@@ -14,38 +14,49 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 
+import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.WebSocket;
+import okhttp3.WebSocketListener;
 
 public class DayRhythmKeepAliveService extends Service {
     public static final String CHANNEL_KEEPALIVE = "dayrhythm_keepalive";
     public static final String CHANNEL_UPDATES = "dayrhythm_updates";
+    public static final String ACTION_WS_SYNC_MESSAGE = "app.dayrhythm.mobile.WS_SYNC_MESSAGE";
+    public static final String ACTION_UPDATE_AVAILABLE = "app.dayrhythm.mobile.UPDATE_AVAILABLE";
+    public static final String EXTRA_WS_PAYLOAD = "ws_payload";
+    public static final String EXTRA_UPDATE_TAG = "update_tag";
+    public static final String EXTRA_UPDATE_URL = "update_url";
+
     private static final int NOTIF_KEEPALIVE_ID = 1001;
     private static final int NOTIF_UPDATE_ID = 1002;
-    private static final long CHECK_INTERVAL_MS = 15 * 60 * 1000L; // 15 minutes
+    private static final long UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000L; // Every 60 minutes
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private long lastUpdateCheckMs = 0L;
 
-    private final Runnable periodicPulse = new Runnable() {
+    private OkHttpClient wsClient;
+    private WebSocket activeWebSocket;
+    private long wsBackoffMs = 3000L;
+    private volatile boolean isDestroyed = false;
+
+    private final Runnable periodicUpdateTask = new Runnable() {
         @Override
         public void run() {
-            executor.execute(() -> {
-                pingCloudHealth();
-                long now = System.currentTimeMillis();
-                if (now - lastUpdateCheckMs > 3 * 60 * 60 * 1000L) {
-                    lastUpdateCheckMs = now;
-                    checkForGithubUpdate();
-                }
-            });
-            handler.postDelayed(this, CHECK_INTERVAL_MS);
+            executor.execute(() -> checkForGithubUpdate());
+            handler.postDelayed(this, UPDATE_CHECK_INTERVAL_MS);
         }
     };
+
+    private final Runnable wsReconnectRunnable = this::connectBackgroundWebSocket;
 
     public static void startServiceCompat(Context context) {
         Intent intent = new Intent(context, DayRhythmKeepAliveService.class);
@@ -56,7 +67,7 @@ public class DayRhythmKeepAliveService extends Service {
                 context.startService(intent);
             }
         } catch (Exception ignored) {
-            // Avoid crash if background restriction temporarily blocks launch
+            // Avoid crash if background launch restriction temporarily blocks start
         }
     }
 
@@ -64,31 +75,48 @@ public class DayRhythmKeepAliveService extends Service {
     public void onCreate() {
         super.onCreate();
         createNotificationChannels();
+        LocalAssetServer.ensureStarted(this);
+
+        wsClient = new OkHttpClient.Builder()
+                .pingInterval(25, TimeUnit.SECONDS)
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(0, TimeUnit.MILLISECONDS)
+                .retryOnConnectionFailure(true)
+                .build();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        Notification notification = buildKeepAliveNotification("إيقاع اليوم يعمل في الخلفية · مزامنة لحظية مع الكمبيوتر");
+        Notification notification = buildKeepAliveNotification("يعمل 24/7 في الخلفية · مزامنة لحظية وتحديث تلقائي نشط");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIF_KEEPALIVE_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         } else {
             startForeground(NOTIF_KEEPALIVE_ID, notification);
         }
 
-        handler.removeCallbacks(periodicPulse);
-        handler.post(periodicPulse);
+        connectBackgroundWebSocket();
+        handler.removeCallbacks(periodicUpdateTask);
+        handler.post(periodicUpdateTask);
         return START_STICKY;
     }
 
     @Override
     public void onTimeout(int startId) {
-        // Android 14/15/16 dataSync foreground timeout compliance: stop cleanly so OS doesn't crash app
         stopSelf(startId);
     }
 
     @Override
     public void onDestroy() {
-        handler.removeCallbacks(periodicPulse);
+        isDestroyed = true;
+        handler.removeCallbacks(periodicUpdateTask);
+        handler.removeCallbacks(wsReconnectRunnable);
+        if (activeWebSocket != null) {
+            try {
+                activeWebSocket.close(1000, "service_stopped");
+            } catch (Exception ignored) {
+            }
+            activeWebSocket = null;
+        }
         executor.shutdownNow();
         super.onDestroy();
     }
@@ -96,6 +124,71 @@ public class DayRhythmKeepAliveService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    private String resolveSyncWsUrl() {
+        SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE);
+        String saved = prefs.getString(MainActivity.KEY_REMOTE_WS_URL, BuildConfig.REMOTE_WS_URL);
+        if (saved == null) return "";
+        return saved.trim();
+    }
+
+    private void connectBackgroundWebSocket() {
+        if (isDestroyed || wsClient == null) return;
+        String wsUrl = resolveSyncWsUrl();
+        if (wsUrl.isEmpty() || (!wsUrl.startsWith("ws://") && !wsUrl.startsWith("wss://"))) {
+            updateKeepAliveNotification("يعمل 24/7 في الخلفية · مزامنة Firestore لحظية نشطة");
+            return;
+        }
+
+        if (activeWebSocket != null) {
+            try {
+                activeWebSocket.cancel();
+            } catch (Exception ignored) {
+            }
+            activeWebSocket = null;
+        }
+
+        Request request = new Request.Builder().url(wsUrl).build();
+        activeWebSocket = wsClient.newWebSocket(request, new WebSocketListener() {
+            @Override
+            public void onOpen(@NonNull WebSocket webSocket, @NonNull Response response) {
+                wsBackoffMs = 3000L;
+                updateKeepAliveNotification("متصل لحظياً عبر WebSocket · OnePlus 12R ⇄ الكمبيوتر");
+            }
+
+            @Override
+            public void onMessage(@NonNull WebSocket webSocket, @NonNull String text) {
+                Intent syncIntent = new Intent(ACTION_WS_SYNC_MESSAGE);
+                syncIntent.setPackage(getPackageName());
+                syncIntent.putExtra(EXTRA_WS_PAYLOAD, text);
+                sendBroadcast(syncIntent);
+            }
+
+            @Override
+            public void onClosed(@NonNull WebSocket webSocket, int code, @NonNull String reason) {
+                scheduleWsReconnect();
+            }
+
+            @Override
+            public void onFailure(@NonNull WebSocket webSocket, @NonNull Throwable t, Response response) {
+                updateKeepAliveNotification("يعمل في الخلفية · جاري إعادة ربط WebSocket...");
+                scheduleWsReconnect();
+            }
+        });
+    }
+
+    private void scheduleWsReconnect() {
+        if (isDestroyed) return;
+        handler.removeCallbacks(wsReconnectRunnable);
+        handler.postDelayed(wsReconnectRunnable, wsBackoffMs);
+        wsBackoffMs = Math.min(wsBackoffMs * 2L, 45000L);
+    }
+
+    private void updateKeepAliveNotification(String subtitle) {
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        nm.notify(NOTIF_KEEPALIVE_ID, buildKeepAliveNotification(subtitle));
     }
 
     private void createNotificationChannels() {
@@ -115,7 +208,7 @@ public class DayRhythmKeepAliveService extends Service {
             NotificationChannel updates = new NotificationChannel(
                     CHANNEL_UPDATES,
                     "تحديثات إيقاع اليوم التلقائية",
-                    NotificationManager.IMPORTANCE_DEFAULT
+                    NotificationManager.IMPORTANCE_HIGH
             );
             nm.createNotificationChannel(updates);
         }
@@ -142,35 +235,24 @@ public class DayRhythmKeepAliveService extends Service {
                 .build();
     }
 
-    private void pingCloudHealth() {
-        HttpURLConnection conn = null;
-        try {
-            SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE);
-            String baseUrl = prefs.getString(MainActivity.KEY_APP_URL, BuildConfig.DEFAULT_APP_URL);
-            if (baseUrl == null || baseUrl.trim().isEmpty()) return;
-            String clean = baseUrl.trim().replaceAll("/+$", "");
-            URL url = new URL(clean + "/api/health");
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
-            conn.setRequestMethod("GET");
-            conn.getResponseCode();
-        } catch (Exception ignored) {
-            // Silent keepalive probe
-        } finally {
-            if (conn != null) conn.disconnect();
-        }
-    }
-
     private void checkForGithubUpdate() {
         AutoUpdateManager.UpdateInfo info = AutoUpdateManager.checkLatestRelease(this);
         if (info == null || !info.hasUpdate) return;
+
+        // Broadcast to active MainActivity for instant in-app install banner
+        Intent updateBroadcast = new Intent(ACTION_UPDATE_AVAILABLE);
+        updateBroadcast.setPackage(getPackageName());
+        updateBroadcast.putExtra(EXTRA_UPDATE_TAG, info.latestTag);
+        updateBroadcast.putExtra(EXTRA_UPDATE_URL, info.apkDownloadUrl);
+        sendBroadcast(updateBroadcast);
 
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm == null) return;
 
         Intent openIntent = new Intent(this, MainActivity.class);
         openIntent.putExtra("trigger_update", true);
+        openIntent.putExtra(EXTRA_UPDATE_TAG, info.latestTag);
+        openIntent.putExtra(EXTRA_UPDATE_URL, info.apkDownloadUrl);
         openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pi = PendingIntent.getActivity(
                 this,
@@ -180,8 +262,8 @@ public class DayRhythmKeepAliveService extends Service {
         );
 
         Notification notif = new NotificationCompat.Builder(this, CHANNEL_UPDATES)
-                .setContentTitle("يتوفر تحديث جديد لإيقاع اليوم (" + info.latestTag + ")")
-                .setContentText("اضغط هنا لتنزيل وتثبيت التحديث تلقائياً على OnePlus 12R")
+                .setContentTitle("🚀 يتوفر إصدار جديد من إيقاع اليوم (" + info.latestTag + ")")
+                .setContentText("اضغط هنا لتنزيل وتثبيت التحديث مباشرة من التطبيق")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setAutoCancel(true)
                 .setContentIntent(pi)

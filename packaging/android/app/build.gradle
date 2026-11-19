@@ -2,9 +2,8 @@ plugins {
     id 'com.android.application'
 }
 
-def resolvedAppUrl = (project.findProperty('APP_URL') ?: 'https://ais-pre-nldzeytdlkfysmfvrz4pkn-146281240493.europe-west2.run.app').toString()
-def resolvedAppHost = (project.findProperty('APP_HOST') ?: 'ais-pre-nldzeytdlkfysmfvrz4pkn-146281240493.europe-west2.run.app').toString()
 def resolvedGithubRepo = (project.findProperty('GITHUB_REPO') ?: '').toString()
+def resolvedRemoteWsUrl = (project.findProperty('REMOTE_WS_URL') ?: '').toString()
 def resolvedVersionCode = (project.findProperty('VERSION_CODE') ?: '1').toString().toInteger()
 def resolvedVersionName = (project.findProperty('VERSION_NAME') ?: '1.0.1').toString()
 
@@ -19,12 +18,10 @@ android {
         versionCode resolvedVersionCode
         versionName resolvedVersionName
 
-        buildConfigField 'String', 'DEFAULT_APP_URL', "\"${resolvedAppUrl}\""
         buildConfigField 'String', 'GITHUB_REPO', "\"${resolvedGithubRepo}\""
+        buildConfigField 'String', 'REMOTE_WS_URL', "\"${resolvedRemoteWsUrl}\""
 
         resValue 'string', 'app_name', 'إيقاع اليوم'
-        resValue 'string', 'launch_url', resolvedAppUrl
-        resValue 'string', 'host_name', resolvedAppHost
         resValue 'string', 'file_provider_authority', 'app.dayrhythm.mobile.fileprovider'
     }
 
@@ -61,6 +58,6 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.browser:browser:1.8.0'
     implementation 'androidx.core:core:1.13.1'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 }

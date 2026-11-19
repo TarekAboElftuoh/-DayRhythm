@@ -4,7 +4,6 @@ const {
   Menu,
   Notification,
   Tray,
-  ipcMain,
   nativeImage,
   powerSaveBlocker,
   session,
@@ -14,6 +13,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const path = require('path');
+const { WebSocket, WebSocketServer } = require('ws');
 
 let autoUpdater = null;
 try {
@@ -22,19 +22,50 @@ try {
   autoUpdater = null;
 }
 
-const DEFAULT_APP_URL =
-  process.env.DAYRHYTHM_APP_URL ||
-  'https://ais-pre-nldzeytdlkfysmfvrz4pkn-146281240493.europe-west2.run.app';
 const GITHUB_REPO = 'DAYRHYTHM_GITHUB_OWNER/DAYRHYTHM_GITHUB_REPO';
 const PARTITION = 'persist:dayrhythm';
-const AUTO_UPDATE_INTERVAL_MS = 30 * 60 * 1000; // Every 30 minutes
+const PREFERRED_PORT = 41735;
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000; // Every 30 minutes
+const WS_PING_INTERVAL_MS = 25 * 1000;
+
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.ttf': 'font/ttf',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+};
 
 let mainWindow = null;
 let tray = null;
+let localServer = null;
+let localWss = null;
+let localPort = PREFERRED_PORT;
 let isQuitting = false;
 let powerSaveId = null;
+
+// Background WebSocket keep-alive state
+let remoteWs = null;
+let remoteWsReconnectTimer = null;
+let remoteWsPingTimer = null;
+let remoteWsBackoffMs = 3000;
+let wsStatusLabel = 'متصل محلياً + Firestore لحظي';
+
+// Auto-update state
 let updateDownloaded = false;
-let updateStatusLabel = 'التطبيق محدّث';
+let latestReleaseInfo = null; // { version, tag, downloadUrl }
+let updateStatusLabel = `محدّث v${app.getVersion()}`;
 
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'dayrhythm-config.json');
@@ -45,13 +76,13 @@ function loadConfig() {
     const raw = fs.readFileSync(getConfigPath(), 'utf8');
     const parsed = JSON.parse(raw);
     return {
-      appUrl: typeof parsed.appUrl === 'string' && parsed.appUrl.trim() ? parsed.appUrl.trim() : DEFAULT_APP_URL,
       autoLaunch: typeof parsed.autoLaunch === 'boolean' ? parsed.autoLaunch : true,
+      remoteSyncWsUrl: typeof parsed.remoteSyncWsUrl === 'string' ? parsed.remoteSyncWsUrl.trim() : '',
     };
   } catch {
     return {
-      appUrl: DEFAULT_APP_URL,
       autoLaunch: true,
+      remoteSyncWsUrl: '',
     };
   }
 }
@@ -60,34 +91,11 @@ function saveConfig(next) {
   try {
     fs.writeFileSync(getConfigPath(), JSON.stringify(next, null, 2), 'utf8');
   } catch {
-    // ignore disk write issues
+    // ignore disk errors
   }
 }
 
-let currentConfig = { appUrl: DEFAULT_APP_URL, autoLaunch: true };
-
-function normalizeUrl(raw) {
-  const trimmed = String(raw || '').trim().replace(/\/+$/, '');
-  if (!trimmed) return DEFAULT_APP_URL;
-  if (!/^https?:\/\//i.test(trimmed)) return `https://${trimmed}`;
-  return trimmed;
-}
-
-function getCurrentOrigin() {
-  try {
-    return new URL(currentConfig.appUrl).origin;
-  } catch {
-    return new URL(DEFAULT_APP_URL).origin;
-  }
-}
-
-function getCurrentHost() {
-  try {
-    return new URL(currentConfig.appUrl).hostname;
-  } catch {
-    return new URL(DEFAULT_APP_URL).hostname;
-  }
-}
+let currentConfig = { autoLaunch: true, remoteSyncWsUrl: '' };
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -102,12 +110,33 @@ if (!gotLock) {
   });
 }
 
+function getIconPath() {
+  return path.join(__dirname, 'build', 'icon.png');
+}
+
+function getEmbeddedDistDir() {
+  const packaged = path.join(__dirname, 'app-dist');
+  if (fs.existsSync(path.join(packaged, 'index.html'))) {
+    return packaged;
+  }
+  const repoDist = path.resolve(__dirname, '..', '..', 'dist');
+  if (fs.existsSync(path.join(repoDist, 'index.html'))) {
+    return repoDist;
+  }
+  return packaged;
+}
+
+function getLocalOrigin() {
+  return `http://localhost:${localPort}`;
+}
+
 function isAuthOrAppUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
     const host = parsed.hostname.toLowerCase();
     return (
-      host === getCurrentHost().toLowerCase() ||
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
       host === 'accounts.google.com' ||
       host.endsWith('.google.com') ||
       host.endsWith('.googleapis.com') ||
@@ -120,48 +149,18 @@ function isAuthOrAppUrl(rawUrl) {
   }
 }
 
-function getIconPath() {
-  return path.join(__dirname, 'build', 'icon.png');
-}
-
-function probeUrlHealth(targetUrl) {
-  return new Promise((resolve) => {
-    try {
-      const clean = normalizeUrl(targetUrl);
-      const parsed = new URL(`${clean}/api/health`);
-      const lib = parsed.protocol === 'http:' ? http : https;
-      const req = lib.get(
-        parsed,
-        {
-          timeout: 6000,
-          headers: { 'User-Agent': 'DayRhythm-Desktop/1.0' },
-        },
-        (res) => {
-          const code = res.statusCode || 0;
-          res.resume();
-          resolve({ ok: code >= 200 && code < 400, statusCode: code });
-        }
-      );
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({ ok: false, statusCode: 0, error: 'timeout' });
-      });
-      req.on('error', (err) => {
-        resolve({ ok: false, statusCode: 0, error: err.message });
-      });
-    } catch (err) {
-      resolve({ ok: false, statusCode: 0, error: String(err) });
-    }
-  });
-}
-
-function showDesktopNotification(title, body) {
+function showDesktopNotification(title, body, onClick) {
   try {
-    if (Notification.isSupported()) {
-      new Notification({ title, body, icon: getIconPath() }).show();
-    }
+    if (!Notification.isSupported()) return;
+    const notif = new Notification({
+      title,
+      body,
+      icon: getIconPath(),
+    });
+    if (onClick) notif.on('click', onClick);
+    notif.show();
   } catch {
-    // ignore
+    // ignore notification errors
   }
 }
 
@@ -173,15 +172,480 @@ function applyAutoLaunchSetting(enabled) {
       args: ['--background'],
     });
   } catch {
-    // ignore on unsupported environments
+    // ignore on unsupported platforms
   }
 }
 
+// =========================================================================
+// 1. Embedded Local HTTP + WebSocket Server (ZERO 404 EVER, Works Offline!)
+// =========================================================================
+function startEmbeddedServer() {
+  return new Promise((resolve) => {
+    const distDir = getEmbeddedDistDir();
+    const syncRooms = new Map();
+
+    const broadcastRoom = (uid, rawMsg, senderWs) => {
+      const room = syncRooms.get(uid);
+      if (!room) return;
+      for (const client of room) {
+        if (client !== senderWs && client.readyState === WebSocket.OPEN) {
+          try {
+            client.send(rawMsg);
+          } catch {
+            // ignore
+          }
+        }
+      }
+    };
+
+    const server = http.createServer((req, res) => {
+      try {
+        const reqUrl = new URL(req.url || '/', 'http://localhost');
+        const pathname = decodeURIComponent(reqUrl.pathname);
+
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+
+        if (pathname === '/api/health') {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              mode: 'desktop_standalone',
+              wsSyncRooms: syncRooms.size,
+              version: app.getVersion(),
+              serverTimeIso: new Date().toISOString(),
+            })
+          );
+          return;
+        }
+
+        if (pathname === '/__dayrhythm_native/status') {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(
+            JSON.stringify({
+              version: app.getVersion(),
+              updateDownloaded,
+              latestRelease: latestReleaseInfo,
+              wsStatus: wsStatusLabel,
+            })
+          );
+          return;
+        }
+
+        if (pathname === '/__dayrhythm_native/install-update' && req.method === 'POST') {
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true }));
+          triggerInstallOrDownloadUpdate();
+          return;
+        }
+
+        // Prevent path traversal & serve embedded dist assets
+        const safeRel = pathname.replace(/^\/+/, '').replace(/\.\./g, '');
+        let filePath = path.join(distDir, safeRel || 'index.html');
+        if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+          filePath = path.join(distDir, 'index.html');
+        }
+
+        if (!fs.existsSync(filePath)) {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<!doctype html><html dir="rtl" lang="ar"><body style="background:#000;color:#fff;font-family:sans-serif;padding:32px;text-align:center"><h2>جاري تجهيز ملفات إيقاع اليوم...</h2></body></html>');
+          return;
+        }
+
+        const ext = path.extname(filePath).toLowerCase();
+        const mime = MIME_TYPES[ext] || 'application/octet-stream';
+        const headers = { 'Content-Type': mime };
+        if (ext === '.html') {
+          headers['Cache-Control'] = 'no-cache';
+        }
+        res.writeHead(200, headers);
+        fs.createReadStream(filePath).pipe(res);
+      } catch {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Internal Error');
+      }
+    });
+
+    // Local WebSocket server on /ws/sync (keeps renderer WebSocket permanently connected)
+    const wss = new WebSocketServer({ server, path: '/ws/sync' });
+    wss.on('connection', (ws, req) => {
+      let uid = 'local';
+      try {
+        const u = new URL(req.url || '/ws/sync', 'http://localhost');
+        uid = u.searchParams.get('uid') || 'local';
+      } catch {
+        uid = 'local';
+      }
+
+      if (!syncRooms.has(uid)) syncRooms.set(uid, new Set());
+      syncRooms.get(uid).add(ws);
+
+      ws.isAlive = true;
+      ws.on('pong', () => {
+        ws.isAlive = true;
+      });
+
+      ws.send(JSON.stringify({ type: 'connected', mode: 'desktop_tray_ws', ts: Date.now() }));
+
+      ws.on('message', (data) => {
+        const text = data.toString();
+        if (text === 'ping') {
+          try {
+            ws.send('pong');
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        broadcastRoom(uid, text, ws);
+        if (remoteWs && remoteWs.readyState === WebSocket.OPEN) {
+          try {
+            remoteWs.send(text);
+          } catch {
+            // ignore
+          }
+        }
+      });
+
+      ws.on('close', () => {
+        const room = syncRooms.get(uid);
+        if (room) {
+          room.delete(ws);
+          if (room.size === 0) syncRooms.delete(uid);
+        }
+      });
+    });
+
+    // Heartbeat keep-alive for all local WebSocket clients
+    const heartbeat = setInterval(() => {
+      wss.clients.forEach((client) => {
+        if (client.isAlive === false) {
+          try {
+            client.terminate();
+          } catch {
+            // ignore
+          }
+          return;
+        }
+        client.isAlive = false;
+        try {
+          client.ping();
+        } catch {
+          // ignore
+        }
+      });
+    }, WS_PING_INTERVAL_MS);
+
+    wss.on('close', () => clearInterval(heartbeat));
+
+    localServer = server;
+    localWss = wss;
+
+    server.on('error', () => {
+      // Fallback to random available localhost port if PREFERRED_PORT is occupied
+      server.listen(0, '127.0.0.1', () => {
+        const addr = server.address();
+        localPort = typeof addr === 'object' && addr ? addr.port : PREFERRED_PORT;
+        resolve(localPort);
+      });
+    });
+
+    server.listen(PREFERRED_PORT, '127.0.0.1', () => {
+      localPort = PREFERRED_PORT;
+      resolve(localPort);
+    });
+  });
+}
+
+// =========================================================================
+// 2. Persistent Background Remote WebSocket Bridge (Optional Cloud Relay)
+// =========================================================================
+function connectRemoteSyncWebSocket() {
+  const wsUrl = currentConfig.remoteSyncWsUrl;
+  if (!wsUrl || !/^wss?:\/\//i.test(wsUrl)) {
+    wsStatusLabel = 'متصل محلياً + Firestore لحظي';
+    rebuildTrayMenu();
+    return;
+  }
+
+  if (remoteWsReconnectTimer) {
+    clearTimeout(remoteWsReconnectTimer);
+    remoteWsReconnectTimer = null;
+  }
+
+  try {
+    remoteWs = new WebSocket(wsUrl);
+  } catch {
+    scheduleRemoteWsReconnect();
+    return;
+  }
+
+  remoteWs.on('open', () => {
+    remoteWsBackoffMs = 3000;
+    wsStatusLabel = 'متصل بـ WebSocket 24/7 ✓';
+    rebuildTrayMenu();
+
+    if (remoteWsPingTimer) clearInterval(remoteWsPingTimer);
+    remoteWsPingTimer = setInterval(() => {
+      if (remoteWs && remoteWs.readyState === WebSocket.OPEN) {
+        try {
+          remoteWs.ping();
+        } catch {
+          // ignore
+        }
+      }
+    }, WS_PING_INTERVAL_MS);
+  });
+
+  remoteWs.on('message', (data) => {
+    const text = data.toString();
+    if (localWss) {
+      localWss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          try {
+            client.send(text);
+          } catch {
+            // ignore
+          }
+        }
+      });
+    }
+  });
+
+  remoteWs.on('close', () => {
+    if (remoteWsPingTimer) clearInterval(remoteWsPingTimer);
+    wsStatusLabel = 'جاري إعادة ربط WebSocket...';
+    rebuildTrayMenu();
+    scheduleRemoteWsReconnect();
+  });
+
+  remoteWs.on('error', () => {
+    try {
+      remoteWs.close();
+    } catch {
+      // ignore
+    }
+  });
+}
+
+function scheduleRemoteWsReconnect() {
+  if (isQuitting) return;
+  if (remoteWsReconnectTimer) clearTimeout(remoteWsReconnectTimer);
+  remoteWsReconnectTimer = setTimeout(() => {
+    connectRemoteSyncWebSocket();
+  }, remoteWsBackoffMs);
+  remoteWsBackoffMs = Math.min(remoteWsBackoffMs * 2, 45000);
+}
+
+// =========================================================================
+// 3. Periodic GitHub Releases Auto-Update Service (Setup + Portable)
+// =========================================================================
+function isVersionNewer(remoteTag, localVersion) {
+  const r = String(remoteTag || '').replace(/^v/i, '').split('.').map((x) => parseInt(x.replace(/\D/g, ''), 10) || 0);
+  const l = String(localVersion || '').replace(/^v/i, '').split('.').map((x) => parseInt(x.replace(/\D/g, ''), 10) || 0);
+  const len = Math.max(r.length, l.length);
+  for (let i = 0; i < len; i++) {
+    const rv = r[i] || 0;
+    const lv = l[i] || 0;
+    if (rv > lv) return true;
+    if (rv < lv) return false;
+  }
+  return false;
+}
+
+function fetchLatestGithubRelease() {
+  return new Promise((resolve) => {
+    if (!GITHUB_REPO || GITHUB_REPO.includes('DAYRHYTHM_GITHUB')) {
+      resolve(null);
+      return;
+    }
+    const req = https.get(
+      `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+      {
+        timeout: 8000,
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': `DayRhythm-Desktop/${app.getVersion()}`,
+        },
+      },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        let raw = '';
+        res.on('data', (chunk) => {
+          raw += chunk;
+        });
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(raw);
+            const tag = String(json.tag_name || '').trim();
+            const assets = Array.isArray(json.assets) ? json.assets : [];
+            const setupAsset = assets.find((a) => String(a.name || '').toLowerCase().includes('setup.exe'));
+            const anyExe = assets.find((a) => String(a.name || '').toLowerCase().endsWith('.exe'));
+            const chosen = setupAsset || anyExe;
+            resolve({
+              tag,
+              version: tag.replace(/^v/i, ''),
+              downloadUrl: chosen ? chosen.browser_download_url : json.html_url,
+              htmlUrl: json.html_url,
+            });
+          } catch {
+            resolve(null);
+          }
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+function injectInAppUpdateBanner(tagLabel) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const safeTag = String(tagLabel || '').replace(/['"\\<>]/g, '');
+  const js = `
+    (() => {
+      const existing = document.getElementById('dayrhythm-native-update-bar');
+      if (existing) existing.remove();
+      const bar = document.createElement('div');
+      bar.id = 'dayrhythm-native-update-bar';
+      bar.dir = 'rtl';
+      bar.style.cssText = 'position:fixed;bottom:18px;left:18px;z-index:2147483647;background:#06281e;color:#ecfdf5;border:1px solid #10b981;border-radius:16px;padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 16px 40px rgba(0,0,0,0.65);font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:13px;';
+      bar.innerHTML = '<span>🚀 يتوفر تحديث جديد لإيقاع اليوم (<b>${safeTag}</b>)</span>'
+        + '<button id="dr-upd-install-btn" style="background:#10b981;color:#022c22;border:none;border-radius:10px;padding:7px 14px;font-weight:700;cursor:pointer;">تثبيت الآن</button>'
+        + '<button id="dr-upd-close-btn" style="background:transparent;color:#a7f3d0;border:none;cursor:pointer;font-size:16px;padding:0 4px;">×</button>';
+      document.body.appendChild(bar);
+      document.getElementById('dr-upd-install-btn')?.addEventListener('click', () => {
+        fetch('/__dayrhythm_native/install-update', { method: 'POST' }).catch(() => {});
+      });
+      document.getElementById('dr-upd-close-btn')?.addEventListener('click', () => bar.remove());
+    })();
+  `;
+  mainWindow.webContents.executeJavaScript(js).catch(() => {});
+}
+
+function triggerInstallOrDownloadUpdate() {
+  if (updateDownloaded && autoUpdater) {
+    isQuitting = true;
+    autoUpdater.quitAndInstall(false, true);
+    return;
+  }
+  if (latestReleaseInfo && latestReleaseInfo.downloadUrl) {
+    shell.openExternal(latestReleaseInfo.downloadUrl).catch(() => {});
+    return;
+  }
+  if (!GITHUB_REPO.includes('DAYRHYTHM_GITHUB')) {
+    shell.openExternal(`https://github.com/${GITHUB_REPO}/releases/latest`).catch(() => {});
+  }
+}
+
+function setupBackgroundAutoUpdater() {
+  if (autoUpdater && app.isPackaged) {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('checking-for-update', () => {
+      updateStatusLabel = 'جاري فحص التحديثات...';
+      rebuildTrayMenu();
+    });
+
+    autoUpdater.on('update-available', (info) => {
+      latestReleaseInfo = {
+        tag: `v${info.version}`,
+        version: info.version,
+        downloadUrl: `https://github.com/${GITHUB_REPO}/releases/latest`,
+      };
+      updateStatusLabel = `جاري تنزيل v${info.version}...`;
+      rebuildTrayMenu();
+      showDesktopNotification(
+        'يتوفر تحديث جديد لإيقاع اليوم',
+        `جاري تنزيل الإصدار v${info.version} تلقائياً في الخلفية.`
+      );
+    });
+
+    autoUpdater.on('update-not-available', () => {
+      updateStatusLabel = `محدّث v${app.getVersion()}`;
+      rebuildTrayMenu();
+    });
+
+    autoUpdater.on('update-downloaded', (info) => {
+      updateDownloaded = true;
+      updateStatusLabel = `جاهز للتثبيت v${info.version}`;
+      rebuildTrayMenu();
+      injectInAppUpdateBanner(`v${info.version}`);
+      showDesktopNotification(
+        'التحديث جاهز للتثبيت ✓',
+        `اضغط هنا لتثبيت الإصدار v${info.version} وإعادة تشغيل إيقاع اليوم تلقائياً.`,
+        () => triggerInstallOrDownloadUpdate()
+      );
+    });
+
+    autoUpdater.on('error', () => {
+      // Fallback to lightweight GitHub API check below
+    });
+  }
+
+  void runPeriodicUpdateCheck(false);
+  setInterval(() => {
+    void runPeriodicUpdateCheck(false);
+  }, UPDATE_CHECK_INTERVAL_MS);
+}
+
+async function runPeriodicUpdateCheck(notifyIfUpToDate) {
+  let handledByElectronUpdater = false;
+  if (autoUpdater && app.isPackaged) {
+    try {
+      const res = await autoUpdater.checkForUpdates();
+      handledByElectronUpdater = true;
+      if (notifyIfUpToDate && (!res || !res.updateInfo || !isVersionNewer(res.updateInfo.version, app.getVersion()))) {
+        showDesktopNotification('إيقاع اليوم محدّث ✓', `أنت تستخدم أحدث إصدار (v${app.getVersion()}).`);
+      }
+    } catch {
+      handledByElectronUpdater = false;
+    }
+  }
+
+  if (!handledByElectronUpdater) {
+    const rel = await fetchLatestGithubRelease();
+    if (rel && isVersionNewer(rel.version, app.getVersion())) {
+      latestReleaseInfo = rel;
+      updateStatusLabel = `تحديث متاح ${rel.tag}`;
+      rebuildTrayMenu();
+      injectInAppUpdateBanner(rel.tag);
+      showDesktopNotification(
+        `يتوفر إصدار جديد (${rel.tag})`,
+        'اضغط هنا لتنزيل وتثبيت التحديث الجديد مباشرة من GitHub Releases.',
+        () => triggerInstallOrDownloadUpdate()
+      );
+    } else if (notifyIfUpToDate) {
+      showDesktopNotification('إيقاع اليوم محدّث ✓', `أنت تستخدم أحدث إصدار (v${app.getVersion()}).`);
+    }
+  }
+}
+
+// =========================================================================
+// 4. Windows System Tray Icon (24/7 Background Operation)
+// =========================================================================
 function rebuildTrayMenu() {
   if (!tray) return;
   const template = [
     {
-      label: 'فتح إيقاع اليوم',
+      label: 'إيقاع اليوم | DayRhythm',
+      enabled: false,
+    },
+    {
+      label: `المزامنة: ${wsStatusLabel}`,
+      enabled: false,
+    },
+    { type: 'separator' },
+    {
+      label: 'فتح النافذة',
       click: () => {
         if (mainWindow) {
           mainWindow.show();
@@ -190,37 +654,28 @@ function rebuildTrayMenu() {
       },
     },
     {
-      label: 'تحديث الصفحة',
+      label: 'تحديث الواجهة',
       click: () => {
-        if (mainWindow) void openAppOrRecovery(currentConfig.appUrl);
-      },
-    },
-    {
-      label: 'تغيير رابط السحابة',
-      click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-          mainWindow.focus();
-          loadRecoveryPage(mainWindow, currentConfig.appUrl, 'تعديل رابط الخادم السحابي يدوياً');
-        }
+        if (mainWindow) mainWindow.reload();
       },
     },
     { type: 'separator' },
     {
       label: updateDownloaded
-        ? 'تثبيت التحديث الجديد الآن (إعادة تشغيل)'
-        : `فحص التحديثات (${updateStatusLabel})`,
+        ? '🚀 تثبيت التحديث الآن (إعادة تشغيل)'
+        : latestReleaseInfo && isVersionNewer(latestReleaseInfo.version, app.getVersion())
+          ? `⬇️ تنزيل التحديث (${latestReleaseInfo.tag})`
+          : `فحص التحديثات (${updateStatusLabel})`,
       click: () => {
-        if (updateDownloaded && autoUpdater) {
-          isQuitting = true;
-          autoUpdater.quitAndInstall(false, true);
+        if (updateDownloaded || (latestReleaseInfo && isVersionNewer(latestReleaseInfo.version, app.getVersion()))) {
+          triggerInstallOrDownloadUpdate();
         } else {
-          void triggerUpdateCheck(true);
+          void runPeriodicUpdateCheck(true);
         }
       },
     },
     {
-      label: 'التشغيل التلقائي مع ويندوز (24/7 في الخلفية)',
+      label: 'التشغيل تلقائياً مع ويندوز (24/7 في الخلفية)',
       type: 'checkbox',
       checked: currentConfig.autoLaunch,
       click: (item) => {
@@ -239,35 +694,13 @@ function rebuildTrayMenu() {
     },
   ];
   tray.setContextMenu(Menu.buildFromTemplate(template));
-}
-
-function setupPermissions() {
-  const ses = session.fromPartition(PARTITION);
-  const allowedPermissions = new Set([
-    'notifications',
-    'geolocation',
-    'media',
-    'audioCapture',
-    'clipboard-read',
-    'clipboard-sanitized-write',
-  ]);
-
-  ses.setPermissionRequestHandler((webContents, permission, callback) => {
-    try {
-      const currentUrl = webContents.getURL();
-      const trusted = currentUrl.startsWith(getCurrentOrigin());
-      callback(trusted && allowedPermissions.has(permission));
-    } catch {
-      callback(false);
-    }
-  });
+  tray.setToolTip(`إيقاع اليوم | ${wsStatusLabel}`);
 }
 
 function createTray() {
   try {
     const icon = nativeImage.createFromPath(getIconPath()).resize({ width: 16, height: 16 });
     tray = new Tray(icon);
-    tray.setToolTip('إيقاع اليوم | DayRhythm (يعمل في الخلفية)');
     rebuildTrayMenu();
     tray.on('click', () => {
       if (!mainWindow) return;
@@ -282,221 +715,26 @@ function createTray() {
   }
 }
 
-function setupAutoUpdater() {
-  if (!autoUpdater || !app.isPackaged) return;
+function setupPermissions() {
+  const ses = session.fromPartition(PARTITION);
+  const allowed = new Set([
+    'notifications',
+    'geolocation',
+    'media',
+    'audioCapture',
+    'clipboard-read',
+    'clipboard-sanitized-write',
+  ]);
 
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-
-  autoUpdater.on('checking-for-update', () => {
-    updateStatusLabel = 'جاري الفحص...';
-    rebuildTrayMenu();
-  });
-
-  autoUpdater.on('update-available', (info) => {
-    updateStatusLabel = `جاري تنزيل v${info.version}...`;
-    rebuildTrayMenu();
-    showDesktopNotification(
-      'يتوفر تحديث جديد لإيقاع اليوم',
-      `جاري تنزيل الإصدار ${info.version} تلقائياً في الخلفية.`
-    );
-  });
-
-  autoUpdater.on('update-not-available', () => {
-    updateStatusLabel = `محدّث v${app.getVersion()}`;
-    rebuildTrayMenu();
-  });
-
-  autoUpdater.on('update-downloaded', (info) => {
-    updateDownloaded = true;
-    updateStatusLabel = `جاهز للتثبيت v${info.version}`;
-    rebuildTrayMenu();
-    showDesktopNotification(
-      'التحديث جاهز للتثبيت ✓',
-      `تم تنزيل الإصدار ${info.version}. اضغط من أيقونة شريط المهام للتثبيت فوراً أو سيُثبّت عند إعادة التشغيل.`
-    );
-  });
-
-  autoUpdater.on('error', () => {
-    updateStatusLabel = `v${app.getVersion()}`;
-    rebuildTrayMenu();
-  });
-
-  void triggerUpdateCheck(false);
-  setInterval(() => {
-    void triggerUpdateCheck(false);
-  }, AUTO_UPDATE_INTERVAL_MS);
-}
-
-async function triggerUpdateCheck(notifyIfUpToDate) {
-  if (autoUpdater && app.isPackaged) {
+  ses.setPermissionRequestHandler((webContents, permission, callback) => {
     try {
-      const res = await autoUpdater.checkForUpdates();
-      if (notifyIfUpToDate && (!res || !res.updateInfo || res.updateInfo.version === app.getVersion())) {
-        showDesktopNotification('إيقاع اليوم محدّث', `أنت تستخدم أحدث إصدار (${app.getVersion()}).`);
-      }
-      return;
+      const currentUrl = webContents.getURL();
+      const trusted = currentUrl.startsWith(getLocalOrigin());
+      callback(trusted && allowed.has(permission));
     } catch {
-      // Fallback to GitHub Releases page if portable build
+      callback(false);
     }
-  }
-  if (notifyIfUpToDate && !GITHUB_REPO.includes('DAYRHYTHM_GITHUB')) {
-    shell.openExternal(`https://github.com/${GITHUB_REPO}/releases/latest`).catch(() => {});
-  }
-}
-
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function loadRecoveryPage(win, failedUrl, reasonText) {
-  const safeUrl = escapeHtml(failedUrl);
-  const safeReason = escapeHtml(reasonText);
-  const releasesUrl = GITHUB_REPO.includes('DAYRHYTHM_GITHUB')
-    ? ''
-    : `https://github.com/${GITHUB_REPO}/releases/latest`;
-
-  const html = `<!doctype html>
-  <html lang="ar" dir="rtl">
-    <head>
-      <meta charset="utf-8" />
-      <title>إيقاع اليوم | إعداد رابط السحابة</title>
-      <style>
-        * { box-sizing: border-box; }
-        body {
-          margin: 0;
-          min-height: 100vh;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: #000000;
-          color: #f4f4f5;
-          font-family: system-ui, -apple-system, 'Segoe UI', Tahoma, sans-serif;
-          padding: 24px;
-        }
-        .card {
-          width: 100%;
-          max-width: 520px;
-          background: #0b0b0d;
-          border: 1px solid #27272a;
-          border-radius: 22px;
-          padding: 28px;
-          box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
-        }
-        .badge {
-          display: inline-block;
-          background: rgba(16, 185, 129, 0.14);
-          color: #34d399;
-          border: 1px solid rgba(16, 185, 129, 0.35);
-          border-radius: 10px;
-          padding: 4px 10px;
-          font-size: 12px;
-          font-weight: 700;
-          margin-bottom: 12px;
-        }
-        h1 { font-size: 20px; margin: 0 0 8px; }
-        p { font-size: 13.5px; color: #a1a1aa; line-height: 1.75; margin: 0 0 14px; }
-        .reason {
-          background: rgba(244, 63, 94, 0.1);
-          border: 1px solid rgba(244, 63, 94, 0.3);
-          color: #fda4af;
-          border-radius: 12px;
-          padding: 10px 14px;
-          font-size: 12.5px;
-          margin-bottom: 16px;
-          word-break: break-word;
-        }
-        label { display: block; font-size: 12.5px; color: #d4d4d8; margin-bottom: 6px; font-weight: 600; }
-        input {
-          width: 100%;
-          direction: ltr;
-          text-align: left;
-          background: #141417;
-          border: 1px solid #3f3f46;
-          color: #ffffff;
-          border-radius: 12px;
-          padding: 11px 14px;
-          font-size: 13px;
-          outline: none;
-          margin-bottom: 14px;
-        }
-        input:focus { border-color: #10b981; }
-        .row { display: flex; gap: 10px; flex-wrap: wrap; }
-        button {
-          flex: 1;
-          min-width: 140px;
-          border: none;
-          border-radius: 12px;
-          padding: 11px 16px;
-          font-weight: 700;
-          font-size: 13.5px;
-          cursor: pointer;
-        }
-        .primary { background: #10b981; color: #022c22; }
-        .secondary { background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46; }
-        .hint {
-          margin-top: 16px;
-          padding-top: 14px;
-          border-top: 1px solid #27272a;
-          font-size: 12px;
-          color: #a1a1aa;
-          line-height: 1.7;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="card">
-        <div class="badge">إيقاع اليوم · يعمل 24/7 في الخلفية + تحديث تلقائي</div>
-        <h1>تعذر الوصول إلى رابط التطبيق السحابي</h1>
-        <p>الرابط الحالي غير منشور بعد أو عاد بخطأ 404. انشر التطبيق في AI Studio عبر زر <b>Deploy / Share</b> ثم الصق الرابط الدائم هنا مرة واحدة فقط وسيُحفظ تلقائياً.</p>
-        <div class="reason">${safeReason}</div>
-        <label for="urlInput">رابط السحابة الدائم (Cloud Run / Shared URL):</label>
-        <input id="urlInput" type="url" value="${safeUrl}" placeholder="https://your-app.run.app" />
-        <div class="row">
-          <button class="primary" onclick="saveAndOpen()">حفظ والاتصال الآن</button>
-          <button class="secondary" onclick="retryNow()">إعادة المحاولة</button>
-          ${releasesUrl ? `<button class="secondary" onclick="openUpdates()">فحص التحديثات</button>` : ''}
-        </div>
-        <div class="hint">
-          • يظل التطبيق شغالاً في خلفية ويندوز (شريط المهام) لمزامنة الموبايل والتنبيهات.<br />
-          • يفحص التطبيق التحديثات الجديدة تلقائياً كل 30 دقيقة من GitHub Releases.
-        </div>
-      </div>
-      <script>
-        function saveAndOpen() {
-          const val = document.getElementById('urlInput').value.trim();
-          if (!val) return;
-          window.location.href = 'dayrhythm-config://save?url=' + encodeURIComponent(val);
-        }
-        function retryNow() {
-          window.location.href = 'dayrhythm-config://retry';
-        }
-        function openUpdates() {
-          window.location.href = 'dayrhythm-config://updates';
-        }
-      </script>
-    </body>
-  </html>`;
-  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-}
-
-async function openAppOrRecovery(targetUrl) {
-  if (!mainWindow) return;
-  const cleanUrl = normalizeUrl(targetUrl);
-  const probe = await probeUrlHealth(cleanUrl);
-  if (probe.ok) {
-    mainWindow.loadURL(cleanUrl);
-    return;
-  }
-  const reason =
-    probe.statusCode === 404
-      ? `الرابط أعاد خطأ 404 (Page not found): ${cleanUrl} — تأكد من نشر التطبيق أولاً عبر Deploy/Share ثم ضع الرابط المنشور.`
-      : `تعذر الاتصال بـ ${cleanUrl} (${probe.statusCode || probe.error || 'لا يوجد استجابة'})`;
-  loadRecoveryPage(mainWindow, cleanUrl, reason);
+  });
 }
 
 function createWindow(startHidden) {
@@ -521,6 +759,7 @@ function createWindow(startHidden) {
     },
   });
 
+  // Clean Chrome User-Agent so Google Sign-In works seamlessly
   const cleanUa = mainWindow.webContents
     .getUserAgent()
     .replace(/\sElectron\/[^\s]+/g, '')
@@ -533,36 +772,9 @@ function createWindow(startHidden) {
     }
   });
 
-  // Intercept internal config actions from recovery screen
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (url.startsWith('dayrhythm-config://')) {
-      event.preventDefault();
-      try {
-        const parsed = new URL(url);
-        if (parsed.hostname === 'save') {
-          const newUrl = normalizeUrl(parsed.searchParams.get('url') || '');
-          currentConfig = { ...currentConfig, appUrl: newUrl };
-          saveConfig(currentConfig);
-          void openAppOrRecovery(newUrl);
-        } else if (parsed.hostname === 'retry') {
-          void openAppOrRecovery(currentConfig.appUrl);
-        } else if (parsed.hostname === 'updates') {
-          void triggerUpdateCheck(true);
-        }
-      } catch {
-        // ignore
-      }
-    }
-  });
-
-  // Intercept 404/5xx HTTP responses on main frame so user never sees raw Google 404
-  mainWindow.webContents.on('did-navigate', async (_event, url, httpResponseCode) => {
-    if (url.startsWith(getCurrentOrigin()) && httpResponseCode >= 400) {
-      loadRecoveryPage(
-        mainWindow,
-        currentConfig.appUrl,
-        `الخادم أعاد خطأ HTTP ${httpResponseCode} على الرابط: ${url}`
-      );
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (updateDownloaded && latestReleaseInfo) {
+      injectInAppUpdateBanner(latestReleaseInfo.tag);
     }
   });
 
@@ -588,13 +800,6 @@ function createWindow(startHidden) {
     return { action: 'deny' };
   });
 
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, desc, validatedURL) => {
-    if (errorCode === -3) return;
-    if (validatedURL && validatedURL.startsWith(getCurrentOrigin())) {
-      loadRecoveryPage(mainWindow, currentConfig.appUrl, `فشل التحميل (${errorCode}): ${desc}`);
-    }
-  });
-
   mainWindow.on('close', (event) => {
     if (!isQuitting && tray) {
       event.preventDefault();
@@ -602,23 +807,26 @@ function createWindow(startHidden) {
     }
   });
 
-  void openAppOrRecovery(currentConfig.appUrl);
+  mainWindow.loadURL(getLocalOrigin());
 }
 
 app.setAppUserModelId('app.dayrhythm.desktop');
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   currentConfig = loadConfig();
   applyAutoLaunchSetting(currentConfig.autoLaunch);
 
-  // Prevent Windows from suspending background timers/WebSockets while in tray
+  // Prevent Windows from suspending WebSocket & timers when minimized to Tray
   powerSaveId = powerSaveBlocker.start('prevent-app-suspension');
 
+  await startEmbeddedServer();
   setupPermissions();
   createTray();
+  connectRemoteSyncWebSocket();
+
   const startHidden = process.argv.includes('--background');
   createWindow(startHidden);
-  setupAutoUpdater();
+  setupBackgroundAutoUpdater();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -631,6 +839,15 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  if (remoteWsReconnectTimer) clearTimeout(remoteWsReconnectTimer);
+  if (remoteWsPingTimer) clearInterval(remoteWsPingTimer);
+  try {
+    if (remoteWs) remoteWs.close();
+    if (localWss) localWss.close();
+    if (localServer) localServer.close();
+  } catch {
+    // ignore
+  }
   if (powerSaveId !== null && powerSaveBlocker.isStarted(powerSaveId)) {
     powerSaveBlocker.stop(powerSaveId);
   }
@@ -641,5 +858,3 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
-
-ipcMain.handle('ping', () => 'pong');

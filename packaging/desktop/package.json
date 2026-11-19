@@ -1,7 +1,7 @@
 {
   "name": "dayrhythm-desktop",
   "version": "1.0.0",
-  "description": "إيقاع اليوم | DayRhythm — تطبيق ويندوز الرسمي مع تحديث تلقائي وتشغيل دائم في الخلفية",
+  "description": "إيقاع اليوم | DayRhythm — تطبيق ويندوز مستقل (بدون 404) مع Tray Icon ومزامنة WebSocket وتحديث تلقائي من GitHub",
   "main": "main.cjs",
   "private": true,
   "scripts": {
@@ -9,7 +9,8 @@
     "dist:win": "electron-builder --win --x64 --publish never"
   },
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "electron-updater": "^6.3.9",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "electron": "^33.2.0",
@@ -25,6 +26,7 @@
     "files": [
       "main.cjs",
       "build/icon.png",
+      "app-dist/**/*",
       "package.json",
       "node_modules/**/*"
     ],
