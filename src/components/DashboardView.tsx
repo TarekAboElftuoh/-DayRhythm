@@ -9,8 +9,6 @@ import {
   Zap,
   Moon,
   Sun,
-  Download,
-  Smartphone,
   Sparkles,
   Volume2,
   VolumeX,
@@ -21,9 +19,6 @@ import {
   X,
   BellOff,
   CalendarClock,
-  Copy,
-  Check,
-  FileCode2,
   CheckSquare,
   MessageSquare,
   SlidersHorizontal,
@@ -37,7 +32,6 @@ import {
   Leaf,
   AlertCircle,
 } from 'lucide-react';
-import { downloadDayRhythmSourceKit } from '../engines/exportKitEngine';
 import { HydrationWeeklyChart } from './HydrationWeeklyChart';
 import {
   ActiveSanctuaryState,
@@ -88,28 +82,8 @@ import {
   getCairoTodayIso,
 } from '../engines/prayerEngine';
 import { ARABIC_WEEKDAYS, formatDurationAr } from '../engines/lifeRhythmEngine';
+import { cleanCalendarText, resolveBlockDisplayInfo } from '../services/apiClient';
 import { QUIET_MODE_LABELS, t } from '../engines/i18n';
-import {
-  SAMPLE_ICS_FEED,
-  icsEventsToScheduleBlocks,
-  parseIcsFeedWithRrule,
-} from '../engines/icsParser';
-
-const APPS_SCRIPT_CODE = `// Google Apps Script (script.google.com) — Zero-Cloud-Console Personal Bridge
-function doGet() {
-  var events = CalendarApp.getDefaultCalendar().getEventsForDay(new Date());
-  var out = events.map(function(e) {
-    return { id: e.getId(), title: e.getTitle(), start: e.getStartTime(), end: e.getEndTime() };
-  });
-  return ContentService.createTextOutput(JSON.stringify({ events: out }))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-function doPost(e) {
-  var body = JSON.parse(e.postData.contents);
-  var ev = CalendarApp.getDefaultCalendar().createEvent(body.title, new Date(body.start), new Date(body.end));
-  return ContentService.createTextOutput(JSON.stringify({ id: ev.getId(), status: "created" }))
-    .setMimeType(ContentService.MimeType.JSON);
-}`;
 
 interface DashboardViewProps {
   language: AppLanguage;
@@ -393,14 +367,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [editingWeight, setEditingWeight] = useState(false);
   const [weightInput, setWeightInput] = useState<string>(String(lifeProfile.weightKg));
   const [showScheduleControls, setShowScheduleControls] = useState(false);
-  const [showFourTierSync, setShowFourTierSync] = useState(false);
   const [showHydrationSchedule, setShowHydrationSchedule] = useState(false);
   const [showSleepCheckinEdit, setShowSleepCheckinEdit] = useState(false);
-  const [icsInput, setIcsInput] = useState(SAMPLE_ICS_FEED);
-  const [icsImportStatus, setIcsImportStatus] = useState('');
-  const [copiedScript, setCopiedScript] = useState(false);
-  const [sweepMsg, setSweepMsg] = useState('');
-  const [timelineFilter, setTimelineFilter] = useState<'today' | 'week' | 'anchors' | 'pending'>('today');
+  const [timelineFilter, setTimelineFilter] = useState<'today' | 'done' | 'week' | 'anchors'>('today');
   const [selectedTaskListId, setSelectedTaskListId] = useState<string>('all');
   const [syncLoading, setSyncLoading] = useState(false);
 
@@ -454,36 +423,69 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [blocks]
   );
 
+  const nowMinutes = getCairoNowMinutes();
+
+  const isBlockFinishedOrPassed = (b: ScheduleBlock): boolean => {
+    if (b.completed) return true;
+    if (b.isAllDay) return false;
+    return b.startMin + b.durationMin <= nowMinutes;
+  };
+
+  const remainingTodayBlocks = useMemo(
+    () => activeBlocks.filter((b) => !isBlockFinishedOrPassed(b)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeBlocks, nowMinutes]
+  );
+
+  const finishedTodayBlocks = useMemo(
+    () => activeBlocks.filter((b) => isBlockFinishedOrPassed(b)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeBlocks, nowMinutes]
+  );
+
   const filteredBlocks = useMemo(() => {
-    if (timelineFilter === 'pending') {
-      return activeBlocks.filter((b) => !b.completed);
+    if (timelineFilter === 'done') {
+      return finishedTodayBlocks;
     }
     if (timelineFilter === 'anchors') {
       return activeBlocks.filter((b) => b.isAnchor);
     }
-    return activeBlocks;
-  }, [activeBlocks, timelineFilter]);
+    return remainingTodayBlocks;
+  }, [activeBlocks, finishedTodayBlocks, remainingTodayBlocks, timelineFilter]);
 
-  const nowMinutes = getCairoNowMinutes();
-
+  // Always pick the currently-active or next remaining task today (never loop back to passed 3 AM events!)
   const nextAlarmBlock = useMemo(() => {
-    const upcoming = activeBlocks.find((b) => !b.completed && b.startMin >= nowMinutes);
-    return upcoming ?? activeBlocks.find((b) => !b.completed) ?? activeBlocks[0];
-  }, [activeBlocks, nowMinutes]);
+    return remainingTodayBlocks[0] ?? null;
+  }, [remainingTodayBlocks]);
+
+  const isNextBlockHappeningNow = Boolean(
+    nextAlarmBlock &&
+      !nextAlarmBlock.isAllDay &&
+      nextAlarmBlock.startMin <= nowMinutes &&
+      nextAlarmBlock.startMin + nextAlarmBlock.durationMin > nowMinutes
+  );
+
+  const nextAlarmDisplay = useMemo(
+    () => resolveBlockDisplayInfo(nextAlarmBlock),
+    [nextAlarmBlock]
+  );
 
   const countdownDisplay = useMemo(() => {
     if (simulateUnder60s) {
       return `00:${String(liveCountdownSec).padStart(2, '0')}`;
     }
-    if (!nextAlarmBlock) return '--:--';
-    let diffMin = nextAlarmBlock.startMin - nowMinutes;
-    if (diffMin < 0) diffMin += 1440;
+    if (!nextAlarmBlock) return '✓';
+    if (isNextBlockHappeningNow) {
+      const rem = Math.max(1, nextAlarmBlock.startMin + nextAlarmBlock.durationMin - nowMinutes);
+      return language === 'ar' ? `الآن · ${rem} د` : `Now · ${rem}m`;
+    }
+    const diffMin = Math.max(0, nextAlarmBlock.startMin - nowMinutes);
     const h = Math.floor(diffMin / 60);
     const m = diffMin % 60;
     return language === 'ar'
       ? `${String(h).padStart(2, '0')} س : ${String(m).padStart(2, '0')} د`
       : `${String(h).padStart(2, '0')}h : ${String(m).padStart(2, '0')}m`;
-  }, [nextAlarmBlock, nowMinutes, simulateUnder60s, liveCountdownSec, language]);
+  }, [nextAlarmBlock, isNextBlockHappeningNow, nowMinutes, simulateUnder60s, liveCountdownSec, language]);
 
   const totalMl = hydrationToday.cupsLogged * dailyRhythmPlan.cupSizeMl;
   const targetMl = hydrationToday.targetCups * dailyRhythmPlan.cupSizeMl;
@@ -500,11 +502,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return dailyRhythmPlan.hydrationSlots.find((_, idx) => !hydrationToday.slots[idx]) ?? null;
   }, [dailyRhythmPlan.hydrationSlots, hydrationToday.slots, nowMinutes]);
 
-  const expiredTombstoneCount = useMemo(
-    () => tombstones.filter((t) => t.ageDays > 14).length,
-    [tombstones]
-  );
-
   const visibleTasks = useMemo(() => {
     const base =
       selectedTaskListId === 'all'
@@ -515,11 +512,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       return (a.due ?? '9999').localeCompare(b.due ?? '9999');
     });
   }, [googleTasks, selectedTaskListId]);
-
-  const recentChatActivity = useMemo(
-    () => chatMessages.filter((m) => m.id !== 'welcome-1').slice(-4).reverse(),
-    [chatMessages]
-  );
 
   const newEventTime24 = useMemo(() => {
     let h24 = newEvHour12 % 12;
@@ -604,15 +596,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     } finally {
       setSyncLoading(false);
     }
-  };
-
-  const handleRunIcsImport = () => {
-    const parsed = parseIcsFeedWithRrule(icsInput, new Date());
-    const newBlocks = icsEventsToScheduleBlocks(parsed);
-    onImportIcsBlocks(newBlocks);
-    setIcsImportStatus(
-      `تم تحليل ${parsed.length} حدث (RRULE) واستيراد ${newBlocks.length} أحداث سارية لليوم بنجاح ✓`
-    );
   };
 
   const quietCountdownText = useMemo(() => {
@@ -947,7 +930,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Active Distinct Task Audio Alert + Continuous Ringing Stop + Shake-to-Acknowledge Banner */}
+      {/* Active Privacy Alert Banner (Emoji-Only so nobody sitting nearby reads details) */}
       {activeAudioAlert && (
         <div
           className={`rounded-2xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
@@ -956,19 +939,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               : 'border-[#7FFFD4]/45 bg-[#7FFFD4]/12'
           }`}
         >
-          <div className="flex items-center gap-2.5 text-xs">
-            <span className="text-lg">{TASK_SOUND_META[activeAudioAlert.category].icon}</span>
-            <div>
-              <div className="text-white font-bold">
-                {activeAudioAlert.isContinuous ? 'رنين مستمر · ' : 'تنبيه '}
-                {TASK_SOUND_META[activeAudioAlert.category].labelAr}: {activeAudioAlert.title}
-              </div>
-              <div className="text-[11px] text-zinc-300">
-                {activeAudioAlert.isContinuous
-                  ? 'سيستمر الرنين حتى تضغط إيقاف أو تهز الهاتف (يتوقف تلقائياً على كل أجهزتك)'
-                  : 'هُز الهاتف للتأكيد بدون النظر للشاشة (محمي في الجيب)'}
-              </div>
-            </div>
+          <div className="flex items-center gap-2.5 text-sm">
+            <span className="text-2xl">{activeAudioAlert.title || TASK_SOUND_META[activeAudioAlert.category].icon}</span>
+            <span className="font-mono-tabular text-xs text-zinc-300">
+              {activeAudioAlert.isContinuous ? 'رنين نشط' : 'تنبيه'}
+            </span>
           </div>
           <button
             type="button"
@@ -979,7 +954,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
             }`}
           >
-            {activeAudioAlert.isContinuous ? '🔕 إيقاف الرنين الآن ✓' : '📳 إيقاف / تأكيد الاستلام'}
+            {activeAudioAlert.isContinuous ? '🔕 إيقاف ✓' : '✓ تم'}
           </button>
         </div>
       )}
@@ -988,73 +963,89 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {batteryGuard.bedtimeGuardTriggered && (
         <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs text-rose-200 flex items-center justify-between gap-3">
           <span>
-            🔋 <strong>تنبيه ما قبل النوم (08:35 م – 09:10 م):</strong> بطارية OnePlus 12R عند{' '}
-            {batteryGuard.levelPct}% (&le; 25%) — اشحن الهاتف الآن قبل موعد النوم 09:15 م!
+            🔋 <strong>تنبيه ما قبل النوم (08:35 م – 09:10 م):</strong> بطارية الهاتف عند{' '}
+            {batteryGuard.levelPct}% — اشحن الجهاز قبل موعد النوم!
           </span>
         </div>
       )}
 
-      {/* 8-Second Shake-to-Undo Banner */}
+      {/* 8-Second Quick Undo Banner */}
       {lastDeletedBlock && shakeUndoSecondsLeft > 0 && (
         <div className="rounded-2xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3 text-xs">
-            <Smartphone className="w-4 h-4 text-[#7FFFD4]" />
+          <div className="flex items-center gap-2 text-xs">
+            <RotateCcw className="w-4 h-4 text-[#7FFFD4]" />
             <span className="text-white font-semibold">
-              تم حذف {lastDeletedBlock.emojiPair} · نافذة التراجع السريع بالهز نشطة ({shakeUndoSecondsLeft} ث)
+              تم حذف {lastDeletedBlock.emojiPair} ({shakeUndoSecondsLeft} ث)
             </span>
-            <span className="text-zinc-400 font-mono-tabular">gForce &gt; 2.6f</span>
           </div>
           <button
             type="button"
             onClick={onTriggerShakeUndo}
             className="px-3.5 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
           >
-            📳 محاكاة هز الهاتف واسترجاع الحدث
+            ↩️ تراجع واسترجاع
           </button>
         </div>
       )}
 
-      {/* FOCAL HERO COMMAND STRIP: Next Alarm + Quick Actions + 5 Prayers (Always Above the Fold) */}
+      {/* FOCAL HERO COMMAND STRIP: Current / Next Task (Full Calendar Info) + Quick Actions + 5 Prayers */}
       <section className={`rounded-2xl border p-3.5 sm:p-5 ${cardSurface}`}>
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5 items-center">
-          {/* Next Event + Countdown + Quick 1-Tap Actions */}
+          {/* Next Task + Full Details + Countdown + Quick 1-Tap Actions */}
           <div className="lg:col-span-6 flex flex-col justify-between gap-3.5 sm:gap-4 min-w-0">
             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2.5 sm:gap-4">
-              <div className="min-w-0">
-                <div className="text-xs text-zinc-400">
-                  {t(language, 'nextAlarmHeader')} ·{' '}
-                  {nextAlarmBlock?.isAnchor
-                    ? t(language, 'adhanLeadTag')
-                    : nextAlarmBlock?.source === 'google_calendar'
-                      ? 'Google Calendar'
-                      : t(language, 'rhythmTag')}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-xs text-zinc-400">
+                  <span className={isNextBlockHappeningNow ? 'text-[#4ADE80] font-bold' : 'text-[#7FFFD4] font-semibold'}>
+                    {isNextBlockHappeningNow
+                      ? 'جارٍ الآن'
+                      : language === 'ar'
+                        ? 'المهمة الجاية'
+                        : 'Up Next'}
+                  </span>
+                  <span>·</span>
+                  <span>
+                    {nextAlarmBlock?.isAnchor
+                      ? t(language, 'adhanLeadTag')
+                      : nextAlarmBlock?.source === 'google_calendar'
+                        ? 'Google Calendar'
+                        : t(language, 'rhythmTag')}
+                  </span>
                 </div>
-                <div className="mt-2 flex items-center gap-2.5 sm:gap-3">
-                  <span className="text-2xl sm:text-3xl shrink-0">{nextAlarmBlock?.emojiPair ?? '📅'}</span>
-                  <div className="min-w-0">
-                    {(() => {
-                      const rawTitle = nextAlarmBlock?.categoryAr ?? '';
-                      const cleanTitle =
-                        nextAlarmBlock && rawTitle.trim().startsWith(nextAlarmBlock.emojiPair.trim())
-                          ? rawTitle.trim().slice(nextAlarmBlock.emojiPair.trim().length).trim()
-                          : rawTitle;
-                      return (
-                        <h1 className="text-base sm:text-lg font-bold text-white truncate">
-                          {cleanTitle ||
-                            (nextAlarmBlock
-                              ? nextAlarmBlock.isAnchor
-                                ? 'موعد صلاة'
-                                : 'حدث مجدول'
-                              : calendarConnected
-                                ? 'لا توجد أحداث متبقية اليوم'
-                                : 'بانتظار ربط حساب Google')}
-                        </h1>
-                      );
-                    })()}
-                    <div className="font-mono-tabular text-xs text-zinc-400">
+                <div className="mt-2 flex items-start gap-2.5 sm:gap-3">
+                  <span className="text-2xl sm:text-3xl shrink-0 leading-none mt-0.5">
+                    {nextAlarmBlock?.emojiPair ?? '✅'}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <h1 className="text-base sm:text-lg font-bold text-white leading-snug break-words">
                       {nextAlarmBlock
-                        ? `${formatMinutes12h(nextAlarmBlock.startMin, language)} · ${nextAlarmBlock.durationMin} ${language === 'ar' ? 'دقيقة' : 'min'}`
-                        : 'سجّل الدخول لعرض جدولك الفعلي بنظام 12 ساعة'}
+                        ? nextAlarmDisplay.title
+                        : calendarConnected
+                          ? 'أنجزت مهام اليوم المتبقية ✓'
+                          : 'بانتظار ربط حساب Google'}
+                    </h1>
+                    {nextAlarmBlock && nextAlarmDisplay.detail && (
+                      <p className="text-xs text-zinc-300 mt-0.5 leading-relaxed line-clamp-2">
+                        {nextAlarmDisplay.detail}
+                      </p>
+                    )}
+                    <div className="font-mono-tabular text-xs text-zinc-400 mt-1 flex flex-wrap items-center gap-2">
+                      <span>
+                        {nextAlarmBlock
+                          ? nextAlarmBlock.isAllDay
+                            ? 'طوال اليوم'
+                            : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)} (${nextAlarmBlock.durationMin} د)`
+                          : 'سجّل الدخول لعرض جدولك الفعلي بنظام 12 ساعة'}
+                      </span>
+                      {nextAlarmBlock && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleComplete(nextAlarmBlock.id)}
+                          className="px-2 py-0.5 rounded-lg border border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80] text-[11px] font-semibold hover:bg-[#4ADE80]/20 cursor-pointer"
+                        >
+                          ✓ تم الإنجاز
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1062,8 +1053,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               <div className="text-right sm:text-left shrink-0">
                 <div
-                  className={`font-mono-tabular text-2xl sm:text-3xl font-bold tracking-tight ${
-                    simulateUnder60s ? 'text-[#FF6B6B]' : 'text-[#7FFFD4]'
+                  className={`font-mono-tabular text-2xl sm:text-3xl font-bold tracking-tight whitespace-nowrap ${
+                    simulateUnder60s
+                      ? 'text-[#FF6B6B]'
+                      : isNextBlockHappeningNow
+                        ? 'text-[#4ADE80]'
+                        : 'text-[#7FFFD4]'
                   }`}
                 >
                   {countdownDisplay}
@@ -1200,7 +1195,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   type="button"
                   onClick={() => setShowScheduleControls((v) => !v)}
                   className={`min-h-[36px] px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                    showScheduleControls || showFourTierSync
+                    showScheduleControls
                       ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
                       : 'border-white/10 text-zinc-300 hover:border-white/25'
                   }`}
@@ -1211,9 +1206,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* Collapsible Schedule Settings & Sync Drawer (keeps primary view calm) */}
-            {(showScheduleControls || showFourTierSync) && (
-              <div className="mt-4 rounded-xl border border-white/10 bg-black/50 p-3.5 space-y-3">
+            {/* Collapsible Schedule Settings Drawer (clean, user-facing only) */}
+            {showScheduleControls && (
+              <div className="mt-4 rounded-xl border border-white/10 bg-black/50 p-3.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <button
@@ -1253,28 +1248,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         💻 كل جمعتين 04:15 م
                       </button>
                     )}
-
-                    <button
-                      type="button"
-                      onClick={() => setShowFourTierSync((v) => !v)}
-                      className={`px-3 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer ${
-                        showFourTierSync
-                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                          : 'border-white/10 text-zinc-300 hover:border-white/25'
-                      }`}
-                    >
-                      <FileCode2 className="w-3.5 h-3.5" />
-                      <span>المزامنة (4-Tier)</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={downloadDayRhythmSourceKit}
-                      className="px-3 py-1.5 rounded-lg border border-white/10 text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>حزمة exe/apk (.zip)</span>
-                    </button>
                   </div>
 
                   {calendarConnected && (
@@ -1287,132 +1260,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </button>
                   )}
                 </div>
-
-                {/* 4-Tier Free Sync Sub-Drawer */}
-                {showFourTierSync && (
-                  <div className="pt-3 border-t border-white/10 space-y-3 text-xs">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-bold text-[#7FFFD4]">
-                        المزامنة المجانية الشاملة (4-Tier Sync)
-                      </span>
-                      <button
-                        type="button"
-                        onClick={onToggleOfflineDemo}
-                        className={`px-3 py-1 rounded-lg border text-[11px] cursor-pointer ${
-                          useOfflineDemo
-                            ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                            : 'border-white/15 text-zinc-400'
-                        }`}
-                      >
-                        {useOfflineDemo ? 'إخفاء النموذج الأوفلاين' : 'معاينة نموذج أوفلاين تجريبي'}
-                      </button>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                      {(
-                        [
-                          {
-                            id: 'android_calendar_contract',
-                            title: '1. تقويم أندرويد المباشر',
-                            desc: 'CalendarContract ContentObserver بدون أي API Key',
-                          },
-                          {
-                            id: 'apps_script_bridge',
-                            title: '2. جسر Apps Script الشخصي',
-                            desc: 'منشور على script.google.com برابط مشفر خاص',
-                          },
-                          {
-                            id: 'ics_rrule_feed',
-                            title: '3. خلاصة .ics السرية (RRULE)',
-                            desc: 'تحليل قواعد التكرار واستيرادها في 10 ثوانٍ',
-                          },
-                          {
-                            id: 'offline_rules',
-                            title: '4. الجدول الداخلي الأوفلاين',
-                            desc: 'يعمل 100% بلا إنترنت بقواعد الثوابت اليومية',
-                          },
-                        ] as const
-                      ).map((tier) => (
-                        <button
-                          key={tier.id}
-                          type="button"
-                          onClick={() => onChangeSyncTier(tier.id)}
-                          className={`rounded-xl border p-3 text-right cursor-pointer ${
-                            syncTier === tier.id
-                              ? 'border-[#7FFFD4] bg-[#7FFFD4]/15'
-                              : 'border-white/10 bg-white/[0.03]'
-                          }`}
-                        >
-                          <div className="font-bold text-white">{tier.title}</div>
-                          <div className="text-[10px] text-zinc-400 mt-1">{tier.desc}</div>
-                        </button>
-                      ))}
-                    </div>
-
-                    {syncTier === 'apps_script_bridge' && (
-                      <div className="space-y-2 rounded-xl border border-white/10 bg-black p-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-200 font-semibold">
-                            كود Google Apps Script الجاهز للنشر (Code.gs):
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard?.writeText(APPS_SCRIPT_CODE);
-                              setCopiedScript(true);
-                              window.setTimeout(() => setCopiedScript(false), 2000);
-                            }}
-                            className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold flex items-center gap-1 cursor-pointer"
-                          >
-                            {copiedScript ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                            <span>{copiedScript ? 'تم النسخ ✓' : 'نسخ Code.gs'}</span>
-                          </button>
-                        </div>
-                        <pre className="font-mono-tabular text-[10px] text-zinc-400 overflow-x-auto max-h-36">
-                          {APPS_SCRIPT_CODE}
-                        </pre>
-                      </div>
-                    )}
-
-                    {syncTier === 'ics_rrule_feed' && (
-                      <div className="space-y-2 rounded-xl border border-white/10 bg-black p-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-zinc-200 font-semibold">
-                            محلل خلاصة .ics وقواعد التكرار (RRULE Parser):
-                          </span>
-                          <button
-                            type="button"
-                            onClick={handleRunIcsImport}
-                            className="px-3 py-1.5 rounded-lg bg-[#7FFFD4] text-black font-bold cursor-pointer"
-                          >
-                            تحليل واستيراد .ics إلى الجدول
-                          </button>
-                        </div>
-                        <textarea
-                          value={icsInput}
-                          onChange={(e) => setIcsInput(e.target.value)}
-                          rows={5}
-                          className="w-full rounded-lg border border-white/10 bg-[#080B10] p-2.5 font-mono-tabular text-[10px] text-zinc-300"
-                        />
-                        {icsImportStatus && (
-                          <div className="text-[#4ADE80] text-[11px]">{icsImportStatus}</div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             )}
 
             {/* Single Clean Filter & Quick-Action Toolbar */}
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center p-1 rounded-xl bg-white/[0.04] border border-white/10">
+              <div className="flex items-center p-1 rounded-xl bg-white/[0.04] border border-white/10 overflow-x-auto max-w-full">
                 {(
                   [
-                    { id: 'today', label: 'أحداث اليوم' },
+                    { id: 'today', label: `المتبقي اليوم (${remainingTodayBlocks.length})` },
+                    { id: 'done', label: `المنتهي (${finishedTodayBlocks.length})` },
                     { id: 'week', label: `الأسبوع (${calendarEvents.length})` },
                     { id: 'anchors', label: 'المراسي' },
-                    { id: 'pending', label: 'المتبقي' },
                   ] as const
                 ).map((tab) => (
                   <button
@@ -1458,90 +1317,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* Trash + Self-Cleaning 14-Day Calendar Tombstones Drawer */}
+            {/* Clean Trash Drawer (Zero developer Tombstone telemetry) */}
             {showTrash && (
-              <div className="my-4 rounded-xl border border-white/15 bg-black/70 p-4 space-y-4">
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-semibold text-zinc-200">
-                      محذوفات اليوم
-                    </span>
-                    {deletedBlocks.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={onRestoreAllDeleted}
-                        className="text-xs text-[#7FFFD4] hover:underline cursor-pointer"
-                      >
-                        استعادة الكل بضغطة واحدة
-                      </button>
-                    )}
-                  </div>
-                  {deletedBlocks.length === 0 ? (
-                    <p className="text-xs text-zinc-500">لا توجد مهام محذوفة اليوم.</p>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {deletedBlocks.map((b) => (
-                        <button
-                          key={b.id}
-                          type="button"
-                          onClick={() => onRestoreBlock(b.id)}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 text-xs text-zinc-200 hover:border-[#7FFFD4] cursor-pointer"
-                        >
-                          <span>{b.emojiPair}</span>
-                          <span className="text-zinc-400">{formatMinutes12h(b.startMin, language)}</span>
-                          <RotateCcw className="w-3 h-3 text-[#7FFFD4]" />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="pt-3 border-t border-white/10">
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                    <div>
-                      <div className="text-xs font-semibold text-white flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-[#7FFFD4]" />
-                        مكنسة استثناءات التقويم (Self-Cleaning Tombstones &gt; 14 يوماً)
-                      </div>
-                      <div className="text-[11px] text-zinc-500">
-                        تنظيف تلقائي لإبقاء قاعدة بيانات CalendarProvider خفيفة وسريعة على OnePlus 12R
-                      </div>
-                    </div>
+              <div className="my-4 rounded-xl border border-white/15 bg-black/70 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-zinc-200">
+                    محذوفات اليوم
+                  </span>
+                  {deletedBlocks.length > 0 && (
                     <button
                       type="button"
-                      onClick={() => {
-                        const removed = onSweepOldTombstones();
-                        setSweepMsg(
-                          removed > 0
-                            ? `تم تنظيف ${removed} سجل/سجلات منتهية الصلاحية (>14 يوماً) ✓`
-                            : 'جميع السجلات حديثة (<=14 يوماً)'
-                        );
-                      }}
-                      className="px-3 py-1.5 rounded-lg border border-[#7FFFD4]/40 text-[#7FFFD4] text-xs font-medium hover:bg-[#7FFFD4]/10 cursor-pointer"
+                      onClick={onRestoreAllDeleted}
+                      className="text-xs text-[#7FFFD4] hover:underline cursor-pointer"
                     >
-                      🧹 تشغيل المكنسة ({expiredTombstoneCount} منتهي)
+                      استعادة الكل بضغطة واحدة
                     </button>
-                  </div>
-
-                  {sweepMsg && (
-                    <div className="text-[11px] text-[#4ADE80] mb-2">{sweepMsg}</div>
                   )}
-
+                </div>
+                {deletedBlocks.length === 0 ? (
+                  <p className="text-xs text-zinc-500">لا توجد مهام محذوفة اليوم.</p>
+                ) : (
                   <div className="flex flex-wrap gap-2">
-                    {tombstones.map((tItem) => (
-                      <div
-                        key={tItem.id}
-                        className={`px-2.5 py-1 rounded-lg border text-[11px] font-mono-tabular ${
-                          tItem.ageDays > 14
-                            ? 'border-rose-500/40 bg-rose-500/10 text-rose-300'
-                            : 'border-white/10 bg-white/[0.03] text-zinc-400'
-                        }`}
+                    {deletedBlocks.map((b) => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => onRestoreBlock(b.id)}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 text-xs text-zinc-200 hover:border-[#7FFFD4] cursor-pointer"
                       >
-                        {tItem.emojiPair} · عمر {tItem.ageDays}ي
-                      </div>
+                        <span>{b.emojiPair}</span>
+                        <span className="text-zinc-400">{formatMinutes12h(b.startMin, language)}</span>
+                        <RotateCcw className="w-3 h-3 text-[#7FFFD4]" />
+                      </button>
                     ))}
                   </div>
-                </div>
+                )}
               </div>
             )}
 
@@ -1578,84 +1388,110 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     لا توجد أحداث مسجلة في تقويمك خلال الأيام السبعة القادمة.
                   </div>
                 ) : (
-                  calendarEvents.map((ev) => (
-                    <div
-                      key={`${ev.calendarId ?? 'primary'}-${ev.id}`}
-                      className="rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span
-                            className="w-2 h-2 rounded-full shrink-0"
-                            style={{ backgroundColor: ev.calendarColor || '#7FFFD4' }}
-                          />
-                          <span className="font-semibold text-white truncate">{ev.summary}</span>
-                          {ev.calendarTitle && ev.calendarTitle !== calendarUserEmail && (
-                            <span className="text-[11px] text-zinc-500">
-                              · {ev.calendarTitle}
+                  calendarEvents.map((ev) => {
+                    const descPreview = cleanCalendarText(ev.description);
+                    return (
+                      <div
+                        key={`${ev.calendarId ?? 'primary'}-${ev.id}`}
+                        className="rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 flex items-start justify-between gap-3 text-xs"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: ev.calendarColor || '#7FFFD4' }}
+                            />
+                            <span className="font-semibold text-white break-words">
+                              {ev.summary}
                             </span>
+                            {ev.calendarTitle && ev.calendarTitle !== calendarUserEmail && (
+                              <span className="text-[11px] text-zinc-500">
+                                · {ev.calendarTitle}
+                              </span>
+                            )}
+                          </div>
+                          {descPreview && (
+                            <div className="text-[11px] text-zinc-300 mt-1 leading-relaxed line-clamp-2">
+                              {descPreview}
+                            </div>
                           )}
+                          <div className="font-mono-tabular text-[11px] text-[#7FFFD4] mt-1 whitespace-nowrap">
+                            {formatIsoTo12h(ev.start, language)}
+                            {ev.end && !ev.isAllDay
+                              ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false })}`
+                              : ''}
+                          </div>
                         </div>
-                        <div className="font-mono-tabular text-[11px] text-[#7FFFD4] mt-1">
-                          {formatIsoTo12h(ev.start, language)}
-                          {ev.end && !ev.isAllDay
-                            ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false })}`
-                            : ''}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {ev.htmlLink && (
-                          <a
-                            href={ev.htmlLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-md text-[#4ADE80] hover:bg-white/10"
-                            title="فتح في Google Calendar"
+                        <div className="flex items-center gap-1 shrink-0">
+                          {ev.htmlLink && (
+                            <a
+                              href={ev.htmlLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-[#4ADE80] hover:bg-white/10"
+                              title="فتح في Google Calendar"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteGoogleEv(ev)}
+                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                            title="حذف من Google Calendar"
                           >
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => setConfirmDeleteGoogleEv(ev)}
-                          className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-md text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
-                          title="حذف من Google Calendar"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             ) : (
-              /* Chronological Today List (Live Google Calendar Events + Prayer Anchors) */
+              /* Chronological Remaining Today List (Auto-hides passed/completed items + full Calendar details + crisp mobile layout) */
               <div className="divide-y divide-white/[0.06] mt-3">
                 {filteredBlocks.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-zinc-500">
-                    لا توجد أحداث في هذا العرض لليوم. أضف حدثاً جديداً أو اطلب من شات Gemini التخطيط ليومك.
+                  <div className="py-8 text-center text-xs text-zinc-400">
+                    {timelineFilter === 'today'
+                      ? 'أنجزت كل مهام اليوم المتبقية ✓ — يمكنك مراجعة المنتهي من التبويب بالأعلى.'
+                      : timelineFilter === 'done'
+                        ? 'لا توجد مهام منتهية بعد اليوم.'
+                        : 'لا توجد أحداث في هذا العرض لليوم.'}
                   </div>
                 ) : (
                   filteredBlocks.map((block) => {
                     const isPostponed = block.reflowStatus === 'postponed_travel';
                     const isSkipped = block.reflowStatus === 'skipped';
                     const isGoogleEvent = block.source === 'google_calendar';
+                    const isHappeningNow =
+                      !block.completed &&
+                      !block.isAllDay &&
+                      block.startMin <= nowMinutes &&
+                      block.startMin + block.durationMin > nowMinutes;
+                    const display = resolveBlockDisplayInfo(block);
+                    const showSecondaryCalendarLabel =
+                      block.calendarTitle && block.calendarTitle !== calendarUserEmail;
+
                     return (
                       <div
                         key={block.id}
-                        className={`flex items-center justify-between gap-3 py-3 px-2 rounded-xl transition-colors hover:bg-white/[0.02] ${
+                        className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 py-3 px-2 rounded-xl transition-colors hover:bg-white/[0.02] ${
+                          isHappeningNow ? 'bg-[#7FFFD4]/[0.05] border border-[#7FFFD4]/25 my-1 px-3' : ''
+                        } ${
                           block.completed || isSkipped || isPostponed
-                            ? 'opacity-50'
+                            ? 'opacity-55'
                             : lowEnergyActive && !block.isAnchor
-                              ? 'opacity-70'
+                              ? 'opacity-75'
                               : ''
                         }`}
                       >
-                        <div className="flex items-center gap-3 min-w-0">
+                        <div className="flex items-start gap-2.5 min-w-0 flex-1">
                           <button
                             type="button"
                             onClick={() => onToggleComplete(block.id)}
-                            className="min-h-[40px] min-w-[40px] flex items-center justify-center text-zinc-400 hover:text-[#7FFFD4] cursor-pointer shrink-0"
+                            className="min-h-[36px] min-w-[36px] flex items-center justify-center text-zinc-400 hover:text-[#7FFFD4] cursor-pointer shrink-0 -mt-0.5"
+                            title={block.completed ? 'إعادة الفتح' : 'تحديد كمكتمل'}
                           >
                             {block.completed ? (
                               <CheckCircle2 className="w-5 h-5 text-[#4ADE80]" />
@@ -1664,73 +1500,77 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             )}
                           </button>
 
-                          <span className="text-2xl shrink-0 tracking-wide">{block.emojiPair}</span>
+                          <span className="text-xl sm:text-2xl shrink-0 leading-none mt-1">
+                            {block.emojiPair}
+                          </span>
 
-                          <div className="min-w-0">
-                            {(() => {
-                              const rawTitle = block.categoryAr.trim();
-                              const emojiPrefix = block.emojiPair.trim();
-                              const remainingText = rawTitle.startsWith(emojiPrefix)
-                                ? rawTitle.slice(emojiPrefix.length).trim()
-                                : rawTitle;
-                              const showSecondaryCalendarLabel =
-                                block.calendarTitle &&
-                                block.calendarTitle !== calendarUserEmail;
-                              return (
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  {remainingText && (
-                                    <span
-                                      className={`text-sm font-semibold truncate ${
-                                        block.isFridayRitual
-                                          ? 'text-[#4ADE80]'
-                                          : block.isAnchor
-                                            ? 'text-[#7FFFD4]'
-                                            : 'text-zinc-100'
-                                      }`}
-                                    >
-                                      {remainingText}
-                                    </span>
-                                  )}
-                                  {showSecondaryCalendarLabel && (
-                                    <span className="text-[11px] text-zinc-400">
-                                      · {block.calendarTitle}
-                                    </span>
-                                  )}
-                                  {block.reflowStatus && (
-                                    <span className="text-[11px] text-amber-300">
-                                      ·{' '}
-                                      {block.reflowStatus === 'compressed'
-                                        ? 'مضغوط'
-                                        : block.reflowStatus === 'shifted_evening'
-                                          ? 'مرحل للمساء 🌙'
-                                          : block.reflowStatus === 'started_now'
-                                            ? 'يبدأ الآن ⏩'
-                                            : block.reflowStatus === 'postponed_travel'
-                                              ? 'مؤجل للسفر 🧳'
-                                              : 'تم تخطيه اليوم'}
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })()}
-                            <div className="font-mono-tabular text-xs text-zinc-500 mt-0.5">
-                              {block.isAllDay
-                                ? 'طوال اليوم'
-                                : `${formatMinutes12h(block.startMin, language)} – ${formatMinutes12h(block.startMin + block.durationMin, language)} (${block.durationMin} د)`}
-                              {block.isFridayRitual
-                                ? ' · مرساة طقوس الجمعة'
-                                : block.isAnchor
-                                  ? ' · مرساة صلاة ثابتة'
-                                  : block.source === 'creative'
-                                    ? ' · 🎨 وقت فاضي إبداعي'
-                                    : isGoogleEvent
-                                      ? ' · Google Calendar'
-                                      : ''}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className={`text-sm font-semibold leading-snug break-words ${
+                                  block.isFridayRitual
+                                    ? 'text-[#4ADE80]'
+                                    : block.isAnchor
+                                      ? 'text-[#7FFFD4]'
+                                      : 'text-zinc-100'
+                                }`}
+                              >
+                                {display.title}
+                              </span>
+                              {isHappeningNow && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-[#4ADE80]/20 text-[#4ADE80]">
+                                  الآن
+                                </span>
+                              )}
+                              {showSecondaryCalendarLabel && (
+                                <span className="text-[11px] text-zinc-400">
+                                  · {block.calendarTitle}
+                                </span>
+                              )}
+                              {block.reflowStatus && (
+                                <span className="text-[11px] text-amber-300">
+                                  ·{' '}
+                                  {block.reflowStatus === 'compressed'
+                                    ? 'مضغوط'
+                                    : block.reflowStatus === 'shifted_evening'
+                                      ? 'مرحل للمساء 🌙'
+                                      : block.reflowStatus === 'started_now'
+                                        ? 'يبدأ الآن ⏩'
+                                        : block.reflowStatus === 'postponed_travel'
+                                          ? 'مؤجل للسفر 🧳'
+                                          : 'تم تخطيه اليوم'}
+                                </span>
+                              )}
+                            </div>
+
+                            {display.detail && (
+                              <div className="text-xs text-zinc-400 mt-0.5 leading-relaxed line-clamp-2 break-words">
+                                {display.detail}
+                              </div>
+                            )}
+
+                            <div className="font-mono-tabular text-xs text-zinc-400 mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <span className="whitespace-nowrap text-[#7FFFD4]/90">
+                                {block.isAllDay
+                                  ? 'طوال اليوم'
+                                  : `${formatMinutes12h(block.startMin, language)} – ${formatMinutes12h(block.startMin + block.durationMin, language)}`}
+                              </span>
+                              {!block.isAllDay && (
+                                <span className="whitespace-nowrap text-zinc-500">
+                                  ({block.durationMin} د)
+                                </span>
+                              )}
+                              {block.isFridayRitual && (
+                                <span className="text-zinc-500">· طقوس الجمعة</span>
+                              )}
+                              {block.source === 'creative' && (
+                                <span className="text-cyan-300/80">· وقت إبداعي</span>
+                              )}
                             </div>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex items-center justify-end gap-1 shrink-0 pr-9 sm:pr-0">
                           {block.source === 'creative' && block.creativeActivityId && (
                             <button
                               type="button"
@@ -1740,7 +1580,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 );
                                 if (placement) setPendingCreativeCalendarConfirm(placement);
                               }}
-                              className="min-h-[36px] px-2.5 py-1 rounded-lg border border-cyan-400/40 bg-cyan-400/10 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-400/20 cursor-pointer whitespace-nowrap"
+                              className="min-h-[34px] px-2.5 py-1 rounded-lg border border-cyan-400/40 bg-cyan-400/10 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-400/20 cursor-pointer whitespace-nowrap"
                               title="تثبيت هذه الجلسة في وقت فراغك داخل Google Calendar"
                             >
                               📅 تثبيت
@@ -1754,10 +1594,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 block.emojiPair,
                                 block.isAnchor
                               );
-                              onTriggerTaskAlert(block.categoryAr, cat);
+                              onTriggerTaskAlert(block.emojiPair, cat);
                             }}
-                            className="min-h-[40px] min-w-[36px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-[#7FFFD4]/10 cursor-pointer"
-                            title={`تشغيل النغمة المميزة (${TASK_SOUND_META[classifyTaskSound(block.categoryAr, block.emojiPair, block.isAnchor)].labelAr})`}
+                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-[#7FFFD4]/10 cursor-pointer"
+                            title="تجربة تنبيه الخصوصية (إيموجي فقط)"
                           >
                             <Volume2 className="w-4 h-4" />
                           </button>
@@ -1766,7 +1606,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               href={block.googleHtmlLink}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[#4ADE80] hover:bg-[#4ADE80]/10"
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-[#4ADE80] hover:bg-[#4ADE80]/10"
                               title="فتح في Google Calendar"
                             >
                               <ExternalLink className="w-4 h-4" />
@@ -1780,13 +1620,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   id: block.googleEventId!,
                                   calendarId: block.googleCalendarId,
                                   calendarTitle: block.calendarTitle,
-                                  summary: block.categoryAr,
+                                  summary: display.title || block.categoryAr,
                                   start: block.startIso ?? '',
                                   end: block.endIso ?? '',
                                   description: block.description ?? '',
                                 })
                               }
-                              className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
                               title="حذف الحدث من Google Calendar"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -1797,8 +1637,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => onDeleteBlock(block.id)}
-                                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
-                                title="حذف مع نافذة تراجع 8 ثوانٍ بالهز"
+                                className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
+                                title="حذف"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -2105,56 +1945,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             )}
           </section>
 
-          {/* 3. Saved Gemini Chat Plans & Messages Card */}
-          <section className={`rounded-2xl border p-5 space-y-3 ${cardSurface}`}>
-            <div className="flex items-center justify-between pb-3 border-b border-white/10">
-              <div>
-                <h2 className="text-base font-bold text-white flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4 text-[#7FFFD4]" />
-                  <span>آخر محادثات وخطط شات Gemini</span>
-                </h2>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  رسائلك وخططك المحفوظة مع Gemini المربوط مباشرة بالتقويم والمهام
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={onOpenAssistant}
-                className="px-3.5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer shrink-0"
-              >
-                فتح شات Gemini
-              </button>
-            </div>
-
-            {recentChatActivity.length === 0 ? (
-              <div className="rounded-xl border border-white/10 bg-black/40 p-5 text-center text-xs text-zinc-400">
-                لا توجد محادثات سابقة بعد — افتح شات Gemini واكتب خططك لتظهر هنا تلقائياً.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {recentChatActivity.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`rounded-xl border p-3 text-xs ${
-                      msg.role === 'user'
-                        ? 'border-[#7FFFD4]/25 bg-[#7FFFD4]/[0.05] text-white'
-                        : 'border-white/10 bg-black/50 text-zinc-300'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-[10px] text-zinc-500 mb-1">
-                      <span>{msg.role === 'user' ? 'أنت' : 'Gemini'}</span>
-                      {msg.createdAtIso && (
-                        <span className="font-mono-tabular">
-                          {formatIsoTo12h(msg.createdAtIso, language)}
-                        </span>
-                      )}
-                    </div>
-                    <div className="line-clamp-2 leading-relaxed">{msg.text}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
+          {/* Duplicate Gemini chat preview card removed — dedicated Gemini tab + Hero button keep Dashboard crisp */}
 
           {/* 4. Smart Gmail Digest (Calm Collapsible Strip — expands on click or when appointments are found) */}
           <section className={`rounded-2xl border p-4 ${cardSurface}`}>

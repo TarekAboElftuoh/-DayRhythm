@@ -470,6 +470,9 @@ export interface PersistedChatMessage {
     status: 'pending' | 'confirmed' | 'cancelled';
   };
   error?: boolean;
+  latencyMs?: number;
+  memoriesAppliedCount?: number;
+  retryPrompt?: string;
 }
 
 export interface HydrationDayLog {

@@ -1,11 +1,10 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Globe,
   LayoutDashboard,
   Smartphone,
   Monitor,
   MessageSquare,
-  Cpu,
 } from 'lucide-react';
 import { ActiveTab, AppLanguage } from '../types/dayrhythm';
 import { t } from '../engines/i18n';
@@ -19,6 +18,13 @@ interface TopBarProps {
   onToggleLanguage: () => void;
 }
 
+function detectIsMobileEnvironment(): boolean {
+  if (typeof window === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return true;
+  return window.innerWidth < 768;
+}
+
 export const TopBar: React.FC<TopBarProps> = ({
   activeTab,
   onSelectTab,
@@ -26,43 +32,61 @@ export const TopBar: React.FC<TopBarProps> = ({
   language,
   onToggleLanguage,
 }) => {
+  const [isMobileEnv, setIsMobileEnv] = useState<boolean>(detectIsMobileEnvironment);
+
+  useEffect(() => {
+    const onResize = () => setIsMobileEnv(detectIsMobileEnvironment());
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Platform-aware navigation: zero cross-platform clutter, zero technical architecture tab
   const navItems: Array<{
     id: ActiveTab;
     label: string;
     mobileLabel: string;
     Icon: React.ComponentType<{ className?: string }>;
-  }> = [
-    {
-      id: 'dashboard',
-      label: t(language, 'navDashboard'),
-      mobileLabel: language === 'ar' ? 'اليوم' : 'Today',
-      Icon: LayoutDashboard,
-    },
-    {
-      id: 'mobile',
-      label: t(language, 'navMobile'),
-      mobileLabel: language === 'ar' ? 'الموبايل' : 'Phone',
-      Icon: Smartphone,
-    },
-    {
-      id: 'overlay',
-      label: t(language, 'navOverlay'),
-      mobileLabel: language === 'ar' ? 'ويندوز' : 'Desktop',
-      Icon: Monitor,
-    },
-    {
-      id: 'assistant',
-      label: t(language, 'navAssistant'),
-      mobileLabel: 'Gemini',
-      Icon: MessageSquare,
-    },
-    {
-      id: 'blueprint',
-      label: t(language, 'navBlueprint'),
-      mobileLabel: language === 'ar' ? 'النظام' : 'System',
-      Icon: Cpu,
-    },
-  ];
+  }> = isMobileEnv
+    ? [
+        {
+          id: 'dashboard',
+          label: t(language, 'navDashboard'),
+          mobileLabel: language === 'ar' ? 'اليوم' : 'Today',
+          Icon: LayoutDashboard,
+        },
+        {
+          id: 'assistant',
+          label: t(language, 'navAssistant'),
+          mobileLabel: 'Gemini',
+          Icon: MessageSquare,
+        },
+        {
+          id: 'mobile',
+          label: language === 'ar' ? 'الهاتف' : 'Phone',
+          mobileLabel: language === 'ar' ? 'الهاتف' : 'Phone',
+          Icon: Smartphone,
+        },
+      ]
+    : [
+        {
+          id: 'dashboard',
+          label: t(language, 'navDashboard'),
+          mobileLabel: language === 'ar' ? 'اليوم' : 'Today',
+          Icon: LayoutDashboard,
+        },
+        {
+          id: 'assistant',
+          label: t(language, 'navAssistant'),
+          mobileLabel: 'Gemini',
+          Icon: MessageSquare,
+        },
+        {
+          id: 'overlay',
+          label: language === 'ar' ? 'وضع الكمبيوتر' : 'Desktop',
+          mobileLabel: language === 'ar' ? 'ويندوز' : 'Desktop',
+          Icon: Monitor,
+        },
+      ];
 
   return (
     <>
@@ -80,7 +104,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <span className="hidden sm:inline">{t(language, 'brand')}</span>
           </button>
 
-          {/* Zone 2: Single-line navigation links (Desktop) */}
+          {/* Zone 2: Single-line navigation links (Desktop — only relevant tabs) */}
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium">
             {navItems.map((item) => {
               const active = activeTab === item.id;
@@ -131,12 +155,12 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
       </header>
 
-      {/* Mobile Bottom Thumb-Zone Navigation (Calibrated for OnePlus 12R 1264×2780 / 412px CSS viewport) */}
+      {/* Mobile Bottom Thumb-Zone Navigation (3 clean tabs: Today, Gemini, Phone — zero Desktop/System clutter) */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-white/12 bg-black/95 backdrop-blur-xl px-1.5 pt-1 pb-[max(0.45rem,env(safe-area-inset-bottom))]"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-white/12 bg-black/95 backdrop-blur-xl px-2 pt-1 pb-[max(0.45rem,env(safe-area-inset-bottom))]"
       >
-        <div className="grid grid-cols-5 gap-1">
+        <div className="grid grid-cols-3 gap-1.5">
           {navItems.map((item) => {
             const active = activeTab === item.id;
             const Icon = item.Icon;
@@ -145,14 +169,14 @@ export const TopBar: React.FC<TopBarProps> = ({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectTab(item.id)}
-                className={`min-h-[50px] px-1 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer ${
+                className={`min-h-[50px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer ${
                   active
                     ? 'bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
                     : 'text-zinc-400 hover:text-zinc-200'
                 }`}
               >
-                <Icon className="w-[18px] h-[18px] shrink-0" />
-                <span className="text-[10px] leading-none truncate max-w-full">
+                <Icon className="w-[19px] h-[19px] shrink-0" />
+                <span className="text-[11px] leading-none truncate max-w-full">
                   {item.mobileLabel}
                 </span>
               </button>

@@ -61,6 +61,7 @@ import {
   signInWithGoogleCalendar,
   signOutGoogleCalendar,
 } from './services/googleCalendarAuth';
+import { apiFetchJson, cleanCalendarText, sanitizePersistedChats } from './services/apiClient';
 import {
   DEFAULT_CREATIVE_ACTIVITIES,
   DEFAULT_DEVICE_SETTINGS,
@@ -117,6 +118,7 @@ import { applyTravelMatrix, buildBaseSchedule } from './engines/scheduleEngine';
 import {
   DEFAULT_SOUND_REPEATS,
   TASK_SOUND_META,
+  classifyTaskSound,
   evaluateAudioSanctuary,
   playSoftChime,
   playTaskSignature,
@@ -129,7 +131,6 @@ import { DashboardView } from './components/DashboardView';
 import { MobilePreviewView } from './components/MobilePreviewView';
 import { OverlaySimulatorView } from './components/OverlaySimulatorView';
 import { GeminiAssistantView } from './components/GeminiAssistantView';
-import { ArchitectureBlueprintView } from './components/ArchitectureBlueprintView';
 import { TravelModeModal } from './components/TravelModeModal';
 import { SmartCatchUpModal } from './components/SmartCatchUpModal';
 import { PomodoroModal } from './components/PomodoroModal';
@@ -157,12 +158,14 @@ function loadSavedChats(): PersistedChatMessage[] {
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
+      return sanitizePersistedChats(parsed, WELCOME_MESSAGE);
     }
   } catch {
-    // ignore storage errors
+    try {
+      localStorage.removeItem(CHAT_STORAGE_KEY);
+    } catch {
+      // ignore storage cleanup error
+    }
   }
   return [WELCOME_MESSAGE];
 }
@@ -362,6 +365,18 @@ function extractEmojiPair(summary: string, fallback = '📅'): string {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  useEffect(() => {
+    const isMobilePlatform =
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+      window.innerWidth < 768;
+    if (
+      activeTab === 'blueprint' ||
+      (isMobilePlatform && activeTab === 'overlay') ||
+      (!isMobilePlatform && activeTab === 'mobile')
+    ) {
+      setActiveTab('dashboard');
+    }
+  }, [activeTab]);
   const [language, setLanguage] = useState<AppLanguage>('ar');
   const [dayMode] = useState<DayMode>('normal');
   const [isFridayMode, setIsFridayMode] = useState<boolean>(
@@ -766,14 +781,29 @@ export default function App() {
     document.documentElement.lang = language;
   }, [language]);
 
-  // Persist Gemini chat messages
+  // Persist sanitized Gemini chat messages & keep multiple tabs synchronized
   useEffect(() => {
     try {
-      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatMessages.slice(-60)));
+      const safeChats = sanitizePersistedChats(chatMessages, WELCOME_MESSAGE);
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(safeChats.slice(-60)));
     } catch {
       // ignore quota errors
     }
   }, [chatMessages]);
+
+  useEffect(() => {
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key !== CHAT_STORAGE_KEY || !ev.newValue) return;
+      try {
+        const parsed = JSON.parse(ev.newValue);
+        setChatMessages(sanitizePersistedChats(parsed, WELCOME_MESSAGE));
+      } catch {
+        // ignore invalid external payload
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   // Persist preserved silent notifications (during Prayer, Sleep, or Meeting sanctuaries)
   useEffect(() => {
@@ -903,9 +933,10 @@ export default function App() {
     (
       title: string,
       category: TaskSoundCategory,
-      options?: { bypassSanctuary?: boolean }
+      options?: { bypassSanctuary?: boolean; privacyEmoji?: string }
     ) => {
       const meta = TASK_SOUND_META[category];
+      const privacyBadge = (options?.privacyEmoji || extractEmojiPair(title, meta.icon)).trim();
       const repeatCount: SoundRepeatSetting =
         (lifeProfile.soundRepeats ?? DEFAULT_SOUND_REPEATS)[category] ??
         DEFAULT_SOUND_REPEATS[category] ??
@@ -921,14 +952,14 @@ export default function App() {
               : 'وضع الاجتماع';
         const item: SilentNotificationItem = {
           id: `sn_${Date.now().toString(36)}`,
-          title,
+          title: privacyBadge,
           reasonAr,
           time12h: formatCairoNow12h('ar'),
           soundCategory: category,
           createdAtIso: new Date().toISOString(),
         };
         setSilentNotifications((prev) => [item, ...prev].slice(0, 25));
-        showToast(`🔕 تم حفظ تنبيه «${title}» صامتاً (${reasonAr}) دون صوت`);
+        showToast(`🔕 ${privacyBadge}`);
         return;
       }
 
@@ -938,14 +969,14 @@ export default function App() {
       });
       setActiveAudioAlert({
         id: `alert_${Date.now().toString(36)}`,
-        title,
+        title: privacyBadge,
         category,
         isContinuous: playRes.isContinuous,
       });
       showToast(
         playRes.isContinuous
-          ? `${meta.icon} رنين مستمر «${meta.labelAr}»: ${title} — اضغط إيقاف أو هُز الهاتف`
-          : `${meta.icon} نغمة «${meta.labelAr}» (${repeatCount}×): ${title}`
+          ? `${privacyBadge} · ${formatCairoNow12h('ar')}`
+          : `${privacyBadge} · ${formatCairoNow12h('ar')}`
       );
     },
     [activeSanctuary, lifeProfile.soundRepeats, showToast]
@@ -1162,25 +1193,33 @@ export default function App() {
     setGmailError('');
     setGmailNeedsReauth(false);
     try {
-      const res = await fetch('/api/gmail/digest', {
+      const { ok, status, data } = await apiFetchJson<{
+        needsReauth?: boolean;
+        error?: string;
+        scannedCount?: number;
+        digestItems?: GmailDigestItem[];
+      }>('/api/gmail/digest', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401 || res.status === 403 || data.needsReauth) {
+      if (status === 401 || status === 403 || data.needsReauth) {
         setGmailNeedsReauth(true);
         setGmailError(
           data.error || 'يرجى إعادة تسجيل الدخول بحساب Google لتفعيل صلاحية قراءة Gmail.'
         );
         return;
       }
-      if (!res.ok) {
+      if (!ok) {
         setGmailError(data.error || 'تعذر قراءة ملخص Gmail حالياً.');
         return;
       }
       setGmailScannedCount(Number(data.scannedCount ?? 0));
       setGmailDigest(Array.isArray(data.digestItems) ? data.digestItems : []);
-    } catch {
-      setGmailError('تعذر الاتصال بخدمة ملخص Gmail (تأكد من الاتصال بالإنترنت).');
+    } catch (err: unknown) {
+      setGmailError(
+        err instanceof Error
+          ? err.message
+          : 'تعذر الاتصال بخدمة ملخص Gmail (تأكد من الاتصال بالإنترنت).'
+      );
     } finally {
       setLoadingGmail(false);
     }
@@ -2283,6 +2322,12 @@ export default function App() {
           }
           const blockId = `gcal_${ev.calendarId ?? 'primary'}_${ev.id}`;
           const emojiPair = extractEmojiPair(ev.summary, '📅');
+          const combinedDescription = [
+            cleanCalendarText(ev.description),
+            ev.location ? `📍 ${ev.location}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n');
           return {
             id: blockId,
             emojiPair,
@@ -2305,7 +2350,7 @@ export default function App() {
             startIso: ev.start,
             endIso: ev.end,
             isAllDay: startInfo.isAllDay || ev.isAllDay,
-            description: ev.description,
+            description: combinedDescription,
             source: 'google_calendar',
           };
         })
@@ -2633,29 +2678,130 @@ export default function App() {
       }
 
       if (token) {
-        const res = await fetch('/api/calendar/execute', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-            ...(firebaseUser?.uid ? { 'x-user-uid': firebaseUser.uid } : {}),
-            'x-client-id': clientIdRef.current,
-          },
-          body: JSON.stringify({ actions, undoSnapshot: undoSnap }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          if (res.status === 401) {
-            setNeedsAuth(true);
+        let serverHandled = false;
+        try {
+          const { ok, status, data } = await apiFetchJson<{
+            results?: CalendarExecutionResult[];
+            error?: string;
+          }>('/api/calendar/execute', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+              ...(firebaseUser?.uid ? { 'x-user-uid': firebaseUser.uid } : {}),
+              'x-client-id': clientIdRef.current,
+            },
+            body: JSON.stringify({ actions, undoSnapshot: undoSnap }),
+          });
+          if (!ok) {
+            if (status === 401) {
+              setNeedsAuth(true);
+            }
+            await fetchCalendarEvents(token);
+            throw new Error(data.error || 'تعذر تنفيذ التعديلات على Google Calendar.');
           }
-          // Restore latest calendar state if server rejected
-          await fetchCalendarEvents(token);
-          throw new Error(data.error || 'تعذر تنفيذ التعديلات على Google Calendar.');
+          results = Array.isArray(data.results) ? data.results : [];
+          serverHandled = true;
+        } catch (proxyErr: unknown) {
+          // If running standalone APK/EXE without backend proxy, execute directly via Google Calendar API v3
+          const directResults: CalendarExecutionResult[] = [];
+          for (const act of actions) {
+            const calId = encodeURIComponent(act.calendarId || 'primary');
+            if (act.operation === 'delete' && act.eventId) {
+              const r = await fetch(
+                `https://www.googleapis.com/calendar/v3/calendars/${calId}/events/${encodeURIComponent(act.eventId)}`,
+                { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+              );
+              if (r.status === 401) {
+                setNeedsAuth(true);
+                throw proxyErr;
+              }
+              if (!r.ok && r.status !== 404 && r.status !== 410) {
+                throw new Error('تعذر حذف الحدث من Google Calendar.');
+              }
+              directResults.push({
+                operation: 'delete',
+                title: act.title,
+                status: 'deleted',
+                id: act.eventId,
+              });
+            } else if (act.operation === 'create' && act.dateIso && act.startTime24) {
+              const startDt = `${act.dateIso}T${act.startTime24}:00+02:00`;
+              const startMs = new Date(startDt).getTime();
+              const endDt = new Date(startMs + (act.durationMinutes || 30) * 60_000).toISOString();
+              const r = await fetch(
+                `https://www.googleapis.com/calendar/v3/calendars/${calId}/events`,
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    summary: act.title,
+                    description: act.description || '',
+                    start: { dateTime: startDt, timeZone: 'Africa/Cairo' },
+                    end: { dateTime: endDt, timeZone: 'Africa/Cairo' },
+                  }),
+                }
+              );
+              if (r.status === 401) {
+                setNeedsAuth(true);
+                throw proxyErr;
+              }
+              if (!r.ok) throw new Error('تعذر إنشاء الحدث في Google Calendar.');
+              const created = (await r.json()) as { id?: string; htmlLink?: string };
+              directResults.push({
+                operation: 'create',
+                title: act.title,
+                status: 'created',
+                id: created.id,
+                htmlLink: created.htmlLink,
+              });
+            } else if (act.operation === 'update' && act.eventId) {
+              const body: Record<string, unknown> = { summary: act.title };
+              if (act.description !== undefined) body.description = act.description;
+              if (act.dateIso && act.startTime24) {
+                const startDt = `${act.dateIso}T${act.startTime24}:00+02:00`;
+                const startMs = new Date(startDt).getTime();
+                const endDt = new Date(startMs + (act.durationMinutes || 30) * 60_000).toISOString();
+                body.start = { dateTime: startDt, timeZone: 'Africa/Cairo' };
+                body.end = { dateTime: endDt, timeZone: 'Africa/Cairo' };
+              }
+              const r = await fetch(
+                `https://www.googleapis.com/calendar/v3/calendars/${calId}/events/${encodeURIComponent(act.eventId)}`,
+                {
+                  method: 'PATCH',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(body),
+                }
+              );
+              if (r.status === 401) {
+                setNeedsAuth(true);
+                throw proxyErr;
+              }
+              if (!r.ok) throw new Error('تعذر تحديث الحدث في Google Calendar.');
+              const updated = (await r.json()) as { id?: string; htmlLink?: string };
+              directResults.push({
+                operation: 'update',
+                title: act.title,
+                status: 'updated',
+                id: updated.id || act.eventId,
+                htmlLink: updated.htmlLink,
+              });
+            }
+          }
+          results = directResults;
+          serverHandled = true;
         }
-        results = Array.isArray(data.results) ? data.results : [];
-        googleSynced = true;
-        setReflowedBlocksOverride(null);
-        await fetchCalendarEvents(token);
+        if (serverHandled) {
+          googleSynced = true;
+          setReflowedBlocksOverride(null);
+          await fetchCalendarEvents(token);
+        }
 
         if (undoSnap) {
           setLastDeletedWorkspaceItem(undoSnap);
@@ -2729,26 +2875,112 @@ export default function App() {
         }
       }
 
-      const res = await fetch('/api/tasks/execute', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-          ...(firebaseUser?.uid ? { 'x-user-uid': firebaseUser.uid } : {}),
-          'x-client-id': clientIdRef.current,
-        },
-        body: JSON.stringify({ taskActions, undoSnapshot: undoSnap }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        if (res.status === 401) {
-          setNeedsAuth(true);
+      let results: TaskExecutionResult[] = [];
+      try {
+        const { ok, status, data } = await apiFetchJson<{
+          results?: TaskExecutionResult[];
+          error?: string;
+        }>('/api/tasks/execute', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+            ...(firebaseUser?.uid ? { 'x-user-uid': firebaseUser.uid } : {}),
+            'x-client-id': clientIdRef.current,
+          },
+          body: JSON.stringify({ taskActions, undoSnapshot: undoSnap }),
+        });
+        if (!ok) {
+          if (status === 401) {
+            setNeedsAuth(true);
+          }
+          await fetchGoogleTasks(token);
+          throw new Error(data.error || 'تعذر تنفيذ التعديلات على Google Tasks.');
         }
-        await fetchGoogleTasks(token);
-        throw new Error(data.error || 'تعذر تنفيذ التعديلات على Google Tasks.');
+        results = Array.isArray(data.results) ? data.results : [];
+      } catch (proxyErr: unknown) {
+        // Standalone APK/EXE fallback: execute directly via Google Tasks API v1
+        const directResults: TaskExecutionResult[] = [];
+        for (const act of taskActions) {
+          const listId = encodeURIComponent(act.taskListId || '@default');
+          if (act.operation === 'create') {
+            const body: Record<string, unknown> = { title: act.title };
+            if (act.notes) body.notes = act.notes;
+            if (act.dueDateIso) body.due = `${act.dueDateIso}T00:00:00.000Z`;
+            const r = await fetch(
+              `https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks`,
+              {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+              }
+            );
+            if (r.status === 401) {
+              setNeedsAuth(true);
+              throw proxyErr;
+            }
+            if (!r.ok) throw new Error('تعذر إنشاء المهمة في Google Tasks.');
+            const created = (await r.json()) as { id?: string };
+            directResults.push({
+              operation: 'create',
+              title: act.title,
+              status: 'created',
+              id: created.id,
+              taskListId: act.taskListId || '@default',
+            });
+          } else if (act.operation === 'delete' && act.taskId) {
+            const r = await fetch(
+              `https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${encodeURIComponent(act.taskId)}`,
+              { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (r.status === 401) {
+              setNeedsAuth(true);
+              throw proxyErr;
+            }
+            if (!r.ok && r.status !== 404) throw new Error('تعذر حذف المهمة من Google Tasks.');
+            directResults.push({
+              operation: 'delete',
+              title: act.title,
+              status: 'deleted',
+              id: act.taskId,
+              taskListId: act.taskListId || '@default',
+            });
+          } else if ((act.operation === 'complete' || act.operation === 'reopen' || act.operation === 'update') && act.taskId) {
+            const body: Record<string, unknown> = {};
+            if (act.operation === 'complete') body.status = 'completed';
+            if (act.operation === 'reopen') {
+              body.status = 'needsAction';
+              body.completed = null;
+            }
+            if (act.operation === 'update') {
+              body.title = act.title;
+              if (act.notes !== undefined) body.notes = act.notes;
+              if (act.dueDateIso) body.due = `${act.dueDateIso}T00:00:00.000Z`;
+            }
+            const r = await fetch(
+              `https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${encodeURIComponent(act.taskId)}`,
+              {
+                method: 'PATCH',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+              }
+            );
+            if (r.status === 401) {
+              setNeedsAuth(true);
+              throw proxyErr;
+            }
+            if (!r.ok) throw new Error('تعذر تحديث المهمة في Google Tasks.');
+            directResults.push({
+              operation: act.operation,
+              title: act.title,
+              status: act.operation,
+              id: act.taskId,
+              taskListId: act.taskListId || '@default',
+            });
+          }
+        }
+        results = directResults;
       }
-
-      const results: TaskExecutionResult[] = Array.isArray(data.results) ? data.results : [];
       await fetchGoogleTasks(token);
 
       if (undoSnap) {
@@ -3179,7 +3411,7 @@ export default function App() {
       }
     };
 
-    // 1. Water cup reminders (dailyRhythmPlan.hydrationSlots automatically excludes fasting hours!)
+    // 1. Water cup reminders (Emoji-only privacy notification so nobody nearby sees details)
     if (waterRemindersEnabled && hydrationToday) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
         if (hydrationToday.slots[idx]) return;
@@ -3188,14 +3420,14 @@ export default function App() {
           const key = `${todayIso}:water:${slot.cupIndex}`;
           if (firedReminderKeysRef.current.has(key)) return;
           firedReminderKeysRef.current.add(key);
-          const msg = `كوب الماء رقم ${slot.cupIndex} (${dailyRhythmPlan.cupSizeMl} مل) · ${slot.windowAr}`;
-          triggerTaskAlert(msg, 'water');
-          sendSystemNotification('💧 حان وقت شرب الماء — إيقاع اليوم', msg, key);
+          const time12 = formatMinutes12h(slot.timeMinutes, 'ar');
+          triggerTaskAlert('💧', 'water', { privacyEmoji: '💧' });
+          sendSystemNotification('💧', time12, key);
         }
       });
     }
 
-    // 2. Medication & Supplement multi-dose + weekday-aware reminders
+    // 2. Medication & Supplement reminders (Emoji-only privacy notification)
     medications.forEach((med) => {
       if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayW)) {
         return;
@@ -3220,10 +3452,26 @@ export default function App() {
         const key = `${todayIso}:med:${med.id}:${t24}`;
         if (firedReminderKeysRef.current.has(key)) return;
         firedReminderKeysRef.current.add(key);
-        const msg = `جرعة ${med.name}${med.doseNote ? ` — ${med.doseNote}` : ''}`;
-        triggerTaskAlert(msg, 'medication');
-        sendSystemNotification('💊 موعد علاجك / مكملك — إيقاع اليوم', msg, key);
+        const time12 = formatMinutes12h(medMin, 'ar');
+        triggerTaskAlert('💊', 'medication', { privacyEmoji: '💊' });
+        sendSystemNotification('💊', time12, key);
       });
+    });
+
+    // 3. Live Google Calendar event reminders (STRICTLY Emoji-only for privacy when someone sits nearby)
+    liveBlocks.forEach((block) => {
+      if (block.deleted || block.completed || block.isAllDay) return;
+      const diff = nowTickMin - block.startMin;
+      if (diff >= 0 && diff <= 2) {
+        const key = `${todayIso}:event:${block.id}:${block.startMin}`;
+        if (firedReminderKeysRef.current.has(key)) return;
+        firedReminderKeysRef.current.add(key);
+        const emojiOnly = (block.emojiPair || '📅').trim();
+        const time12 = formatMinutes12h(block.startMin, 'ar');
+        const soundCat = classifyTaskSound(block.categoryAr, block.emojiPair, block.isAnchor);
+        triggerTaskAlert(emojiOnly, soundCat, { privacyEmoji: emojiOnly });
+        sendSystemNotification(emojiOnly, time12, key);
+      }
     });
   }, [
     nowTickMin,
@@ -3232,6 +3480,7 @@ export default function App() {
     dailyRhythmPlan.cupSizeMl,
     hydrationToday,
     medications,
+    liveBlocks,
     activeLocation.timeZone,
     lifeProfile.currentTimeZone,
     activeSanctuary.type,
@@ -3729,10 +3978,14 @@ export default function App() {
 
   const nextActiveBlock = useMemo(() => {
     const nowMin = getCairoNowMinutes();
-    const upcoming = liveBlocks.find(
-      (b) => !b.completed && !b.deleted && b.startMin >= nowMin
+    return (
+      liveBlocks.find(
+        (b) =>
+          !b.completed &&
+          !b.deleted &&
+          (b.isAllDay || b.startMin + b.durationMin > nowMin)
+      ) ?? null
     );
-    return upcoming ?? liveBlocks.find((b) => !b.completed && !b.deleted) ?? liveBlocks[0];
   }, [liveBlocks]);
 
   const pipCountdownText = useMemo(() => {
@@ -3765,45 +4018,19 @@ export default function App() {
       .map((p) => `${p.nameAr}: ${formatMinutes12h(p.adhanMinutes, 'ar')} (تنبيه ${formatMinutes12h(p.alarmMinutes, 'ar')})`)
       .join(' | ');
 
-    const calendarLines =
-      calendarEvents.length > 0
-        ? calendarEvents
-            .map(
-              (ev) =>
-                `- [eventId=${ev.id} | calendarId=${ev.calendarId ?? 'primary'}] ${ev.summary} (${formatIsoTo12h(ev.start, 'ar')})`
-            )
-            .join('\n')
-        : 'لا توجد أحداث تقويم محملة حالياً.';
-
-    const taskLines =
-      googleTasks.length > 0
-        ? googleTasks
-            .map(
-              (tk) =>
-                `- [taskId=${tk.id} | list=${tk.taskListTitle}] ${tk.title} (${tk.status === 'completed' ? 'مكتملة' : 'قيد التنفيذ'})`
-            )
-            .join('\n')
-        : 'لا توجد مهام محملة حالياً.';
-
     return `
 ${lifeConstitution}
 حالة حماية الصوت الآن: ${activeSanctuary.type === 'none' ? 'عادي' : activeSanctuary.labelAr}
 مواقيت الصلاة اليوم (${activeLocation.nameAr}): ${prayerLines}
 الترطيب المسجل اليوم: ${hydrationToday.cupsLogged}/${hydrationToday.targetCups} كوب (${hydrationToday.cupsLogged * lifeProfile.cupSizeMl} / ${dailyRhythmPlan.activeTargetMl} مل)
 الحدث القادم: ${nextActiveBlock ? `${nextActiveBlock.emojiPair} ${nextActiveBlock.categoryAr} (${formatMinutes12h(nextActiveBlock.startMin, 'ar')})` : 'لا يوجد'}
-ملخص أحداث اليوم على الشاشة:
-${calendarLines}
-ملخص مهام Google Tasks:
-${taskLines}
 `.trim();
   }, [
     activeLocation.nameAr,
     activeSanctuary,
-    calendarEvents,
     creativePlacements,
     dailyRhythmPlan,
     freeSlotsToday,
-    googleTasks,
     hydrationToday.cupsLogged,
     hydrationToday.targetCups,
     lifeProfile,
@@ -4043,11 +4270,12 @@ ${taskLines}
             autoStartVoice={autoStartVoice}
             onConsumeAutoStartVoice={() => setAutoStartVoice(false)}
             memoryCount={memories.length}
+            memories={memories}
+            lifeProfile={lifeProfile}
+            firestoreSynced={firestoreSynced}
+            onAddMemory={handleAddMemory}
+            onDeleteMemory={handleDeleteMemory}
           />
-        )}
-
-        {activeTab === 'blueprint' && (
-          <ArchitectureBlueprintView changelog={changelog} />
         )}
       </main>
 

@@ -6,8 +6,10 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { calendar } from '@googleapis/calendar';
 import {
   Content,
+  FunctionCall,
   FunctionDeclaration,
   GoogleGenAI,
+  ThinkingLevel,
   Type,
 } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
@@ -687,18 +689,115 @@ export interface MemoryActionProposal {
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
+    // Allow standalone Windows EXE & Android APK (served on Firebase-authorized virtual host) to call /api/*
+    const origin = req.headers.origin;
+    if (
+      typeof origin === 'string' &&
+      (origin === 'https://gen-lang-client-0625331922.web.app' ||
+        origin === 'https://gen-lang-client-0625331922.firebaseapp.com' ||
+        origin.startsWith('http://localhost:') ||
+        origin.startsWith('http://127.0.0.1:'))
+    ) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-uid, x-client-id');
+      if (req.method === 'OPTIONS') {
+        res.status(204).end();
+        return;
+      }
+    }
     // Keeps window.opener intact for Firebase Google OAuth signInWithPopup across Desktop & Mobile Chrome
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     next();
   });
 
+  let geminiProbeCache: {
+    ok: boolean;
+    connected: boolean;
+    status: 'online' | 'degraded' | 'offline';
+    model: string;
+    latencyMs: number;
+    checkedAtIso: string;
+    error?: string;
+    expiresAtMs: number;
+  } | null = null;
+
   app.get('/api/health', (_req, res) => {
     res.json({
       ok: true,
+      geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
       wsSyncRooms: syncRooms.size,
       serverTimeIso: new Date().toISOString(),
     });
+  });
+
+  // Real Gemini connectivity & latency probe (cached briefly to avoid wasting quota)
+  app.get('/api/gemini/status', async (req, res) => {
+    const forceProbe = req.query.probe === '1' || req.query.force === '1';
+    const hasKey = Boolean(process.env.GEMINI_API_KEY);
+    if (!hasKey) {
+      res.status(503).json({
+        ok: false,
+        connected: false,
+        status: 'offline',
+        model: 'gemini-4-hydrogen',
+        latencyMs: 0,
+        checkedAtIso: new Date().toISOString(),
+        error: 'مفتاح Gemini API غير مهيأ في إعدادات الخادم (Settings > Secrets).',
+      });
+      return;
+    }
+
+    const nowMs = Date.now();
+    if (!forceProbe && geminiProbeCache && geminiProbeCache.expiresAtMs > nowMs) {
+      const { expiresAtMs: _ignore, ...cachedPayload } = geminiProbeCache;
+      res.json(cachedPayload);
+      return;
+    }
+
+    const startedAt = Date.now();
+    try {
+      const ai = getGeminiClient();
+      const probeRes = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: 'أجب بكلمة واحدة فقط: جاهز',
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      });
+      const latencyMs = Math.max(1, Date.now() - startedAt);
+      const connected = Boolean((probeRes.text ?? '').trim().length > 0);
+      geminiProbeCache = {
+        ok: connected,
+        connected,
+        status: connected ? 'online' : 'degraded',
+        model: 'gemini-4-hydrogen',
+        latencyMs,
+        checkedAtIso: new Date().toISOString(),
+        expiresAtMs: Date.now() + 90_000,
+      };
+      const { expiresAtMs: _ignore, ...payload } = geminiProbeCache;
+      res.json(payload);
+    } catch (err: unknown) {
+      const latencyMs = Math.max(1, Date.now() - startedAt);
+      const rawMsg = err instanceof Error ? err.message : 'تعذر الاتصال بخدمة Gemini.';
+      const statusPayload = {
+        ok: false,
+        connected: false,
+        status: 'offline' as const,
+        model: 'gemini-4-hydrogen',
+        latencyMs,
+        checkedAtIso: new Date().toISOString(),
+        error: rawMsg,
+      };
+      geminiProbeCache = {
+        ...statusPayload,
+        expiresAtMs: Date.now() + 15_000,
+      };
+      res.status(502).json(statusPayload);
+    }
   });
 
   // 1. Read user's real Google Calendar events across ALL user calendars via @googleapis/calendar
@@ -1400,165 +1499,384 @@ async function startServer() {
     }
   });
 
-  // 3. Multi-turn Gemini Chat with Hybrid Google Search + Calendar/Tasks/Meds/Creative Function Calling
-  app.post('/api/chat', async (req, res) => {
-    try {
-      const {
-        message,
-        history,
-        contextSummary,
-        calendarEvents,
-        tasks,
-        medications,
-        creativeActivities,
-      } = req.body as {
-        message?: string;
-        history?: Array<{ role: 'user' | 'model'; text: string }>;
-        contextSummary?: string;
-        calendarEvents?: Array<{
-          id: string;
-          calendarId?: string;
-          calendarTitle?: string;
-          summary: string;
-          start: string;
-          end?: string;
-        }>;
-        tasks?: Array<{
-          id: string;
-          taskListId: string;
-          taskListTitle?: string;
-          title: string;
-          status: string;
-          due?: string;
-        }>;
-        medications?: Array<{
-          id: string;
-          name: string;
-          time24?: string;
-          times24?: string[];
-          daysOfWeek?: number[];
-          doseNote?: string;
-          takenToday?: boolean;
-          takenDosesToday?: string[];
-          courseEndDate?: string;
-          remainingDoses?: number;
-          totalDoses?: number;
-        }>;
-        creativeActivities?: Array<{
-          id: string;
-          name: string;
-          emoji?: string;
-          cadence?: string;
-          goalCount?: number;
-          sessionsInPeriod?: number;
-          weeklyGoalSessions: number;
-          sessionsThisWeek: number;
-          sessionMinutes: number;
-          completedToday?: boolean;
-          scheduledTime24?: string;
-          expiresOnDate?: string;
-        }>;
-      };
+  interface ChatRequestPayload {
+    message?: string;
+    history?: Array<{ role: 'user' | 'model'; text: string }>;
+    contextSummary?: string;
+    memories?: Array<{
+      id: string;
+      category: string;
+      ruleText: string;
+      source?: string;
+    }>;
+    calendarEvents?: Array<{
+      id: string;
+      calendarId?: string;
+      calendarTitle?: string;
+      summary: string;
+      description?: string;
+      location?: string;
+      start: string;
+      end?: string;
+    }>;
+    tasks?: Array<{
+      id: string;
+      taskListId: string;
+      taskListTitle?: string;
+      title: string;
+      status: string;
+      due?: string;
+    }>;
+    medications?: Array<{
+      id: string;
+      name: string;
+      time24?: string;
+      times24?: string[];
+      daysOfWeek?: number[];
+      doseNote?: string;
+      takenToday?: boolean;
+      takenDosesToday?: string[];
+      courseEndDate?: string;
+      remainingDoses?: number;
+      totalDoses?: number;
+    }>;
+    creativeActivities?: Array<{
+      id: string;
+      name: string;
+      emoji?: string;
+      cadence?: string;
+      goalCount?: number;
+      sessionsInPeriod?: number;
+      weeklyGoalSessions: number;
+      sessionsThisWeek: number;
+      sessionMinutes: number;
+      completedToday?: boolean;
+      scheduledTime24?: string;
+      expiresOnDate?: string;
+    }>;
+  }
 
-      if (!message || typeof message !== 'string') {
-        res.status(400).json({ error: 'الرسالة مطلوبة.' });
-        return;
+  function normalizeGeminiHistory(
+    rawHistory?: Array<{ role: 'user' | 'model'; text: string }>
+  ): Content[] {
+    if (!Array.isArray(rawHistory) || rawHistory.length === 0) return [];
+    const merged: Array<{ role: 'user' | 'model'; text: string }> = [];
+    for (const item of rawHistory) {
+      if (!item || (item.role !== 'user' && item.role !== 'model')) continue;
+      const text = typeof item.text === 'string' ? item.text.trim() : '';
+      if (!text) continue;
+      if (merged.length === 0 && item.role !== 'user') {
+        continue;
       }
+      const prev = merged[merged.length - 1];
+      if (prev && prev.role === item.role) {
+        prev.text = `${prev.text}\n\n${text}`.slice(0, 4000);
+      } else {
+        merged.push({ role: item.role, text: text.slice(0, 4000) });
+      }
+    }
+    const recent = merged.slice(-20);
+    while (recent.length > 0 && recent[0].role !== 'user') {
+      recent.shift();
+    }
+    while (recent.length > 0 && recent[recent.length - 1].role === 'user') {
+      recent.pop();
+    }
+    return recent.map((h) => ({
+      role: h.role,
+      parts: [{ text: h.text }],
+    }));
+  }
 
+  function buildChatSystemInstruction(payload: ChatRequestPayload): {
+    systemInstruction: string;
+    memoriesAppliedCount: number;
+  } {
+    const todayCairo = getCairoTodayIso();
+    const nowCairo12 = getCairoNowTime12();
+    const dayNamesAr = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+
+    const memoriesArr = Array.isArray(payload.memories)
+      ? payload.memories.filter((m) => m && typeof m.ruleText === 'string' && m.ruleText.trim().length > 0)
+      : [];
+
+    const memoriesBlock =
+      memoriesArr.length > 0
+        ? `\n\n=== ذاكرة المستخدم الدائمة (Memories — إلزامي مراعاتها في كل رد دون استثناء) ===\n${memoriesArr
+            .map(
+              (m, idx) =>
+                `${idx + 1}. [memoryId=${m.id} | ${m.category}] ${m.ruleText.trim()}`
+            )
+            .join('\n')}`
+        : '\n\n=== ذاكرة المستخدم الدائمة (Memories) ===\nلا توجد قواعد إضافية بعد — التزم بالدستور الشخصي أدناه.';
+
+    const eventsListText =
+      Array.isArray(payload.calendarEvents) && payload.calendarEvents.length > 0
+        ? `\n\nأحداث Google Calendar الفعلية للأسبوع (نظام 12 ساعة):\n${payload.calendarEvents
+            .slice(0, 65)
+            .map((e) => {
+              const descClean = (e.description || '')
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 160);
+              return `- [eventId=${e.id}${e.calendarId ? ` | calendarId=${e.calendarId}` : ''}${e.calendarTitle ? ` | التقويم: ${e.calendarTitle}` : ''}] ${e.summary}${descClean ? ` | التفاصيل: ${descClean}` : ''}${e.location ? ` | المكان: ${e.location}` : ''} | من: ${formatServerIsoTo12h(e.start)}${e.end ? ` | إلى: ${formatServerIsoTo12h(e.end)}` : ''}`;
+            })
+            .join('\n')}`
+        : '\n\nملاحظة: لا توجد أحداث مسجلة حالياً في Google Calendar ضمن النطاق المعروض أو لم يتم ربط الحساب بعد.';
+
+    const tasksListText =
+      Array.isArray(payload.tasks) && payload.tasks.length > 0
+        ? `\n\nمهام Google Tasks الفعلية الحالية:\n${payload.tasks
+            .slice(0, 45)
+            .map(
+              (t) =>
+                `- [taskId=${t.id} | taskListId=${t.taskListId}${t.taskListTitle ? ` | القائمة: ${t.taskListTitle}` : ''}] ${t.title} | الحالة: ${t.status === 'completed' ? 'مكتملة' : 'قيد التنفيذ'}${t.due ? ` | الاستحقاق: ${t.due.slice(0, 10)}` : ''}`
+            )
+            .join('\n')}`
+        : '\n\nملاحظة: لا توجد مهام حالياً في Google Tasks أو لم يتم ربط الحساب بعد.';
+
+    const medsListText =
+      Array.isArray(payload.medications) && payload.medications.length > 0
+        ? `\n\nقائمة العلاجات والمكملات الحالية:\n${payload.medications
+            .map((m) => {
+              const doses =
+                Array.isArray(m.times24) && m.times24.length > 0
+                  ? m.times24.join(', ')
+                  : m.time24 || 'بدون ميعاد محدد بعد';
+              const daysStr =
+                Array.isArray(m.daysOfWeek) && m.daysOfWeek.length > 0
+                  ? `أيام: ${m.daysOfWeek.map((d) => dayNamesAr[d] ?? d).join('، ')}`
+                  : 'يومياً';
+              const courseStr = m.courseEndDate ? ` | ينتهي الكورس: ${m.courseEndDate}` : '';
+              const refillStr =
+                typeof m.remainingDoses === 'number' && m.remainingDoses >= 0
+                  ? ` | المتبقي: ${m.remainingDoses}${typeof m.totalDoses === 'number' && m.totalDoses > 0 ? `/${m.totalDoses}` : ''} جرعة`
+                  : '';
+              return `- [medicationId=${m.id}] ${m.name} | المواعيد: ${doses} | التكرار: ${daysStr}${courseStr}${refillStr}${m.doseNote ? ` | ${m.doseNote}` : ''} | حالة اليوم: ${m.takenToday ? 'تم التناول ✓' : m.takenDosesToday && m.takenDosesToday.length > 0 ? `أُخذ (${m.takenDosesToday.join(', ')})` : 'لم يُؤخذ بعد'}`;
+            })
+            .join('\n')}`
+        : '';
+
+    const creativeListText =
+      Array.isArray(payload.creativeActivities) && payload.creativeActivities.length > 0
+        ? `\n\nالأنشطة الإبداعية والهوايات المسجلة:\n${payload.creativeActivities
+            .map((a) => {
+              const cadAr =
+                a.cadence === 'daily' ? 'يومي' : a.cadence === 'monthly' ? 'شهري' : 'أسبوعي';
+              return `- [activityId=${a.id}] ${a.emoji ?? '🎨'} ${a.name} | (${cadAr}: ${a.sessionsInPeriod ?? a.sessionsThisWeek}/${a.goalCount ?? a.weeklyGoalSessions}) | المدة: ${a.sessionMinutes} د${a.expiresOnDate ? ` | حتى ${a.expiresOnDate}` : ''}${a.scheduledTime24 ? ` | موعد مجدول: ${a.scheduledTime24}` : ''} | اليوم: ${a.completedToday ? 'أُنجز ✓' : 'لم يُنجز بعد'}`;
+            })
+            .join('\n')}`
+        : '';
+
+    const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nقاعدة حاكمة صارمة: كل رد أو اقتراح أو جدولة يجب أن يعتمد حرفياً على «الدستور الشخصي» و«ذاكرة المستخدم الدائمة (Memories)» أدناه بدون أي مخالفة. أجب بسرعة ووضوح واختصار عملي.\n\nتاريخ اليوم بتوقيت القاهرة: ${todayCairo}\nالوقت الحالي بتوقيت القاهرة: ${nowCairo12}${memoriesBlock}\n\n=== الدستور الشخصي والسياق الحي ===\n${payload.contextSummary ?? ''}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+
+    return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
+  }
+
+  function extractPendingProposalFromFunctionCalls(fnCalls?: FunctionCall[]) {
+    if (!fnCalls || fnCalls.length === 0) return undefined;
+    const calCall = fnCalls.find((f) => f.name === 'propose_calendar_actions');
+    const taskCall = fnCalls.find((f) => f.name === 'propose_task_actions');
+    const medCall = fnCalls.find((f) => f.name === 'propose_medication_actions');
+    const creativeCall = fnCalls.find((f) => f.name === 'propose_creative_actions');
+    const profileCall = fnCalls.find((f) => f.name === 'propose_profile_updates');
+    const memoryCall = fnCalls.find((f) => f.name === 'propose_memory_actions');
+    if (!calCall && !taskCall && !medCall && !creativeCall && !profileCall && !memoryCall) {
+      return undefined;
+    }
+
+    const calArgs = (calCall?.args ?? {}) as {
+      summaryAr?: string;
+      actions?: CalendarActionProposal[];
+    };
+    const taskArgs = (taskCall?.args ?? {}) as {
+      summaryAr?: string;
+      taskActions?: TaskActionProposal[];
+    };
+    const medArgs = (medCall?.args ?? {}) as {
+      summaryAr?: string;
+      medicationActions?: MedicationActionProposal[];
+    };
+    const creativeArgs = (creativeCall?.args ?? {}) as {
+      summaryAr?: string;
+      creativeActions?: CreativeActivityActionProposal[];
+    };
+    const profileArgs = (profileCall?.args ?? {}) as Record<string, unknown>;
+    const { summaryAr: profileSummaryAr, ...rawProfilePatch } = profileArgs;
+    const profileUpdates =
+      profileCall && Object.keys(rawProfilePatch).length > 0
+        ? rawProfilePatch
+        : undefined;
+    const memoryArgs = (memoryCall?.args ?? {}) as {
+      summaryAr?: string;
+      memoryActions?: MemoryActionProposal[];
+    };
+
+    const actions = Array.isArray(calArgs.actions) ? calArgs.actions : [];
+    const taskActions = Array.isArray(taskArgs.taskActions) ? taskArgs.taskActions : [];
+    const medicationActions = Array.isArray(medArgs.medicationActions)
+      ? medArgs.medicationActions
+      : [];
+    const creativeActions = Array.isArray(creativeArgs.creativeActions)
+      ? creativeArgs.creativeActions
+      : [];
+    const memoryActions = Array.isArray(memoryArgs.memoryActions)
+      ? memoryArgs.memoryActions
+      : [];
+    const summaryAr =
+      [
+        calArgs.summaryAr,
+        taskArgs.summaryAr,
+        medArgs.summaryAr,
+        creativeArgs.summaryAr,
+        typeof profileSummaryAr === 'string' ? profileSummaryAr : undefined,
+        memoryArgs.summaryAr,
+      ]
+        .filter(Boolean)
+        .join(' · ') || 'تعديل التقويم والدستور والذاكرة الدائمة';
+
+    return {
+      summaryAr,
+      actions,
+      taskActions,
+      medicationActions,
+      creativeActions,
+      profileUpdates,
+      memoryActions,
+    };
+  }
+
+  const GEMINI_CHAT_TOOLS = [
+    { googleSearch: {} },
+    {
+      functionDeclarations: [
+        proposeCalendarActionsDeclaration,
+        proposeTaskActionsDeclaration,
+        proposeMedicationActionsDeclaration,
+        proposeCreativeActionsDeclaration,
+        proposeProfileUpdatesDeclaration,
+        proposeMemoryActionsDeclaration,
+      ],
+    },
+  ];
+
+  // 3A. Fast Streaming Multi-turn Gemini Chat (SSE)
+  app.post('/api/chat/stream', async (req, res) => {
+    const startedAt = Date.now();
+    const payload = req.body as ChatRequestPayload;
+    if (!payload?.message || typeof payload.message !== 'string') {
+      res.status(400).json({ error: 'الرسالة مطلوبة.' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const writeEvent = (obj: Record<string, unknown>) => {
+      if (res.writableEnded) return;
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    };
+
+    try {
       const ai = getGeminiClient();
-      const formattedHistory: Content[] = Array.isArray(history)
-        ? history.map((h) => ({
-            role: h.role,
-            parts: [{ text: h.text }],
-          }))
-        : [];
-
-      const todayCairo = getCairoTodayIso();
-      const nowCairo12 = getCairoNowTime12();
-      const dayNamesAr = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-
-      const eventsListText =
-        Array.isArray(calendarEvents) && calendarEvents.length > 0
-          ? `\n\nأحداث Google Calendar الفعلية (مقروءة من تقويمات المستخدم للأسبوع، بنظام 12 ساعة):\n${calendarEvents
-              .map(
-                (e) =>
-                  `- [eventId=${e.id}${e.calendarId ? ` | calendarId=${e.calendarId}` : ''}${e.calendarTitle ? ` | التقويم: ${e.calendarTitle}` : ''}] ${e.summary} | من: ${formatServerIsoTo12h(e.start)}${e.end ? ` | إلى: ${formatServerIsoTo12h(e.end)}` : ''}`
-              )
-              .join('\n')}`
-          : '\n\nملاحظة: لا توجد أحداث مسجلة حالياً في Google Calendar ضمن النطاق المعروض أو لم يتم ربط الحساب بعد.';
-
-      const tasksListText =
-        Array.isArray(tasks) && tasks.length > 0
-          ? `\n\nمهام Google Tasks الفعلية الحالية:\n${tasks
-              .map(
-                (t) =>
-                  `- [taskId=${t.id} | taskListId=${t.taskListId}${t.taskListTitle ? ` | القائمة: ${t.taskListTitle}` : ''}] ${t.title} | الحالة: ${t.status === 'completed' ? 'مكتملة' : 'قيد التنفيذ'}${t.due ? ` | الاستحقاق: ${t.due.slice(0, 10)}` : ''}`
-              )
-              .join('\n')}`
-          : '\n\nملاحظة: لا توجد مهام حالياً في Google Tasks أو لم يتم ربط الحساب بعد.';
-
-      const medsListText =
-        Array.isArray(medications) && medications.length > 0
-          ? `\n\nقائمة العلاجات والمكملات الحالية:\n${medications
-              .map((m) => {
-                const doses =
-                  Array.isArray(m.times24) && m.times24.length > 0
-                    ? m.times24.join(', ')
-                    : m.time24 || 'بدون ميعاد محدد بعد';
-                const daysStr =
-                  Array.isArray(m.daysOfWeek) && m.daysOfWeek.length > 0
-                    ? `أيام: ${m.daysOfWeek.map((d) => dayNamesAr[d] ?? d).join('، ')}`
-                    : 'يومياً';
-                const courseStr = m.courseEndDate ? ` | ينتهي الكورس: ${m.courseEndDate}` : '';
-                const refillStr =
-                  typeof m.remainingDoses === 'number' && m.remainingDoses >= 0
-                    ? ` | المتبقي: ${m.remainingDoses}${typeof m.totalDoses === 'number' && m.totalDoses > 0 ? `/${m.totalDoses}` : ''} جرعة`
-                    : '';
-                return `- [medicationId=${m.id}] ${m.name} | المواعيد: ${doses} | التكرار: ${daysStr}${courseStr}${refillStr}${m.doseNote ? ` | ${m.doseNote}` : ''} | حالة اليوم: ${m.takenToday ? 'تم التناول ✓' : m.takenDosesToday && m.takenDosesToday.length > 0 ? `أُخذ (${m.takenDosesToday.join(', ')})` : 'لم يُؤخذ بعد'}`;
-              })
-              .join('\n')}`
-          : '';
-
-      const creativeListText =
-        Array.isArray(creativeActivities) && creativeActivities.length > 0
-          ? `\n\nالأنشطة الإبداعية والهوايات المسجلة:\n${creativeActivities
-              .map((a) => {
-                const cadAr =
-                  a.cadence === 'daily' ? 'يومي' : a.cadence === 'monthly' ? 'شهري' : 'أسبوعي';
-                return `- [activityId=${a.id}] ${a.emoji ?? '🎨'} ${a.name} | (${cadAr}: ${a.sessionsInPeriod ?? a.sessionsThisWeek}/${a.goalCount ?? a.weeklyGoalSessions}) | المدة: ${a.sessionMinutes} د${a.expiresOnDate ? ` | حتى ${a.expiresOnDate}` : ''}${a.scheduledTime24 ? ` | موعد مجدول: ${a.scheduledTime24}` : ''} | اليوم: ${a.completedToday ? 'أُنجز ✓' : 'لم يُنجز بعد'}`;
-              })
-              .join('\n')}`
-          : '';
-
-      const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nتاريخ اليوم بتوقيت القاهرة: ${todayCairo}\nالوقت الحالي بتوقيت القاهرة: ${nowCairo12}\n${contextSummary ?? ''}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+      const formattedHistory = normalizeGeminiHistory(payload.history);
+      const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
 
       const chat = ai.chats.create({
         model: 'gemini-4-hydrogen',
         history: formattedHistory,
         config: {
           systemInstruction,
-          tools: [
-            { googleSearch: {} },
-            {
-              functionDeclarations: [
-                proposeCalendarActionsDeclaration,
-                proposeTaskActionsDeclaration,
-                proposeMedicationActionsDeclaration,
-                proposeCreativeActionsDeclaration,
-                proposeProfileUpdatesDeclaration,
-                proposeMemoryActionsDeclaration,
-              ],
-            },
-          ],
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          tools: GEMINI_CHAT_TOOLS,
           toolConfig: {
             includeServerSideToolInvocations: true,
           },
         },
       });
 
-      const response = await chat.sendMessage({ message });
-      const fnCalls = response.functionCalls;
+      const stream = await chat.sendMessageStream({ message: payload.message });
+      let fullText = '';
+      const collectedFnCalls: FunctionCall[] = [];
+      const sourcesMap = new Map<string, { title: string; uri: string }>();
 
+      for await (const chunk of stream) {
+        if (res.writableEnded) break;
+        const delta = chunk.text ?? '';
+        if (delta) {
+          fullText += delta;
+          writeEvent({ type: 'delta', text: delta });
+        }
+        if (Array.isArray(chunk.functionCalls) && chunk.functionCalls.length > 0) {
+          collectedFnCalls.push(...chunk.functionCalls);
+        }
+        const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+        for (const gc of gChunks) {
+          if (gc.web?.uri && !sourcesMap.has(gc.web.uri)) {
+            sourcesMap.set(gc.web.uri, {
+              title: gc.web.title ?? gc.web.uri ?? 'مصدر ويب',
+              uri: gc.web.uri,
+            });
+          }
+        }
+      }
+
+      const sources = Array.from(sourcesMap.values());
+      const pendingProposal = extractPendingProposalFromFunctionCalls(collectedFnCalls);
+      const finalText =
+        fullText.trim() ||
+        pendingProposal?.summaryAr ||
+        'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
+
+      writeEvent({
+        type: 'done',
+        text: finalText,
+        sources: sources.length > 0 ? sources : undefined,
+        pendingProposal,
+        latencyMs: Math.max(1, Date.now() - startedAt),
+        memoriesAppliedCount,
+        model: 'gemini-4-hydrogen',
+      });
+      res.end();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'حدث خطأ أثناء الاتصال بـ Gemini.';
+      writeEvent({ type: 'error', error: msg });
+      res.end();
+    }
+  });
+
+  // 3B. Multi-turn Gemini Chat JSON Fallback (with ThinkingLevel.LOW + normalized history + Memories)
+  app.post('/api/chat', async (req, res) => {
+    const startedAt = Date.now();
+    try {
+      const payload = req.body as ChatRequestPayload;
+      if (!payload?.message || typeof payload.message !== 'string') {
+        res.status(400).json({ error: 'الرسالة مطلوبة.' });
+        return;
+      }
+
+      const ai = getGeminiClient();
+      const formattedHistory = normalizeGeminiHistory(payload.history);
+      const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
+
+      const chat = ai.chats.create({
+        model: 'gemini-4-hydrogen',
+        history: formattedHistory,
+        config: {
+          systemInstruction,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          tools: GEMINI_CHAT_TOOLS,
+          toolConfig: {
+            includeServerSideToolInvocations: true,
+          },
+        },
+      });
+
+      const response = await chat.sendMessage({ message: payload.message });
       const groundingChunks =
         response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
       const sources = groundingChunks
@@ -1568,87 +1886,30 @@ async function startServer() {
           uri: c.web?.uri ?? '',
         }));
 
-      if (fnCalls && fnCalls.length > 0) {
-        const calCall = fnCalls.find((f) => f.name === 'propose_calendar_actions');
-        const taskCall = fnCalls.find((f) => f.name === 'propose_task_actions');
-        const medCall = fnCalls.find((f) => f.name === 'propose_medication_actions');
-        const creativeCall = fnCalls.find((f) => f.name === 'propose_creative_actions');
-        const profileCall = fnCalls.find((f) => f.name === 'propose_profile_updates');
-        const memoryCall = fnCalls.find((f) => f.name === 'propose_memory_actions');
-        if (calCall || taskCall || medCall || creativeCall || profileCall || memoryCall) {
-          const calArgs = (calCall?.args ?? {}) as {
-            summaryAr?: string;
-            actions?: CalendarActionProposal[];
-          };
-          const taskArgs = (taskCall?.args ?? {}) as {
-            summaryAr?: string;
-            taskActions?: TaskActionProposal[];
-          };
-          const medArgs = (medCall?.args ?? {}) as {
-            summaryAr?: string;
-            medicationActions?: MedicationActionProposal[];
-          };
-          const creativeArgs = (creativeCall?.args ?? {}) as {
-            summaryAr?: string;
-            creativeActions?: CreativeActivityActionProposal[];
-          };
-          const profileArgs = (profileCall?.args ?? {}) as Record<string, unknown>;
-          const { summaryAr: profileSummaryAr, ...rawProfilePatch } = profileArgs;
-          const profileUpdates =
-            profileCall && Object.keys(rawProfilePatch).length > 0
-              ? rawProfilePatch
-              : undefined;
-          const memoryArgs = (memoryCall?.args ?? {}) as {
-            summaryAr?: string;
-            memoryActions?: MemoryActionProposal[];
-          };
+      const pendingProposal = extractPendingProposalFromFunctionCalls(response.functionCalls);
+      const latencyMs = Math.max(1, Date.now() - startedAt);
 
-          const actions = Array.isArray(calArgs.actions) ? calArgs.actions : [];
-          const taskActions = Array.isArray(taskArgs.taskActions) ? taskArgs.taskActions : [];
-          const medicationActions = Array.isArray(medArgs.medicationActions)
-            ? medArgs.medicationActions
-            : [];
-          const creativeActions = Array.isArray(creativeArgs.creativeActions)
-            ? creativeArgs.creativeActions
-            : [];
-          const memoryActions = Array.isArray(memoryArgs.memoryActions)
-            ? memoryArgs.memoryActions
-            : [];
-          const summaryAr =
-            [
-              calArgs.summaryAr,
-              taskArgs.summaryAr,
-              medArgs.summaryAr,
-              creativeArgs.summaryAr,
-              typeof profileSummaryAr === 'string' ? profileSummaryAr : undefined,
-              memoryArgs.summaryAr,
-            ]
-              .filter(Boolean)
-              .join(' · ') || 'تعديل التقويم والدستور والذاكرة الدائمة';
-
-          res.json({
-            text:
-              response.text ||
-              summaryAr ||
-              'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.',
-            sources: sources.length > 0 ? sources : undefined,
-            pendingProposal: {
-              summaryAr,
-              actions,
-              taskActions,
-              medicationActions,
-              creativeActions,
-              profileUpdates,
-              memoryActions,
-            },
-          });
-          return;
-        }
+      if (pendingProposal) {
+        res.json({
+          text:
+            response.text ||
+            pendingProposal.summaryAr ||
+            'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.',
+          sources: sources.length > 0 ? sources : undefined,
+          pendingProposal,
+          latencyMs,
+          memoriesAppliedCount,
+          model: 'gemini-4-hydrogen',
+        });
+        return;
       }
 
       res.json({
         text: response.text ?? '',
         sources: sources.length > 0 ? sources : undefined,
+        latencyMs,
+        memoriesAppliedCount,
+        model: 'gemini-4-hydrogen',
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'حدث خطأ أثناء الاتصال بـ Gemini.';
@@ -1656,13 +1917,16 @@ async function startServer() {
     }
   });
 
-  // 4. Google Maps Grounding Endpoint
+  // 4. Google Maps Grounding Endpoint (Constitution & Memories aware)
   app.post('/api/maps', async (req, res) => {
+    const startedAt = Date.now();
     try {
-      const { query, lat, lng } = req.body as {
+      const { query, lat, lng, memories, constitutionBrief } = req.body as {
         query?: string;
         lat?: number;
         lng?: number;
+        memories?: Array<{ ruleText: string; category?: string }>;
+        constitutionBrief?: string;
       };
 
       if (!query || typeof query !== 'string') {
@@ -1673,13 +1937,21 @@ async function startServer() {
       const latitude = typeof lat === 'number' ? lat : 31.1953;
       const longitude = typeof lng === 'number' ? lng : 31.5212;
 
+      const memLines =
+        Array.isArray(memories) && memories.length > 0
+          ? `\nقواعد ذاكرة المستخدم الدائمة:\n${memories
+              .slice(0, 12)
+              .map((m) => `- ${m.ruleText}`)
+              .join('\n')}`
+          : '';
+
       const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',
         contents: query,
         config: {
-          systemInstruction:
-            'أجب بالعربية بوضوح واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على بيانات خرائط جوجل.',
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          systemInstruction: `أجب بالعربية بوضوح واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على بيانات خرائط جوجل، مع الالتزام بنظام 12 ساعة (ص/م) والدستور الشخصي وذاكرة المستخدم.${constitutionBrief ? `\n${constitutionBrief.slice(0, 800)}` : ''}${memLines}`,
           tools: [{ googleMaps: {} }],
           toolConfig: {
             retrievalConfig: {
@@ -1712,6 +1984,8 @@ async function startServer() {
       res.json({
         text: response.text ?? '',
         places,
+        latencyMs: Math.max(1, Date.now() - startedAt),
+        memoriesAppliedCount: Array.isArray(memories) ? memories.length : 0,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'تعذر جلب بيانات خرائط جوجل.';
@@ -1719,22 +1993,35 @@ async function startServer() {
     }
   });
 
-  // 5. Google Search Grounding Endpoint
+  // 5. Google Search Grounding Endpoint (Constitution & Memories aware)
   app.post('/api/search', async (req, res) => {
+    const startedAt = Date.now();
     try {
-      const { query } = req.body as { query?: string };
+      const { query, memories, constitutionBrief } = req.body as {
+        query?: string;
+        memories?: Array<{ ruleText: string; category?: string }>;
+        constitutionBrief?: string;
+      };
       if (!query || typeof query !== 'string') {
         res.status(400).json({ error: 'استعلام البحث مطلوب.' });
         return;
       }
+
+      const memLines =
+        Array.isArray(memories) && memories.length > 0
+          ? `\nقواعد ذاكرة المستخدم الدائمة:\n${memories
+              .slice(0, 12)
+              .map((m) => `- ${m.ruleText}`)
+              .join('\n')}`
+          : '';
 
       const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',
         contents: query,
         config: {
-          systemInstruction:
-            'أجب بالعربية بدقة واختصار مستنداً إلى نتائج البحث الحية، مع احترام خصوصية المستخدم.',
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          systemInstruction: `أجب بالعربية بدقة واختصار مستنداً إلى نتائج البحث الحية، مع احترام خصوصية المستخدم ونظام 12 ساعة (ص/م) والدستور الشخصي وذاكرة المستخدم.${constitutionBrief ? `\n${constitutionBrief.slice(0, 800)}` : ''}${memLines}`,
           tools: [{ googleSearch: {} }],
         },
       });
@@ -1752,6 +2039,8 @@ async function startServer() {
       res.json({
         text: response.text ?? '',
         sources,
+        latencyMs: Math.max(1, Date.now() - startedAt),
+        memoriesAppliedCount: Array.isArray(memories) ? memories.length : 0,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'تعذر إجراء البحث المباشر.';
