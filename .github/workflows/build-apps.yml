@@ -15,25 +15,43 @@ permissions:
   contents: write
 
 jobs:
-  build-android-apk:
-    name: Build Standalone Android APK (OnePlus 12R · 24/7 + Auto-Update)
+  build-web-bundle:
+    name: Build DayRhythm Web Bundle (Shared for APK & EXE)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
-      - name: Build DayRhythm Web Bundle for Embedding inside APK
+      - name: Install dependencies and build production dist
         run: |
-          npm install --no-audit --no-fund
+          npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
-          rm -rf packaging/android/app/src/main/assets/www
-          mkdir -p packaging/android/app/src/main/assets/www
-          cp -r dist/* packaging/android/app/src/main/assets/www/
+
+      - name: Upload built dist bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: dayrhythm-web-dist
+          path: dist/
+          retention-days: 1
+
+  build-android-apk:
+    name: Build Standalone Android APK (OnePlus 12R · 24/7 + Auto-Update)
+    needs: [build-web-bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download pre-built DayRhythm web bundle into APK assets
+        uses: actions/download-artifact@v4
+        with:
+          name: dayrhythm-web-dist
+          path: packaging/android/app/src/main/assets/www
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -110,31 +128,28 @@ jobs:
 
   build-windows-exe:
     name: Build Standalone Windows EXE (Tray + WebSocket + Auto-Update)
+    needs: [build-web-bundle]
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
-      - name: Build DayRhythm Web Bundle for Embedding inside EXE
-        run: |
-          npm install --no-audit --no-fund
-          npm run build
+      - name: Download pre-built DayRhythm web bundle into desktop app-dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dayrhythm-web-dist
+          path: packaging/desktop/app-dist
 
-      - name: Embed dist bundle, icon, version & GitHub auto-updater repo
+      - name: Configure icon, version & GitHub auto-updater repo
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "packaging/desktop/build" | Out-Null
           Copy-Item "public/pwa-512x512.png" "packaging/desktop/build/icon.png" -Force
-
-          if (Test-Path "packaging/desktop/app-dist") {
-            Remove-Item -Recurse -Force "packaging/desktop/app-dist"
-          }
-          Copy-Item -Recurse -Force "dist" "packaging/desktop/app-dist"
 
           $repoFull = "${{ github.repository }}"
           $parts = $repoFull.Split("/")
@@ -157,7 +172,7 @@ jobs:
 
       - name: Install desktop builder dependencies
         working-directory: packaging/desktop
-        run: npm install --no-audit --no-fund
+        run: npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Build Windows Setup, Portable EXE & Auto-Update metadata
         working-directory: packaging/desktop
