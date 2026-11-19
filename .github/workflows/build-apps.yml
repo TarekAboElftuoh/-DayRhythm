@@ -1,0 +1,181 @@
+name: Build DayRhythm APK & Windows EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: 'DayRhythm Live App URL'
+        required: false
+        default: 'https://ais-pre-nldzeytdlkfysmfvrz4pkn-146281240493.europe-west2.run.app'
+  push:
+    branches: [main, master]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  DEFAULT_APP_URL: 'https://ais-pre-nldzeytdlkfysmfvrz4pkn-146281240493.europe-west2.run.app'
+
+jobs:
+  build-android-apk:
+    name: Build Android APK (OnePlus 12R)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Copy DayRhythm icons into Android resources
+        run: |
+          mkdir -p packaging/android/app/src/main/res/mipmap-xxxhdpi
+          mkdir -p packaging/android/app/src/main/res/mipmap-xhdpi
+          mkdir -p packaging/android/app/src/main/res/drawable
+          cp public/pwa-512x512.png packaging/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          cp public/pwa-512x512.png packaging/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+          cp public/pwa-192x192.png packaging/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          cp public/pwa-192x192.png packaging/android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
+          cp public/pwa-512x512.png packaging/android/app/src/main/res/drawable/ic_splash.png
+
+      - name: Prepare Android release signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS_SECRET: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          KS_FILE="$RUNNER_TEMP/dayrhythm-release.jks"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 --decode > "$KS_FILE"
+            echo "ANDROID_KEYSTORE_PASSWORD=${KEYSTORE_PASS:-dayrhythm2026}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=${KEY_ALIAS_SECRET:-dayrhythm}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=${KEY_PASS:-dayrhythm2026}" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -v \
+              -keystore "$KS_FILE" \
+              -storetype PKCS12 \
+              -alias dayrhythm \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass dayrhythm2026 \
+              -keypass dayrhythm2026 \
+              -dname "CN=DayRhythm, OU=Mobile, O=DayRhythm, L=Cairo, ST=Dakahlia, C=EG"
+            echo "ANDROID_KEYSTORE_PASSWORD=dayrhythm2026" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=dayrhythm" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=dayrhythm2026" >> "$GITHUB_ENV"
+          fi
+          echo "ANDROID_KEYSTORE_PATH=$KS_FILE" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        working-directory: packaging/android
+        run: |
+          TARGET_URL="${{ inputs.app_url || env.DEFAULT_APP_URL }}"
+          TARGET_HOST=$(node -e "console.log(new URL(process.argv[1]).hostname)" "$TARGET_URL")
+          gradle assembleRelease \
+            -PAPP_URL="$TARGET_URL" \
+            -PAPP_HOST="$TARGET_HOST" \
+            -PVERSION_CODE="${{ github.run_number }}" \
+            -PVERSION_NAME="1.0.${{ github.run_number }}"
+
+      - name: Stage APK artifact
+        run: |
+          mkdir -p release-android
+          cp packaging/android/app/build/outputs/apk/release/app-release.apk release-android/DayRhythm-OnePlus12R.apk
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DayRhythm-Android-APK
+          path: release-android/DayRhythm-OnePlus12R.apk
+          retention-days: 30
+
+  build-windows-exe:
+    name: Build Windows EXE (Setup & Portable)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Prepare Electron app icon and target URL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "packaging/desktop/build" | Out-Null
+          Copy-Item "public/pwa-512x512.png" "packaging/desktop/build/icon.png" -Force
+          $targetUrl = "${{ inputs.app_url }}"
+          if ([string]::IsNullOrWhiteSpace($targetUrl)) { $targetUrl = "${{ env.DEFAULT_APP_URL }}" }
+          $mainPath = "packaging/desktop/main.cjs"
+          $content = Get-Content $mainPath -Raw
+          $content = $content.Replace("https://ais-pre-nldzeytdlkfysmfvrz4pkn-146281240493.europe-west2.run.app", $targetUrl)
+          Set-Content -Path $mainPath -Value $content -NoNewline
+
+      - name: Install desktop builder dependencies
+        working-directory: packaging/desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Build Windows Setup & Portable EXE
+        working-directory: packaging/desktop
+        run: npm run dist:win
+
+      - name: Upload Windows EXE artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DayRhythm-Windows-EXE
+          path: |
+            packaging/desktop/dist/DayRhythm-Setup.exe
+            packaging/desktop/dist/DayRhythm-Portable.exe
+          retention-days: 30
+
+  publish-release:
+    name: Publish GitHub Release (Direct Downloads)
+    needs: [build-android-apk, build-windows-exe]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: DayRhythm-Android-APK
+          path: release-files
+
+      - name: Download Windows EXE files
+        uses: actions/download-artifact@v4
+        with:
+          name: DayRhythm-Windows-EXE
+          path: release-files
+
+      - name: Create latest GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v1.${{ github.run_number }}.${{ github.run_attempt }}"
+          cat <<'EOF' > release-notes.md
+          ## إيقاع اليوم | DayRhythm — تنزيل مباشر
+
+          - **OnePlus 12R (أندرويد):** `DayRhythm-OnePlus12R.apk` — مثبّت أندرويد جاهز بتقنية Trusted Web Activity (يدعم تسجيل دخول جوجل، المزامنة اللحظية، والإشعارات).
+          - **الكمبيوتر (Windows 64-bit):**
+            - `DayRhythm-Setup.exe` — برنامج تثبيت كامل مع اختصار على سطح المكتب وقائمة ابدأ.
+            - `DayRhythm-Portable.exe` — نسخة محمولة تعمل فوراً بدون تثبيت.
+          EOF
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            release-files/DayRhythm-OnePlus12R.apk \
+            release-files/DayRhythm-Setup.exe \
+            release-files/DayRhythm-Portable.exe \
+            --title "إيقاع اليوم | DayRhythm ($TAG)" \
+            --notes-file release-notes.md \
+            --latest

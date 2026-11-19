@@ -687,6 +687,19 @@ export interface MemoryActionProposal {
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
+  app.use((_req, res, next) => {
+    // Keeps window.opener intact for Firebase Google OAuth signInWithPopup across Desktop & Mobile Chrome
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+    next();
+  });
+
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      ok: true,
+      wsSyncRooms: syncRooms.size,
+      serverTimeIso: new Date().toISOString(),
+    });
+  });
 
   // 1. Read user's real Google Calendar events across ALL user calendars via @googleapis/calendar
   app.get('/api/calendar/events', async (req, res) => {

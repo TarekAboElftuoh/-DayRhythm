@@ -3553,7 +3553,7 @@ ${taskLines}
 
   return (
     <div
-      className={`min-h-screen transition-colors ${
+      className={`min-h-[100dvh] overflow-x-clip transition-colors ${
         surfaceTheme === 'amoled' ? 'bg-black' : 'bg-[#070A0F]'
       } text-zinc-100 pb-16`}
     >
@@ -3566,7 +3566,7 @@ ${taskLines}
       />
 
       {toastMessage && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 rounded-xl border border-[#7FFFD4]/50 bg-black/95 px-4 py-2.5 text-xs font-semibold text-[#7FFFD4] shadow-2xl">
+        <div className="fixed top-[calc(env(safe-area-inset-top)+4rem)] inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 sm:max-w-lg z-50 rounded-xl border border-[#7FFFD4]/50 bg-black/95 px-4 py-2.5 text-xs font-semibold text-[#7FFFD4] text-center shadow-2xl break-words">
           {toastMessage}
         </div>
       )}

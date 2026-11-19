@@ -3,7 +3,6 @@ import { getAuth } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
-  deleteField,
   doc,
   getDoc,
   getDocFromServer,
@@ -13,6 +12,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   Unsubscribe,
   updateDoc,
   where,
@@ -194,12 +194,14 @@ export { DEFAULT_MEMORIES };
 
 function clampInt(val: unknown, min: number, max: number, fallback: number): number {
   const n = typeof val === 'number' && Number.isFinite(val) ? Math.round(val) : fallback;
-  return Math.max(min, Math.min(max, n));
+  const clamped = Math.max(min, Math.min(max, n));
+  return clamped === 0 ? 0 : clamped;
 }
 
 function clampFloat(val: unknown, min: number, max: number, fallback: number): number {
   const n = typeof val === 'number' && Number.isFinite(val) ? val : fallback;
-  return Math.max(min, Math.min(max, Math.round(n * 10000) / 10000));
+  const clamped = Math.max(min, Math.min(max, Math.round(n * 10000) / 10000));
+  return clamped === 0 ? 0 : clamped;
 }
 
 function sanitizeWeekdayList(raw: unknown, fallback: number[]): number[] {
@@ -207,7 +209,7 @@ function sanitizeWeekdayList(raw: unknown, fallback: number[]): number[] {
   const unique = new Set<number>();
   for (const item of raw) {
     const n = typeof item === 'number' && Number.isFinite(item) ? Math.round(item) : -1;
-    if (n >= 0 && n <= 6) unique.add(n);
+    if (n >= 0 && n <= 6) unique.add(n === 0 ? 0 : n);
   }
   return Array.from(unique).slice(0, 7);
 }
@@ -587,6 +589,8 @@ function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayloa
   };
 }
 
+const knownCreatedAtByUid = new Map<string, Timestamp>();
+
 export function subscribeUserRhythmState(
   uid: string,
   onRemoteState: (state: SyncedRhythmPayload) => void,
@@ -604,6 +608,9 @@ export function subscribeUserRhythmState(
         return;
       }
       const data = snap.data();
+      if (data.createdAt instanceof Timestamp) {
+        knownCreatedAtByUid.set(uid, data.createdAt);
+      }
       onRemoteState(
         sanitizeRhythmPayload({
           hydrationDateKey: String(data.hydrationDateKey ?? ''),
@@ -660,6 +667,8 @@ export async function publishWorkspaceSyncSignal(
   }
 }
 
+const pendingUserSaves = new Map<string, Promise<void>>();
+
 export async function saveUserRhythmState(
   uid: string,
   payload: SyncedRhythmPayload
@@ -669,31 +678,69 @@ export async function saveUserRhythmState(
   const docRef = doc(db, 'users', uid);
   const clean = sanitizeRhythmPayload(payload);
 
-  try {
-    const existingSnap = await getDoc(docRef);
-    if (!existingSnap.exists()) {
-      await setDoc(docRef, {
-        uid,
-        ...clean,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      const existingData = existingSnap.data();
-      // Use updateDoc so immutable uid & createdAt stay untouched on the server
-      // (avoids permission denials from pending local serverTimestamp cache reads).
-      const updatePayload: Record<string, unknown> = {
-        ...clean,
-        updatedAt: serverTimestamp(),
-      };
-      if ('flaxseedTaken' in existingData) {
-        updatePayload.flaxseedTaken = deleteField();
-      }
-      await updateDoc(docRef, updatePayload);
+  const attemptAtomicSave = async (isRetry: boolean): Promise<void> => {
+    let existingSnap;
+    try {
+      existingSnap = await getDocFromServer(docRef);
+    } catch {
+      existingSnap = await getDoc(docRef);
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
+
+    const exists = existingSnap.exists();
+    const existingData = exists ? (existingSnap.data() ?? {}) : null;
+
+    let preservedCreatedAt: Timestamp | null = null;
+    if (existingData?.createdAt instanceof Timestamp) {
+      preservedCreatedAt = existingData.createdAt;
+      knownCreatedAtByUid.set(uid, preservedCreatedAt);
+    } else if (exists && knownCreatedAtByUid.has(uid)) {
+      preservedCreatedAt = knownCreatedAtByUid.get(uid) ?? null;
+    }
+
+    const preservedSignal =
+      clean.syncSignal ?? (existingData ? sanitizeSyncSignal(existingData.syncSignal) : undefined);
+
+    // Atomic full-document setDoc (no merge): guarantees ZERO legacy/unknown fields can survive
+    // while preserving the server's immutable createdAt Timestamp when present.
+    const fullDoc: Record<string, unknown> = {
+      uid,
+      ...clean,
+      ...(preservedSignal ? { syncSignal: preservedSignal } : {}),
+      createdAt: preservedCreatedAt ?? serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    try {
+      await setDoc(docRef, fullDoc);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (!isRetry && msg.toLowerCase().includes('permission')) {
+        // Handle simultaneous first-create race across PC <-> Mobile by re-fetching server createdAt once
+        await attemptAtomicSave(true);
+        return;
+      }
+      console.warn('DayRhythm Firestore write diagnostic:', {
+        hadExistingDoc: exists,
+        existingCreatedAtType: existingData
+          ? existingData.createdAt instanceof Timestamp
+            ? 'Timestamp'
+            : existingData.createdAt === null
+              ? 'null'
+              : typeof existingData.createdAt
+          : 'no_doc',
+        existingUidMatches: existingData ? existingData.uid === uid : false,
+        existingKeys: existingData ? Object.keys(existingData) : [],
+        fullDocKeys: Object.keys(fullDoc),
+        lifeProfileKeys: Object.keys(clean.lifeProfile),
+      });
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  };
+
+  const prev = pendingUserSaves.get(uid) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(() => attemptAtomicSave(false));
+  pendingUserSaves.set(uid, next);
+  return next;
 }
 
 export function subscribeMedications(

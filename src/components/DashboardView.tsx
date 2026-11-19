@@ -623,9 +623,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   }, [quietRemainingSec]);
 
   return (
-    <div className="mx-auto max-w-[1380px] px-4 sm:px-6 py-6 space-y-6">
+    <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6">
       {/* DEDICATED TOP ENVIRONMENT CARD: Day + Gregorian + Hijri + Live Weather + Conditional Full Moon (13-15 Hijri ONLY) */}
-      <section className={`rounded-2xl border p-4 sm:p-5 ${cardSurface}`}>
+      <section className={`rounded-2xl border p-3.5 sm:p-5 ${cardSurface}`}>
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="space-y-1.5 min-w-0">
             <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
@@ -1015,11 +1015,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       )}
 
       {/* FOCAL HERO COMMAND STRIP: Next Alarm + Quick Actions + 5 Prayers (Always Above the Fold) */}
-      <section className={`rounded-2xl border p-5 ${cardSurface}`}>
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+      <section className={`rounded-2xl border p-3.5 sm:p-5 ${cardSurface}`}>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5 items-center">
           {/* Next Event + Countdown + Quick 1-Tap Actions */}
-          <div className="lg:col-span-6 flex flex-col justify-between gap-4">
-            <div className="flex items-start justify-between gap-4">
+          <div className="lg:col-span-6 flex flex-col justify-between gap-3.5 sm:gap-4 min-w-0">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2.5 sm:gap-4">
               <div className="min-w-0">
                 <div className="text-xs text-zinc-400">
                   {t(language, 'nextAlarmHeader')} ·{' '}
@@ -1029,8 +1029,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       ? 'Google Calendar'
                       : t(language, 'rhythmTag')}
                 </div>
-                <div className="mt-2 flex items-center gap-3">
-                  <span className="text-3xl shrink-0">{nextAlarmBlock?.emojiPair ?? '📅'}</span>
+                <div className="mt-2 flex items-center gap-2.5 sm:gap-3">
+                  <span className="text-2xl sm:text-3xl shrink-0">{nextAlarmBlock?.emojiPair ?? '📅'}</span>
                   <div className="min-w-0">
                     {(() => {
                       const rawTitle = nextAlarmBlock?.categoryAr ?? '';
@@ -1039,7 +1039,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           ? rawTitle.trim().slice(nextAlarmBlock.emojiPair.trim().length).trim()
                           : rawTitle;
                       return (
-                        <h1 className="text-lg font-bold text-white truncate">
+                        <h1 className="text-base sm:text-lg font-bold text-white truncate">
                           {cleanTitle ||
                             (nextAlarmBlock
                               ? nextAlarmBlock.isAnchor
@@ -1060,7 +1060,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              <div className="text-left shrink-0">
+              <div className="text-right sm:text-left shrink-0">
                 <div
                   className={`font-mono-tabular text-2xl sm:text-3xl font-bold tracking-tight ${
                     simulateUnder60s ? 'text-[#FF6B6B]' : 'text-[#7FFFD4]'
@@ -1108,25 +1108,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          {/* 5 Prayers Strip (Strict 12-Hour) */}
-          <div className="lg:col-span-6 lg:border-r lg:border-white/10 lg:pr-5">
-            <div className="grid grid-cols-5 gap-2 text-center">
+          {/* 5 Prayers Strip (Strict 12-Hour · Calibrated for OnePlus 12R 360-412px) */}
+          <div className="lg:col-span-6 lg:border-r lg:border-white/10 lg:pr-5 min-w-0">
+            <div className="grid grid-cols-5 gap-1 sm:gap-2 text-center">
               {prayers
                 .filter((p) => p.isObligatory)
                 .map((p) => (
                   <div
                     key={p.id}
-                    className="rounded-xl border border-white/10 bg-black/45 py-2.5 px-1"
+                    className="rounded-xl border border-white/10 bg-black/45 py-2 px-0.5 sm:px-1.5 min-w-0"
                   >
-                    <div className="text-sm">{p.emojiPair.split(' ')[1]}</div>
-                    <div className="text-[11px] font-medium text-zinc-300 mt-0.5">
+                    <div className="text-xs sm:text-sm leading-none">{p.emojiPair.split(' ')[1]}</div>
+                    <div className="text-[10px] sm:text-[11px] font-medium text-zinc-300 mt-1 truncate">
                       {language === 'ar' ? p.nameAr : p.nameEn}
                     </div>
-                    <div className="font-mono-tabular text-[11px] font-semibold text-[#7FFFD4] mt-0.5">
+                    <div className="font-mono-tabular text-[10px] sm:text-[11px] font-semibold text-[#7FFFD4] mt-0.5 whitespace-nowrap">
                       {formatMinutes12h(p.alarmMinutes, language)}
                     </div>
-                    <div className="font-mono-tabular text-[9px] text-zinc-500">
-                      {language === 'ar' ? 'أذان' : 'Adhan'}{' '}
+                    <div className="font-mono-tabular text-[8.5px] sm:text-[9px] text-zinc-500 mt-0.5 whitespace-nowrap truncate">
+                      <span className="hidden sm:inline">{language === 'ar' ? 'أذان ' : 'Adhan '}</span>
                       {formatMinutes12h(p.adhanMinutes, language)}
                     </div>
                   </div>
@@ -2004,29 +2004,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       dueDateIso: newTaskDueIso || undefined,
                     });
                   }}
-                  className="flex flex-wrap items-center gap-2"
+                  className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2"
                 >
                   <input
                     type="text"
                     value={newTaskTitle}
                     onChange={(e) => setNewTaskTitle(e.target.value)}
                     placeholder="اكتب مهمة جديدة لإضافتها إلى Google Tasks..."
-                    className="flex-1 min-w-[200px] rounded-xl border border-white/10 bg-black/60 px-3.5 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+                    className="w-full sm:w-auto sm:flex-1 min-w-0 rounded-xl border border-white/10 bg-black/60 px-3.5 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
                   />
-                  <input
-                    type="date"
-                    value={newTaskDueIso}
-                    onChange={(e) => setNewTaskDueIso(e.target.value)}
-                    className="rounded-xl border border-white/10 bg-black/60 px-3 py-2 text-xs text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!newTaskTitle.trim()}
-                    className="px-4 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>إضافة مهمة</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      value={newTaskDueIso}
+                      onChange={(e) => setNewTaskDueIso(e.target.value)}
+                      className="flex-1 sm:flex-none min-w-0 rounded-xl border border-white/10 bg-black/60 px-3 py-2 text-xs text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!newTaskTitle.trim()}
+                      className="min-h-[40px] px-4 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>إضافة مهمة</span>
+                    </button>
+                  </div>
                 </form>
 
                 {visibleTasks.length === 0 ? (
@@ -3363,8 +3365,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Quick Create Google Calendar Event Modal (Strict 12-hour input + Explicit Confirmation) */}
       {newEventModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-5 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-[#7FFFD4]" />
@@ -3515,8 +3517,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Delete Event from Google Calendar */}
       {confirmDeleteGoogleEv && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-rose-500/40 bg-[#090C11] p-5 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-rose-500/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-rose-300">
               تأكيد حذف الحدث من Google Calendar
             </h3>
@@ -3546,8 +3548,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Mutate Google Task */}
       {pendingTaskConfirmation && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-5 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4]">
               تأكيد تعديل مهمة في Google Tasks
             </h3>
@@ -3594,8 +3596,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Add Gmail-Extracted Event to Google Calendar */}
       {pendingGmailEventConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-5 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4] flex items-center gap-2">
               <Mail className="w-4 h-4" />
               <span>تأكيد إضافة موعد من Gmail إلى Google Calendar</span>
@@ -3636,8 +3638,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Schedule Creative Activity in Free Slot on Google Calendar */}
       {pendingCreativeCalendarConfirm && pendingCreativeCalendarConfirm.suggestedSlot && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-5 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4] flex items-center gap-2">
               <Palette className="w-4 h-4" />
               <span>تأكيد تثبيت النشاط الإبداعي في Google Calendar</span>

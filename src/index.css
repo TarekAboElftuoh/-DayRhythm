@@ -8,10 +8,32 @@
     --font-mono: "JetBrains Mono", ui-monospace, monospace;
   }
 
+  html {
+    overflow-x: clip;
+    max-width: 100%;
+    overscroll-behavior-y: contain;
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
     font-family: var(--font-ar);
     background-color: #000000;
     color: #f4f4f5;
+    overflow-x: clip;
+    max-width: 100%;
+    min-height: 100dvh;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  @media (max-width: 640px) {
+    input[type="text"],
+    input[type="number"],
+    input[type="date"],
+    input[type="time"],
+    select,
+    textarea {
+      font-size: 16px;
+    }
   }
 }
 

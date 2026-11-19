@@ -116,10 +116,10 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
   };
 
   return (
-    <div className="mx-auto max-w-[1380px] px-4 sm:px-6 py-6">
-      <div className="mb-6 pb-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-4">
+    <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-4 sm:py-6">
+      <div className="mb-5 pb-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-lg font-bold text-white">إعدادات OnePlus 12R</h1>
+          <h1 className="text-base sm:text-lg font-bold text-white">إعدادات OnePlus 12R</h1>
           {firestoreSynced && (
             <span className="inline-flex items-center gap-1 text-xs font-medium text-[#4ADE80]">
               <Cloud className="w-3.5 h-3.5" />
@@ -134,7 +134,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
             setPreviewPocketShield(false);
             setShowNightWakeScreen((v) => !v);
           }}
-          className={`px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer ${
+          className={`min-h-[38px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer ${
             showNightWakeScreen
               ? 'border-[#7FFFD4] bg-[#7FFFD4] text-black font-bold'
               : 'border-white/15 bg-white/[0.04] text-zinc-200 hover:border-white/30'
@@ -145,10 +145,10 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 items-start">
         {/* Left: Clean OnePlus 12R Live Preview Frame */}
-        <div className="lg:col-span-5 flex flex-col items-center">
-          <div className="w-full max-w-[366px] rounded-[38px] border-2 border-zinc-700/80 bg-black px-4 pb-4 pt-3 shadow-2xl relative overflow-hidden">
+        <div className="lg:col-span-5 flex flex-col items-center w-full">
+          <div className="w-full max-w-[380px] rounded-[34px] sm:rounded-[38px] border-2 border-zinc-700/80 bg-black px-3.5 sm:px-4 pb-4 pt-3 shadow-2xl relative overflow-hidden">
             <div className="flex items-center justify-center mb-2">
               <span className="w-12 h-1 rounded-full bg-zinc-800" />
             </div>

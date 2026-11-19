@@ -18,15 +18,16 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ language }) 
       <button
         type="button"
         onClick={() => void promptInstall()}
-        className="min-h-[38px] px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#7FFFD4]/45 bg-[#7FFFD4]/12 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+        className="min-h-[38px] px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#7FFFD4]/45 bg-[#7FFFD4]/12 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
         title={
           language === 'ar'
             ? 'تثبيت إيقاع اليوم كتطبيق مستقل مع اختصارات الشاشة الرئيسية'
             : 'Install DayRhythm as an offline standalone app with home shortcuts'
         }
       >
-        <Download className="w-3.5 h-3.5" />
-        <span>{language === 'ar' ? 'تثبيت التطبيق' : 'Install App'}</span>
+        <Download className="w-3.5 h-3.5 shrink-0" />
+        <span className="sm:hidden">{language === 'ar' ? 'تثبيت' : 'Install'}</span>
+        <span className="hidden sm:inline">{language === 'ar' ? 'تثبيت التطبيق' : 'Install App'}</span>
       </button>
     );
   }
@@ -37,10 +38,11 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ language }) 
         <button
           type="button"
           onClick={() => setShowIOSGuide(true)}
-          className="min-h-[38px] px-3 py-1.5 text-xs font-semibold rounded-lg border border-white/15 bg-white/[0.04] text-zinc-200 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+          className="min-h-[38px] px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg border border-white/15 bg-white/[0.04] text-zinc-200 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
         >
-          <Download className="w-3.5 h-3.5 text-[#7FFFD4]" />
-          <span>{language === 'ar' ? 'تثبيت التطبيق' : 'Install App'}</span>
+          <Download className="w-3.5 h-3.5 text-[#7FFFD4] shrink-0" />
+          <span className="sm:hidden">{language === 'ar' ? 'تثبيت' : 'Install'}</span>
+          <span className="hidden sm:inline">{language === 'ar' ? 'تثبيت التطبيق' : 'Install App'}</span>
         </button>
 
         {showIOSGuide && (

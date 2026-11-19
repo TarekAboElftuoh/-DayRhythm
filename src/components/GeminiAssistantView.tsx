@@ -580,11 +580,11 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   const pendingTasks = googleTasks.filter((t) => t.status !== 'completed');
 
   return (
-    <div className="mx-auto max-w-[1380px] px-4 sm:px-6 py-6 space-y-5">
+    <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-5">
       {/* Header + Mode Selector */}
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-white/10">
-        <div>
-          <h1 className="text-lg font-bold text-white">
+      <div className="flex flex-wrap items-center justify-between gap-3 sm:gap-4 pb-3.5 sm:pb-4 border-b border-white/10">
+        <div className="min-w-0">
+          <h1 className="text-base sm:text-lg font-bold text-white">
             شات Gemini · التقويم · المهام · العلاجات
           </h1>
           <p className="text-xs text-zinc-400 mt-0.5">
@@ -592,11 +592,11 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           <button
             type="button"
             onClick={onOpenLifeProfile}
-            className="px-3 py-1.5 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-xs text-[#7FFFD4] font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer"
+            className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-xs text-[#7FFFD4] font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer"
           >
             الدستور والذاكرة ({memoryCount})
           </button>
@@ -604,33 +604,34 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           <button
             type="button"
             onClick={onResetChat}
-            className="px-3 py-1.5 rounded-xl border border-white/10 text-xs text-zinc-300 hover:border-white/25 flex items-center gap-1.5 cursor-pointer"
+            className="min-h-[38px] px-3 py-1.5 rounded-xl border border-white/10 text-xs text-zinc-300 hover:border-white/25 flex items-center gap-1.5 cursor-pointer"
             title="بدء محادثة جديدة"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             <span>محادثة جديدة</span>
           </button>
 
-          <div className="flex items-center p-1 rounded-xl bg-white/[0.04] border border-white/10">
+          <div className="w-full sm:w-auto grid grid-cols-3 sm:flex items-center p-1 rounded-xl bg-white/[0.04] border border-white/10">
             {(
               [
-                { id: 'chat', label: 'شات التعديل المباشر', Icon: MessageSquare },
-                { id: 'maps', label: 'خرائط المساجد والسفر', Icon: MapPin },
-                { id: 'search', label: 'بحث الويب المباشر', Icon: Search },
+                { id: 'chat', label: 'شات التعديل المباشر', shortLabel: 'شات', Icon: MessageSquare },
+                { id: 'maps', label: 'خرائط المساجد والسفر', shortLabel: 'خرائط', Icon: MapPin },
+                { id: 'search', label: 'بحث الويب المباشر', shortLabel: 'بحث', Icon: Search },
               ] as const
-            ).map(({ id, label, Icon }) => (
+            ).map(({ id, label, shortLabel, Icon }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setMode(id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors ${
+                className={`min-h-[36px] px-2 sm:px-3 py-1.5 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
                   mode === id
                     ? 'bg-[#7FFFD4] text-black font-semibold'
                     : 'text-zinc-400 hover:text-white'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
-                <span>{label}</span>
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span className="sm:hidden">{shortLabel}</span>
+                <span className="hidden sm:inline">{label}</span>
               </button>
             ))}
           </div>
@@ -638,27 +639,27 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       </div>
 
       {/* Main Split: Chat Thread + Live Google Calendar & Google Tasks Sidebar */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
         {/* Chat Column (8 cols) */}
-        <div className="lg:col-span-8 space-y-3">
+        <div className="lg:col-span-8 space-y-3 min-w-0">
           {mode === 'maps' && (
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-[#080B10] px-4 py-2.5 text-xs">
-              <div className="flex items-center gap-2 text-zinc-300">
-                <MapPin className="w-4 h-4 text-[#7FFFD4]" />
-                <span>نقطة البحث الحالية: {gpsStatus}</span>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-[#080B10] px-3.5 py-2.5 text-xs">
+              <div className="flex items-center gap-2 text-zinc-300 min-w-0">
+                <MapPin className="w-4 h-4 text-[#7FFFD4] shrink-0" />
+                <span className="truncate">نقطة البحث الحالية: {gpsStatus}</span>
               </div>
               <button
                 type="button"
                 onClick={requestBrowserGps}
-                className="px-3 py-1.5 rounded-lg border border-[#7FFFD4]/40 text-[#7FFFD4] hover:bg-[#7FFFD4]/10 cursor-pointer"
+                className="min-h-[36px] px-3 py-1.5 rounded-lg border border-[#7FFFD4]/40 text-[#7FFFD4] hover:bg-[#7FFFD4]/10 cursor-pointer whitespace-nowrap"
               >
                 تحديث عبر GPS المتصفح
               </button>
             </div>
           )}
 
-          <div className="rounded-2xl border border-white/10 bg-[#07090D] flex flex-col h-[560px]">
-            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+          <div className="rounded-2xl border border-white/10 bg-[#07090D] flex flex-col h-[58dvh] min-h-[360px] sm:h-[560px]">
+            <div className="flex-1 overflow-y-auto p-3.5 sm:p-5 space-y-4">
               {messages.map((m) => (
                 <div
                   key={m.id}

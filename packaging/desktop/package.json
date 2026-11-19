@@ -1,0 +1,51 @@
+{
+  "name": "dayrhythm-desktop",
+  "version": "1.0.0",
+  "description": "إيقاع اليوم | DayRhythm — تطبيق ويندوز الرسمي المتزامن لحظياً مع OnePlus 12R",
+  "main": "main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "app.dayrhythm.desktop",
+    "productName": "DayRhythm",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.cjs",
+      "build/icon.png"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DayRhythm",
+      "artifactName": "DayRhythm-Setup.exe"
+    },
+    "portable": {
+      "artifactName": "DayRhythm-Portable.exe"
+    }
+  }
+}
