@@ -2,11 +2,13 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Net.NetworkInformation;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Win32;
 
 namespace DayRhythm
 {
@@ -20,22 +22,38 @@ namespace DayRhythm
 
     internal sealed class BackgroundServices : IDisposable
     {
+        private const int BaseBackoffMs = 1000;
+        private const int MaxBackoffMs = 30000;
+        private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(25);
+        private static readonly TimeSpan ReceiveLivenessTimeout = TimeSpan.FromSeconds(55);
+
         private readonly HttpClient _http;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly Action<string> _onWsStatusChanged;
         private readonly Action<string> _onWsMessageReceived;
         private readonly Action<ReleaseUpdateInfo> _onUpdateAvailable;
+        private readonly Action _onNetworkRecovered;
+        private readonly object _recoveryLock = new object();
+        private readonly Random _jitterRng = new Random();
+
+        private CancellationTokenSource _wsWakeupCts = new CancellationTokenSource();
+        private ClientWebSocket _activeWs;
+        private bool _eventsHooked;
+        private bool _disposed;
 
         public ReleaseUpdateInfo LatestUpdate { get; private set; }
 
         public BackgroundServices(
             Action<string> onWsStatusChanged,
             Action<string> onWsMessageReceived,
-            Action<ReleaseUpdateInfo> onUpdateAvailable)
+            Action<ReleaseUpdateInfo> onUpdateAvailable,
+            Action onNetworkRecovered = null)
         {
             _onWsStatusChanged = onWsStatusChanged;
             _onWsMessageReceived = onWsMessageReceived;
             _onUpdateAvailable = onUpdateAvailable;
+            _onNetworkRecovered = onNetworkRecovered;
 
             _http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             _http.DefaultRequestHeaders.UserAgent.ParseAdd("DayRhythm-Windows/" + AppConfig.GetVersionString());
@@ -44,7 +62,9 @@ namespace DayRhythm
 
         public void Start(string remoteWsUrl)
         {
+            HookSystemRecoveryEvents();
             _ = Task.Run(() => RunPeriodicUpdateLoopAsync(_cts.Token));
+
             if (!string.IsNullOrWhiteSpace(remoteWsUrl) &&
                 (remoteWsUrl.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
                  remoteWsUrl.StartsWith("wss://", StringComparison.OrdinalIgnoreCase)))
@@ -53,56 +73,285 @@ namespace DayRhythm
             }
             else
             {
-                _onWsStatusChanged?.Invoke("متصل 24/7 (Firestore لحظي)");
+                _onWsStatusChanged?.Invoke("متصل 24/7 (Firestore استعادة تلقائية)");
             }
+        }
+
+        private void HookSystemRecoveryEvents()
+        {
+            if (_eventsHooked) return;
+            _eventsHooked = true;
+            try
+            {
+                NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+                SystemEvents.PowerModeChanged += OnPowerModeChanged;
+            }
+            catch
+            {
+                // Non-fatal if OS rejects event subscription
+            }
+        }
+
+        private void OnNetworkAvailabilityChanged(object sender, NetworkAvailabilityEventArgs e)
+        {
+            if (_disposed) return;
+            if (!e.IsAvailable)
+            {
+                AbortActiveWebSocket();
+                _onWsStatusChanged?.Invoke("بانتظار عودة الإنترنت (استعادة تلقائية)...");
+                return;
+            }
+            TriggerImmediateAutoRecovery();
+        }
+
+        private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (_disposed) return;
+            if (e.Mode == PowerModes.Suspend)
+            {
+                AbortActiveWebSocket();
+            }
+            else if (e.Mode == PowerModes.Resume)
+            {
+                TriggerImmediateAutoRecovery();
+            }
+        }
+
+        public void TriggerImmediateAutoRecovery()
+        {
+            if (_disposed) return;
+            AbortActiveWebSocket();
+            SignalWsWakeup();
+            _onNetworkRecovered?.Invoke();
+        }
+
+        private void AbortActiveWebSocket()
+        {
+            lock (_recoveryLock)
+            {
+                if (_activeWs != null)
+                {
+                    try
+                    {
+                        _activeWs.Abort();
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+                }
+            }
+        }
+
+        private void SignalWsWakeup()
+        {
+            lock (_recoveryLock)
+            {
+                try
+                {
+                    _wsWakeupCts.Cancel();
+                    _wsWakeupCts.Dispose();
+                }
+                catch
+                {
+                    // ignore
+                }
+                _wsWakeupCts = new CancellationTokenSource();
+            }
+        }
+
+        private CancellationToken GetCurrentWakeupToken()
+        {
+            lock (_recoveryLock)
+            {
+                return _wsWakeupCts.Token;
+            }
+        }
+
+        private int ComputeExponentialBackoffWithJitter(int attempt)
+        {
+            int shift = Math.Min(Math.Max(0, attempt), 6);
+            int exp = Math.Min(MaxBackoffMs, BaseBackoffMs * (1 << shift));
+            int maxJitter = Math.Min(1500, (int)(exp * 0.3));
+            int jitter;
+            lock (_recoveryLock)
+            {
+                jitter = maxJitter > 0 ? _jitterRng.Next(0, maxJitter) : 0;
+            }
+            return Math.Min(MaxBackoffMs, exp + jitter);
         }
 
         private async Task RunPersistentWebSocketLoopAsync(string wsUrl, CancellationToken token)
         {
-            int backoffMs = 3000;
-            byte[] buffer = new byte[8192];
+            int attempt = 0;
+            byte[] buffer = new byte[16384];
+            byte[] pingPayload = Encoding.UTF8.GetBytes("{\"type\":\"ping\"}");
 
             while (!token.IsCancellationRequested)
             {
-                using (ClientWebSocket ws = new ClientWebSocket())
-                {
-                    ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(25);
-                    try
-                    {
-                        _onWsStatusChanged?.Invoke("جاري الاتصال بـ WebSocket...");
-                        await ws.ConnectAsync(new Uri(wsUrl), token).ConfigureAwait(false);
-                        backoffMs = 3000;
-                        _onWsStatusChanged?.Invoke("متصل بـ WebSocket 24/7 ✓");
+                ClientWebSocket ws = new ClientWebSocket();
+                ws.Options.KeepAliveInterval = PingInterval;
 
-                        while (ws.State == WebSocketState.Open && !token.IsCancellationRequested)
-                        {
-                            WebSocketReceiveResult result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), token).ConfigureAwait(false);
-                            if (result.MessageType == WebSocketMessageType.Close)
-                            {
-                                break;
-                            }
-                            if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
-                            {
-                                string msg = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                                _onWsMessageReceived?.Invoke(msg);
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        _onWsStatusChanged?.Invoke("إعادة ربط WebSocket في الخلفية...");
-                    }
+                lock (_recoveryLock)
+                {
+                    _activeWs = ws;
                 }
 
                 try
                 {
-                    await Task.Delay(backoffMs, token).ConfigureAwait(false);
+                    _onWsStatusChanged?.Invoke(attempt == 0
+                        ? "جاري الاتصال بـ WebSocket..."
+                        : $"استعادة WebSocket تلقائياً (محاولة #{attempt + 1})...");
+
+                    using (CancellationTokenSource connectCts = CancellationTokenSource.CreateLinkedTokenSource(token, GetCurrentWakeupToken()))
+                    {
+                        connectCts.CancelAfter(ConnectTimeout);
+                        await ws.ConnectAsync(new Uri(wsUrl), connectCts.Token).ConfigureAwait(false);
+                    }
+
+                    bool recoveredFromDrop = attempt > 0;
+                    attempt = 0;
+                    _onWsStatusChanged?.Invoke("متصل بـ WebSocket 24/7 ✓");
+                    if (recoveredFromDrop)
+                    {
+                        _onNetworkRecovered?.Invoke();
+                    }
+
+                    using (CancellationTokenSource sessionCts = CancellationTokenSource.CreateLinkedTokenSource(token, GetCurrentWakeupToken()))
+                    {
+                        Task pingLoop = RunHeartbeatPingLoopAsync(ws, pingPayload, sessionCts.Token);
+
+                        try
+                        {
+                            while (ws.State == WebSocketState.Open && !sessionCts.Token.IsCancellationRequested)
+                            {
+                                using (CancellationTokenSource recvTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(sessionCts.Token))
+                                {
+                                    recvTimeoutCts.CancelAfter(ReceiveLivenessTimeout);
+                                    WebSocketReceiveResult result = await ws.ReceiveAsync(
+                                        new ArraySegment<byte>(buffer),
+                                        recvTimeoutCts.Token
+                                    ).ConfigureAwait(false);
+
+                                    if (result.MessageType == WebSocketMessageType.Close)
+                                    {
+                                        break;
+                                    }
+
+                                    if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
+                                    {
+                                        string msg = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                                        if (!msg.Contains("\"pong\""))
+                                        {
+                                            _onWsMessageReceived?.Invoke(msg);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            sessionCts.Cancel();
+                            try
+                            {
+                                await pingLoop.ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                // ignore ping loop cancellation
+                            }
+                        }
+                    }
                 }
                 catch
                 {
+                    _onWsStatusChanged?.Invoke("جاري استعادة WebSocket في الخلفية...");
+                }
+                finally
+                {
+                    lock (_recoveryLock)
+                    {
+                        if (ReferenceEquals(_activeWs, ws))
+                        {
+                            _activeWs = null;
+                        }
+                    }
+                    try
+                    {
+                        if (ws.State == WebSocketState.Open || ws.State == WebSocketState.CloseReceived)
+                        {
+                            using (CancellationTokenSource closeCts = new CancellationTokenSource(1500))
+                            {
+                                await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "auto_recovery_reset", closeCts.Token).ConfigureAwait(false);
+                            }
+                        }
+                        else
+                        {
+                            ws.Abort();
+                        }
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            ws.Abort();
+                        }
+                        catch
+                        {
+                            // ignore
+                        }
+                    }
+                    ws.Dispose();
+                }
+
+                if (token.IsCancellationRequested) break;
+
+                int delayMs = ComputeExponentialBackoffWithJitter(attempt);
+                attempt = Math.Min(attempt + 1, 6);
+
+                try
+                {
+                    using (CancellationTokenSource waitCts = CancellationTokenSource.CreateLinkedTokenSource(token, GetCurrentWakeupToken()))
+                    {
+                        await Task.Delay(delayMs, waitCts.Token).ConfigureAwait(false);
+                    }
+                }
+                catch
+                {
+                    if (token.IsCancellationRequested) break;
+                    // Wakeup signal received (network restored / PC resumed): retry immediately with reset backoff
+                    attempt = 0;
+                }
+            }
+        }
+
+        private static async Task RunHeartbeatPingLoopAsync(ClientWebSocket ws, byte[] pingPayload, CancellationToken token)
+        {
+            while (!token.IsCancellationRequested && ws.State == WebSocketState.Open)
+            {
+                await Task.Delay(PingInterval, token).ConfigureAwait(false);
+                if (token.IsCancellationRequested || ws.State != WebSocketState.Open) break;
+                try
+                {
+                    await ws.SendAsync(
+                        new ArraySegment<byte>(pingPayload),
+                        WebSocketMessageType.Text,
+                        true,
+                        token
+                    ).ConfigureAwait(false);
+                }
+                catch
+                {
+                    try
+                    {
+                        ws.Abort();
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
                     break;
                 }
-                backoffMs = Math.Min(backoffMs * 2, 45000);
             }
         }
 
@@ -264,9 +513,33 @@ namespace DayRhythm
 
         public void Dispose()
         {
+            if (_disposed) return;
+            _disposed = true;
+
+            if (_eventsHooked)
+            {
+                try
+                {
+                    NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
+                    SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+                }
+                catch
+                {
+                    // ignore
+                }
+                _eventsHooked = false;
+            }
+
+            AbortActiveWebSocket();
+
             try
             {
                 _cts.Cancel();
+                lock (_recoveryLock)
+                {
+                    _wsWakeupCts.Cancel();
+                    _wsWakeupCts.Dispose();
+                }
                 _http.Dispose();
                 _cts.Dispose();
             }

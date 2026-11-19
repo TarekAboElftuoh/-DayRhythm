@@ -1772,11 +1772,30 @@ async function startServer() {
     }
   });
 
+  const aliveSockets = new WeakMap<WebSocket, boolean>();
+
   wss.on('connection', (ws) => {
     let joinedUid = '';
     let entry: SyncClientEntry | null = null;
+    aliveSockets.set(ws, true);
+
+    ws.on('pong', () => {
+      aliveSockets.set(ws, true);
+    });
+
+    const removeFromRoom = () => {
+      if (joinedUid && entry) {
+        const room = syncRooms.get(joinedUid);
+        room?.delete(entry);
+        if (room && room.size === 0) {
+          syncRooms.delete(joinedUid);
+        }
+        entry = null;
+      }
+    };
 
     ws.on('message', (raw) => {
+      aliveSockets.set(ws, true);
       try {
         const msg = JSON.parse(String(raw)) as {
           type?: string;
@@ -1789,9 +1808,7 @@ async function startServer() {
           timestampMs?: number;
         };
         if (msg.type === 'join' && typeof msg.uid === 'string' && msg.uid.length > 0 && msg.uid.length <= 128) {
-          if (joinedUid && entry) {
-            syncRooms.get(joinedUid)?.delete(entry);
-          }
+          removeFromRoom();
           joinedUid = msg.uid;
           entry = { ws, clientId: String(msg.clientId ?? 'anon').slice(0, 64) };
           if (!syncRooms.has(joinedUid)) {
@@ -1821,16 +1838,41 @@ async function startServer() {
       }
     });
 
-    ws.on('close', () => {
-      if (joinedUid && entry) {
-        const room = syncRooms.get(joinedUid);
-        room?.delete(entry);
-        if (room && room.size === 0) {
-          syncRooms.delete(joinedUid);
-        }
+    ws.on('close', removeFromRoom);
+    ws.on('error', () => {
+      removeFromRoom();
+      try {
+        ws.terminate();
+      } catch {
+        // ignore
       }
     });
   });
+
+  // Server-side dead-connection reaper: terminates half-open WebSockets automatically
+  const wsHeartbeatInterval = setInterval(() => {
+    wss.clients.forEach((client) => {
+      if (aliveSockets.get(client) === false) {
+        try {
+          client.terminate();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      aliveSockets.set(client, false);
+      try {
+        client.ping();
+      } catch {
+        try {
+          client.terminate();
+        } catch {
+          // ignore
+        }
+      }
+    });
+  }, 30_000);
+  wss.on('close', () => clearInterval(wsHeartbeatInterval));
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

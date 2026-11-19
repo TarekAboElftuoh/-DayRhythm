@@ -1,14 +1,24 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import {
+  browserLocalPersistence,
+  getAuth,
+  indexedDBLocalPersistence,
+  setPersistence,
+} from 'firebase/auth';
 import {
   collection,
   deleteDoc,
+  disableNetwork,
   doc,
+  enableNetwork,
   getDoc,
   getDocFromServer,
   getFirestore,
+  initializeFirestore,
   limit,
   onSnapshot,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   query,
   serverTimestamp,
   setDoc,
@@ -42,8 +52,31 @@ export const app =
 const configuredDbId =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-dayrhythm-1f2dd321-5d9e-4566-bb4c-87a3962fa6f7';
-export const db = getFirestore(app, configuredDbId);
+
+function createResilientFirestore() {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+        experimentalAutoDetectLongPolling: true,
+      },
+      configuredDbId
+    );
+  } catch {
+    return getFirestore(app, configuredDbId);
+  }
+}
+
+export const db = createResilientFirestore();
 export const auth = getAuth(app);
+
+// Keep Firebase Auth session permanently across app restarts, reboots, and updates
+void setPersistence(auth, indexedDBLocalPersistence).catch(() =>
+  setPersistence(auth, browserLocalPersistence).catch(() => {})
+);
 
 export enum OperationType {
   CREATE = 'create',
@@ -97,12 +130,206 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
+const FS_BASE_BACKOFF_MS = 1000;
+const FS_MAX_BACKOFF_MS = 30_000;
+const FS_NETWORK_RESET_COOLDOWN_MS = 6_000;
+
+let activeNetworkRecovery: Promise<void> | null = null;
+let lastNetworkResetMs = 0;
+const activeListenerRecoverers = new Set<() => void>();
+
+function computeExponentialBackoffMs(attempt: number, baseMs = FS_BASE_BACKOFF_MS, maxMs = FS_MAX_BACKOFF_MS): number {
+  const exp = Math.min(maxMs, baseMs * Math.pow(2, Math.max(0, attempt)));
+  const jitter = Math.floor(Math.random() * Math.min(1200, exp * 0.3));
+  return Math.min(maxMs, exp + jitter);
+}
+
+function isTransientFirestoreError(error: unknown): boolean {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: string }).code ?? '').toLowerCase()
+      : '';
+  const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+
+  if (code.includes('permission-denied') || msg.includes('missing or insufficient permissions')) {
+    return false;
+  }
+
+  return (
+    code.includes('unavailable') ||
+    code.includes('deadline-exceeded') ||
+    code.includes('aborted') ||
+    code.includes('internal') ||
+    code.includes('resource-exhausted') ||
+    code.includes('cancelled') ||
+    msg.includes('unavailable') ||
+    msg.includes('offline') ||
+    msg.includes('network') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('transport') ||
+    msg.includes('timed out')
+  );
+}
+
+/**
+ * Tears down stalled/half-open Firestore network channels via disableNetwork -> enableNetwork
+ * (coalesced with cooldown so concurrent listeners never stampede).
+ */
+export async function recoverFirestoreNetwork(force = false): Promise<void> {
+  if (activeNetworkRecovery) {
+    return activeNetworkRecovery;
+  }
+  const now = Date.now();
+  if (!force && now - lastNetworkResetMs < FS_NETWORK_RESET_COOLDOWN_MS) {
+    return;
+  }
+  lastNetworkResetMs = now;
+
+  activeNetworkRecovery = (async () => {
+    try {
+      await disableNetwork(db);
+      await new Promise((r) => setTimeout(r, 250));
+      await enableNetwork(db);
+    } catch {
+      try {
+        await enableNetwork(db);
+      } catch {
+        // SDK will retry on next network event
+      }
+    } finally {
+      activeNetworkRecovery = null;
+    }
+  })();
+
+  return activeNetworkRecovery;
+}
+
+/**
+ * Proactively resets stalled Firestore channels & re-attaches all active real-time listeners
+ * (called on device wake, network restore, or native Windows/Android recovery events).
+ */
+export function triggerFirestoreRecovery(forceNetworkReset = true): void {
+  void recoverFirestoreNetwork(forceNetworkReset).then(() => {
+    activeListenerRecoverers.forEach((recover) => {
+      try {
+        recover();
+      } catch {
+        // ignore individual listener error
+      }
+    });
+  });
+}
+
+function createResilientSnapshot(
+  attach: (onHealthy: () => void, onError: (error: unknown) => void) => Unsubscribe,
+  operationType: OperationType,
+  path: string,
+  onSyncError?: (message: string) => void
+): Unsubscribe {
+  let disposed = false;
+  let attempt = 0;
+  let currentUnsub: Unsubscribe | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearRetryTimer = () => {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+
+  const teardownCurrent = () => {
+    if (currentUnsub) {
+      try {
+        currentUnsub();
+      } catch {
+        // ignore teardown errors
+      }
+      currentUnsub = null;
+    }
+  };
+
+  const startSubscription = () => {
+    if (disposed) return;
+    clearRetryTimer();
+    teardownCurrent();
+
+    currentUnsub = attach(
+      () => {
+        attempt = 0;
+      },
+      (error) => {
+        if (disposed) return;
+        if (isTransientFirestoreError(error)) {
+          teardownCurrent();
+          const delayMs = computeExponentialBackoffMs(attempt);
+          attempt = Math.min(attempt + 1, 8);
+          void recoverFirestoreNetwork(false);
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            startSubscription();
+          }, delayMs);
+          return;
+        }
+        try {
+          handleFirestoreError(error, operationType, path);
+        } catch (err) {
+          onSyncError?.(err instanceof Error ? err.message : String(err));
+        }
+      }
+    );
+  };
+
+  const forceRecover = () => {
+    if (disposed) return;
+    // Only re-attach immediately if we are currently waiting on a backoff retry
+    if (retryTimer !== null || currentUnsub === null) {
+      attempt = 0;
+      startSubscription();
+    }
+  };
+
+  activeListenerRecoverers.add(forceRecover);
+  startSubscription();
+
+  return () => {
+    disposed = true;
+    activeListenerRecoverers.delete(forceRecover);
+    clearRetryTimer();
+    teardownCurrent();
+  };
+}
+
+async function withFirestoreWriteRetry<T>(
+  action: () => Promise<T>,
+  operationType: OperationType,
+  path: string
+): Promise<T> {
+  let attempt = 0;
+  const maxRetries = 3;
+  while (true) {
+    try {
+      return await action();
+    } catch (error) {
+      if (attempt < maxRetries && isTransientFirestoreError(error)) {
+        const delayMs = computeExponentialBackoffMs(attempt, 800, 8_000);
+        attempt += 1;
+        await recoverFirestoreNetwork(false);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      handleFirestoreError(error, operationType, path);
+    }
+  }
+}
+
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration.');
+      void recoverFirestoreNetwork(true);
     }
   }
 }
@@ -600,52 +827,53 @@ export function subscribeUserRhythmState(
   const path = `users/${uid}`;
   const docRef = doc(db, 'users', uid);
 
-  return onSnapshot(
-    docRef,
-    (snap) => {
-      if (!snap.exists()) {
-        onMissingDoc();
-        return;
-      }
-      const data = snap.data();
-      if (data.createdAt instanceof Timestamp) {
-        knownCreatedAtByUid.set(uid, data.createdAt);
-      }
-      onRemoteState(
-        sanitizeRhythmPayload({
-          hydrationDateKey: String(data.hydrationDateKey ?? ''),
-          cupsLogged: Number(data.cupsLogged ?? 0),
-          targetCups: Number(data.targetCups ?? 13),
-          hydrationWeeklyCounts: Array.isArray(data.hydrationWeeklyCounts)
-            ? data.hydrationWeeklyCounts.map(Number)
-            : [0, 0, 0, 0, 0, 0, 0],
-          dailyCommitmentDays: Number(data.dailyCommitmentDays ?? 0),
-          dailyCommitmentDoneToday: Boolean(data.dailyCommitmentDoneToday),
-          waterTargetDays: Number(data.waterTargetDays ?? 0),
-          waterTargetDoneToday: Boolean(data.waterTargetDoneToday),
-          quietMode: (data.quietMode as QuietModeType) ?? 'normal',
-          adhanOverrideSilent:
-            typeof data.adhanOverrideSilent === 'boolean'
-              ? data.adhanOverrideSilent
-              : true,
-          surfaceTheme: (data.surfaceTheme as SurfaceTheme) ?? 'amoled',
-          deviceSettings: sanitizeDeviceSettings(
-            data.deviceSettings as Partial<OnePlusDeviceSettings> | undefined
-          ),
-          lifeProfile: sanitizeLifeProfile(
-            data.lifeProfile as Partial<LifeProfile> | undefined
-          ),
-          syncSignal: sanitizeSyncSignal(data.syncSignal),
-        })
-      );
-    },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.GET, path);
-      } catch (err) {
-        onSyncError?.(err instanceof Error ? err.message : String(err));
-      }
-    }
+  return createResilientSnapshot(
+    (onHealthy, onError) =>
+      onSnapshot(
+        docRef,
+        (snap) => {
+          onHealthy();
+          if (!snap.exists()) {
+            onMissingDoc();
+            return;
+          }
+          const data = snap.data();
+          if (data.createdAt instanceof Timestamp) {
+            knownCreatedAtByUid.set(uid, data.createdAt);
+          }
+          onRemoteState(
+            sanitizeRhythmPayload({
+              hydrationDateKey: String(data.hydrationDateKey ?? ''),
+              cupsLogged: Number(data.cupsLogged ?? 0),
+              targetCups: Number(data.targetCups ?? 13),
+              hydrationWeeklyCounts: Array.isArray(data.hydrationWeeklyCounts)
+                ? data.hydrationWeeklyCounts.map(Number)
+                : [0, 0, 0, 0, 0, 0, 0],
+              dailyCommitmentDays: Number(data.dailyCommitmentDays ?? 0),
+              dailyCommitmentDoneToday: Boolean(data.dailyCommitmentDoneToday),
+              waterTargetDays: Number(data.waterTargetDays ?? 0),
+              waterTargetDoneToday: Boolean(data.waterTargetDoneToday),
+              quietMode: (data.quietMode as QuietModeType) ?? 'normal',
+              adhanOverrideSilent:
+                typeof data.adhanOverrideSilent === 'boolean'
+                  ? data.adhanOverrideSilent
+                  : true,
+              surfaceTheme: (data.surfaceTheme as SurfaceTheme) ?? 'amoled',
+              deviceSettings: sanitizeDeviceSettings(
+                data.deviceSettings as Partial<OnePlusDeviceSettings> | undefined
+              ),
+              lifeProfile: sanitizeLifeProfile(
+                data.lifeProfile as Partial<LifeProfile> | undefined
+              ),
+              syncSignal: sanitizeSyncSignal(data.syncSignal),
+            })
+          );
+        },
+        onError
+      ),
+    OperationType.GET,
+    path,
+    onSyncError
   );
 }
 
@@ -711,7 +939,7 @@ export async function saveUserRhythmState(
     };
 
     try {
-      await setDoc(docRef, fullDoc);
+      await withFirestoreWriteRetry(() => setDoc(docRef, fullDoc), OperationType.WRITE, path);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (!isRetry && msg.toLowerCase().includes('permission')) {
@@ -733,7 +961,7 @@ export async function saveUserRhythmState(
         fullDocKeys: Object.keys(fullDoc),
         lifeProfileKeys: Object.keys(clean.lifeProfile),
       });
-      handleFirestoreError(error, OperationType.WRITE, path);
+      throw error;
     }
   };
 
@@ -755,39 +983,40 @@ export function subscribeMedications(
     limit(30)
   );
 
-  return onSnapshot(
-    colQuery,
-    (snapshot) => {
-      const items = snapshot.docs.map((d) => {
-        const data = d.data();
-        return sanitizeMedicationItem({
-          id: String(data.id ?? d.id),
-          name: String(data.name ?? ''),
-          time24: String(data.time24 ?? ''),
-          times24: Array.isArray(data.times24) ? data.times24.map(String) : undefined,
-          daysOfWeek: Array.isArray(data.daysOfWeek) ? data.daysOfWeek.map(Number) : undefined,
-          takenDosesToday: Array.isArray(data.takenDosesToday)
-            ? data.takenDosesToday.map(String)
-            : undefined,
-          doseNote: String(data.doseNote ?? ''),
-          takenDateKey: String(data.takenDateKey ?? ''),
-          calendarEventId: String(data.calendarEventId ?? ''),
-          courseEndDate: String(data.courseEndDate ?? ''),
-          remainingDoses:
-            typeof data.remainingDoses === 'number' ? data.remainingDoses : -1,
-          totalDoses: typeof data.totalDoses === 'number' ? data.totalDoses : -1,
-        });
-      });
-      items.sort((a, b) => (a.time24 || '99:99').localeCompare(b.time24 || '99:99'));
-      onMedications(items);
-    },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, path);
-      } catch (err) {
-        onSyncError?.(err instanceof Error ? err.message : String(err));
-      }
-    }
+  return createResilientSnapshot(
+    (onHealthy, onError) =>
+      onSnapshot(
+        colQuery,
+        (snapshot) => {
+          onHealthy();
+          const items = snapshot.docs.map((d) => {
+            const data = d.data();
+            return sanitizeMedicationItem({
+              id: String(data.id ?? d.id),
+              name: String(data.name ?? ''),
+              time24: String(data.time24 ?? ''),
+              times24: Array.isArray(data.times24) ? data.times24.map(String) : undefined,
+              daysOfWeek: Array.isArray(data.daysOfWeek) ? data.daysOfWeek.map(Number) : undefined,
+              takenDosesToday: Array.isArray(data.takenDosesToday)
+                ? data.takenDosesToday.map(String)
+                : undefined,
+              doseNote: String(data.doseNote ?? ''),
+              takenDateKey: String(data.takenDateKey ?? ''),
+              calendarEventId: String(data.calendarEventId ?? ''),
+              courseEndDate: String(data.courseEndDate ?? ''),
+              remainingDoses:
+                typeof data.remainingDoses === 'number' ? data.remainingDoses : -1,
+              totalDoses: typeof data.totalDoses === 'number' ? data.totalDoses : -1,
+            });
+          });
+          items.sort((a, b) => (a.time24 || '99:99').localeCompare(b.time24 || '99:99'));
+          onMedications(items);
+        },
+        onError
+      ),
+    OperationType.LIST,
+    path,
+    onSyncError
   );
 }
 
@@ -800,34 +1029,36 @@ export async function upsertMedicationRecord(
   const path = `users/${uid}/medications/${clean.id}`;
   const docRef = doc(db, 'users', uid, 'medications', clean.id);
 
-  try {
-    const existingSnap = await getDoc(docRef);
-    if (!existingSnap.exists()) {
-      await setDoc(docRef, {
-        ...clean,
-        uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await updateDoc(docRef, {
-        name: clean.name,
-        time24: clean.time24,
-        times24: clean.times24 ?? [],
-        daysOfWeek: clean.daysOfWeek ?? [],
-        takenDosesToday: clean.takenDosesToday ?? [],
-        doseNote: clean.doseNote,
-        takenDateKey: clean.takenDateKey,
-        calendarEventId: clean.calendarEventId,
-        courseEndDate: clean.courseEndDate ?? '',
-        remainingDoses: clean.remainingDoses ?? -1,
-        totalDoses: clean.totalDoses ?? -1,
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
+  await withFirestoreWriteRetry(
+    async () => {
+      const existingSnap = await getDoc(docRef);
+      if (!existingSnap.exists()) {
+        await setDoc(docRef, {
+          ...clean,
+          uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(docRef, {
+          name: clean.name,
+          time24: clean.time24,
+          times24: clean.times24 ?? [],
+          daysOfWeek: clean.daysOfWeek ?? [],
+          takenDosesToday: clean.takenDosesToday ?? [],
+          doseNote: clean.doseNote,
+          takenDateKey: clean.takenDateKey,
+          calendarEventId: clean.calendarEventId,
+          courseEndDate: clean.courseEndDate ?? '',
+          remainingDoses: clean.remainingDoses ?? -1,
+          totalDoses: clean.totalDoses ?? -1,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    },
+    OperationType.WRITE,
+    path
+  );
 }
 
 export async function deleteMedicationRecord(
@@ -837,11 +1068,11 @@ export async function deleteMedicationRecord(
   if (!auth.currentUser || auth.currentUser.uid !== uid) return;
   const cleanId = sanitizeMedicationId(medicationId);
   const path = `users/${uid}/medications/${cleanId}`;
-  try {
-    await deleteDoc(doc(db, 'users', uid, 'medications', cleanId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
+  await withFirestoreWriteRetry(
+    () => deleteDoc(doc(db, 'users', uid, 'medications', cleanId)),
+    OperationType.DELETE,
+    path
+  );
 }
 
 export function subscribeCreativeActivities(
@@ -856,35 +1087,36 @@ export function subscribeCreativeActivities(
     limit(100)
   );
 
-  return onSnapshot(
-    colQuery,
-    (snapshot) => {
-      const items = snapshot.docs.map((d) => {
-        const data = d.data();
-        return sanitizeCreativeActivityItem({
-          id: String(data.id ?? d.id),
-          name: String(data.name ?? ''),
-          emoji: String(data.emoji ?? '🎨'),
-          cadence: data.cadence as CreativeCadence | undefined,
-          goalCount: typeof data.goalCount === 'number' ? data.goalCount : undefined,
-          weeklyGoalSessions: Number(data.weeklyGoalSessions ?? 3),
-          sessionMinutes: Number(data.sessionMinutes ?? 45),
-          loggedDates: Array.isArray(data.loggedDates) ? data.loggedDates.map(String) : [],
-          scheduledTime24: String(data.scheduledTime24 ?? ''),
-          calendarEventId: String(data.calendarEventId ?? ''),
-          expiresOnDate: String(data.expiresOnDate ?? ''),
-        });
-      });
-      items.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
-      onActivities(items);
-    },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, path);
-      } catch (err) {
-        onSyncError?.(err instanceof Error ? err.message : String(err));
-      }
-    }
+  return createResilientSnapshot(
+    (onHealthy, onError) =>
+      onSnapshot(
+        colQuery,
+        (snapshot) => {
+          onHealthy();
+          const items = snapshot.docs.map((d) => {
+            const data = d.data();
+            return sanitizeCreativeActivityItem({
+              id: String(data.id ?? d.id),
+              name: String(data.name ?? ''),
+              emoji: String(data.emoji ?? '🎨'),
+              cadence: data.cadence as CreativeCadence | undefined,
+              goalCount: typeof data.goalCount === 'number' ? data.goalCount : undefined,
+              weeklyGoalSessions: Number(data.weeklyGoalSessions ?? 3),
+              sessionMinutes: Number(data.sessionMinutes ?? 45),
+              loggedDates: Array.isArray(data.loggedDates) ? data.loggedDates.map(String) : [],
+              scheduledTime24: String(data.scheduledTime24 ?? ''),
+              calendarEventId: String(data.calendarEventId ?? ''),
+              expiresOnDate: String(data.expiresOnDate ?? ''),
+            });
+          });
+          items.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+          onActivities(items);
+        },
+        onError
+      ),
+    OperationType.LIST,
+    path,
+    onSyncError
   );
 }
 
@@ -897,33 +1129,35 @@ export async function upsertCreativeActivityRecord(
   const path = `users/${uid}/creativeActivities/${clean.id}`;
   const docRef = doc(db, 'users', uid, 'creativeActivities', clean.id);
 
-  try {
-    const existingSnap = await getDoc(docRef);
-    if (!existingSnap.exists()) {
-      await setDoc(docRef, {
-        ...clean,
-        uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await updateDoc(docRef, {
-        name: clean.name,
-        emoji: clean.emoji,
-        cadence: clean.cadence ?? 'weekly',
-        goalCount: clean.goalCount ?? clean.weeklyGoalSessions,
-        weeklyGoalSessions: clean.weeklyGoalSessions,
-        sessionMinutes: clean.sessionMinutes,
-        loggedDates: clean.loggedDates,
-        scheduledTime24: clean.scheduledTime24,
-        calendarEventId: clean.calendarEventId,
-        expiresOnDate: clean.expiresOnDate ?? '',
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
+  await withFirestoreWriteRetry(
+    async () => {
+      const existingSnap = await getDoc(docRef);
+      if (!existingSnap.exists()) {
+        await setDoc(docRef, {
+          ...clean,
+          uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(docRef, {
+          name: clean.name,
+          emoji: clean.emoji,
+          cadence: clean.cadence ?? 'weekly',
+          goalCount: clean.goalCount ?? clean.weeklyGoalSessions,
+          weeklyGoalSessions: clean.weeklyGoalSessions,
+          sessionMinutes: clean.sessionMinutes,
+          loggedDates: clean.loggedDates,
+          scheduledTime24: clean.scheduledTime24,
+          calendarEventId: clean.calendarEventId,
+          expiresOnDate: clean.expiresOnDate ?? '',
+          updatedAt: serverTimestamp(),
+        });
+      }
+    },
+    OperationType.WRITE,
+    path
+  );
 }
 
 export async function deleteCreativeActivityRecord(
@@ -933,11 +1167,11 @@ export async function deleteCreativeActivityRecord(
   if (!auth.currentUser || auth.currentUser.uid !== uid) return;
   const cleanId = sanitizeCreativeActivityId(activityId);
   const path = `users/${uid}/creativeActivities/${cleanId}`;
-  try {
-    await deleteDoc(doc(db, 'users', uid, 'creativeActivities', cleanId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
+  await withFirestoreWriteRetry(
+    () => deleteDoc(doc(db, 'users', uid, 'creativeActivities', cleanId)),
+    OperationType.DELETE,
+    path
+  );
 }
 
 export function sanitizeMemoryId(raw: string): string {
@@ -979,37 +1213,38 @@ export function subscribeMemories(
     limit(50)
   );
 
-  return onSnapshot(
-    colQuery,
-    (snapshot) => {
-      const items = snapshot.docs.map((d) => {
-        const data = d.data();
-        return sanitizeMemoryItem({
-          id: String(data.id ?? d.id),
-          category: data.category as MemoryCategory,
-          ruleText: String(data.ruleText ?? ''),
-          source: data.source as MemoryItem['source'],
-        });
-      });
-      // Keep system_seed foundational memories in stable order, newest custom rules at the top
-      const seedOrder = DEFAULT_MEMORIES.map((m) => m.id);
-      items.sort((a, b) => {
-        const ia = seedOrder.indexOf(a.id);
-        const ib = seedOrder.indexOf(b.id);
-        if (ia !== -1 && ib !== -1) return ia - ib;
-        if (ia !== -1) return 1;
-        if (ib !== -1) return -1;
-        return b.id.localeCompare(a.id);
-      });
-      onMemories(items);
-    },
-    (error) => {
-      try {
-        handleFirestoreError(error, OperationType.LIST, path);
-      } catch (err) {
-        onSyncError?.(err instanceof Error ? err.message : String(err));
-      }
-    }
+  return createResilientSnapshot(
+    (onHealthy, onError) =>
+      onSnapshot(
+        colQuery,
+        (snapshot) => {
+          onHealthy();
+          const items = snapshot.docs.map((d) => {
+            const data = d.data();
+            return sanitizeMemoryItem({
+              id: String(data.id ?? d.id),
+              category: data.category as MemoryCategory,
+              ruleText: String(data.ruleText ?? ''),
+              source: data.source as MemoryItem['source'],
+            });
+          });
+          // Keep system_seed foundational memories in stable order, newest custom rules at the top
+          const seedOrder = DEFAULT_MEMORIES.map((m) => m.id);
+          items.sort((a, b) => {
+            const ia = seedOrder.indexOf(a.id);
+            const ib = seedOrder.indexOf(b.id);
+            if (ia !== -1 && ib !== -1) return ia - ib;
+            if (ia !== -1) return 1;
+            if (ib !== -1) return -1;
+            return b.id.localeCompare(a.id);
+          });
+          onMemories(items);
+        },
+        onError
+      ),
+    OperationType.LIST,
+    path,
+    onSyncError
   );
 }
 
@@ -1022,25 +1257,27 @@ export async function upsertMemoryRecord(
   const path = `users/${uid}/memories/${clean.id}`;
   const docRef = doc(db, 'users', uid, 'memories', clean.id);
 
-  try {
-    const existingSnap = await getDoc(docRef);
-    if (!existingSnap.exists()) {
-      await setDoc(docRef, {
-        ...clean,
-        uid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await updateDoc(docRef, {
-        category: clean.category,
-        ruleText: clean.ruleText,
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
+  await withFirestoreWriteRetry(
+    async () => {
+      const existingSnap = await getDoc(docRef);
+      if (!existingSnap.exists()) {
+        await setDoc(docRef, {
+          ...clean,
+          uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(docRef, {
+          category: clean.category,
+          ruleText: clean.ruleText,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    },
+    OperationType.WRITE,
+    path
+  );
 }
 
 export async function deleteMemoryRecord(
@@ -1050,10 +1287,10 @@ export async function deleteMemoryRecord(
   if (!auth.currentUser || auth.currentUser.uid !== uid) return;
   const cleanId = sanitizeMemoryId(memoryId);
   const path = `users/${uid}/memories/${cleanId}`;
-  try {
-    await deleteDoc(doc(db, 'users', uid, 'memories', cleanId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
+  await withFirestoreWriteRetry(
+    () => deleteDoc(doc(db, 'users', uid, 'memories', cleanId)),
+    OperationType.DELETE,
+    path
+  );
 }
 

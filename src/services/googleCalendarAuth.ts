@@ -3,6 +3,7 @@ import {
   signInWithRedirect,
   getRedirectResult,
   setPersistence,
+  indexedDBLocalPersistence,
   browserLocalPersistence,
   browserPopupRedirectResolver,
   GoogleAuthProvider,
@@ -26,14 +27,18 @@ const CORE_CALENDAR_SCOPES = [
 
 auth.useDeviceLanguage();
 
-function buildGoogleProvider(scopes: readonly string[]): GoogleAuthProvider {
+function buildGoogleProvider(scopes: readonly string[], loginHint?: string | null): GoogleAuthProvider {
   const provider = new GoogleAuthProvider();
   for (const scope of scopes) {
     provider.addScope(scope);
   }
-  provider.setCustomParameters({
-    prompt: 'select_account',
-  });
+  const params: Record<string, string> = {};
+  if (loginHint) {
+    params.login_hint = loginHint;
+  } else {
+    params.prompt = 'select_account';
+  }
+  provider.setCustomParameters(params);
   return provider;
 }
 
@@ -60,7 +65,7 @@ function formatAuthErrorAr(err: unknown): string {
     return 'المتصفح منع نافذة تسجيل الدخول المنبثقة — اسمح بالـ Popups أو افتح التطبيق في Chrome.';
   }
   if (code === 'auth/unauthorized-domain') {
-    return 'هذا الرابط غير مضاف بعد في نطاقات Firebase المصرح بها — افتح التطبيق من رابط AI Studio أو أضف النطاق في Firebase Console.';
+    return 'هذا الرابط غير مضاف بعد في نطاقات Firebase المصرح بها — حدّث التطبيق لآخر إصدار من Releases أو افتحه من الرابط المصرح به.';
   }
   if (code === 'auth/network-request-failed') {
     return 'تعذر الاتصال بخوادم Google — تحقق من الإنترنت وحاول مرة أخرى.';
@@ -70,13 +75,14 @@ function formatAuthErrorAr(err: unknown): string {
     code === 'auth/missing-initial-state' ||
     rawMsg.toLowerCase().includes('requested action is invalid')
   ) {
-    return 'انتهت صلاحية جلسة المتصفح أثناء التحويل — افتح التطبيق في متصفح Chrome العادي (خارج المتصفح الداخلي) واضغط تسجيل الدخول مرة أخرى.';
+    return 'انتهت صلاحية جلسة المتصفح أثناء التحويل — أعد المحاولة مرة أخرى.';
   }
   return rawMsg || 'تعذر تسجيل الدخول بحساب Google.';
 }
 
 let isSigningIn = false;
-// Strictly in-memory token cache (never localStorage/sessionStorage)
+// Keep OAuth access token strictly in memory (cleared on sign-out);
+// never trigger background GIS popups outside an explicit user click.
 let cachedAccessToken: string | null = null;
 let redirectChecked = false;
 
@@ -109,8 +115,17 @@ export function initCalendarAuth(
   }
 
   return onAuthStateChanged(auth, (user: User | null) => {
-    if (user && cachedAccessToken) {
-      onAuthSuccess?.(user, cachedAccessToken);
+    if (user) {
+      // Keep Firebase Auth session permanently fresh in the background (no popups)
+      void user.getIdToken(false).catch(() => {});
+
+      if (cachedAccessToken) {
+        onAuthSuccess?.(user, cachedAccessToken);
+      } else if (!isSigningIn) {
+        // Firestore remains live via Firebase Auth; request user click only when Calendar OAuth token is needed
+        cachedAccessToken = null;
+        onAuthFailure?.();
+      }
     } else if (!isSigningIn) {
       cachedAccessToken = null;
       onAuthFailure?.();
@@ -126,26 +141,27 @@ export async function signInWithGoogleCalendar(): Promise<{
 
   try {
     isSigningIn = true;
-    await setPersistence(auth, browserLocalPersistence).catch(() => {});
+    await setPersistence(auth, indexedDBLocalPersistence).catch(() =>
+      setPersistence(auth, browserLocalPersistence).catch(() => {})
+    );
 
-    const fullProvider = buildGoogleProvider(CALENDAR_SCOPES);
+    const existingEmail = auth.currentUser?.email ?? null;
+    const fullProvider = buildGoogleProvider(CALENDAR_SCOPES, existingEmail);
 
     try {
       const result = await signInWithPopup(auth, fullProvider, browserPopupRedirectResolver);
       const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (!credential?.accessToken) {
-        throw new Error('لم يتم الحصول على رمز الوصول لتقويم جوجل.');
+      const token = credential?.accessToken ?? '';
+      if (token) {
+        cachedAccessToken = token;
       }
-      cachedAccessToken = credential.accessToken;
-      return { user: result.user, accessToken: cachedAccessToken };
+      return { user: result.user, accessToken: token };
     } catch (primaryErr: unknown) {
       const code =
         typeof primaryErr === 'object' && primaryErr !== null && 'code' in primaryErr
           ? String((primaryErr as { code?: string }).code ?? '')
           : '';
 
-      // On Android / OnePlus 12R installed standalone PWA, popups are sometimes blocked:
-      // safely fall back to redirect flow ONLY when top-level standalone (never inside an iframe).
       if (
         (code === 'auth/popup-blocked' ||
           code === 'auth/operation-not-supported-in-this-environment') &&
@@ -155,18 +171,18 @@ export async function signInWithGoogleCalendar(): Promise<{
         return null;
       }
 
-      // If full scopes (including Gmail) fail due to scope restriction, retry cleanly with core Calendar + Tasks
       if (
         code === 'auth/invalid-credential' ||
         code === 'auth/internal-error'
       ) {
-        const coreProvider = buildGoogleProvider(CORE_CALENDAR_SCOPES);
+        const coreProvider = buildGoogleProvider(CORE_CALENDAR_SCOPES, existingEmail);
         const retryResult = await signInWithPopup(auth, coreProvider, browserPopupRedirectResolver);
         const retryCred = GoogleAuthProvider.credentialFromResult(retryResult);
-        if (retryCred?.accessToken) {
-          cachedAccessToken = retryCred.accessToken;
-          return { user: retryResult.user, accessToken: cachedAccessToken };
+        const token = retryCred?.accessToken ?? '';
+        if (token) {
+          cachedAccessToken = token;
         }
+        return { user: retryResult.user, accessToken: token };
       }
 
       throw new Error(formatAuthErrorAr(primaryErr));
@@ -181,6 +197,6 @@ export function getCalendarAccessToken(): string | null {
 }
 
 export async function signOutGoogleCalendar(): Promise<void> {
-  await auth.signOut();
   cachedAccessToken = null;
+  await auth.signOut();
 }

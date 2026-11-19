@@ -55,7 +55,8 @@ public class MainActivity extends Activity {
     public static final String PREFS_NAME = "dayrhythm_mobile_prefs";
     public static final String KEY_REMOTE_WS_URL = "remote_ws_url";
     private static final String KEY_BATTERY_PROMPTED = "battery_prompted_once";
-    private static final String APP_ORIGIN = "https://localhost/";
+    private static final String APP_HOST = "gen-lang-client-0625331922.web.app";
+    private static final String APP_ORIGIN = "https://gen-lang-client-0625331922.web.app/index.html";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private WebView webView;
@@ -93,6 +94,13 @@ public class MainActivity extends Activity {
                             null
                     );
                 }
+            } else if (DayRhythmSyncService.ACTION_NETWORK_RECOVERED.equals(action)) {
+                if (webView != null) {
+                    webView.evaluateJavascript(
+                            "window.dispatchEvent(new Event('dayrhythm:network-recovered'));",
+                            null
+                    );
+                }
             }
         }
     };
@@ -101,8 +109,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 1. Official AndroidX WebViewAssetLoader serving APK assets over https://localhost/
-        //    (Zero TCP ports, zero cleartext HTTP, zero 404, 100% Firebase Auth authorized!)
+        // 1. Official AndroidX WebViewAssetLoader serving APK assets over Firebase-authorized
+        //    https://gen-lang-client-0625331922.web.app/ (zero 404, zero unauthorized-domain!)
         assetLoader = buildSpaAssetLoader();
 
         // 2. Start 24/7 Foreground Service + schedule hourly WorkManager GitHub update checks
@@ -118,6 +126,7 @@ public class MainActivity extends Activity {
         filter.addAction(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
         filter.addAction(DayRhythmSyncService.ACTION_UPDATE_AVAILABLE);
         filter.addAction(DayRhythmSyncService.ACTION_WS_SYNC_MESSAGE);
+        filter.addAction(DayRhythmSyncService.ACTION_NETWORK_RECOVERED);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(nativeEventsReceiver, filter, Context.RECEIVER_EXPORTED);
         } else {
@@ -130,9 +139,15 @@ public class MainActivity extends Activity {
         checkUpdatesOnLaunch();
     }
 
+    @Override
+    protected void onPause() {
+        super.onPause();
+        CookieManager.getInstance().flush();
+    }
+
     private WebViewAssetLoader buildSpaAssetLoader() {
         return new WebViewAssetLoader.Builder()
-                .setDomain("localhost")
+                .setDomain(APP_HOST)
                 .addPathHandler("/", path -> {
                     String clean = path == null ? "" : path.replaceFirst("^/+", "").replace("..", "");
                     if (clean.isEmpty()) clean = "index.html";
@@ -233,6 +248,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        CookieManager.getInstance().flush();
         try {
             unregisterReceiver(nativeEventsReceiver);
         } catch (Exception ignored) {
@@ -307,8 +323,11 @@ public class MainActivity extends Activity {
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 if (uri != null && "https".equalsIgnoreCase(uri.getScheme())
-                        && "localhost".equalsIgnoreCase(uri.getHost())) {
-                    return assetLoader.shouldInterceptRequest(uri);
+                        && APP_HOST.equalsIgnoreCase(uri.getHost())) {
+                    String p = uri.getPath();
+                    if (p == null || !p.startsWith("/__/")) {
+                        return assetLoader.shouldInterceptRequest(uri);
+                    }
                 }
                 return super.shouldInterceptRequest(view, request);
             }
@@ -317,7 +336,8 @@ public class MainActivity extends Activity {
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String host = uri.getHost() != null ? uri.getHost().toLowerCase() : "";
-                if (host.equals("localhost")
+                if (host.equals(APP_HOST)
+                        || host.equals("localhost")
                         || host.equals("127.0.0.1")
                         || host.endsWith("google.com")
                         || host.endsWith("googleapis.com")
@@ -362,6 +382,7 @@ public class MainActivity extends Activity {
                 popupWebView.setWebChromeClient(new WebChromeClient() {
                     @Override
                     public void onCloseWindow(WebView window) {
+                        CookieManager.getInstance().flush();
                         dialog.dismiss();
                     }
                 });

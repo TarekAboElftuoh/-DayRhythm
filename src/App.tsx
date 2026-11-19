@@ -85,6 +85,7 @@ import {
   subscribeMedications,
   subscribeMemories,
   subscribeUserRhythmState,
+  triggerFirestoreRecovery,
   upsertCreativeActivityRecord,
   upsertMedicationRecord,
   upsertMemoryRecord,
@@ -990,7 +991,6 @@ export default function App() {
   const fetchCalendarEvents = useCallback(async (tokenOverride?: string) => {
     const token = tokenOverride ?? getCalendarAccessToken();
     if (!token) {
-      setNeedsAuth(true);
       return;
     }
     setLoadingEvents(true);
@@ -999,16 +999,83 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.status === 401) {
-        setNeedsAuth(true);
         return;
       }
-      const data = await res.json();
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
         if (Array.isArray(data.calendars)) setCalendarList(data.calendars);
         if (Array.isArray(data.events)) setCalendarEvents(data.events);
+        return;
       }
     } catch {
-      // ignore transient network errors
+      // Standalone APK/EXE without Express proxy: fall through to direct Google API
+    }
+
+    // Direct client-side Google Calendar API v3 (works 100% natively inside standalone EXE & APK)
+    try {
+      const calRes = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!calRes.ok) return;
+      const calJson = (await calRes.json()) as { items?: Array<Record<string, unknown>> };
+      const rawCals = Array.isArray(calJson.items) ? calJson.items : [];
+      const mappedCals: GoogleCalendarInfo[] = rawCals.map((c) => ({
+        id: String(c.id || 'primary'),
+        summary: String(c.summary || 'التقويم الرئيسي'),
+        primary: Boolean(c.primary),
+        backgroundColor: typeof c.backgroundColor === 'string' ? c.backgroundColor : undefined,
+      }));
+      setCalendarList(mappedCals);
+
+      const now = new Date();
+      const timeMin = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toISOString();
+      const timeMax = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 14).toISOString();
+      const targetCals = mappedCals.slice(0, 6);
+      const allEvents: GoogleCalendarEventItem[] = [];
+
+      await Promise.all(
+        targetCals.map(async (cal) => {
+          try {
+            const url =
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events` +
+              `?singleEvents=true&orderBy=startTime&maxResults=80&timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`;
+            const evRes = await fetch(url, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!evRes.ok) return;
+            const evJson = (await evRes.json()) as { items?: Array<Record<string, unknown>> };
+            for (const ev of evJson.items || []) {
+              const startObj = (ev.start || {}) as { dateTime?: string; date?: string };
+              const endObj = (ev.end || {}) as { dateTime?: string; date?: string };
+              const startVal = startObj.dateTime || startObj.date || '';
+              const endVal = endObj.dateTime || endObj.date || startVal;
+              if (!startVal) continue;
+              allEvents.push({
+                id: String(ev.id || `${cal.id}-${startVal}`),
+                calendarId: cal.id,
+                calendarTitle: cal.summary,
+                calendarColor: cal.backgroundColor,
+                summary: String(ev.summary || '(بدون عنوان)'),
+                description: typeof ev.description === 'string' ? ev.description : '',
+                location: typeof ev.location === 'string' ? ev.location : undefined,
+                start: startVal,
+                end: endVal,
+                isAllDay: Boolean(startObj.date && !startObj.dateTime),
+                htmlLink: typeof ev.htmlLink === 'string' ? ev.htmlLink : undefined,
+                status: typeof ev.status === 'string' ? ev.status : undefined,
+              });
+            }
+          } catch {
+            // skip individual calendar error
+          }
+        })
+      );
+
+      allEvents.sort((a, b) => a.start.localeCompare(b.start));
+      setCalendarEvents(allEvents);
+    } catch {
+      // ignore offline errors
     } finally {
       setLoadingEvents(false);
     }
@@ -1023,16 +1090,63 @@ export default function App() {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.status === 401) {
-        setNeedsAuth(true);
         return;
       }
-      const data = await res.json();
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
         if (Array.isArray(data.taskLists)) setGoogleTaskLists(data.taskLists);
         if (Array.isArray(data.tasks)) setGoogleTasks(data.tasks);
+        return;
       }
     } catch {
-      // ignore transient errors
+      // Standalone APK/EXE fallback below
+    }
+
+    // Direct client-side Google Tasks API v1
+    try {
+      const listsRes = await fetch('https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=20', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!listsRes.ok) return;
+      const listsJson = (await listsRes.json()) as { items?: Array<Record<string, unknown>> };
+      const mappedLists: GoogleTaskList[] = (listsJson.items || []).map((l) => ({
+        id: String(l.id || '@default'),
+        title: String(l.title || 'مهامي'),
+      }));
+      setGoogleTaskLists(mappedLists);
+
+      const allTasks: GoogleTaskItem[] = [];
+      await Promise.all(
+        mappedLists.slice(0, 6).map(async (list) => {
+          try {
+            const tRes = await fetch(
+              `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(list.id)}/tasks?showCompleted=true&showHidden=false&maxResults=100`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (!tRes.ok) return;
+            const tJson = (await tRes.json()) as { items?: Array<Record<string, unknown>> };
+            for (const item of tJson.items || []) {
+              allTasks.push({
+                id: String(item.id || ''),
+                taskListId: list.id,
+                taskListTitle: list.title,
+                title: String(item.title || '(مهمة بدون عنوان)'),
+                notes: typeof item.notes === 'string' ? item.notes : undefined,
+                status: item.status === 'completed' ? 'completed' : 'needsAction',
+                due: typeof item.due === 'string' ? item.due : undefined,
+                completed: typeof item.completed === 'string' ? item.completed : undefined,
+                updated: typeof item.updated === 'string' ? item.updated : undefined,
+              });
+            }
+          } catch {
+            // skip individual list error
+          }
+        })
+      );
+      setGoogleTasks(allTasks);
+    } catch {
+      // ignore offline errors
     } finally {
       setLoadingTasks(false);
     }
@@ -1087,7 +1201,10 @@ export default function App() {
       (user, token) => {
         setAuthUser(user);
         setNeedsAuth(false);
-        refreshWorkspace(token);
+        setUseOfflineDemo(false);
+        if (token) {
+          void refreshWorkspace(token);
+        }
       },
       () => {
         setAuthUser(null);
@@ -1150,7 +1267,7 @@ export default function App() {
     [fetchCalendarEvents, fetchGoogleTasks, refreshWorkspace]
   );
 
-  // Instant Cross-Device WebSocket Sync Hub (/ws/sync) + Same-Origin BroadcastChannel + Tab Focus Refresh
+  // Instant Cross-Device WebSocket Sync Hub (/ws/sync) + Auto-Recovery (Dead-Socket Teardown + Exponential Backoff + Wake/Online Recovery)
   useEffect(() => {
     const uid = firebaseUser?.uid;
     if (!uid || !firebaseUser?.emailVerified) {
@@ -1160,18 +1277,96 @@ export default function App() {
 
     let closedByCleanup = false;
     let reconnectTimer: number | null = null;
+    let connectWatchdogTimer: number | null = null;
     let heartbeatTimer: number | null = null;
-    let retryDelayMs = 1000;
+    let pongTimeoutTimer: number | null = null;
+    let backoffAttempt = 0;
+    let hadPreviousDisconnect = false;
+    let lastVisibleAtMs = Date.now();
+
+    const clearTimers = () => {
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (connectWatchdogTimer !== null) {
+        window.clearTimeout(connectWatchdogTimer);
+        connectWatchdogTimer = null;
+      }
+      if (heartbeatTimer !== null) {
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      if (pongTimeoutTimer !== null) {
+        window.clearTimeout(pongTimeoutTimer);
+        pongTimeoutTimer = null;
+      }
+    };
+
+    const teardownSocket = (sock: WebSocket | null, reason = 'auto_recovery_reset') => {
+      if (!sock) return;
+      sock.onopen = null;
+      sock.onmessage = null;
+      sock.onclose = null;
+      sock.onerror = null;
+      try {
+        if (sock.readyState === WebSocket.OPEN || sock.readyState === WebSocket.CONNECTING) {
+          sock.close(4000, reason);
+        }
+      } catch {
+        // ignore socket close errors
+      }
+      if (wsRef.current === sock) {
+        wsRef.current = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (closedByCleanup) return;
+      if (reconnectTimer !== null) return;
+      const baseMs = Math.min(30_000, 1000 * Math.pow(2, backoffAttempt));
+      const jitterMs = Math.floor(Math.random() * Math.min(1500, baseMs * 0.3));
+      const delayMs = Math.min(30_000, baseMs + jitterMs);
+      backoffAttempt = Math.min(backoffAttempt + 1, 6);
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connectWs();
+      }, delayMs);
+    };
 
     const connectWs = () => {
       if (closedByCleanup) return;
+      clearTimers();
+      teardownSocket(wsRef.current, 'replace_stale_socket');
+
+      // Skip local /ws/sync if running on static virtual Firebase Hosting domain without a WS backend
+      const hostLower = window.location.hostname.toLowerCase();
+      if (hostLower.endsWith('.web.app') || hostLower.endsWith('.firebaseapp.com')) {
+        setWsConnected(false);
+        return;
+      }
+
       try {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws/sync`);
         wsRef.current = ws;
 
+        // Abort hung CONNECTING handshakes after 10s
+        connectWatchdogTimer = window.setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) {
+            setWsConnected(false);
+            hadPreviousDisconnect = true;
+            teardownSocket(ws, 'connect_timeout');
+            scheduleReconnect();
+          }
+        }, 10_000);
+
         ws.onopen = () => {
-          retryDelayMs = 1000;
+          if (connectWatchdogTimer !== null) {
+            window.clearTimeout(connectWatchdogTimer);
+            connectWatchdogTimer = null;
+          }
+          backoffAttempt = 0;
           setWsConnected(true);
           ws.send(
             JSON.stringify({
@@ -1180,15 +1375,47 @@ export default function App() {
               clientId: clientIdRef.current,
             })
           );
-          if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
+
+          if (hadPreviousDisconnect) {
+            hadPreviousDisconnect = false;
+            void refreshWorkspace();
+            triggerFirestoreRecovery(false);
+          }
+
+          // Active Ping/Pong dead-socket liveness monitor
           heartbeatTimer = window.setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'ping' }));
+            if (ws.readyState !== WebSocket.OPEN) {
+              setWsConnected(false);
+              hadPreviousDisconnect = true;
+              teardownSocket(ws, 'socket_not_open');
+              scheduleReconnect();
+              return;
             }
-          }, 25_000);
+            try {
+              ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
+            } catch {
+              setWsConnected(false);
+              hadPreviousDisconnect = true;
+              teardownSocket(ws, 'ping_send_failed');
+              scheduleReconnect();
+              return;
+            }
+            if (pongTimeoutTimer !== null) window.clearTimeout(pongTimeoutTimer);
+            pongTimeoutTimer = window.setTimeout(() => {
+              // Zombie/half-open connection detected: no pong within 10s -> force teardown & recover
+              setWsConnected(false);
+              hadPreviousDisconnect = true;
+              teardownSocket(ws, 'pong_timeout');
+              scheduleReconnect();
+            }, 10_000);
+          }, 20_000);
         };
 
         ws.onmessage = (ev) => {
+          if (pongTimeoutTimer !== null) {
+            window.clearTimeout(pongTimeoutTimer);
+            pongTimeoutTimer = null;
+          }
           try {
             const msg = JSON.parse(String(ev.data)) as {
               type?: string;
@@ -1198,6 +1425,7 @@ export default function App() {
               action?: string;
               undoSnapshot?: DeletedWorkspaceSnapshot;
             };
+            if (msg.type === 'pong') return;
             if (msg.type === 'sync') {
               handleIncomingRemoteSync(msg);
             }
@@ -1208,25 +1436,24 @@ export default function App() {
 
         ws.onclose = () => {
           setWsConnected(false);
-          if (heartbeatTimer !== null) {
-            window.clearInterval(heartbeatTimer);
-            heartbeatTimer = null;
+          hadPreviousDisconnect = true;
+          clearTimers();
+          if (wsRef.current === ws) {
+            wsRef.current = null;
           }
-          if (!closedByCleanup) {
-            reconnectTimer = window.setTimeout(connectWs, retryDelayMs);
-            retryDelayMs = Math.min(10_000, retryDelayMs * 1.6);
-          }
+          scheduleReconnect();
         };
 
         ws.onerror = () => {
-          try {
-            ws.close();
-          } catch {
-            // ignore
-          }
+          setWsConnected(false);
+          hadPreviousDisconnect = true;
+          teardownSocket(ws, 'ws_error');
+          scheduleReconnect();
         };
       } catch {
         setWsConnected(false);
+        hadPreviousDisconnect = true;
+        scheduleReconnect();
       }
     };
 
@@ -1246,26 +1473,64 @@ export default function App() {
       }
     }
 
-    const handleResumeSync = () => {
-      if (document.visibilityState === 'visible') {
-        void refreshWorkspace();
+    const triggerImmediateAutoRecovery = (forceFirestoreReset: boolean) => {
+      if (closedByCleanup) return;
+      backoffAttempt = 0;
+      const sock = wsRef.current;
+      if (!sock || sock.readyState !== WebSocket.OPEN) {
+        connectWs();
+      }
+      triggerFirestoreRecovery(forceFirestoreReset);
+      void refreshWorkspace();
+    };
+
+    const handleOnline = () => {
+      triggerImmediateAutoRecovery(true);
+    };
+
+    const handleNativeNetworkRecovered = () => {
+      triggerImmediateAutoRecovery(true);
+    };
+
+    const handleNativeWsSync = (ev: Event) => {
+      try {
+        const detail = (ev as CustomEvent<string>).detail;
+        if (typeof detail === 'string') {
+          const parsed = JSON.parse(detail);
+          if (parsed && typeof parsed === 'object') {
+            handleIncomingRemoteSync(parsed);
+          }
+        }
+      } catch {
+        // ignore malformed native WS payload
       }
     };
+
+    const handleResumeSync = () => {
+      if (document.visibilityState === 'visible') {
+        const sleptMs = Date.now() - lastVisibleAtMs;
+        lastVisibleAtMs = Date.now();
+        triggerImmediateAutoRecovery(sleptMs > 45_000);
+      } else {
+        lastVisibleAtMs = Date.now();
+      }
+    };
+
+    window.addEventListener('online', handleOnline);
     window.addEventListener('focus', handleResumeSync);
+    window.addEventListener('dayrhythm:network-recovered', handleNativeNetworkRecovered);
+    window.addEventListener('dayrhythm:ws-sync', handleNativeWsSync);
     document.addEventListener('visibilitychange', handleResumeSync);
 
     return () => {
       closedByCleanup = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
-      try {
-        wsRef.current?.close();
-      } catch {
-        // ignore
-      }
-      wsRef.current = null;
+      clearTimers();
+      teardownSocket(wsRef.current, 'unmount');
       bc?.close();
+      window.removeEventListener('online', handleOnline);
       window.removeEventListener('focus', handleResumeSync);
+      window.removeEventListener('dayrhythm:network-recovered', handleNativeNetworkRecovered);
+      window.removeEventListener('dayrhythm:ws-sync', handleNativeWsSync);
       document.removeEventListener('visibilitychange', handleResumeSync);
     };
   }, [firebaseUser?.uid, firebaseUser?.emailVerified, handleIncomingRemoteSync, refreshWorkspace]);

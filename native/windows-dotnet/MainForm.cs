@@ -12,9 +12,14 @@ namespace DayRhythm
 {
     internal sealed class MainForm : Form
     {
+        // Permanent Firebase-authorized domain for gen-lang-client-0625331922
+        // Mapped locally via Edge WebView2 SetVirtualHostNameToFolderMapping (zero 404, zero unauthorized-domain, 100% HTTPS!)
+        private const string VirtualAppHost = "gen-lang-client-0625331922.web.app";
+        private const string VirtualAppOrigin = "https://gen-lang-client-0625331922.web.app";
+        private const string VirtualAppUrl = "https://gen-lang-client-0625331922.web.app/index.html";
+
         private readonly bool _startHidden;
         private readonly UserSettings _settings;
-        private readonly LocalWebServer _localServer;
         private readonly BackgroundServices _bgServices;
 
         private WebView2 _webView;
@@ -49,14 +54,11 @@ namespace DayRhythm
                 Icon = appIcon;
             }
 
-            string wwwDir = ResolveWwwDirectory();
-            _localServer = new LocalWebServer(wwwDir, () => RunOnUi(() => _ = InstallPendingUpdateAsync()));
-            _localServer.Start();
-
             _bgServices = new BackgroundServices(
                 onWsStatusChanged: status => RunOnUi(() => UpdateWsStatus(status)),
                 onWsMessageReceived: payload => RunOnUi(() => ForwardWsPayloadToWebView(payload)),
-                onUpdateAvailable: info => RunOnUi(() => HandleUpdateAvailable(info))
+                onUpdateAvailable: info => RunOnUi(() => HandleUpdateAvailable(info)),
+                onNetworkRecovered: () => RunOnUi(DispatchNetworkRecoveredToWebView)
             );
 
             InitializeTray(appIcon);
@@ -211,6 +213,7 @@ namespace DayRhythm
 
             try
             {
+                // Persistent WebView2 profile: keeps Google & Firebase Auth logged in permanently!
                 string userDataDir = Path.Combine(AppConfig.GetDataDir(), "WebView2Data");
                 _webViewEnv = await CoreWebView2Environment.CreateAsync(null, userDataDir);
                 await _webView.EnsureCoreWebView2Async(_webViewEnv);
@@ -218,10 +221,33 @@ namespace DayRhythm
                 _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
                 _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
 
+                // Map local www/ directly to Firebase-authorized HTTPS host (zero 404, zero unauthorized-domain!)
+                string wwwDir = ResolveWwwDirectory();
+                _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                    VirtualAppHost,
+                    wwwDir,
+                    CoreWebView2HostResourceAccessKind.Allow
+                );
+
+                _webView.CoreWebView2.WebMessageReceived += (_, args) =>
+                {
+                    try
+                    {
+                        string msg = args.TryGetWebMessageAsString();
+                        if (string.Equals(msg, "install-update", StringComparison.OrdinalIgnoreCase))
+                        {
+                            RunOnUi(() => _ = InstallPendingUpdateAsync());
+                        }
+                    }
+                    catch
+                    {
+                        // ignore non-string messages
+                    }
+                };
+
                 _webView.CoreWebView2.PermissionRequested += (_, args) =>
                 {
-                    if (args.Uri != null && (args.Uri.StartsWith("http://localhost", StringComparison.OrdinalIgnoreCase) ||
-                                             args.Uri.StartsWith("http://127.0.0.1", StringComparison.OrdinalIgnoreCase)))
+                    if (args.Uri != null && args.Uri.StartsWith(VirtualAppOrigin, StringComparison.OrdinalIgnoreCase))
                     {
                         args.State = CoreWebView2PermissionState.Allow;
                     }
@@ -236,7 +262,7 @@ namespace DayRhythm
                     }
                 };
 
-                _webView.CoreWebView2.Navigate(_localServer.BaseUrl);
+                _webView.CoreWebView2.Navigate(VirtualAppUrl);
                 _bgServices.Start(_settings.RemoteWsUrl);
             }
             catch (Exception ex)
@@ -308,10 +334,14 @@ namespace DayRhythm
 
         private static bool IsAuthOrAppUrl(string rawUrl)
         {
-            if (string.IsNullOrWhiteSpace(rawUrl)) return true;
+            if (string.IsNullOrWhiteSpace(rawUrl) || string.Equals(rawUrl, "about:blank", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
             if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out Uri uri)) return false;
             string host = uri.Host.ToLowerInvariant();
-            return host == "localhost"
+            return host == VirtualAppHost
+                || host == "localhost"
                 || host == "127.0.0.1"
                 || host == "accounts.google.com"
                 || host.EndsWith(".google.com")
@@ -354,6 +384,14 @@ namespace DayRhythm
             _ = _webView.CoreWebView2.ExecuteScriptAsync(script);
         }
 
+        private void DispatchNetworkRecoveredToWebView()
+        {
+            if (_webView?.CoreWebView2 == null) return;
+            _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                "window.dispatchEvent(new Event('dayrhythm:network-recovered'));"
+            );
+        }
+
         private void HandleUpdateAvailable(ReleaseUpdateInfo info)
         {
             _pendingUpdate = info;
@@ -385,7 +423,7 @@ namespace DayRhythm
                         + '<button id=""dr-upd-dismiss"" style=""background:transparent;color:#a7f3d0;border:none;cursor:pointer;font-size:16px;padding:0 4px;"">×</button>';
                     document.body.appendChild(bar);
                     document.getElementById('dr-upd-install')?.addEventListener('click', () => {{
-                        fetch('/__dayrhythm_native/install-update', {{ method: 'POST' }}).catch(() => {{}});
+                        window.chrome?.webview?.postMessage('install-update');
                     }});
                     document.getElementById('dr-upd-dismiss')?.addEventListener('click', () => bar.remove());
                 }})();
@@ -433,7 +471,6 @@ namespace DayRhythm
                 _trayIcon = null;
             }
             _bgServices.Dispose();
-            _localServer.Dispose();
         }
 
         private void RunOnUi(Action action)
