@@ -1,12 +1,15 @@
 {
   "name": "dayrhythm-desktop",
   "version": "1.0.0",
-  "description": "إيقاع اليوم | DayRhythm — تطبيق ويندوز الرسمي المتزامن لحظياً مع OnePlus 12R",
+  "description": "إيقاع اليوم | DayRhythm — تطبيق ويندوز الرسمي مع تحديث تلقائي وتشغيل دائم في الخلفية",
   "main": "main.cjs",
   "private": true,
   "scripts": {
     "start": "electron .",
     "dist:win": "electron-builder --win --x64 --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "electron": "^33.2.0",
@@ -21,7 +24,16 @@
     },
     "files": [
       "main.cjs",
-      "build/icon.png"
+      "build/icon.png",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "DAYRHYTHM_GITHUB_OWNER",
+        "repo": "DAYRHYTHM_GITHUB_REPO"
+      }
     ],
     "win": {
       "icon": "build/icon.png",
