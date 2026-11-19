@@ -1,0 +1,401 @@
+import {
+  ActiveSanctuaryState,
+  PrayerTimeItem,
+  SoundRepeatMap,
+  SoundRepeatSetting,
+  TaskSoundCategory,
+} from '../types/dayrhythm';
+
+let audioCtx: AudioContext | null = null;
+let activeRepeatTimers: number[] = [];
+let activeContinuousInterval: number | null = null;
+let activeContinuousSafetyTimeout: number | null = null;
+
+export const DEFAULT_SOUND_REPEATS: SoundRepeatMap = {
+  prayer: 3,
+  water: 2,
+  medication: 2,
+  focus_work: 2,
+  walk_health: 2,
+  sleep_suhoor: 'continuous',
+  meeting_event: 3,
+  general: 1,
+};
+
+export function stopContinuousAlert(): void {
+  if (typeof window === 'undefined') return;
+  for (const t of activeRepeatTimers) {
+    window.clearTimeout(t);
+  }
+  activeRepeatTimers = [];
+  if (activeContinuousInterval !== null) {
+    window.clearInterval(activeContinuousInterval);
+    activeContinuousInterval = null;
+  }
+  if (activeContinuousSafetyTimeout !== null) {
+    window.clearTimeout(activeContinuousSafetyTimeout);
+    activeContinuousSafetyTimeout = null;
+  }
+  if (typeof navigator !== 'undefined' && navigator.vibrate) {
+    try {
+      navigator.vibrate(0);
+    } catch {
+      // ignore vibration cancel errors
+    }
+  }
+}
+
+function getCtx(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const Ctx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
+  if (!Ctx) return null;
+  if (!audioCtx) {
+    audioCtx = new Ctx();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+  return audioCtx;
+}
+
+export const TASK_SOUND_META: Record<
+  TaskSoundCategory,
+  { labelAr: string; icon: string; descAr: string }
+> = {
+  prayer: {
+    labelAr: 'أذان وصلاة',
+    icon: '🕌',
+    descAr: 'رنين روحاني دافئ وممتد قبل الأذان',
+  },
+  water: {
+    labelAr: 'شرب الماء',
+    icon: '💧',
+    descAr: 'نغمة قطرتين سريعتين متصاعدتين',
+  },
+  medication: {
+    labelAr: 'علاج ومكمل',
+    icon: '💊',
+    descAr: 'نبضتان زجاجيتان واضحتان للجرعة',
+  },
+  focus_work: {
+    labelAr: 'مذاكرة / عمل',
+    icon: '💻',
+    descAr: 'ثلاثية إيقاعية متزنة لبداية التركيز',
+  },
+  walk_health: {
+    labelAr: 'مشي وحركة',
+    icon: '🚶',
+    descAr: 'سلم حيوي صاعد من 3 خطوات',
+  },
+  sleep_suhoor: {
+    labelAr: 'نوم وسحور واستيقاظ',
+    icon: '🌙',
+    descAr: 'نغمة ليلية واضحة ومستمرة حتى الإيقاف',
+  },
+  meeting_event: {
+    labelAr: 'موعد واجتماع',
+    icon: '📅',
+    descAr: 'طرقة خشبية مزدوجة خفيفة',
+  },
+  general: {
+    labelAr: 'مهمة عامة',
+    icon: '🔔',
+    descAr: 'رنة هادئة قصيرة',
+  },
+};
+
+export function classifyTaskSound(
+  title: string,
+  emojiPair = '',
+  isAnchor = false
+): TaskSoundCategory {
+  const text = `${emojiPair} ${title}`.toLowerCase();
+  if (
+    isAnchor ||
+    text.includes('🕌') ||
+    /صلا|أذان|اذان|فجر|ظهر|عصر|مغرب|عشاء|جمعة|fajr|dhuhr|asr|maghrib|isha|prayer/.test(
+      text
+    )
+  ) {
+    return 'prayer';
+  }
+  if (text.includes('💧') || text.includes('🥤') || /ماء|مايه|مياه|كوب|water|hydrat/.test(text)) {
+    return 'water';
+  }
+  if (
+    text.includes('💊') ||
+    text.includes('🩺') ||
+    /علاج|دواء|فيتامين|يقطين|مكمل|جرعة|vitamin|med|supplement|oil/.test(text)
+  ) {
+    return 'medication';
+  }
+  if (
+    text.includes('🌙') ||
+    text.includes('😴') ||
+    /نوم|سحور|قيلولة|استيقاظ|صحي|sleep|suhoor|nap|bed|wake/.test(text)
+  ) {
+    return 'sleep_suhoor';
+  }
+  if (
+    text.includes('🚶') ||
+    text.includes('🏃') ||
+    text.includes('🏋') ||
+    /مشي|رياضة|تمرين|جيم|walk|run|workout|gym/.test(text)
+  ) {
+    return 'walk_health';
+  }
+  if (
+    text.includes('💻') ||
+    text.includes('🔥') ||
+    text.includes('📚') ||
+    /مذاكر|كورس|تطبيق|شغل|عمل|devops|linux|docker|kubernetes|k8s|study|course|code|work/.test(
+      text
+    )
+  ) {
+    return 'focus_work';
+  }
+  if (
+    text.includes('🎙') ||
+    text.includes('🤝') ||
+    text.includes('📞') ||
+    /اجتماع|مكالمة|مقابلة|لقاء|meeting|call|sync|interview/.test(text)
+  ) {
+    return 'meeting_event';
+  }
+  return 'general';
+}
+
+function isMinuteWithinCircularWindow(
+  nowMin: number,
+  startMin: number,
+  durationMin: number
+): boolean {
+  const n = ((nowMin % 1440) + 1440) % 1440;
+  const s = ((startMin % 1440) + 1440) % 1440;
+  const diff = (n - s + 1440) % 1440;
+  return diff >= 0 && diff < durationMin;
+}
+
+export function evaluateAudioSanctuary(params: {
+  nowMin: number;
+  prayers: PrayerTimeItem[];
+  bedtimeMin: number;
+  wakeMin: number;
+  prayerSilenceMinutes: number;
+  fajrSilenceMinutes: number;
+  oneTimeSilenceMinutes?: number;
+  meetingActive: boolean;
+  isFriday?: boolean;
+}): ActiveSanctuaryState {
+  const {
+    nowMin,
+    prayers,
+    bedtimeMin,
+    wakeMin,
+    prayerSilenceMinutes,
+    fajrSilenceMinutes,
+    oneTimeSilenceMinutes = 0,
+    meetingActive,
+    isFriday = false,
+  } = params;
+
+  // 1. Automatic Prayer Silence Sanctuary (starts at actual Adhan time, AFTER the -3m pre-Adhan call)
+  for (const p of prayers) {
+    if (!p.isObligatory) continue;
+    const baseDuration =
+      p.id === 'fajr'
+        ? fajrSilenceMinutes
+        : isFriday && p.id === 'dhuhr'
+          ? Math.max(prayerSilenceMinutes, 50)
+          : prayerSilenceMinutes;
+    const silenceDuration =
+      oneTimeSilenceMinutes >= 5 && oneTimeSilenceMinutes <= 120
+        ? oneTimeSilenceMinutes
+        : baseDuration;
+
+    if (isMinuteWithinCircularWindow(nowMin, p.adhanMinutes, silenceDuration)) {
+      return {
+        type: 'prayer',
+        labelAr: `صامت تلقائياً · وقت صلاة ${p.nameAr} (${silenceDuration} د${oneTimeSilenceMinutes >= 5 ? ' · تعديل مؤقت' : ''})`,
+        endsAtMin: (p.adhanMinutes + silenceDuration) % 1440,
+        vibrateOnly: true,
+      };
+    }
+  }
+
+  // 2. Manual 1-Tap Meeting Mode
+  if (meetingActive) {
+    return {
+      type: 'meeting',
+      labelAr: 'وضع الاجتماع نشط · صامت مع اهتزاز وحفظ الإشعارات',
+      vibrateOnly: true,
+    };
+  }
+
+  // 3. Automatic Sleep Silence Sanctuary (bedtime -> wake)
+  const sleepDur = (wakeMin - bedtimeMin + 1440) % 1440;
+  if (sleepDur > 0 && sleepDur < 900 && isMinuteWithinCircularWindow(nowMin, bedtimeMin, sleepDur)) {
+    return {
+      type: 'sleep',
+      labelAr: 'وقت النوم · كتم تام للصوت مع حفظ الإشعارات',
+      endsAtMin: wakeMin,
+      vibrateOnly: false,
+    };
+  }
+
+  return {
+    type: 'none',
+    labelAr: '',
+    vibrateOnly: false,
+  };
+}
+
+function scheduleTone(
+  ctx: AudioContext,
+  freq: number,
+  startOffsetSec: number,
+  durationSec: number,
+  wave: OscillatorType,
+  peakGain: number,
+  slideToFreq?: number
+) {
+  const now = ctx.currentTime + startOffsetSec;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = wave;
+  osc.frequency.setValueAtTime(freq, now);
+  if (slideToFreq) {
+    osc.frequency.exponentialRampToValueAtTime(slideToFreq, now + durationSec * 0.75);
+  }
+  gain.gain.setValueAtTime(0.0008, now);
+  gain.gain.exponentialRampToValueAtTime(peakGain, now + 0.025);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
+
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + durationSec + 0.03);
+}
+
+function playSingleBurst(ctx: AudioContext, category: TaskSoundCategory) {
+  switch (category) {
+    case 'prayer':
+      scheduleTone(ctx, 392.0, 0, 0.75, 'sine', 0.12);
+      scheduleTone(ctx, 587.33, 0.22, 0.85, 'sine', 0.11);
+      scheduleTone(ctx, 783.99, 0.48, 0.95, 'triangle', 0.09);
+      break;
+    case 'water':
+      scheduleTone(ctx, 520, 0, 0.16, 'sine', 0.11, 980);
+      scheduleTone(ctx, 640, 0.17, 0.18, 'sine', 0.12, 1240);
+      break;
+    case 'medication':
+      scheduleTone(ctx, 1046.5, 0, 0.18, 'triangle', 0.1);
+      scheduleTone(ctx, 1318.5, 0.16, 0.24, 'triangle', 0.1);
+      break;
+    case 'focus_work':
+      scheduleTone(ctx, 440.0, 0, 0.22, 'triangle', 0.09);
+      scheduleTone(ctx, 554.37, 0.14, 0.22, 'triangle', 0.09);
+      scheduleTone(ctx, 659.25, 0.28, 0.34, 'sine', 0.1);
+      break;
+    case 'walk_health':
+      scheduleTone(ctx, 523.25, 0, 0.14, 'sine', 0.09);
+      scheduleTone(ctx, 659.25, 0.12, 0.14, 'sine', 0.09);
+      scheduleTone(ctx, 783.99, 0.24, 0.18, 'sine', 0.1);
+      scheduleTone(ctx, 1046.5, 0.38, 0.26, 'sine', 0.11);
+      break;
+    case 'sleep_suhoor':
+      scheduleTone(ctx, 329.63, 0, 0.45, 'sine', 0.1);
+      scheduleTone(ctx, 440.0, 0.28, 0.55, 'sine', 0.11);
+      scheduleTone(ctx, 523.25, 0.6, 0.65, 'triangle', 0.09);
+      break;
+    case 'meeting_event':
+      scheduleTone(ctx, 698.46, 0, 0.11, 'square', 0.045);
+      scheduleTone(ctx, 698.46, 0.14, 0.14, 'square', 0.045);
+      break;
+    default:
+      scheduleTone(ctx, 587.33, 0, 0.28, 'sine', 0.08);
+      scheduleTone(ctx, 880.0, 0.16, 0.32, 'sine', 0.08);
+      break;
+  }
+}
+
+/**
+ * Plays a distinct, recognizable audio signature for each task category with configurable repeats
+ * (1x, 2x, 3x, 4x, or 'continuous' until user explicitly stops/dismisses it).
+ */
+export function playTaskSignature(
+  category: TaskSoundCategory,
+  options?: {
+    bypassSanctuary?: boolean;
+    sanctuary?: ActiveSanctuaryState;
+    repeatCount?: SoundRepeatSetting;
+  }
+): { playedAudio: boolean; vibrated: boolean; isContinuous: boolean } {
+  const sanctuary = options?.sanctuary;
+  if (!options?.bypassSanctuary && sanctuary && sanctuary.type !== 'none') {
+    if (sanctuary.vibrateOnly && typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate([70, 50, 70]);
+      return { playedAudio: false, vibrated: true, isContinuous: false };
+    }
+    return { playedAudio: false, vibrated: false, isContinuous: false };
+  }
+
+  const ctx = getCtx();
+  if (!ctx) return { playedAudio: false, vibrated: false, isContinuous: false };
+
+  stopContinuousAlert();
+
+  const repeat: SoundRepeatSetting = options?.repeatCount ?? 1;
+  playSingleBurst(ctx, category);
+
+  if (repeat === 'continuous' && typeof window !== 'undefined') {
+    const loopMs = category === 'prayer' || category === 'sleep_suhoor' ? 2100 : 1650;
+    activeContinuousInterval = window.setInterval(() => {
+      const c = getCtx();
+      if (c) playSingleBurst(c, category);
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try {
+          navigator.vibrate([120, 80, 120]);
+        } catch {
+          // ignore
+        }
+      }
+    }, loopMs);
+    // Safety auto-stop after 3 minutes so unattended device never loops endlessly
+    activeContinuousSafetyTimeout = window.setTimeout(() => {
+      stopContinuousAlert();
+    }, 180_000);
+    return { playedAudio: true, vibrated: false, isContinuous: true };
+  }
+
+  if (typeof repeat === 'number' && repeat > 1 && typeof window !== 'undefined') {
+    const gapMs = category === 'prayer' || category === 'sleep_suhoor' ? 1850 : 1250;
+    const clamped = Math.min(4, Math.max(1, Math.round(repeat)));
+    for (let i = 1; i < clamped; i++) {
+      const id = window.setTimeout(() => {
+        const c = getCtx();
+        if (c) playSingleBurst(c, category);
+      }, i * gapMs);
+      activeRepeatTimers.push(id);
+    }
+  }
+
+  return { playedAudio: true, vibrated: false, isContinuous: false };
+}
+
+export function playSoftChime(
+  type: 'focus_done' | 'break_done' | 'alarm_pulse',
+  sanctuary?: ActiveSanctuaryState
+): void {
+  if (type === 'focus_done') {
+    playTaskSignature('focus_work', { sanctuary, repeatCount: 1 });
+  } else if (type === 'break_done') {
+    playTaskSignature('walk_health', { sanctuary, repeatCount: 1 });
+  } else {
+    playTaskSignature('prayer', { sanctuary, repeatCount: 2 });
+  }
+}
+

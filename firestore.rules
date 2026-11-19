@@ -1,0 +1,644 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global hardened primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidSubId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isEmailVerified() && isValidId(userId) && request.auth.uid == userId;
+    }
+
+    function parentUserExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId))
+        && get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid;
+    }
+
+    function isValidCupCount(v) {
+      return v is int && v >= 0 && v <= 40;
+    }
+
+    function isValidWeeklyCounts(arr) {
+      return arr is list
+        && arr.size() == 7
+        && isValidCupCount(arr[0])
+        && isValidCupCount(arr[1])
+        && isValidCupCount(arr[2])
+        && isValidCupCount(arr[3])
+        && isValidCupCount(arr[4])
+        && isValidCupCount(arr[5])
+        && isValidCupCount(arr[6]);
+    }
+
+    function isValidWeekdayList(arr) {
+      return arr is list
+        && arr.size() <= 7
+        && (arr.size() == 0 || (arr[0] is int && arr[0] >= 0 && arr[0] <= 6))
+        && arr.hasOnly([0, 1, 2, 3, 4, 5, 6]);
+    }
+
+    function isValidTimesList(arr) {
+      return arr is list
+        && arr.size() <= 6
+        && (arr.size() == 0 || (arr[0] is string && arr[0].size() == 5 && arr[0].matches('^[0-2][0-9]:[0-5][0-9]$')));
+    }
+
+    function isValidDoseKeysList(arr) {
+      return arr is list
+        && arr.size() <= 6
+        && (arr.size() == 0 || (arr[0] is string && arr[0].size() >= 1 && arr[0].size() <= 16));
+    }
+
+    function isValidDateKeysList(arr) {
+      return arr is list
+        && arr.size() <= 31
+        && (arr.size() == 0 || (arr[0] is string && arr[0].size() == 10 && arr[0].matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')));
+    }
+
+    function isValidDeviceSettings(cfg) {
+      return cfg is map
+        && cfg.keys().hasAll([
+          'alertSliderLinked',
+          'liveAlertsEnabled',
+          'liveAlertsLeadMinutes',
+          'aquaTouchMode',
+          'ltpoNight1Hz',
+          'pocketProtectionEnabled'
+        ])
+        && cfg.keys().hasOnly([
+          'alertSliderLinked',
+          'liveAlertsEnabled',
+          'liveAlertsLeadMinutes',
+          'aquaTouchMode',
+          'ltpoNight1Hz',
+          'pocketProtectionEnabled'
+        ])
+        && cfg.alertSliderLinked is bool
+        && cfg.liveAlertsEnabled is bool
+        && cfg.liveAlertsLeadMinutes is int
+        && cfg.liveAlertsLeadMinutes in [5, 10, 15, 20, 30]
+        && cfg.aquaTouchMode is bool
+        && cfg.ltpoNight1Hz is bool
+        && cfg.pocketProtectionEnabled is bool;
+    }
+
+    function isValidRepeatSetting(v) {
+      return (v is int && v >= 1 && v <= 4) || (v is string && v == 'continuous');
+    }
+
+    function isValidSoundRepeats(m) {
+      return m is map
+        && m.keys().hasAll([
+          'prayer',
+          'water',
+          'medication',
+          'focus_work',
+          'walk_health',
+          'sleep_suhoor',
+          'meeting_event',
+          'general'
+        ])
+        && m.keys().hasOnly([
+          'prayer',
+          'water',
+          'medication',
+          'focus_work',
+          'walk_health',
+          'sleep_suhoor',
+          'meeting_event',
+          'general'
+        ])
+        && isValidRepeatSetting(m.prayer)
+        && isValidRepeatSetting(m.water)
+        && isValidRepeatSetting(m.medication)
+        && isValidRepeatSetting(m.focus_work)
+        && isValidRepeatSetting(m.walk_health)
+        && isValidRepeatSetting(m.sleep_suhoor)
+        && isValidRepeatSetting(m.meeting_event)
+        && isValidRepeatSetting(m.general);
+    }
+
+    function isValidSyncSignal(s) {
+      return s is map
+        && s.keys().hasAll(['opId', 'clientId', 'scope', 'action', 'timestampMs'])
+        && s.keys().hasOnly(['opId', 'clientId', 'scope', 'action', 'timestampMs'])
+        && s.opId is string && s.opId.size() >= 1 && s.opId.size() <= 64
+        && s.clientId is string && s.clientId.size() >= 1 && s.clientId.size() <= 64
+        && s.scope is string && s.scope in ['calendar', 'tasks', 'all', 'alarm_dismiss']
+        && s.action is string && s.action.size() >= 1 && s.action.size() <= 48
+        && s.timestampMs is int && s.timestampMs >= 0;
+    }
+
+    function isValidLifeProfile(p) {
+      return p is map
+        && p.keys().hasAll([
+          'weightKg',
+          'heightCm',
+          'cupSizeMl',
+          'fastingDays',
+          'suhoorLeadMinutes',
+          'sleepTargetMinutes',
+          'sleepStrategy',
+          'sleepDebtMinutes',
+          'sleepDebtLogDateKey',
+          'adhanLeadMinutes',
+          'prayerSilenceMinutes',
+          'fajrSilenceMinutes',
+          'careerTrack',
+          'workEnabled',
+          'workStart24',
+          'workEnd24',
+          'workDays',
+          'autoLocationSync',
+          'currentCityName',
+          'currentTimeZone',
+          'currentLat',
+          'currentLng',
+          'priorityOrderAr',
+          'personalNotes'
+        ])
+        && p.keys().hasOnly([
+          'weightKg',
+          'heightCm',
+          'cupSizeMl',
+          'fastingDays',
+          'suhoorLeadMinutes',
+          'sleepTargetMinutes',
+          'sleepStrategy',
+          'sleepDebtMinutes',
+          'sleepDebtLogDateKey',
+          'adhanLeadMinutes',
+          'prayerSilenceMinutes',
+          'fajrSilenceMinutes',
+          'oneTimeSilenceMinutes',
+          'oneTimeSilenceDateKey',
+          'lowEnergyDateKey',
+          'soundRepeats',
+          'careerTrack',
+          'workEnabled',
+          'workStart24',
+          'workEnd24',
+          'workDays',
+          'autoLocationSync',
+          'currentCityName',
+          'currentTimeZone',
+          'currentLat',
+          'currentLng',
+          'priorityOrderAr',
+          'personalNotes'
+        ])
+        && p.weightKg is number && p.weightKg >= 30 && p.weightKg <= 250
+        && p.heightCm is number && p.heightCm >= 100 && p.heightCm <= 240
+        && p.cupSizeMl is int && p.cupSizeMl >= 50 && p.cupSizeMl <= 2000
+        && isValidWeekdayList(p.fastingDays)
+        && p.suhoorLeadMinutes is int && p.suhoorLeadMinutes >= 10 && p.suhoorLeadMinutes <= 180
+        && p.sleepTargetMinutes is int && p.sleepTargetMinutes >= 180 && p.sleepTargetMinutes <= 720
+        && p.sleepStrategy is string && p.sleepStrategy.size() <= 32
+        && p.sleepStrategy in ['night_only_strict', 'biphasic_qailulah', 'anchor_early_bed']
+        && p.sleepDebtMinutes is int && p.sleepDebtMinutes >= 0 && p.sleepDebtMinutes <= 480
+        && p.sleepDebtLogDateKey is string && p.sleepDebtLogDateKey.size() <= 20
+        && p.sleepDebtLogDateKey.matches('^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && p.adhanLeadMinutes is int && p.adhanLeadMinutes >= 0 && p.adhanLeadMinutes <= 30
+        && p.prayerSilenceMinutes is int && p.prayerSilenceMinutes >= 5 && p.prayerSilenceMinutes <= 90
+        && p.fajrSilenceMinutes is int && p.fajrSilenceMinutes >= 5 && p.fajrSilenceMinutes <= 90
+        && (!('oneTimeSilenceMinutes' in p) || (p.oneTimeSilenceMinutes is int && p.oneTimeSilenceMinutes >= 0 && p.oneTimeSilenceMinutes <= 120))
+        && (!('oneTimeSilenceDateKey' in p) || (p.oneTimeSilenceDateKey is string && p.oneTimeSilenceDateKey.size() <= 20 && p.oneTimeSilenceDateKey.matches('^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
+        && (!('lowEnergyDateKey' in p) || (p.lowEnergyDateKey is string && p.lowEnergyDateKey.size() <= 20 && p.lowEnergyDateKey.matches('^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
+        && (!('soundRepeats' in p) || isValidSoundRepeats(p.soundRepeats))
+        && p.careerTrack is string && p.careerTrack.size() <= 120
+        && p.workEnabled is bool
+        && p.workStart24 is string && p.workStart24.size() <= 5
+        && p.workStart24.matches('^$|^[0-2][0-9]:[0-5][0-9]$')
+        && p.workEnd24 is string && p.workEnd24.size() <= 5
+        && p.workEnd24.matches('^$|^[0-2][0-9]:[0-5][0-9]$')
+        && isValidWeekdayList(p.workDays)
+        && p.autoLocationSync is bool
+        && p.currentCityName is string && p.currentCityName.size() >= 1 && p.currentCityName.size() <= 100
+        && p.currentTimeZone is string && p.currentTimeZone.size() >= 1 && p.currentTimeZone.size() <= 64
+        && p.currentLat is number && p.currentLat >= -90 && p.currentLat <= 90
+        && p.currentLng is number && p.currentLng >= -180 && p.currentLng <= 180
+        && p.priorityOrderAr is string && p.priorityOrderAr.size() <= 260
+        && p.personalNotes is string && p.personalNotes.size() <= 600;
+    }
+
+    function isValidUserRhythmState(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'hydrationDateKey',
+          'cupsLogged',
+          'targetCups',
+          'hydrationWeeklyCounts',
+          'dailyCommitmentDays',
+          'dailyCommitmentDoneToday',
+          'waterTargetDays',
+          'waterTargetDoneToday',
+          'quietMode',
+          'adhanOverrideSilent',
+          'surfaceTheme',
+          'deviceSettings',
+          'lifeProfile',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'hydrationDateKey',
+          'cupsLogged',
+          'targetCups',
+          'hydrationWeeklyCounts',
+          'dailyCommitmentDays',
+          'dailyCommitmentDoneToday',
+          'waterTargetDays',
+          'waterTargetDoneToday',
+          'quietMode',
+          'adhanOverrideSilent',
+          'surfaceTheme',
+          'deviceSettings',
+          'lifeProfile',
+          'syncSignal',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.uid == userId
+        && data.hydrationDateKey is string
+        && data.hydrationDateKey.size() >= 8
+        && data.hydrationDateKey.size() <= 20
+        && data.hydrationDateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && isValidCupCount(data.cupsLogged)
+        && data.targetCups is int
+        && data.targetCups >= 1
+        && data.targetCups <= 40
+        && isValidWeeklyCounts(data.hydrationWeeklyCounts)
+        && data.dailyCommitmentDays is int
+        && data.dailyCommitmentDays >= 0
+        && data.dailyCommitmentDays <= 10000
+        && data.dailyCommitmentDoneToday is bool
+        && data.waterTargetDays is int
+        && data.waterTargetDays >= 0
+        && data.waterTargetDays <= 10000
+        && data.waterTargetDoneToday is bool
+        && data.quietMode is string
+        && data.quietMode.size() <= 20
+        && data.quietMode in ['normal', 'mute_audio', 'vibrate_only', 'silent_all']
+        && data.adhanOverrideSilent is bool
+        && data.surfaceTheme is string
+        && data.surfaceTheme.size() <= 16
+        && data.surfaceTheme in ['amoled', 'obsidian']
+        && isValidDeviceSettings(data.deviceSettings)
+        && isValidLifeProfile(data.lifeProfile)
+        && (!('syncSignal' in data) || isValidSyncSignal(data.syncSignal))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMedicationRecord(data, userId, medicationId) {
+      return data.keys().hasAll([
+          'id',
+          'uid',
+          'name',
+          'time24',
+          'doseNote',
+          'takenDateKey',
+          'calendarEventId',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'uid',
+          'name',
+          'time24',
+          'times24',
+          'daysOfWeek',
+          'takenDosesToday',
+          'doseNote',
+          'takenDateKey',
+          'calendarEventId',
+          'courseEndDate',
+          'remainingDoses',
+          'totalDoses',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidSubId(data.id)
+        && data.id == medicationId
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.uid == userId
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 80
+        && data.time24 is string
+        && data.time24.size() <= 5
+        && data.time24.matches('^$|^[0-2][0-9]:[0-5][0-9]$')
+        && (!('times24' in data) || isValidTimesList(data.times24))
+        && (!('daysOfWeek' in data) || isValidWeekdayList(data.daysOfWeek))
+        && (!('takenDosesToday' in data) || isValidDoseKeysList(data.takenDosesToday))
+        && data.doseNote is string
+        && data.doseNote.size() <= 120
+        && data.takenDateKey is string
+        && data.takenDateKey.size() <= 20
+        && data.takenDateKey.matches('^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.calendarEventId is string
+        && data.calendarEventId.size() <= 128
+        && (!('courseEndDate' in data) || (data.courseEndDate is string && data.courseEndDate.size() <= 20 && data.courseEndDate.matches('^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
+        && (!('remainingDoses' in data) || (data.remainingDoses is int && data.remainingDoses >= -1 && data.remainingDoses <= 500))
+        && (!('totalDoses' in data) || (data.totalDoses is int && data.totalDoses >= -1 && data.totalDoses <= 500))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCreativeActivityRecord(data, userId, activityId) {
+      return data.keys().hasAll([
+          'id',
+          'uid',
+          'name',
+          'emoji',
+          'weeklyGoalSessions',
+          'sessionMinutes',
+          'loggedDates',
+          'scheduledTime24',
+          'calendarEventId',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'uid',
+          'name',
+          'emoji',
+          'cadence',
+          'goalCount',
+          'weeklyGoalSessions',
+          'sessionMinutes',
+          'loggedDates',
+          'scheduledTime24',
+          'calendarEventId',
+          'expiresOnDate',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidSubId(data.id)
+        && data.id == activityId
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.uid == userId
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 80
+        && data.emoji is string
+        && data.emoji.size() >= 1
+        && data.emoji.size() <= 16
+        && (!('cadence' in data) || (data.cadence is string && data.cadence in ['daily', 'weekly', 'monthly']))
+        && (!('goalCount' in data) || (data.goalCount is int && data.goalCount >= 1 && data.goalCount <= 31))
+        && data.weeklyGoalSessions is int
+        && data.weeklyGoalSessions >= 1
+        && data.weeklyGoalSessions <= 14
+        && data.sessionMinutes is int
+        && data.sessionMinutes >= 15
+        && data.sessionMinutes <= 240
+        && isValidDateKeysList(data.loggedDates)
+        && data.scheduledTime24 is string
+        && data.scheduledTime24.size() <= 5
+        && data.scheduledTime24.matches('^$|^[0-2][0-9]:[0-5][0-9]$')
+        && data.calendarEventId is string
+        && data.calendarEventId.size() <= 128
+        && (!('expiresOnDate' in data) || (data.expiresOnDate is string && data.expiresOnDate.size() <= 20 && data.expiresOnDate.matches('^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$')))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMemoryRecord(data, userId, memoryId) {
+      return data.keys().hasAll([
+          'id',
+          'uid',
+          'category',
+          'ruleText',
+          'source',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'uid',
+          'category',
+          'ruleText',
+          'source',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidSubId(data.id)
+        && data.id == memoryId
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.uid == userId
+        && data.category is string
+        && data.category.size() <= 24
+        && data.category in ['priority', 'sleep', 'fasting', 'hydration', 'work_devops', 'travel', 'general']
+        && data.ruleText is string
+        && data.ruleText.size() >= 1
+        && data.ruleText.size() <= 320
+        && data.source is string
+        && data.source.size() <= 20
+        && data.source in ['user', 'gemini', 'system_seed']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId)
+        && isValidUserRhythmState(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isOwner(userId)
+        && isValidUserRhythmState(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'hydrationDateKey',
+            'cupsLogged',
+            'targetCups',
+            'flaxseedTaken',
+            'hydrationWeeklyCounts',
+            'dailyCommitmentDays',
+            'dailyCommitmentDoneToday',
+            'waterTargetDays',
+            'waterTargetDoneToday',
+            'quietMode',
+            'adhanOverrideSilent',
+            'surfaceTheme',
+            'deviceSettings',
+            'lifeProfile',
+            'syncSignal',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if false;
+
+      match /medications/{medicationId} {
+        allow get: if isOwner(userId) && isValidSubId(medicationId) && parentUserExists(userId);
+        allow list: if isOwner(userId)
+          && resource.data.uid == request.auth.uid
+          && request.query.limit != null
+          && request.query.limit <= 30;
+
+        allow create: if isOwner(userId)
+          && isValidSubId(medicationId)
+          && isValidMedicationRecord(incoming(), userId, medicationId)
+          && parentUserExists(userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+
+        allow update: if isOwner(userId)
+          && isValidSubId(medicationId)
+          && isValidMedicationRecord(incoming(), userId, medicationId)
+          && parentUserExists(userId)
+          && incoming().id == existing().id
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'takenDateKey',
+              'takenDosesToday',
+              'remainingDoses',
+              'updatedAt'
+            ])
+            ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'time24',
+              'times24',
+              'daysOfWeek',
+              'takenDosesToday',
+              'doseNote',
+              'takenDateKey',
+              'calendarEventId',
+              'courseEndDate',
+              'remainingDoses',
+              'totalDoses',
+              'updatedAt'
+            ])
+          );
+
+        allow delete: if isOwner(userId) && isValidSubId(medicationId) && parentUserExists(userId);
+      }
+
+      match /creativeActivities/{activityId} {
+        allow get: if isOwner(userId) && isValidSubId(activityId) && parentUserExists(userId);
+        allow list: if isOwner(userId)
+          && resource.data.uid == request.auth.uid
+          && request.query.limit != null
+          && request.query.limit <= 100;
+
+        allow create: if isOwner(userId)
+          && isValidSubId(activityId)
+          && isValidCreativeActivityRecord(incoming(), userId, activityId)
+          && parentUserExists(userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+
+        allow update: if isOwner(userId)
+          && isValidSubId(activityId)
+          && isValidCreativeActivityRecord(incoming(), userId, activityId)
+          && parentUserExists(userId)
+          && incoming().id == existing().id
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'loggedDates',
+              'updatedAt'
+            ])
+            ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'emoji',
+              'cadence',
+              'goalCount',
+              'weeklyGoalSessions',
+              'sessionMinutes',
+              'loggedDates',
+              'scheduledTime24',
+              'calendarEventId',
+              'expiresOnDate',
+              'updatedAt'
+            ])
+          );
+
+        allow delete: if isOwner(userId) && isValidSubId(activityId) && parentUserExists(userId);
+      }
+
+      match /memories/{memoryId} {
+        allow get: if isOwner(userId) && isValidSubId(memoryId) && parentUserExists(userId);
+        allow list: if isOwner(userId)
+          && resource.data.uid == request.auth.uid
+          && request.query.limit != null
+          && request.query.limit <= 50;
+
+        allow create: if isOwner(userId)
+          && isValidSubId(memoryId)
+          && isValidMemoryRecord(incoming(), userId, memoryId)
+          && parentUserExists(userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+
+        allow update: if isOwner(userId)
+          && isValidSubId(memoryId)
+          && isValidMemoryRecord(incoming(), userId, memoryId)
+          && parentUserExists(userId)
+          && incoming().id == existing().id
+          && incoming().uid == existing().uid
+          && incoming().source == existing().source
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'category',
+              'ruleText',
+              'updatedAt'
+            ])
+          );
+
+        allow delete: if isOwner(userId) && isValidSubId(memoryId) && parentUserExists(userId);
+      }
+    }
+  }
+}

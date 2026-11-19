@@ -1,0 +1,6 @@
+{
+  "name": "إيقاع اليوم | DayRhythm",
+  "description": "منظومة شخصية متكاملة لإدارة الإيقاع اليومي، مواقيت الصلاة الفلكية، الترطيب، التركيز، وضع السفر الذكي، وتدارك اليوم دون تعارض.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

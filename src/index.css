@@ -1,0 +1,53 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-ar: "Cairo", "Readex Pro", system-ui, sans-serif;
+    --font-en: "Plus Jakarta Sans", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  body {
+    font-family: var(--font-ar);
+    background-color: #000000;
+    color: #f4f4f5;
+  }
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.font-en {
+  font-family: var(--font-en);
+}
+
+@keyframes alarm-shake {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  20% { transform: translate3d(-4px, 1px, 0); }
+  40% { transform: translate3d(4px, -1px, 0); }
+  60% { transform: translate3d(-3px, -1px, 0); }
+  80% { transform: translate3d(3px, 1px, 0); }
+}
+
+@keyframes alarm-pulse-ring {
+  0%, 100% { opacity: 0.92; }
+  50% { opacity: 0.55; }
+}
+
+.animate-alarm-shake {
+  animation: alarm-shake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97) infinite;
+}
+
+.animate-alarm-pulse {
+  animation: alarm-pulse-ring 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-alarm-shake,
+  .animate-alarm-pulse {
+    animation: none !important;
+  }
+}

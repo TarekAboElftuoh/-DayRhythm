@@ -1,0 +1,392 @@
+{
+  "entities": {
+    "UserRhythmState": {
+      "title": "UserRhythmState",
+      "description": "Personal daily rhythm, hydration, commitment streaks, quiet mode, OnePlus 12R hardware preferences, and persistent Living Life Profile (priorities, biometrics, fasting days, night-only circadian sleep, DevOps/work schedule, and global location) synced in real time across phone and desktop.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Authenticated Firebase user ID (immutable owner)."
+        },
+        "hydrationDateKey": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 20,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Local date key (YYYY-MM-DD) for today's hydration count."
+        },
+        "cupsLogged": {
+          "type": "integer",
+          "description": "Water cups logged today (0 to 30)."
+        },
+        "targetCups": {
+          "type": "integer",
+          "description": "Daily hydration target in cups (1 to 30), dynamically calculated from weight, fixed height, cup ml, and fasting status."
+        },
+        "hydrationWeeklyCounts": {
+          "type": "array",
+          "description": "7-day hydration cup counts aligned to the weekly chart."
+        },
+        "dailyCommitmentDays": {
+          "type": "integer",
+          "description": "Consecutive days of daily commitment streak."
+        },
+        "dailyCommitmentDoneToday": {
+          "type": "boolean",
+          "description": "Whether today's daily commitment is completed."
+        },
+        "waterTargetDays": {
+          "type": "integer",
+          "description": "Consecutive days hitting the water target."
+        },
+        "waterTargetDoneToday": {
+          "type": "boolean",
+          "description": "Whether today's water target was reached."
+        },
+        "quietMode": {
+          "type": "string",
+          "enum": ["normal", "mute_audio", "vibrate_only", "silent_all"],
+          "maxLength": 20,
+          "description": "Active synced quiet mode across OnePlus 12R and Windows PC."
+        },
+        "adhanOverrideSilent": {
+          "type": "boolean",
+          "description": "Whether obligatory prayer calls override silent/vibrate mode."
+        },
+        "surfaceTheme": {
+          "type": "string",
+          "enum": ["amoled", "obsidian"],
+          "maxLength": 16,
+          "description": "Preferred dark display surface theme."
+        },
+        "deviceSettings": {
+          "type": "object",
+          "description": "OnePlus 12R & OxygenOS 16 hardware preferences."
+        },
+        "lifeProfile": {
+          "type": "object",
+          "description": "Persistent user constitution with fully flexible Gemini-editable constants: weightKg (30-250), heightCm (100-240), cupSizeMl (50-2000), fastingDays, suhoorLeadMinutes (10-180), sleepTargetMinutes (180-720), sleepStrategy (night_only_strict default), sleepDebtMinutes (0-480), sleepDebtLogDateKey, adhanLeadMinutes (0-30), prayerSilenceMinutes (5-90), fajrSilenceMinutes (5-90), oneTimeSilenceMinutes (0-120), oneTimeSilenceDateKey, lowEnergyDateKey, soundRepeats (per-category 1..4 or continuous), careerTrack, workEnabled/workStart24/workEnd24/workDays, autoLocationSync & timezone/coords, priorityOrderAr, and personalNotes."
+        },
+        "syncSignal": {
+          "type": "object",
+          "description": "Optional real-time cross-device workspace sync marker (opId, clientId, scope, action, timestampMs) for sub-second PC <-> Mobile Google Calendar/Tasks reconciliation."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set once on creation (immutable)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp updated on every write."
+        }
+      },
+      "required": [
+        "uid",
+        "hydrationDateKey",
+        "cupsLogged",
+        "targetCups",
+        "hydrationWeeklyCounts",
+        "dailyCommitmentDays",
+        "dailyCommitmentDoneToday",
+        "waterTargetDays",
+        "waterTargetDoneToday",
+        "quietMode",
+        "adhanOverrideSilent",
+        "surfaceTheme",
+        "deviceSettings",
+        "lifeProfile",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MedicationRecord": {
+      "title": "MedicationRecord",
+      "description": "A daily supplement or medication item (e.g., Pumpkin Seed Oil or any medication added via Gemini) synced with Google Calendar and daily completion tracking.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Stable identifier for the medication item."
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID (immutable)."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Display name of the medication or supplement."
+        },
+        "time24": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 5,
+          "pattern": "^$|^[0-2][0-9]:[0-5][0-9]$",
+          "description": "Optional primary daily time in HH:MM."
+        },
+        "times24": {
+          "type": "array",
+          "description": "Optional list of up to 6 daily dose times in HH:MM (supports 1x, 2x, 3x/day or empty if awaiting timing)."
+        },
+        "daysOfWeek": {
+          "type": "array",
+          "description": "Optional list of active weekdays (0=Sun..6=Sat). Empty array means every day."
+        },
+        "takenDosesToday": {
+          "type": "array",
+          "description": "Optional list of up to 6 dose keys logged on takenDateKey."
+        },
+        "doseNote": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 120,
+          "description": "Optional dosage note."
+        },
+        "takenDateKey": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20,
+          "pattern": "^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Local date key (YYYY-MM-DD) when last taken."
+        },
+        "calendarEventId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128,
+          "description": "Optional linked Google Calendar event ID."
+        },
+        "courseEndDate": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20,
+          "pattern": "^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Optional end date (YYYY-MM-DD) for a timed medication/supplement course."
+        },
+        "remainingDoses": {
+          "type": "integer",
+          "description": "Optional remaining doses counter (-1 untracked, 0 to 500 tracked)."
+        },
+        "totalDoses": {
+          "type": "integer",
+          "description": "Optional initial total doses in package/course (-1 untracked, 0 to 500 tracked)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set once on creation (immutable)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp updated on every write."
+        }
+      },
+      "required": [
+        "id",
+        "uid",
+        "name",
+        "time24",
+        "doseNote",
+        "takenDateKey",
+        "calendarEventId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CreativeActivityRecord": {
+      "title": "CreativeActivityRecord",
+      "description": "A personal hobby or side project (e.g., reading, side coding, writing) tracked with a weekly session goal, auto-placed into genuinely free daily slots, and synced to Google Calendar.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Stable identifier for the creative activity."
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID (immutable)."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Display name of the creative activity or hobby."
+        },
+        "emoji": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "description": "Visual emoji representing the creative activity."
+        },
+        "weeklyGoalSessions": {
+          "type": "integer",
+          "description": "Target number of sessions per week (1 to 14)."
+        },
+        "cadence": {
+          "type": "string",
+          "enum": ["daily", "weekly", "monthly"],
+          "maxLength": 16,
+          "description": "Optional tracking period cadence (daily, weekly, or monthly)."
+        },
+        "goalCount": {
+          "type": "integer",
+          "description": "Optional target sessions per cadence period (1 to 31)."
+        },
+        "sessionMinutes": {
+          "type": "integer",
+          "description": "Target duration per session in minutes (15 to 240)."
+        },
+        "loggedDates": {
+          "type": "array",
+          "description": "Up to 31 recent YYYY-MM-DD local date keys when sessions were completed."
+        },
+        "scheduledTime24": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 5,
+          "pattern": "^$|^[0-2][0-9]:[0-5][0-9]$",
+          "description": "Optional preferred or calendar-scheduled HH:MM slot."
+        },
+        "calendarEventId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128,
+          "description": "Optional linked Google Calendar event ID."
+        },
+        "expiresOnDate": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 20,
+          "pattern": "^$|^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Optional expiry date (YYYY-MM-DD) for temporary hobbies/projects."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set once on creation (immutable)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp updated on every write."
+        }
+      },
+      "required": [
+        "id",
+        "uid",
+        "name",
+        "emoji",
+        "weeklyGoalSessions",
+        "sessionMinutes",
+        "loggedDates",
+        "scheduledTime24",
+        "calendarEventId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MemoryRecord": {
+      "title": "MemoryRecord",
+      "description": "Persistent long-term memory rule or preference taught by the user to Gemini and the self-adapting rhythm engine, synced across devices.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Stable identifier for the memory entry."
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID (immutable)."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["priority", "sleep", "fasting", "hydration", "work_devops", "travel", "general"],
+          "maxLength": 24,
+          "description": "Topic category for organizing permanent rules."
+        },
+        "ruleText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 320,
+          "description": "The user's explicit rule, decision principle, or preference remembered permanently by Gemini."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["user", "gemini", "system_seed"],
+          "maxLength": 20,
+          "description": "Origin of the saved memory rule."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set once on creation (immutable)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp updated on every write."
+        }
+      },
+      "required": [
+        "id",
+        "uid",
+        "category",
+        "ruleText",
+        "source",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserRhythmState"
+      },
+      "description": "Private per-user real-time synced rhythm, hydration, streaks, OnePlus 12R hardware preferences, and persistent Living Life Profile."
+    },
+    "/users/{userId}/medications/{medicationId}": {
+      "schema": {
+        "$ref": "#/entities/MedicationRecord"
+      },
+      "description": "Private per-user flexible medications and supplements list (multi-dose & weekday schedules)."
+    },
+    "/users/{userId}/creativeActivities/{activityId}": {
+      "schema": {
+        "$ref": "#/entities/CreativeActivityRecord"
+      },
+      "description": "Private per-user creative activities, hobbies, and side projects with weekly session goals."
+    },
+    "/users/{userId}/memories/{memoryId}": {
+      "schema": {
+        "$ref": "#/entities/MemoryRecord"
+      },
+      "description": "Private per-user permanent Gemini memory bank storing all rules, conflict resolution preferences, and lifestyle principles."
+    }
+  }
+}
