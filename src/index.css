@@ -38,8 +38,17 @@
 }
 
 .font-mono-tabular {
+  font-family: var(--font-ar);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.font-digits {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 .font-en {

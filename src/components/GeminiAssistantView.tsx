@@ -53,6 +53,9 @@ import {
   apiFetchStream,
   checkGeminiStatus,
   cleanCalendarText,
+  getSavedCloudApiUrl,
+  isStandaloneVirtualHost,
+  setSavedCloudApiUrl,
 } from '../services/apiClient';
 
 type AssistantMode = 'chat' | 'maps' | 'search';
@@ -219,6 +222,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   const [newMemoryCat, setNewMemoryCat] = useState<MemoryCategory>('general');
   const [newMemoryRule, setNewMemoryRule] = useState('');
   const [memorySearch, setMemorySearch] = useState('');
+  const [cloudUrlDraft, setCloudUrlDraft] = useState(() => getSavedCloudApiUrl());
+  const isStandaloneApp = isStandaloneVirtualHost();
 
   // Voice dictation state
   const [isListeningVoice, setIsListeningVoice] = useState(false);
@@ -1296,20 +1301,47 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
       {/* Offline Warning Banner (only shown when real probe failed) */}
       {geminiStatus.status === 'offline' && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-rose-200">
-          <div className="flex items-center gap-2 min-w-0">
-            <WifiOff className="w-4 h-4 text-rose-400 shrink-0" />
-            <span className="truncate">
-              {geminiStatus.error || 'تعذر الاتصال بخادم Gemini حالياً.'}
-            </span>
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 space-y-2.5 text-xs text-rose-200">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <WifiOff className="w-4 h-4 text-rose-400 shrink-0" />
+              <span className="leading-relaxed">
+                {geminiStatus.error || 'تعذر الاتصال بخادم Gemini حالياً.'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void runGeminiProbe(true)}
+              className="px-3 py-1.5 rounded-lg border border-rose-400/40 bg-rose-500/20 text-rose-100 hover:bg-rose-500/30 font-semibold cursor-pointer whitespace-nowrap shrink-0"
+            >
+              إعادة الاتصال الآن
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => void runGeminiProbe(true)}
-            className="px-3 py-1 rounded-lg border border-rose-400/40 bg-rose-500/20 text-rose-100 hover:bg-rose-500/30 font-semibold cursor-pointer whitespace-nowrap shrink-0"
-          >
-            إعادة الاتصال الآن
-          </button>
+          {isStandaloneApp && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                setSavedCloudApiUrl(cloudUrlDraft);
+                void runGeminiProbe(true);
+              }}
+              className="flex flex-wrap items-center gap-2 pt-2 border-t border-rose-500/20"
+            >
+              <input
+                type="url"
+                dir="ltr"
+                value={cloudUrlDraft}
+                onChange={(e) => setCloudUrlDraft(e.target.value)}
+                placeholder="https://your-deployed-app.run.app"
+                className="flex-1 min-w-[200px] rounded-lg border border-white/15 bg-black/60 px-3 py-1.5 text-xs text-white placeholder:text-zinc-500 focus:border-[#7FFFD4] focus:outline-none"
+              />
+              <button
+                type="submit"
+                className="px-3 py-1.5 rounded-lg bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] cursor-pointer whitespace-nowrap shrink-0"
+              >
+                ربط رابط الخادم المنشور
+              </button>
+            </form>
+          )}
         </div>
       )}
 

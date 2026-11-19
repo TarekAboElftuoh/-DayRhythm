@@ -369,7 +369,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [showScheduleControls, setShowScheduleControls] = useState(false);
   const [showHydrationSchedule, setShowHydrationSchedule] = useState(false);
   const [showSleepCheckinEdit, setShowSleepCheckinEdit] = useState(false);
-  const [timelineFilter, setTimelineFilter] = useState<'today' | 'done' | 'week' | 'anchors'>('today');
+  const [timelineFilter, setTimelineFilter] = useState<'today' | 'tomorrow' | 'special' | 'done' | 'anchors'>('today');
   const [selectedTaskListId, setSelectedTaskListId] = useState<string>('all');
   const [syncLoading, setSyncLoading] = useState(false);
 
@@ -437,6 +437,127 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [activeBlocks, nowMinutes]
   );
 
+  const formatDurationLabel = (totalMin: number): string => {
+    const safe = Math.max(0, Math.round(totalMin));
+    const h = Math.floor(safe / 60);
+    const m = safe % 60;
+    if (language !== 'ar') {
+      if (h === 0) return `${m}m`;
+      return m === 0 ? `${h}h` : `${h}h ${m}m`;
+    }
+    if (h === 0) return `${m} د`;
+    return m === 0 ? `${h} س` : `${h} س ${m} د`;
+  };
+
+  const getEventCairoDateIso = (isoStr: string): string => {
+    if (!isoStr) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(isoStr)) return isoStr;
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return isoStr.slice(0, 10);
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(d);
+    const y = parts.find((p) => p.type === 'year')?.value ?? '2026';
+    const mo = parts.find((p) => p.type === 'month')?.value ?? '01';
+    const day = parts.find((p) => p.type === 'day')?.value ?? '01';
+    return `${y}-${mo}-${day}`;
+  };
+
+  const formatCairoDayHeading = (dateIso: string): string => {
+    const d = new Date(`${dateIso}T12:00:00Z`);
+    if (Number.isNaN(d.getTime())) return dateIso;
+    return new Intl.DateTimeFormat(language === 'ar' ? 'ar-EG' : 'en-US', {
+      timeZone: 'Africa/Cairo',
+      weekday: 'long',
+      day: 'numeric',
+      month: 'short',
+    }).format(d);
+  };
+
+  const resolveCalendarEventText = (ev: GoogleCalendarEventItem): { title: string; detail: string } => {
+    const rawSummary = (ev.summary || '').trim();
+    const cleanedDesc = cleanCalendarText(ev.description);
+    const descLines = cleanedDesc
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const strippedSummary = rawSummary
+      .replace(/\p{Extended_Pictographic}/gu, '')
+      .replace(/[\uFE0F\u200D\u20E3·\-–—|•]+/g, ' ')
+      .trim();
+
+    if (strippedSummary.length > 0) {
+      const detail =
+        descLines.length > 0 && descLines[0] !== rawSummary ? descLines.join(' · ') : '';
+      return { title: rawSummary, detail };
+    }
+    if (descLines.length > 0) {
+      return {
+        title: `${rawSummary ? `${rawSummary} ` : ''}${descLines[0]}`.trim(),
+        detail: descLines.slice(1).join(' · '),
+      };
+    }
+    return { title: rawSummary || 'موعد', detail: '' };
+  };
+
+  const tomorrowCairoIso = useMemo(() => {
+    const base = new Date(`${todayCairoIso}T12:00:00Z`);
+    base.setUTCDate(base.getUTCDate() + 1);
+    return base.toISOString().slice(0, 10);
+  }, [todayCairoIso]);
+
+  const tomorrowEvents = useMemo(() => {
+    return calendarEvents
+      .filter((ev) => getEventCairoDateIso(ev.start) === tomorrowCairoIso)
+      .sort((a, b) => a.start.localeCompare(b.start));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarEvents, tomorrowCairoIso]);
+
+  const nonRoutineUpcomingEvents = useMemo(() => {
+    const routineKeywords =
+      /(نوم ليلي|استيقاظ|الصلوات|صلاة الفجر|صلاة الظهر|صلاة العصر|صلاة المغرب|صلاة العشاء|شرب المياه|ترطيب|فطار|سحور|روتين يومي|روتين صباحي|روتين مسائي|إفطار يومي|غداء يومي|عشاء يومي|قيلولة|أذكار|مشي يومي)/i;
+
+    const signatureDays = new Map<string, Set<string>>();
+    const normalizeSig = (ev: GoogleCalendarEventItem): string => {
+      const resolved = resolveCalendarEventText(ev).title.toLowerCase();
+      const noDates = resolved
+        .replace(/\d{1,2}:\d{2}\s*(ص|م|am|pm)?/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return noDates || (ev.summary || '').trim().toLowerCase();
+    };
+
+    for (const ev of calendarEvents) {
+      const dayIso = getEventCairoDateIso(ev.start);
+      if (!dayIso) continue;
+      const sig = normalizeSig(ev);
+      if (!signatureDays.has(sig)) signatureDays.set(sig, new Set());
+      signatureDays.get(sig)!.add(dayIso);
+    }
+
+    const nowMs = Date.now();
+    return calendarEvents
+      .filter((ev) => {
+        const dayIso = getEventCairoDateIso(ev.start);
+        if (!dayIso || dayIso < todayCairoIso) return false;
+        if (!ev.isAllDay && ev.end) {
+          const endMs = new Date(ev.end).getTime();
+          if (!Number.isNaN(endMs) && endMs <= nowMs) return false;
+        }
+        const sig = normalizeSig(ev);
+        const uniqueDaysCount = signatureDays.get(sig)?.size ?? 1;
+        // Filter out routine/daily items that repeat across 3+ days or match daily routine anchors
+        if (uniqueDaysCount >= 3) return false;
+        if (routineKeywords.test(sig)) return false;
+        return true;
+      })
+      .sort((a, b) => a.start.localeCompare(b.start));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calendarEvents, todayCairoIso]);
+
   const finishedTodayBlocks = useMemo(
     () => activeBlocks.filter((b) => isBlockFinishedOrPassed(b)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -470,21 +591,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [nextAlarmBlock]
   );
 
-  const countdownDisplay = useMemo(() => {
+  const countdownMeta = useMemo(() => {
     if (simulateUnder60s) {
-      return `00:${String(liveCountdownSec).padStart(2, '0')}`;
+      return {
+        clock: `00:${String(liveCountdownSec).padStart(2, '0')}`,
+        caption: language === 'ar' ? 'أقل من دقيقة' : 'Under 1 min',
+      };
     }
-    if (!nextAlarmBlock) return '✓';
+    if (!nextAlarmBlock) {
+      return {
+        clock: '✓',
+        caption: language === 'ar' ? 'انتهى اليوم' : 'All done',
+      };
+    }
     if (isNextBlockHappeningNow) {
       const rem = Math.max(1, nextAlarmBlock.startMin + nextAlarmBlock.durationMin - nowMinutes);
-      return language === 'ar' ? `الآن · ${rem} د` : `Now · ${rem}m`;
+      const h = Math.floor(rem / 60);
+      const m = rem % 60;
+      return {
+        clock: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+        caption:
+          language === 'ar'
+            ? h > 0
+              ? `متبقي الآن (${h} س ${m} د)`
+              : `متبقي الآن (${m} د)`
+            : h > 0
+              ? `Left now (${h}h ${m}m)`
+              : `Left now (${m}m)`,
+      };
     }
     const diffMin = Math.max(0, nextAlarmBlock.startMin - nowMinutes);
     const h = Math.floor(diffMin / 60);
     const m = diffMin % 60;
-    return language === 'ar'
-      ? `${String(h).padStart(2, '0')} س : ${String(m).padStart(2, '0')} د`
-      : `${String(h).padStart(2, '0')}h : ${String(m).padStart(2, '0')}m`;
+    return {
+      clock: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+      caption:
+        language === 'ar'
+          ? h > 0
+            ? `يبدأ بعد ${h} س و ${m} د`
+            : `يبدأ بعد ${m} د`
+          : h > 0
+            ? `Starts in ${h}h ${m}m`
+            : `Starts in ${m}m`,
+    };
   }, [nextAlarmBlock, isNextBlockHappeningNow, nowMinutes, simulateUnder60s, liveCountdownSec, language]);
 
   const totalMl = hydrationToday.cupsLogged * dailyRhythmPlan.cupSizeMl;
@@ -1029,19 +1178,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         {nextAlarmDisplay.detail}
                       </p>
                     )}
-                    <div className="font-mono-tabular text-xs text-zinc-400 mt-1 flex flex-wrap items-center gap-2">
+                    <div className="font-mono-tabular text-xs text-zinc-400 mt-1.5 flex flex-wrap items-center gap-2">
                       <span>
                         {nextAlarmBlock
                           ? nextAlarmBlock.isAllDay
                             ? 'طوال اليوم'
-                            : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)} (${nextAlarmBlock.durationMin} د)`
+                            : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)} (${formatDurationLabel(nextAlarmBlock.durationMin)})`
                           : 'سجّل الدخول لعرض جدولك الفعلي بنظام 12 ساعة'}
                       </span>
                       {nextAlarmBlock && (
                         <button
                           type="button"
                           onClick={() => onToggleComplete(nextAlarmBlock.id)}
-                          className="px-2 py-0.5 rounded-lg border border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80] text-[11px] font-semibold hover:bg-[#4ADE80]/20 cursor-pointer"
+                          className="px-2.5 py-0.5 rounded-lg border border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80] text-[11px] font-semibold hover:bg-[#4ADE80]/20 cursor-pointer"
                         >
                           ✓ تم الإنجاز
                         </button>
@@ -1051,9 +1200,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              <div className="text-right sm:text-left shrink-0">
+              <div className="text-right sm:text-left shrink-0 flex flex-col items-start sm:items-end justify-center">
                 <div
-                  className={`font-mono-tabular text-2xl sm:text-3xl font-bold tracking-tight whitespace-nowrap ${
+                  className={`font-digits text-3xl sm:text-4xl font-bold tracking-tight leading-none whitespace-nowrap ${
                     simulateUnder60s
                       ? 'text-[#FF6B6B]'
                       : isNextBlockHappeningNow
@@ -1061,7 +1210,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         : 'text-[#7FFFD4]'
                   }`}
                 >
-                  {countdownDisplay}
+                  {countdownMeta.clock}
+                </div>
+                <div className="text-[11px] font-medium text-zinc-400 mt-1 whitespace-nowrap">
+                  {countdownMeta.caption}
                 </div>
               </div>
             </div>
@@ -1269,8 +1421,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 {(
                   [
                     { id: 'today', label: `المتبقي اليوم (${remainingTodayBlocks.length})` },
+                    { id: 'tomorrow', label: `غداً (${tomorrowEvents.length})` },
+                    { id: 'special', label: `غير الروتيني (${nonRoutineUpcomingEvents.length})` },
                     { id: 'done', label: `المنتهي (${finishedTodayBlocks.length})` },
-                    { id: 'week', label: `الأسبوع (${calendarEvents.length})` },
                     { id: 'anchors', label: 'المراسي' },
                   ] as const
                 ).map((tab) => (
@@ -1376,76 +1529,200 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             )}
 
-            {/* Week View (All 7 Days Real Google Calendar Events across All Calendars) */}
-            {timelineFilter === 'week' ? (
-              <div className="mt-4 space-y-2">
+            {/* Tomorrow Prep View (Single Clean Card for Preparing Tomorrow) */}
+            {timelineFilter === 'tomorrow' ? (
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5">
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-white">
+                      تجهيز الغد · {formatCairoDayHeading(tomorrowCairoIso)}
+                    </div>
+                    <div className="text-[11px] text-zinc-400 mt-0.5">
+                      {tomorrowEvents.length > 0
+                        ? `لديك ${tomorrowEvents.length} موعداً مسجلاً للغد — راجعها لتجهّز يومك مسبقاً.`
+                        : 'يوم الغد هادئ ولا توجد مواعيد مسجلة بعد في Google Calendar.'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenAssistantWithPrompt(
+                        `راجع مواعيد الغد (${tomorrowCairoIso}) من تقويمي وساعدني في التجهيز المسبق وترتيب الأولويات بهدوء.`
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[#7FFFD4] text-xs font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer whitespace-nowrap"
+                  >
+                    جهّز الغد مع Gemini
+                  </button>
+                </div>
+
                 {!calendarConnected ? (
                   <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
-                    سجّل الدخول بحساب Google لعرض أحداث الأسبوع الحقيقية من Google Calendar.
+                    سجّل الدخول بحساب Google لعرض مواعيد الغد من Google Calendar.
                   </div>
-                ) : calendarEvents.length === 0 ? (
+                ) : tomorrowEvents.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
-                    لا توجد أحداث مسجلة في تقويمك خلال الأيام السبعة القادمة.
+                    لا توجد أحداث مسجلة لغداً حتى الآن — يمكنك إضافة حدث جديد للغد من الزر بالأعلى.
                   </div>
                 ) : (
-                  calendarEvents.map((ev) => {
-                    const descPreview = cleanCalendarText(ev.description);
-                    return (
-                      <div
-                        key={`${ev.calendarId ?? 'primary'}-${ev.id}`}
-                        className="rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 flex items-start justify-between gap-3 text-xs"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span
-                              className="w-2 h-2 rounded-full shrink-0"
-                              style={{ backgroundColor: ev.calendarColor || '#7FFFD4' }}
-                            />
-                            <span className="font-semibold text-white break-words">
-                              {ev.summary}
-                            </span>
-                            {ev.calendarTitle && ev.calendarTitle !== calendarUserEmail && (
-                              <span className="text-[11px] text-zinc-500">
-                                · {ev.calendarTitle}
-                              </span>
-                            )}
-                          </div>
-                          {descPreview && (
-                            <div className="text-[11px] text-zinc-300 mt-1 leading-relaxed line-clamp-2">
-                              {descPreview}
+                  <div className="space-y-2">
+                    {tomorrowEvents.map((ev) => {
+                      const { title, detail } = resolveCalendarEventText(ev);
+                      return (
+                        <div
+                          key={`tmr-${ev.calendarId ?? 'primary'}-${ev.id}`}
+                          className="rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 flex items-start justify-between gap-3 text-xs"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: ev.calendarColor || '#7FFFD4' }}
+                              />
+                              <span className="font-semibold text-white break-words">{title}</span>
+                              {ev.calendarTitle && ev.calendarTitle !== calendarUserEmail && (
+                                <span className="text-[11px] text-zinc-500">
+                                  · {ev.calendarTitle}
+                                </span>
+                              )}
                             </div>
-                          )}
-                          <div className="font-mono-tabular text-[11px] text-[#7FFFD4] mt-1 whitespace-nowrap">
-                            {formatIsoTo12h(ev.start, language)}
-                            {ev.end && !ev.isAllDay
-                              ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false })}`
-                              : ''}
+                            {detail && (
+                              <div className="text-[11px] text-zinc-300 mt-1 leading-relaxed line-clamp-2">
+                                {detail}
+                              </div>
+                            )}
+                            <div className="font-mono-tabular text-[11px] text-[#7FFFD4] mt-1 whitespace-nowrap">
+                              {ev.isAllDay
+                                ? 'طوال اليوم'
+                                : `${formatIsoTo12h(ev.start, language, { includeDate: false })}${
+                                    ev.end
+                                      ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false })}`
+                                      : ''
+                                  }`}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {ev.htmlLink && (
+                              <a
+                                href={ev.htmlLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-[#4ADE80] hover:bg-white/10"
+                                title="فتح في Google Calendar"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteGoogleEv(ev)}
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                              title="حذف من Google Calendar"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          {ev.htmlLink && (
-                            <a
-                              href={ev.htmlLink}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-[#4ADE80] hover:bg-white/10"
-                              title="فتح في Google Calendar"
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : timelineFilter === 'special' ? (
+              /* Non-Routine / Special Upcoming Events (Filters out daily repeating routine items over next 14 days) */
+              <div className="mt-4 space-y-3">
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                      <span>المواعيد المميزة وغير الروتينية (خلال 14 يوماً)</span>
+                    </div>
+                    <div className="text-[11px] text-zinc-400 mt-0.5">
+                      تظهر هنا فقط المواعيد الاستثنائية وغير المتكررة يومياً حتى لا تنساها وسط الروتين.
+                    </div>
+                  </div>
+                </div>
+
+                {!calendarConnected ? (
+                  <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
+                    سجّل الدخول بحساب Google لعرض المواعيد غير الروتينية القادمة من تقويمك.
+                  </div>
+                ) : nonRoutineUpcomingEvents.length === 0 ? (
+                  <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
+                    لا توجد مواعيد غير روتينية مسجلة خلال الأسبوعين القادمين — أيامك تسير على إيقاعك المعتاد.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {nonRoutineUpcomingEvents.map((ev) => {
+                      const { title, detail } = resolveCalendarEventText(ev);
+                      const evDateIso = getEventCairoDateIso(ev.start);
+                      const dayLabel =
+                        evDateIso === todayCairoIso
+                          ? 'اليوم'
+                          : evDateIso === tomorrowCairoIso
+                            ? 'غداً'
+                            : formatCairoDayHeading(evDateIso);
+                      return (
+                        <div
+                          key={`sp-${ev.calendarId ?? 'primary'}-${ev.id}`}
+                          className="rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 flex items-start justify-between gap-3 text-xs"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className="w-2 h-2 rounded-full shrink-0"
+                                style={{ backgroundColor: ev.calendarColor || '#7FFFD4' }}
+                              />
+                              <span className="font-semibold text-white break-words">{title}</span>
+                              <span className="text-[11px] font-medium text-amber-300">
+                                · {dayLabel}
+                              </span>
+                              {ev.calendarTitle && ev.calendarTitle !== calendarUserEmail && (
+                                <span className="text-[11px] text-zinc-500">
+                                  · {ev.calendarTitle}
+                                </span>
+                              )}
+                            </div>
+                            {detail && (
+                              <div className="text-[11px] text-zinc-300 mt-1 leading-relaxed line-clamp-2">
+                                {detail}
+                              </div>
+                            )}
+                            <div className="font-mono-tabular text-[11px] text-[#7FFFD4] mt-1 whitespace-nowrap">
+                              {ev.isAllDay
+                                ? `${dayLabel} · طوال اليوم`
+                                : `${formatIsoTo12h(ev.start, language)}${
+                                    ev.end
+                                      ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false })}`
+                                      : ''
+                                  }`}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {ev.htmlLink && (
+                              <a
+                                href={ev.htmlLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-[#4ADE80] hover:bg-white/10"
+                                title="فتح في Google Calendar"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteGoogleEv(ev)}
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                              title="حذف من Google Calendar"
                             >
-                              <ExternalLink className="w-3.5 h-3.5" />
-                            </a>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteGoogleEv(ev)}
-                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
-                            title="حذف من Google Calendar"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             ) : (
@@ -1557,7 +1834,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               </span>
                               {!block.isAllDay && (
                                 <span className="whitespace-nowrap text-zinc-500">
-                                  ({block.durationMin} د)
+                                  ({formatDurationLabel(block.durationMin)})
                                 </span>
                               )}
                               {block.isFridayRitual && (

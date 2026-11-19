@@ -25,7 +25,9 @@ namespace DayRhythm
         private WebView2 _webView;
         private CoreWebView2Environment _webViewEnv;
         private NotifyIcon _trayIcon;
+        private DesktopCapsuleForm _capsuleForm;
         private ToolStripMenuItem _wsStatusItem;
+        private ToolStripMenuItem _capsuleMenuItem;
         private ToolStripMenuItem _updateMenuItem;
         private ToolStripMenuItem _autoLaunchMenuItem;
 
@@ -62,6 +64,7 @@ namespace DayRhythm
             );
 
             InitializeTray(appIcon);
+            InitializeDesktopCapsule();
             InitializeWebViewControl();
 
             Load += async (_, __) => await OnFormLoadedAsync();
@@ -129,6 +132,26 @@ namespace DayRhythm
             ToolStripMenuItem openItem = new ToolStripMenuItem("فتح النافذة", null, (_, __) => ShowAndFocusWindow());
             ToolStripMenuItem reloadItem = new ToolStripMenuItem("تحديث الواجهة", null, (_, __) => _webView?.Reload());
 
+            _capsuleMenuItem = new ToolStripMenuItem("كبسولة سطح المكتب العائمة (تايمر حر)")
+            {
+                CheckOnClick = true,
+                Checked = _settings.ShowDesktopCapsule,
+            };
+            _capsuleMenuItem.CheckedChanged += (_, __) =>
+            {
+                bool show = _capsuleMenuItem.Checked;
+                _settings.ShowDesktopCapsule = show;
+                AppConfig.SaveSettings(_settings);
+                if (show)
+                {
+                    _capsuleForm?.ShowFloating();
+                }
+                else
+                {
+                    _capsuleForm?.Hide();
+                }
+            };
+
             _updateMenuItem = new ToolStripMenuItem("فحص التحديثات من GitHub الآن", null, async (_, __) =>
             {
                 if (_pendingUpdate != null)
@@ -167,6 +190,7 @@ namespace DayRhythm
             menu.Items.Add(_wsStatusItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(openItem);
+            menu.Items.Add(_capsuleMenuItem);
             menu.Items.Add(reloadItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(_updateMenuItem);
@@ -234,14 +258,44 @@ namespace DayRhythm
                     try
                     {
                         string msg = args.TryGetWebMessageAsString();
+                        if (string.IsNullOrWhiteSpace(msg)) return;
                         if (string.Equals(msg, "install-update", StringComparison.OrdinalIgnoreCase))
                         {
                             RunOnUi(() => _ = InstallPendingUpdateAsync());
+                            return;
+                        }
+                        if (msg.StartsWith("{", StringComparison.Ordinal))
+                        {
+                            using (JsonDocument doc = JsonDocument.Parse(msg))
+                            {
+                                if (doc.RootElement.TryGetProperty("type", out JsonElement typeEl))
+                                {
+                                    string msgType = typeEl.GetString() ?? "";
+                                    if (string.Equals(msgType, "capsule-state", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        CapsuleStatePayload payload = JsonSerializer.Deserialize<CapsuleStatePayload>(msg);
+                                        if (payload != null)
+                                        {
+                                            RunOnUi(() => _capsuleForm?.UpdateState(payload));
+                                        }
+                                    }
+                                    else if (string.Equals(msgType, "show-native-capsule", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        RunOnUi(() =>
+                                        {
+                                            _settings.ShowDesktopCapsule = true;
+                                            AppConfig.SaveSettings(_settings);
+                                            if (_capsuleMenuItem != null) _capsuleMenuItem.Checked = true;
+                                            _capsuleForm?.ShowFloating();
+                                        });
+                                    }
+                                }
+                            }
                         }
                     }
                     catch
                     {
-                        // ignore non-string messages
+                        // ignore non-string or malformed messages
                     }
                 };
 
@@ -454,6 +508,25 @@ namespace DayRhythm
             _trayIcon.ShowBalloonTip(5000);
         }
 
+        private void InitializeDesktopCapsule()
+        {
+            _capsuleForm = new DesktopCapsuleForm(
+                _settings,
+                onOpenMainWindow: () => RunOnUi(ShowAndFocusWindow),
+                onVisibilityChanged: isVisible => RunOnUi(() =>
+                {
+                    if (_capsuleMenuItem != null && _capsuleMenuItem.Checked != isVisible)
+                    {
+                        _capsuleMenuItem.Checked = isVisible;
+                    }
+                })
+            );
+            if (_settings.ShowDesktopCapsule)
+            {
+                _capsuleForm.ShowFloating();
+            }
+        }
+
         private void OnMainFormClosing(object sender, FormClosingEventArgs e)
         {
             if (!_isQuitting && e.CloseReason == CloseReason.UserClosing)
@@ -462,6 +535,13 @@ namespace DayRhythm
                 Hide();
                 ShowInTaskbar = false;
                 return;
+            }
+
+            if (_capsuleForm != null)
+            {
+                _capsuleForm.Close();
+                _capsuleForm.Dispose();
+                _capsuleForm = null;
             }
 
             if (_trayIcon != null)

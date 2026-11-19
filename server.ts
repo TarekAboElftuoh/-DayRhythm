@@ -697,16 +697,23 @@ async function startServer() {
       (origin === 'https://gen-lang-client-0625331922.web.app' ||
         origin === 'https://gen-lang-client-0625331922.firebaseapp.com' ||
         origin.startsWith('http://localhost:') ||
-        origin.startsWith('http://127.0.0.1:'))
+        origin.startsWith('http://127.0.0.1:') ||
+        origin.startsWith('https://localhost:'))
     ) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-uid, x-client-id');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, Cache-Control, x-user-uid, x-client-id'
+      );
       if (req.method === 'OPTIONS') {
         res.status(204).end();
         return;
       }
+    }
+    if (req.path.startsWith('/api/')) {
+      res.setHeader('Cache-Control', 'no-store');
     }
     // Keeps window.opener intact for Firebase Google OAuth signInWithPopup across Desktop & Mobile Chrome
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
@@ -811,7 +818,7 @@ async function startServer() {
 
       const now = new Date();
       const startRange = new Date(now.getTime() - 24 * 60 * 60_000);
-      const endRange = new Date(now.getTime() + 7 * 24 * 60 * 60_000);
+      const endRange = new Date(now.getTime() + 14 * 24 * 60 * 60_000);
 
       const cal = getGoogleCalendarClient(authHeader);
 
@@ -853,7 +860,7 @@ async function startServer() {
             orderBy: 'startTime',
             timeMin: startRange.toISOString(),
             timeMax: endRange.toISOString(),
-            maxResults: 60,
+            maxResults: 120,
           });
           const items = response.data.items ?? [];
           return items.map((ev) => ({

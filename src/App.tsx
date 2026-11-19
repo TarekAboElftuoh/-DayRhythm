@@ -61,7 +61,12 @@ import {
   signInWithGoogleCalendar,
   signOutGoogleCalendar,
 } from './services/googleCalendarAuth';
-import { apiFetchJson, cleanCalendarText, sanitizePersistedChats } from './services/apiClient';
+import {
+  apiFetchJson,
+  cleanCalendarText,
+  resolveBlockDisplayInfo,
+  sanitizePersistedChats,
+} from './services/apiClient';
 import {
   DEFAULT_CREATIVE_ACTIVITIES,
   DEFAULT_DEVICE_SETTINGS,
@@ -3976,6 +3981,15 @@ export default function App() {
     }));
   };
 
+  const [capsuleNowMs, setCapsuleNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCapsuleNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const nextActiveBlock = useMemo(() => {
     const nowMin = getCairoNowMinutes();
     return (
@@ -3986,20 +4000,105 @@ export default function App() {
           (b.isAllDay || b.startMin + b.durationMin > nowMin)
       ) ?? null
     );
-  }, [liveBlocks]);
+    // Re-evaluate as seconds/minutes progress
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveBlocks, Math.floor(capsuleNowMs / 15_000)]);
 
-  const pipCountdownText = useMemo(() => {
+  const capsuleTimerState = useMemo(() => {
+    const display = resolveBlockDisplayInfo(nextActiveBlock);
+    const emoji = (nextActiveBlock?.emojiPair || '✅').split(' ')[0] || '📅';
+
     if (simulateUnder60s) {
-      return `00:${String(liveCountdownSec).padStart(2, '0')}`;
+      const targetMs = capsuleNowMs + liveCountdownSec * 1000;
+      return {
+        emoji,
+        title: nextActiveBlock ? display.title : 'المهمة القادمة',
+        statusLabel: 'أقل من دقيقة',
+        countdownText: `00:${String(liveCountdownSec).padStart(2, '0')}`,
+        isNow: false,
+        isUrgent: true,
+        progressRatio: 0,
+        targetEpochMs: targetMs,
+        durationSeconds: 60,
+      };
     }
-    if (!nextActiveBlock) return '00:00';
-    const nowMin = getCairoNowMinutes();
-    let diff = nextActiveBlock.startMin - nowMin;
-    if (diff < 0) diff += 1440;
-    const h = Math.floor(diff / 60);
-    const m = diff % 60;
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-  }, [nextActiveBlock, simulateUnder60s, liveCountdownSec]);
+
+    if (!nextActiveBlock) {
+      return {
+        emoji: '✅',
+        title: 'أنجزت مهام اليوم',
+        statusLabel: 'يوم هادئ ومكتمل',
+        countdownText: '✓',
+        isNow: false,
+        isUrgent: false,
+        progressRatio: 0,
+        targetEpochMs: 0,
+        durationSeconds: 0,
+      };
+    }
+
+    if (nextActiveBlock.isAllDay) {
+      return {
+        emoji,
+        title: display.title,
+        statusLabel: 'طوال اليوم',
+        countdownText: 'اليوم',
+        isNow: true,
+        isUrgent: false,
+        progressRatio: 0,
+        targetEpochMs: 0,
+        durationSeconds: 0,
+      };
+    }
+
+    // Current Cairo wall-clock seconds since midnight for smooth 1-second ticking
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Cairo',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(capsuleNowMs));
+    const hhRaw = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
+    const hh = hhRaw === 24 ? 0 : hhRaw;
+    const mm = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+    const ss = Number(parts.find((p) => p.type === 'second')?.value ?? '0');
+    const nowSecOfDay = hh * 3600 + mm * 60 + ss;
+
+    const startSec = nextActiveBlock.startMin * 60;
+    const durationSec = Math.max(60, nextActiveBlock.durationMin * 60);
+    const endSec = startSec + durationSec;
+    const isNow = nowSecOfDay >= startSec && nowSecOfDay < endSec;
+
+    const remainingSec = isNow
+      ? Math.max(0, endSec - nowSecOfDay)
+      : Math.max(0, startSec - nowSecOfDay);
+
+    const h = Math.floor(remainingSec / 3600);
+    const m = Math.floor((remainingSec % 3600) / 60);
+    const s = remainingSec % 60;
+
+    const countdownText =
+      h > 0
+        ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+
+    const progressRatio = isNow
+      ? Math.min(1, Math.max(0, (nowSecOfDay - startSec) / durationSec))
+      : 0;
+
+    return {
+      emoji,
+      title: display.title,
+      statusLabel: isNow ? 'جارٍ الآن · المتبقي' : 'المهمة القادمة',
+      countdownText,
+      isNow,
+      isUrgent: remainingSec > 0 && remainingSec <= 60,
+      progressRatio,
+      targetEpochMs: capsuleNowMs + remainingSec * 1000,
+      durationSeconds: durationSec,
+    };
+  }, [nextActiveBlock, simulateUnder60s, liveCountdownSec, capsuleNowMs]);
 
   const assistantContextSummary = useMemo(() => {
     const lifeConstitution = buildLifeProfileGeminiSummary(
@@ -4280,11 +4379,15 @@ ${lifeConstitution}
       </main>
 
       <FloatingPiPCapsule
-        nextEmoji={nextActiveBlock?.emojiPair.split(' ')[0] ?? '📅'}
-        countdownText={pipCountdownText}
-        cupsLogged={hydrationToday.cupsLogged}
-        targetCups={hydrationToday.targetCups}
-        onLogWaterCup={handleLogWaterCup}
+        nextEmoji={capsuleTimerState.emoji}
+        nextTitle={capsuleTimerState.title}
+        statusLabel={capsuleTimerState.statusLabel}
+        countdownText={capsuleTimerState.countdownText}
+        isNow={capsuleTimerState.isNow}
+        isUrgent={capsuleTimerState.isUrgent}
+        progressRatio={capsuleTimerState.progressRatio}
+        targetEpochMs={capsuleTimerState.targetEpochMs}
+        durationSeconds={capsuleTimerState.durationSeconds}
         onOpenDashboard={() => setActiveTab('dashboard')}
       />
 

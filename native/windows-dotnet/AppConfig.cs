@@ -9,6 +9,10 @@ namespace DayRhythm
     {
         public bool AutoLaunch { get; set; } = true;
         public string RemoteWsUrl { get; set; } = "";
+        public bool ShowDesktopCapsule { get; set; } = true;
+        public bool CapsulePrivacyMode { get; set; } = false;
+        public int? CapsuleX { get; set; }
+        public int? CapsuleY { get; set; }
     }
 
     internal static class AppConfig

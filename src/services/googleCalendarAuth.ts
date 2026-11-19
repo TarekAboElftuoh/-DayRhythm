@@ -42,13 +42,19 @@ function buildGoogleProvider(scopes: readonly string[], loginHint?: string | nul
   return provider;
 }
 
-function isStandaloneMobileContext(): boolean {
+function isTopLevelMobileOrWebView(): boolean {
   if (typeof window === 'undefined') return false;
+  const isTopLevel = window.self === window.top;
+  if (!isTopLevel) return false;
+  const ua = navigator.userAgent || '';
+  const isMobileUa = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
   const isStandalone =
     window.matchMedia?.('(display-mode: standalone)').matches ||
     (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
-  const isTopLevel = window.self === window.top;
-  return isStandalone && isTopLevel;
+  const isVirtualAppHost =
+    window.location.hostname.toLowerCase().endsWith('.web.app') ||
+    window.location.hostname.toLowerCase().endsWith('.firebaseapp.com');
+  return isMobileUa || isStandalone || isVirtualAppHost;
 }
 
 function formatAuthErrorAr(err: unknown): string {
@@ -62,7 +68,7 @@ function formatAuthErrorAr(err: unknown): string {
     return 'تم إغلاق نافذة تسجيل الدخول قبل إتمام الربط — اضغط مرة أخرى للمحاولة.';
   }
   if (code === 'auth/popup-blocked') {
-    return 'المتصفح منع نافذة تسجيل الدخول المنبثقة — اسمح بالـ Popups أو افتح التطبيق في Chrome.';
+    return 'المتصفح منع نافذة تسجيل الدخول المنبثقة — اسمح بالـ Popups أو أعد الضغط للمتابعة.';
   }
   if (code === 'auth/unauthorized-domain') {
     return 'هذا الرابط غير مضاف بعد في نطاقات Firebase المصرح بها — حدّث التطبيق لآخر إصدار من Releases أو افتحه من الرابط المصرح به.';
@@ -162,19 +168,20 @@ export async function signInWithGoogleCalendar(): Promise<{
           ? String((primaryErr as { code?: string }).code ?? '')
           : '';
 
+      // On Mobile / Android APK WebView (top-level), seamlessly fall back to same-tab redirect
+      // if popup is blocked or fails to bridge back to window.opener
       if (
         (code === 'auth/popup-blocked' ||
-          code === 'auth/operation-not-supported-in-this-environment') &&
-        isStandaloneMobileContext()
+          code === 'auth/operation-not-supported-in-this-environment' ||
+          code === 'auth/internal-error' ||
+          code === 'auth/web-storage-unsupported') &&
+        isTopLevelMobileOrWebView()
       ) {
         await signInWithRedirect(auth, fullProvider, browserPopupRedirectResolver);
         return null;
       }
 
-      if (
-        code === 'auth/invalid-credential' ||
-        code === 'auth/internal-error'
-      ) {
+      if (code === 'auth/invalid-credential' || code === 'auth/internal-error') {
         const coreProvider = buildGoogleProvider(CORE_CALENDAR_SCOPES, existingEmail);
         const retryResult = await signInWithPopup(auth, coreProvider, browserPopupRedirectResolver);
         const retryCred = GoogleAuthProvider.credentialFromResult(retryResult);

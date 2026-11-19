@@ -13,19 +13,49 @@ export function isStandaloneVirtualHost(): boolean {
   return host.endsWith('.web.app') || host.endsWith('.firebaseapp.com');
 }
 
+export function getSavedCloudApiUrl(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return (localStorage.getItem(CUSTOM_API_URL_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+export function setSavedCloudApiUrl(rawUrl: string): string {
+  const cleaned = rawUrl.trim().replace(/\/+$/, '');
+  if (typeof window !== 'undefined') {
+    try {
+      if (cleaned && /^https?:\/\//i.test(cleaned)) {
+        localStorage.setItem(CUSTOM_API_URL_KEY, cleaned);
+      } else {
+        localStorage.removeItem(CUSTOM_API_URL_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
+  return cleaned;
+}
+
+export function clearSavedCloudApiUrl(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(CUSTOM_API_URL_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
 function getApiBaseCandidates(): string[] {
   if (!isStandaloneVirtualHost()) {
     return [''];
   }
 
   const candidates: string[] = [];
-  try {
-    const custom = localStorage.getItem(CUSTOM_API_URL_KEY)?.trim();
-    if (custom && /^https?:\/\//i.test(custom)) {
-      candidates.push(custom.replace(/\/+$/, ''));
-    }
-  } catch {
-    // ignore storage errors
+  const custom = getSavedCloudApiUrl();
+  if (custom && /^https?:\/\//i.test(custom)) {
+    candidates.push(custom.replace(/\/+$/, ''));
   }
 
   const envUrl = (import.meta.env?.VITE_CLOUD_API_URL as string | undefined)?.trim();
@@ -83,8 +113,10 @@ export async function apiFetchJson<T = Record<string, unknown>>(
         lastStatus = res.status;
         lastErrorMsg =
           res.status === 404
-            ? 'الخادم السحابي غير منشور بعد على هذا الرابط.'
-            : `استجابة غير صالحة من الخادم (${res.status}).`;
+            ? 'رابط الخادم السحابي يعيد 404 (التطبيق لم يُنشر بعد عبر Deploy في AI Studio).'
+            : res.status === 401 || res.status === 403 || res.status === 302
+              ? 'رابط الخادم يتطلب صلاحية وصول عامة (Cloud Run Public).'
+              : `استجابة غير صالحة من الخادم (${res.status}).`;
         continue;
       }
 
@@ -105,7 +137,7 @@ export async function apiFetchJson<T = Record<string, unknown>>(
 
   throw new Error(
     isStandaloneVirtualHost()
-      ? 'تعذر الاتصال بخادم شات Gemini السحابي حالياً — تأكد من الإنترنت أو تأكد من نشر التطبيق (Share / Deploy) في AI Studio لتفعيل شات Gemini على الكمبيوتر والموبايل.'
+      ? 'خادم شات Gemini السحابي غير منشور بعد أو تغيّر رابطه — اضغط Deploy في AI Studio ثم الصق رابط الخادم المنشور هنا مرة واحدة.'
       : lastErrorMsg || `تعذر الاتصال بالخادم (${lastStatus || 'network'}).`
   );
 }

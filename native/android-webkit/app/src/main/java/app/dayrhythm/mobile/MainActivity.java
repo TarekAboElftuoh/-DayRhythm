@@ -292,6 +292,16 @@ public class MainActivity extends Activity {
                 TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics()));
     }
 
+    private static String sanitizeUserAgent(String rawUa) {
+        if (rawUa == null || rawUa.isEmpty()) {
+            return "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
+        }
+        return rawUa
+                .replace("; wv)", ")")
+                .replace("; wv;", ";")
+                .replaceAll("Version/\\d+\\.\\d+\\s*", "");
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private void buildWebViewUi() {
         FrameLayout root = new FrameLayout(this);
@@ -307,12 +317,12 @@ public class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setSupportMultipleWindows(true);
-
-        // Strip "; wv)" from User-Agent so Google Sign-In works seamlessly
-        String ua = settings.getUserAgentString();
-        if (ua != null) {
-            settings.setUserAgentString(ua.replace("; wv)", ")"));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         }
+
+        // Remove WebView markers ("; wv" & "Version/4.0") so Google OAuth never rejects with 403 disallowed_useragent
+        settings.setUserAgentString(sanitizeUserAgent(settings.getUserAgentString()));
 
         CookieManager cm = CookieManager.getInstance();
         cm.setAcceptCookie(true);
@@ -341,6 +351,8 @@ public class MainActivity extends Activity {
                         || host.equals("127.0.0.1")
                         || host.endsWith("google.com")
                         || host.endsWith("googleapis.com")
+                        || host.endsWith("googleusercontent.com")
+                        || host.endsWith("gstatic.com")
                         || host.endsWith("firebaseapp.com")
                         || host.endsWith("web.app")) {
                     return false;
@@ -367,31 +379,113 @@ public class MainActivity extends Activity {
             @Override
             public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
                 WebView popupWebView = new WebView(MainActivity.this);
+                popupWebView.setBackgroundColor(Color.parseColor("#09090B"));
                 WebSettings pSettings = popupWebView.getSettings();
                 pSettings.setJavaScriptEnabled(true);
                 pSettings.setDomStorageEnabled(true);
+                pSettings.setDatabaseEnabled(true);
+                pSettings.setSupportMultipleWindows(true);
                 pSettings.setJavaScriptCanOpenWindowsAutomatically(true);
-                String pUa = pSettings.getUserAgentString();
-                if (pUa != null) {
-                    pSettings.setUserAgentString(pUa.replace("; wv)", ")"));
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    pSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
                 }
-                CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
+                pSettings.setUserAgentString(sanitizeUserAgent(pSettings.getUserAgentString()));
+
+                CookieManager popupCm = CookieManager.getInstance();
+                popupCm.setAcceptCookie(true);
+                popupCm.setAcceptThirdPartyCookies(popupWebView, true);
+
+                LinearLayout dialogContainer = new LinearLayout(MainActivity.this);
+                dialogContainer.setOrientation(LinearLayout.VERTICAL);
+                dialogContainer.setBackgroundColor(Color.parseColor("#09090B"));
+                dialogContainer.setLayoutParams(new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                ));
+
+                // Compact top bar with close button so the user is never trapped on OAuth screens
+                LinearLayout topBar = new LinearLayout(MainActivity.this);
+                topBar.setOrientation(LinearLayout.HORIZONTAL);
+                topBar.setGravity(Gravity.CENTER_VERTICAL);
+                topBar.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+                topBar.setBackgroundColor(Color.parseColor("#0D1117"));
+                topBar.setPadding(dp(14), dp(8), dp(14), dp(8));
+
+                TextView titleTv = new TextView(MainActivity.this);
+                titleTv.setText("تسجيل الدخول بحساب Google");
+                titleTv.setTextColor(Color.parseColor("#E4E4E7"));
+                titleTv.setTextSize(14f);
+                topBar.addView(titleTv, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
                 Dialog dialog = new Dialog(MainActivity.this, android.R.style.Theme_DeviceDefault_NoActionBar);
-                dialog.setContentView(popupWebView);
+
+                Button closeBtn = new Button(MainActivity.this);
+                closeBtn.setText("إغلاق");
+                closeBtn.setAllCaps(false);
+                closeBtn.setTextColor(Color.parseColor("#A1A1AA"));
+                closeBtn.setBackgroundColor(Color.TRANSPARENT);
+                closeBtn.setOnClickListener(v -> dialog.dismiss());
+                topBar.addView(closeBtn, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        dp(36)
+                ));
+
+                dialogContainer.addView(topBar, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                ));
+                dialogContainer.addView(popupWebView, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        0,
+                        1f
+                ));
+
+                dialog.setContentView(dialogContainer);
+                if (dialog.getWindow() != null) {
+                    dialog.getWindow().setLayout(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                    );
+                }
+
+                dialog.setOnDismissListener(d -> {
+                    CookieManager.getInstance().flush();
+                    try {
+                        popupWebView.stopLoading();
+                        popupWebView.destroy();
+                    } catch (Exception ignored) {
+                    }
+                });
+
                 popupWebView.setWebChromeClient(new WebChromeClient() {
                     @Override
                     public void onCloseWindow(WebView window) {
                         CookieManager.getInstance().flush();
-                        dialog.dismiss();
+                        if (dialog.isShowing()) {
+                            dialog.dismiss();
+                        }
                     }
                 });
                 popupWebView.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest req) {
+                        Uri uri = req.getUrl();
+                        if (uri != null && "https".equalsIgnoreCase(uri.getScheme())
+                                && APP_HOST.equalsIgnoreCase(uri.getHost())) {
+                            String p = uri.getPath();
+                            if (p == null || !p.startsWith("/__/")) {
+                                return assetLoader.shouldInterceptRequest(uri);
+                            }
+                        }
+                        return super.shouldInterceptRequest(v, req);
+                    }
+
                     @Override
                     public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
                         return false;
                     }
                 });
+
                 dialog.show();
 
                 WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
