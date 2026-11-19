@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "DayRhythm"
+rootProject.name = "DayRhythmAndroid"
 include ':app'

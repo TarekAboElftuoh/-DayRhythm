@@ -6,113 +6,127 @@ import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
+  const isNativeBundle = process.env.NATIVE_APP === 'true';
+  const rootDir = import.meta.dirname ?? process.cwd();
+
   return {
     plugins: [
       react(),
       tailwindcss(),
-      VitePWA({
-        registerType: 'autoUpdate',
-        includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
-        manifest: {
-          id: '/',
-          name: 'إيقاع اليوم | DayRhythm',
-          short_name: 'DayRhythm',
-          description: 'منظومة شخصية متكاملة لمواقيت الصلاة الفلكية، النوم الليلي، الترطيب، العلاجات، وتقويم جوجل.',
-          theme_color: '#000000',
-          background_color: '#000000',
-          display: 'standalone',
-          orientation: 'portrait',
-          scope: '/',
-          start_url: '/',
-          dir: 'rtl',
-          lang: 'ar',
-          icons: [
-            {
-              src: 'pwa-192x192.png',
-              sizes: '192x192',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: 'pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any',
-            },
-            {
-              src: 'pwa-maskable-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'maskable',
-            },
-          ],
-          shortcuts: [
-            {
-              name: '+1 كوب ماء',
-              short_name: '+1 كوب',
-              description: 'تسجيل كوب ماء فوري في عدّاد الترطيب اليومي',
-              url: '/?action=water',
-              icons: [{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
-            },
-            {
-              name: 'وضع اجتماع (صمت)',
-              short_name: 'اجتماع',
-              description: 'تفعيل كتم الصوت مع الاهتزاز وحفظ الإشعارات',
-              url: '/?action=meeting',
-              icons: [{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
-            },
-            {
-              name: 'شات Gemini بالصوت',
-              short_name: 'صوت Gemini',
-              description: 'فتح المساعد الشخصي مع الإدخال الصوتي المباشر',
-              url: '/?action=voice',
-              icons: [{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
-            },
-          ],
-        },
-        workbox: {
-          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-          cleanupOutdatedCaches: true,
-          clientsClaim: true,
-          skipWaiting: true,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-          navigateFallback: '/index.html',
-          navigateFallbackDenylist: [/^\/api\//, /^\/ws\//, /^\/__\//],
-          runtimeCaching: [
-            {
-              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'google-fonts-cache',
-                expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
-                cacheableResponse: { statuses: [0, 200] },
+      ...(!isNativeBundle
+        ? [
+            VitePWA({
+              registerType: 'autoUpdate',
+              includeAssets: [
+                'icon.svg',
+                'apple-touch-icon.png',
+                'pwa-192x192.png',
+                'pwa-512x512.png',
+                'pwa-maskable-512x512.png',
+              ],
+              manifest: {
+                id: '/',
+                name: 'إيقاع اليوم | DayRhythm',
+                short_name: 'DayRhythm',
+                description:
+                  'منظومة شخصية متكاملة لمواقيت الصلاة الفلكية، النوم الليلي، الترطيب، العلاجات، وتقويم جوجل.',
+                theme_color: '#000000',
+                background_color: '#000000',
+                display: 'standalone',
+                orientation: 'portrait',
+                scope: '/',
+                start_url: '/',
+                dir: 'rtl',
+                lang: 'ar',
+                icons: [
+                  {
+                    src: 'pwa-192x192.png',
+                    sizes: '192x192',
+                    type: 'image/png',
+                    purpose: 'any',
+                  },
+                  {
+                    src: 'pwa-512x512.png',
+                    sizes: '512x512',
+                    type: 'image/png',
+                    purpose: 'any',
+                  },
+                  {
+                    src: 'pwa-maskable-512x512.png',
+                    sizes: '512x512',
+                    type: 'image/png',
+                    purpose: 'maskable',
+                  },
+                ],
+                shortcuts: [
+                  {
+                    name: '+1 كوب ماء',
+                    short_name: '+1 كوب',
+                    description: 'تسجيل كوب ماء فوري في عدّاد الترطيب اليومي',
+                    url: '/?action=water',
+                    icons: [{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+                  },
+                  {
+                    name: 'وضع اجتماع (صمت)',
+                    short_name: 'اجتماع',
+                    description: 'تفعيل كتم الصوت مع الاهتزاز وحفظ الإشعارات',
+                    url: '/?action=meeting',
+                    icons: [{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+                  },
+                  {
+                    name: 'شات Gemini بالصوت',
+                    short_name: 'صوت Gemini',
+                    description: 'فتح المساعد الشخصي مع الإدخال الصوتي المباشر',
+                    url: '/?action=voice',
+                    icons: [{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+                  },
+                ],
               },
-            },
-            {
-              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-              handler: 'CacheFirst',
-              options: {
-                cacheName: 'gstatic-fonts-cache',
-                expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 },
-                cacheableResponse: { statuses: [0, 200] },
+              workbox: {
+                maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+                cleanupOutdatedCaches: true,
+                clientsClaim: true,
+                skipWaiting: true,
+                globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+                navigateFallback: '/index.html',
+                navigateFallbackDenylist: [/^\/api\//, /^\/ws\//, /^\/__\//],
+                runtimeCaching: [
+                  {
+                    urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+                    handler: 'CacheFirst',
+                    options: {
+                      cacheName: 'google-fonts-cache',
+                      expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                      cacheableResponse: { statuses: [0, 200] },
+                    },
+                  },
+                  {
+                    urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+                    handler: 'CacheFirst',
+                    options: {
+                      cacheName: 'gstatic-fonts-cache',
+                      expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                      cacheableResponse: { statuses: [0, 200] },
+                    },
+                  },
+                  {
+                    urlPattern: /^https:\/\/api\.open-meteo\.com\/.*/i,
+                    handler: 'NetworkFirst',
+                    options: {
+                      cacheName: 'open-meteo-weather-cache',
+                      expiration: { maxEntries: 5, maxAgeSeconds: 60 * 60 * 6 },
+                      cacheableResponse: { statuses: [0, 200] },
+                    },
+                  },
+                ],
               },
-            },
-            {
-              urlPattern: /^https:\/\/api\.open-meteo\.com\/.*/i,
-              handler: 'NetworkFirst',
-              options: {
-                cacheName: 'open-meteo-weather-cache',
-                expiration: { maxEntries: 5, maxAgeSeconds: 60 * 60 * 6 },
-                cacheableResponse: { statuses: [0, 200] },
+              devOptions: {
+                enabled: true,
+                type: 'module',
               },
-            },
-          ],
-        },
-        devOptions: {
-          enabled: true,
-          type: 'module',
-        },
-      }),
+            }),
+          ]
+        : []),
       // Copies src/assets into dist/ so root-relative URLs like
       // "/src/assets/images/..." (e.g. generate_image output) still resolve
       // in production builds. Do not remove.
@@ -123,8 +137,8 @@ export default defineConfig(() => {
           if (error) {
             return;
           }
-          const distDir = path.resolve(__dirname, 'dist');
-          const srcAssets = path.resolve(__dirname, 'src/assets');
+          const distDir = path.resolve(rootDir, 'dist');
+          const srcAssets = path.resolve(rootDir, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
@@ -134,7 +148,7 @@ export default defineConfig(() => {
     ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(rootDir, '.'),
       },
     },
     server: {

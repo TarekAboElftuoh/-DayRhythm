@@ -11,7 +11,8 @@ public class BootReceiver extends BroadcastReceiver {
         String action = intent.getAction();
         if (Intent.ACTION_BOOT_COMPLETED.equals(action)
                 || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
-            DayRhythmKeepAliveService.startServiceCompat(context);
+            DayRhythmSyncService.startServiceCompat(context);
+            UpdateCheckWorker.schedulePeriodicCheck(context);
         }
     }
 }

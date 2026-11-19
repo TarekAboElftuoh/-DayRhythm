@@ -1,5 +1,4 @@
-import React, { useState } from 'react';
-import { motion } from 'motion/react';
+import React, { useRef, useState } from 'react';
 import { Droplets, EyeOff, Eye, LayoutDashboard, GripHorizontal } from 'lucide-react';
 
 interface FloatingPiPCapsuleProps {
@@ -21,6 +20,48 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
 }) => {
   const [visible, setVisible] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const dragStateRef = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  }>({ active: false, startX: 0, startY: 0, originX: 0, originY: 0 });
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Allow clicking buttons inside the capsule without triggering drag
+    if ((e.target as HTMLElement).closest('button')) return;
+    if (e.button !== 0) return;
+    dragStateRef.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: offset.x,
+      originY: offset.y,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragStateRef.current.active) return;
+    const dx = e.clientX - dragStateRef.current.startX;
+    const dy = e.clientY - dragStateRef.current.startY;
+    setOffset({
+      x: dragStateRef.current.originX + dx,
+      y: dragStateRef.current.originY + dy,
+    });
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragStateRef.current.active) return;
+    dragStateRef.current.active = false;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore if capture already released
+    }
+  };
 
   if (!visible) {
     return (
@@ -37,14 +78,19 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
   }
 
   return (
-    <motion.div
-      drag
-      dragMomentum={false}
+    <div
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenuOpen((v) => !v);
       }}
-      className="hidden md:block fixed bottom-5 left-5 z-40 select-none"
+      style={{
+        transform: `translate3d(${offset.x}px, ${offset.y}px, 0)`,
+      }}
+      className="hidden md:block fixed bottom-5 left-5 z-40 select-none touch-none"
     >
       <div
         className="flex items-center gap-3 rounded-2xl border border-white/20 bg-black/85 backdrop-blur-xl px-3.5 py-2 shadow-2xl cursor-grab active:cursor-grabbing"
@@ -115,6 +161,6 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
           </button>
         </div>
       )}
-    </motion.div>
+    </div>
   );
 };

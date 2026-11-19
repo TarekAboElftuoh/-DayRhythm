@@ -17,8 +17,6 @@ import android.os.Looper;
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.OkHttpClient;
@@ -27,9 +25,8 @@ import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
-public class DayRhythmKeepAliveService extends Service {
+public class DayRhythmSyncService extends Service {
     public static final String CHANNEL_KEEPALIVE = "dayrhythm_keepalive";
-    public static final String CHANNEL_UPDATES = "dayrhythm_updates";
     public static final String ACTION_WS_SYNC_MESSAGE = "app.dayrhythm.mobile.WS_SYNC_MESSAGE";
     public static final String ACTION_UPDATE_AVAILABLE = "app.dayrhythm.mobile.UPDATE_AVAILABLE";
     public static final String EXTRA_WS_PAYLOAD = "ws_payload";
@@ -37,29 +34,17 @@ public class DayRhythmKeepAliveService extends Service {
     public static final String EXTRA_UPDATE_URL = "update_url";
 
     private static final int NOTIF_KEEPALIVE_ID = 1001;
-    private static final int NOTIF_UPDATE_ID = 1002;
-    private static final long UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000L; // Every 60 minutes
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
-
     private OkHttpClient wsClient;
     private WebSocket activeWebSocket;
     private long wsBackoffMs = 3000L;
     private volatile boolean isDestroyed = false;
 
-    private final Runnable periodicUpdateTask = new Runnable() {
-        @Override
-        public void run() {
-            executor.execute(() -> checkForGithubUpdate());
-            handler.postDelayed(this, UPDATE_CHECK_INTERVAL_MS);
-        }
-    };
-
     private final Runnable wsReconnectRunnable = this::connectBackgroundWebSocket;
 
     public static void startServiceCompat(Context context) {
-        Intent intent = new Intent(context, DayRhythmKeepAliveService.class);
+        Intent intent = new Intent(context, DayRhythmSyncService.class);
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent);
@@ -67,15 +52,15 @@ public class DayRhythmKeepAliveService extends Service {
                 context.startService(intent);
             }
         } catch (Exception ignored) {
-            // Avoid crash if background launch restriction temporarily blocks start
+            // Avoid crash if system temporarily defers background service launch
         }
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
-        createNotificationChannels();
-        LocalAssetServer.ensureStarted(this);
+        createNotificationChannel();
+        UpdateCheckWorker.schedulePeriodicCheck(this);
 
         wsClient = new OkHttpClient.Builder()
                 .pingInterval(25, TimeUnit.SECONDS)
@@ -95,8 +80,6 @@ public class DayRhythmKeepAliveService extends Service {
         }
 
         connectBackgroundWebSocket();
-        handler.removeCallbacks(periodicUpdateTask);
-        handler.post(periodicUpdateTask);
         return START_STICKY;
     }
 
@@ -108,7 +91,6 @@ public class DayRhythmKeepAliveService extends Service {
     @Override
     public void onDestroy() {
         isDestroyed = true;
-        handler.removeCallbacks(periodicUpdateTask);
         handler.removeCallbacks(wsReconnectRunnable);
         if (activeWebSocket != null) {
             try {
@@ -117,7 +99,6 @@ public class DayRhythmKeepAliveService extends Service {
             }
             activeWebSocket = null;
         }
-        executor.shutdownNow();
         super.onDestroy();
     }
 
@@ -191,7 +172,7 @@ public class DayRhythmKeepAliveService extends Service {
         nm.notify(NOTIF_KEEPALIVE_ID, buildKeepAliveNotification(subtitle));
     }
 
-    private void createNotificationChannels() {
+    private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (nm == null) return;
@@ -204,13 +185,6 @@ public class DayRhythmKeepAliveService extends Service {
             keepAlive.setShowBadge(false);
             keepAlive.setSound(null, null);
             nm.createNotificationChannel(keepAlive);
-
-            NotificationChannel updates = new NotificationChannel(
-                    CHANNEL_UPDATES,
-                    "تحديثات إيقاع اليوم التلقائية",
-                    NotificationManager.IMPORTANCE_HIGH
-            );
-            nm.createNotificationChannel(updates);
         }
     }
 
@@ -233,41 +207,5 @@ public class DayRhythmKeepAliveService extends Service {
                 .setPriority(NotificationCompat.PRIORITY_MIN)
                 .setContentIntent(pi)
                 .build();
-    }
-
-    private void checkForGithubUpdate() {
-        AutoUpdateManager.UpdateInfo info = AutoUpdateManager.checkLatestRelease(this);
-        if (info == null || !info.hasUpdate) return;
-
-        // Broadcast to active MainActivity for instant in-app install banner
-        Intent updateBroadcast = new Intent(ACTION_UPDATE_AVAILABLE);
-        updateBroadcast.setPackage(getPackageName());
-        updateBroadcast.putExtra(EXTRA_UPDATE_TAG, info.latestTag);
-        updateBroadcast.putExtra(EXTRA_UPDATE_URL, info.apkDownloadUrl);
-        sendBroadcast(updateBroadcast);
-
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm == null) return;
-
-        Intent openIntent = new Intent(this, MainActivity.class);
-        openIntent.putExtra("trigger_update", true);
-        openIntent.putExtra(EXTRA_UPDATE_TAG, info.latestTag);
-        openIntent.putExtra(EXTRA_UPDATE_URL, info.apkDownloadUrl);
-        openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pi = PendingIntent.getActivity(
-                this,
-                1,
-                openIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
-
-        Notification notif = new NotificationCompat.Builder(this, CHANNEL_UPDATES)
-                .setContentTitle("🚀 يتوفر إصدار جديد من إيقاع اليوم (" + info.latestTag + ")")
-                .setContentText("اضغط هنا لتنزيل وتثبيت التحديث مباشرة من التطبيق")
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setAutoCancel(true)
-                .setContentIntent(pi)
-                .build();
-        nm.notify(NOTIF_UPDATE_ID, notif);
     }
 }

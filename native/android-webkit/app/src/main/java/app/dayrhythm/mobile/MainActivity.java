@@ -28,6 +28,7 @@ import android.webkit.GeolocationPermissions;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -39,7 +40,14 @@ import android.widget.Toast;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.webkit.WebViewAssetLoader;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -47,9 +55,11 @@ public class MainActivity extends Activity {
     public static final String PREFS_NAME = "dayrhythm_mobile_prefs";
     public static final String KEY_REMOTE_WS_URL = "remote_ws_url";
     private static final String KEY_BATTERY_PROMPTED = "battery_prompted_once";
+    private static final String APP_ORIGIN = "https://localhost/";
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private WebView webView;
+    private WebViewAssetLoader assetLoader;
     private LinearLayout updateBar;
     private TextView updateBarText;
     private String pendingUpdateTag = "";
@@ -66,16 +76,16 @@ public class MainActivity extends Activity {
                 long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L);
                 if (id != -1L && id == activeDownloadId) {
                     Toast.makeText(context, "اكتمل تنزيل التحديث — جاري فتح المثبّت", Toast.LENGTH_LONG).show();
-                    AutoUpdateManager.installDownloadedApk(context);
+                    GitHubUpdater.installDownloadedApk(context);
                 }
-            } else if (DayRhythmKeepAliveService.ACTION_UPDATE_AVAILABLE.equals(action)) {
-                String tag = intent.getStringExtra(DayRhythmKeepAliveService.EXTRA_UPDATE_TAG);
-                String url = intent.getStringExtra(DayRhythmKeepAliveService.EXTRA_UPDATE_URL);
+            } else if (DayRhythmSyncService.ACTION_UPDATE_AVAILABLE.equals(action)) {
+                String tag = intent.getStringExtra(DayRhythmSyncService.EXTRA_UPDATE_TAG);
+                String url = intent.getStringExtra(DayRhythmSyncService.EXTRA_UPDATE_URL);
                 if (tag != null && url != null && !url.isEmpty()) {
                     showUpdateBanner(tag, url);
                 }
-            } else if (DayRhythmKeepAliveService.ACTION_WS_SYNC_MESSAGE.equals(action)) {
-                String payload = intent.getStringExtra(DayRhythmKeepAliveService.EXTRA_WS_PAYLOAD);
+            } else if (DayRhythmSyncService.ACTION_WS_SYNC_MESSAGE.equals(action)) {
+                String payload = intent.getStringExtra(DayRhythmSyncService.EXTRA_WS_PAYLOAD);
                 if (payload != null && webView != null) {
                     String escaped = payload.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "");
                     webView.evaluateJavascript(
@@ -91,11 +101,13 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 1. Start embedded localhost server (ZERO 404, works immediately without Cloud Run Deploy!)
-        LocalAssetServer localServer = LocalAssetServer.ensureStarted(this);
+        // 1. Official AndroidX WebViewAssetLoader serving APK assets over https://localhost/
+        //    (Zero TCP ports, zero cleartext HTTP, zero 404, 100% Firebase Auth authorized!)
+        assetLoader = buildSpaAssetLoader();
 
-        // 2. Start 24/7 Foreground Service (WebSocket keep-alive + periodic GitHub auto-update)
-        DayRhythmKeepAliveService.startServiceCompat(this);
+        // 2. Start 24/7 Foreground Service + schedule hourly WorkManager GitHub update checks
+        DayRhythmSyncService.startServiceCompat(this);
+        UpdateCheckWorker.schedulePeriodicCheck(this);
 
         // 3. Request Android 13+ notification permission + OnePlus 12R battery optimization whitelist
         requestEssentialPermissions();
@@ -104,19 +116,103 @@ public class MainActivity extends Activity {
         // 4. Register receiver for APK downloads, update banners, and background WebSocket events
         IntentFilter filter = new IntentFilter();
         filter.addAction(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
-        filter.addAction(DayRhythmKeepAliveService.ACTION_UPDATE_AVAILABLE);
-        filter.addAction(DayRhythmKeepAliveService.ACTION_WS_SYNC_MESSAGE);
+        filter.addAction(DayRhythmSyncService.ACTION_UPDATE_AVAILABLE);
+        filter.addAction(DayRhythmSyncService.ACTION_WS_SYNC_MESSAGE);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(nativeEventsReceiver, filter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(nativeEventsReceiver, filter);
         }
 
-        buildStandaloneWebViewUi(localServer.getBaseUrl());
+        buildWebViewUi();
 
-        // Handle tap on background update notification
         handleIncomingUpdateIntent(getIntent());
         checkUpdatesOnLaunch();
+    }
+
+    private WebViewAssetLoader buildSpaAssetLoader() {
+        return new WebViewAssetLoader.Builder()
+                .setDomain("localhost")
+                .addPathHandler("/", path -> {
+                    String clean = path == null ? "" : path.replaceFirst("^/+", "").replace("..", "");
+                    if (clean.isEmpty()) clean = "index.html";
+
+                    Map<String, String> headers = new HashMap<>();
+                    headers.put("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+
+                    if ("api/health".equals(clean)) {
+                        byte[] json = ("{\"ok\":true,\"mode\":\"android_webkit_assetloader\",\"version\":\""
+                                + BuildConfig.VERSION_NAME + "\"}").getBytes(StandardCharsets.UTF_8);
+                        return new WebResourceResponse(
+                                "application/json",
+                                "UTF-8",
+                                200,
+                                "OK",
+                                headers,
+                                new ByteArrayInputStream(json)
+                        );
+                    }
+
+                    String resolved = clean;
+                    InputStream stream = tryOpenAsset("www/" + clean);
+                    if (stream == null) {
+                        resolved = "index.html";
+                        stream = tryOpenAsset("www/index.html");
+                    }
+
+                    if (stream == null) {
+                        byte[] fallback = "<!doctype html><html dir=\"rtl\" lang=\"ar\"><body style=\"background:#000;color:#fff;font-family:sans-serif;padding:32px;text-align:center\"><h2>جاري تحميل إيقاع اليوم...</h2></body></html>"
+                                .getBytes(StandardCharsets.UTF_8);
+                        return new WebResourceResponse(
+                                "text/html",
+                                "UTF-8",
+                                200,
+                                "OK",
+                                headers,
+                                new ByteArrayInputStream(fallback)
+                        );
+                    }
+
+                    if (resolved.endsWith(".html")) {
+                        headers.put("Cache-Control", "no-cache, no-store, must-revalidate");
+                    }
+                    return new WebResourceResponse(
+                            guessMime(resolved),
+                            "UTF-8",
+                            200,
+                            "OK",
+                            headers,
+                            stream
+                    );
+                })
+                .build();
+    }
+
+    private InputStream tryOpenAsset(String assetPath) {
+        try {
+            return getAssets().open(assetPath);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static String guessMime(String name) {
+        String lower = name.toLowerCase();
+        if (lower.endsWith(".html")) return "text/html";
+        if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "application/javascript";
+        if (lower.endsWith(".css")) return "text/css";
+        if (lower.endsWith(".json")) return "application/json";
+        if (lower.endsWith(".webmanifest")) return "application/manifest+json";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".svg")) return "image/svg+xml";
+        if (lower.endsWith(".ico")) return "image/x-icon";
+        if (lower.endsWith(".woff2")) return "font/woff2";
+        if (lower.endsWith(".woff")) return "font/woff";
+        if (lower.endsWith(".ttf")) return "font/ttf";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".wav")) return "audio/wav";
+        return "application/octet-stream";
     }
 
     @Override
@@ -131,7 +227,6 @@ public class MainActivity extends Activity {
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
-            // Move to background instead of killing so service & WebView stay warm
             moveTaskToBack(true);
         }
     }
@@ -182,7 +277,7 @@ public class MainActivity extends Activity {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private void buildStandaloneWebViewUi(String localBaseUrl) {
+    private void buildWebViewUi() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
 
@@ -196,9 +291,8 @@ public class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setSupportMultipleWindows(true);
-        settings.setAllowFileAccess(true);
 
-        // Strip "; wv)" from UA so Google Sign-In popup works seamlessly
+        // Strip "; wv)" from User-Agent so Google Sign-In works seamlessly
         String ua = settings.getUserAgentString();
         if (ua != null) {
             settings.setUserAgentString(ua.replace("; wv)", ")"));
@@ -209,6 +303,16 @@ public class MainActivity extends Activity {
         cm.setAcceptThirdPartyCookies(webView, true);
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                Uri uri = request.getUrl();
+                if (uri != null && "https".equalsIgnoreCase(uri.getScheme())
+                        && "localhost".equalsIgnoreCase(uri.getHost())) {
+                    return assetLoader.shouldInterceptRequest(uri);
+                }
+                return super.shouldInterceptRequest(view, request);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -322,13 +426,13 @@ public class MainActivity extends Activity {
         root.addView(updateBar, barLp);
 
         setContentView(root);
-        webView.loadUrl(localBaseUrl);
+        webView.loadUrl(APP_ORIGIN);
     }
 
     private void handleIncomingUpdateIntent(Intent intent) {
         if (intent == null || !intent.getBooleanExtra("trigger_update", false)) return;
-        String tag = intent.getStringExtra(DayRhythmKeepAliveService.EXTRA_UPDATE_TAG);
-        String url = intent.getStringExtra(DayRhythmKeepAliveService.EXTRA_UPDATE_URL);
+        String tag = intent.getStringExtra(DayRhythmSyncService.EXTRA_UPDATE_TAG);
+        String url = intent.getStringExtra(DayRhythmSyncService.EXTRA_UPDATE_URL);
         if (tag != null && url != null && !url.isEmpty()) {
             showUpdateBanner(tag, url);
             startPendingUpdateDownload();
@@ -337,7 +441,7 @@ public class MainActivity extends Activity {
 
     private void checkUpdatesOnLaunch() {
         executor.execute(() -> {
-            AutoUpdateManager.UpdateInfo info = AutoUpdateManager.checkLatestRelease(this);
+            GitHubUpdater.UpdateInfo info = GitHubUpdater.checkLatestRelease();
             if (info != null && info.hasUpdate) {
                 runOnUiThread(() -> showUpdateBanner(info.latestTag, info.apkDownloadUrl));
             }
@@ -364,7 +468,7 @@ public class MainActivity extends Activity {
             startActivity(permIntent);
             return;
         }
-        activeDownloadId = AutoUpdateManager.enqueueApkDownload(this, pendingUpdateUrl, pendingUpdateTag);
+        activeDownloadId = GitHubUpdater.enqueueApkDownload(this, pendingUpdateUrl, pendingUpdateTag);
         Toast.makeText(this, "جاري تنزيل التحديث " + pendingUpdateTag + "...", Toast.LENGTH_LONG).show();
     }
 }

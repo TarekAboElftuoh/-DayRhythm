@@ -18,7 +18,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
-public class AutoUpdateManager {
+public class GitHubUpdater {
     public static class UpdateInfo {
         public final boolean hasUpdate;
         public final String latestTag;
@@ -31,7 +31,7 @@ public class AutoUpdateManager {
         }
     }
 
-    public static UpdateInfo checkLatestRelease(Context context) {
+    public static UpdateInfo checkLatestRelease() {
         String repo = BuildConfig.GITHUB_REPO;
         if (repo == null || repo.trim().isEmpty() || !repo.contains("/")) {
             return null;
@@ -41,8 +41,8 @@ public class AutoUpdateManager {
         try {
             URL url = new URL("https://api.github.com/repos/" + repo.trim() + "/releases/latest");
             conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(6000);
-            conn.setReadTimeout(6000);
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(8000);
             conn.setRequestMethod("GET");
             conn.setRequestProperty("Accept", "application/vnd.github+json");
             conn.setRequestProperty("User-Agent", "DayRhythm-Android/" + BuildConfig.VERSION_NAME);
@@ -80,8 +80,7 @@ public class AutoUpdateManager {
                 return null;
             }
 
-            String current = "v" + BuildConfig.VERSION_NAME;
-            boolean newer = isVersionNewer(tag, current);
+            boolean newer = isVersionNewer(tag, "v" + BuildConfig.VERSION_NAME);
             return new UpdateInfo(newer, tag, apkUrl);
         } catch (Exception ignored) {
             return null;
@@ -129,7 +128,7 @@ public class AutoUpdateManager {
 
         DownloadManager.Request req = new DownloadManager.Request(Uri.parse(apkUrl));
         req.setTitle("تحديث إيقاع اليوم " + tagName);
-        req.setDescription("جاري تنزيل أحدث إصدار تلقائياً...");
+        req.setDescription("جاري تنزيل أحدث إصدار تلقائياً من GitHub...");
         req.setMimeType("application/vnd.android.package-archive");
         req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
         req.setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "DayRhythm-Update.apk");

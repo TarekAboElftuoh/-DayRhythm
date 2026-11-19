@@ -1,10 +1,10 @@
-name: Build DayRhythm APK & Windows EXE
+name: Build DayRhythm APK & Windows EXE (Native v2)
 
 on:
   workflow_dispatch:
     inputs:
       remote_ws_url:
-        description: 'Optional Remote WebSocket Sync URL (leave empty to use Firestore + Local WS)'
+        description: 'Optional Remote WebSocket Sync URL (leave empty to use Firestore real-time sync)'
         required: false
         default: ''
   push:
@@ -16,31 +16,40 @@ permissions:
 
 jobs:
   build-web-bundle:
-    name: Build DayRhythm Web Bundle (Shared for APK & EXE)
+    name: Build DayRhythm Web Bundle (Zero-SW Standalone)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: '22'
 
-      - name: Install dependencies and build production dist
+      - name: Install dependencies cleanly and build standalone web bundle
         run: |
-          bun install
-          bun run build
+          rm -f bun.lock package-lock.json
+          npm install --no-package-lock --legacy-peer-deps --no-audit --no-fund
+          npm run build:native
+          node scripts/png-to-ico.mjs public/pwa-512x512.png dist-icons/app.ico
 
-      - name: Upload built dist bundle
+      - name: Upload built web bundle
         uses: actions/upload-artifact@v4
         with:
           name: dayrhythm-web-dist
           path: dist/
           retention-days: 1
 
+      - name: Upload generated Windows ICO icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: dayrhythm-win-icon
+          path: dist-icons/app.ico
+          retention-days: 1
+
   build-android-apk:
-    name: Build Standalone Android APK (OnePlus 12R · 24/7 + Auto-Update)
+    name: Build Android APK (AndroidX WebViewAssetLoader + WorkManager)
     needs: [build-web-bundle]
     runs-on: ubuntu-latest
     steps:
@@ -51,7 +60,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dayrhythm-web-dist
-          path: packaging/android/app/src/main/assets/www
+          path: native/android-webkit/app/src/main/assets/www
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -66,14 +75,12 @@ jobs:
 
       - name: Copy DayRhythm icons into Android resources
         run: |
-          mkdir -p packaging/android/app/src/main/res/mipmap-xxxhdpi
-          mkdir -p packaging/android/app/src/main/res/mipmap-xhdpi
-          mkdir -p packaging/android/app/src/main/res/drawable
-          cp public/pwa-512x512.png packaging/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-          cp public/pwa-512x512.png packaging/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
-          cp public/pwa-192x192.png packaging/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
-          cp public/pwa-192x192.png packaging/android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
-          cp public/pwa-512x512.png packaging/android/app/src/main/res/drawable/ic_splash.png
+          mkdir -p native/android-webkit/app/src/main/res/mipmap-xxxhdpi
+          mkdir -p native/android-webkit/app/src/main/res/mipmap-xhdpi
+          cp public/pwa-512x512.png native/android-webkit/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          cp public/pwa-512x512.png native/android-webkit/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+          cp public/pwa-192x192.png native/android-webkit/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          cp public/pwa-192x192.png native/android-webkit/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
 
       - name: Prepare Android release signing keystore
         env:
@@ -106,18 +113,18 @@ jobs:
           echo "ANDROID_KEYSTORE_PATH=$KS_FILE" >> "$GITHUB_ENV"
 
       - name: Build signed standalone release APK
-        working-directory: packaging/android
+        working-directory: native/android-webkit
         run: |
           gradle assembleRelease \
             -PGITHUB_REPO="${{ github.repository }}" \
             -PREMOTE_WS_URL="${{ inputs.remote_ws_url || '' }}" \
             -PVERSION_CODE="${{ github.run_number }}" \
-            -PVERSION_NAME="1.0.${{ github.run_number }}"
+            -PVERSION_NAME="2.0.${{ github.run_number }}"
 
       - name: Stage APK artifact
         run: |
           mkdir -p release-android
-          cp packaging/android/app/build/outputs/apk/release/app-release.apk release-android/DayRhythm-OnePlus12R.apk
+          cp native/android-webkit/app/build/outputs/apk/release/app-release.apk release-android/DayRhythm-OnePlus12R.apk
 
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4
@@ -127,81 +134,101 @@ jobs:
           retention-days: 30
 
   build-windows-exe:
-    name: Build Standalone Windows EXE (Tray + WebSocket + Auto-Update)
+    name: Build Windows EXE (.NET 8 + Edge WebView2 + Inno Setup)
     needs: [build-web-bundle]
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+      - name: Set up .NET 8 SDK
+        uses: actions/setup-dotnet@v4
         with:
-          node-version: '22'
+          dotnet-version: '8.0.x'
 
-      - name: Download pre-built DayRhythm web bundle into desktop app-dist
+      - name: Download pre-built DayRhythm web bundle into Windows www
         uses: actions/download-artifact@v4
         with:
           name: dayrhythm-web-dist
-          path: packaging/desktop/app-dist
+          path: native/windows-dotnet/www
 
-      - name: Configure icon, version & GitHub auto-updater repo
+      - name: Download generated Windows icon
+        uses: actions/download-artifact@v4
+        with:
+          name: dayrhythm-win-icon
+          path: native/windows-dotnet
+
+      - name: Inject version, GitHub repo & WebSocket config
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "packaging/desktop/build" | Out-Null
-          Copy-Item "public/pwa-512x512.png" "packaging/desktop/build/icon.png" -Force
-
           $repoFull = "${{ github.repository }}"
           $parts = $repoFull.Split("/")
           $repoOwner = $parts[0]
           $repoName = $parts[1]
-          $ver = "1.0.${{ github.run_number }}"
+          $ver = "2.0.${{ github.run_number }}"
+          $wsUrl = "${{ inputs.remote_ws_url || '' }}"
 
-          $pkgPath = "packaging/desktop/package.json"
-          $pkg = Get-Content $pkgPath -Raw
-          $pkg = $pkg.Replace('"version": "1.0.0"', "`"version`": `"$ver`"")
-          $pkg = $pkg.Replace("DAYRHYTHM_GITHUB_OWNER", $repoOwner)
-          $pkg = $pkg.Replace("DAYRHYTHM_GITHUB_REPO", $repoName)
-          Set-Content -Path $pkgPath -Value $pkg -NoNewline
+          $cfgPath = "native/windows-dotnet/AppConfig.cs"
+          $cfg = Get-Content $cfgPath -Raw
+          $cfg = $cfg.Replace("DAYRHYTHM_GITHUB_OWNER", $repoOwner)
+          $cfg = $cfg.Replace("DAYRHYTHM_GITHUB_REPO", $repoName)
+          $cfg = $cfg.Replace("DAYRHYTHM_APP_VERSION", $ver)
+          $cfg = $cfg.Replace("DAYRHYTHM_REMOTE_WS_URL", $wsUrl)
+          Set-Content -Path $cfgPath -Value $cfg -NoNewline
 
-          $mainPath = "packaging/desktop/main.cjs"
-          $main = Get-Content $mainPath -Raw
-          $main = $main.Replace("DAYRHYTHM_GITHUB_OWNER", $repoOwner)
-          $main = $main.Replace("DAYRHYTHM_GITHUB_REPO", $repoName)
-          Set-Content -Path $mainPath -Value $main -NoNewline
+          $csprojPath = "native/windows-dotnet/DayRhythm.csproj"
+          $csproj = Get-Content $csprojPath -Raw
+          $csproj = $csproj.Replace("<Version>1.0.0</Version>", "<Version>$ver</Version>")
+          Set-Content -Path $csprojPath -Value $csproj -NoNewline
 
-      - name: Install desktop builder dependencies
-        working-directory: packaging/desktop
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: Publish self-contained .NET 8 + WebView2 Windows app
+        shell: pwsh
+        run: |
+          dotnet publish native/windows-dotnet/DayRhythm.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -o native/windows-dotnet/publish-out
 
-      - name: Build Windows Setup, Portable EXE & Auto-Update metadata
-        working-directory: packaging/desktop
-        run: npm run dist:win
+      - name: Build DayRhythm-Setup.exe (Inno Setup) and DayRhythm-Portable.zip
+        shell: pwsh
+        run: |
+          $ver = "2.0.${{ github.run_number }}"
+          New-Item -ItemType Directory -Force -Path "release-windows" | Out-Null
 
-      - name: Upload Windows EXE & Auto-Update artifacts
+          Compress-Archive -Path "native/windows-dotnet/publish-out\*" -DestinationPath "release-windows/DayRhythm-Portable.zip" -Force
+
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc "/DAppVersion=$ver" "native/windows-dotnet/installer.iss"
+          Copy-Item "native/windows-dotnet/installer-out/DayRhythm-Setup.exe" "release-windows/DayRhythm-Setup.exe" -Force
+
+      - name: Upload Windows EXE & Portable artifacts
         uses: actions/upload-artifact@v4
         with:
           name: DayRhythm-Windows-EXE
-          if-no-files-found: warn
           path: |
-            packaging/desktop/dist/DayRhythm-Setup.exe
-            packaging/desktop/dist/DayRhythm-Portable.exe
-            packaging/desktop/dist/*.blockmap
-            packaging/desktop/dist/*.yml
+            release-windows/DayRhythm-Setup.exe
+            release-windows/DayRhythm-Portable.zip
           retention-days: 30
 
   publish-release:
-    name: Publish GitHub Release (Standalone Direct Downloads & Auto-Update)
+    name: Publish GitHub Release (Direct APK & Windows EXE Downloads)
     needs: [build-android-apk, build-windows-exe]
+    if: always() && (needs.build-android-apk.result == 'success' || needs.build-windows-exe.result == 'success')
     runs-on: ubuntu-latest
     steps:
-      - name: Download Android APK
+      - name: Download Android APK (if built)
+        if: needs.build-android-apk.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: DayRhythm-Android-APK
           path: release-files
 
-      - name: Download Windows EXE & Auto-Update files
+      - name: Download Windows EXE (if built)
+        if: needs.build-windows-exe.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: DayRhythm-Windows-EXE
@@ -211,25 +238,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v1.0.${{ github.run_number }}"
+          TAG="v2.0.${{ github.run_number }}"
           cat <<'EOF' > release-notes.md
-          ## إيقاع اليوم | DayRhythm — إصدار مستقل بالكامل (بدون الحاجة لـ Deploy)
+          ## إيقاع اليوم | DayRhythm — الجيل الجديد (أدوات أصلية خفيفة بدون Electron وبدون 404)
 
           - **OnePlus 12R (أندرويد):** `DayRhythm-OnePlus12R.apk`
-            - التطبيق مدمج بالكامل داخل الـ APK على خادم محلي (`localhost`) — يفتح فوراً بدون أي خطأ 404.
+            - مبني بأداة **AndroidX WebViewAssetLoader** الرسمية على `https://localhost/` مباشرة من داخل التطبيق (بدون خادم محلي معرّض للإغلاق وبدون خطأ 404 نهائياً).
             - **Foreground Service** دائمة 24/7 في الخلفية مع مزامنة **WebSocket + Firestore** وإعادة تشغيل تلقائي مع الجهاز.
-            - فحص دوري لتحديثات **GitHub Releases** مع إشعار وشريط تثبيت مباشر داخل التطبيق.
+            - فحص تحديثات **GitHub Releases** عبر **AndroidX WorkManager** مع إشعار وشريط تثبيت مباشر بضغطة واحدة.
           - **الكمبيوتر (Windows 64-bit):**
-            - `DayRhythm-Setup.exe` — نسخة مستقلة كاملة مدمجة (بدون 404)، مع **Tray Icon** في شريط المهام وتشغيل تلقائي مع ويندوز، خادم ومزامنة **WebSocket** مستمرة في الخلفية، و**تحديث تلقائي** من GitHub Releases.
-            - `DayRhythm-Portable.exe` — نسخة محمولة مستقلة تعمل فوراً بدون تثبيت.
+            - `DayRhythm-Setup.exe` — تطبيق أصلي خفيف مبني بـ **.NET 8 + Microsoft Edge WebView2 + Inno Setup** (أخف وأسرع بكثير من Electron)، يعمل 24/7 في **System Tray** مع التشغيل التلقائي مع ويندوز، مزامنة WebSocket/Firestore، وتحديث تلقائي مباشر من GitHub Releases.
+            - `DayRhythm-Portable.zip` — نسخة محمولة مستقلة تعمل فوراً بعد فك الضغط بدون تثبيت.
           EOF
-          FILES=(
-            release-files/DayRhythm-OnePlus12R.apk
-            release-files/DayRhythm-Setup.exe
-            release-files/DayRhythm-Portable.exe
-          )
-          if [ -f release-files/latest.yml ]; then FILES+=(release-files/latest.yml); fi
-          if [ -f release-files/DayRhythm-Setup.exe.blockmap ]; then FILES+=(release-files/DayRhythm-Setup.exe.blockmap); fi
+
+          FILES=()
+          for f in release-files/DayRhythm-OnePlus12R.apk release-files/DayRhythm-Setup.exe release-files/DayRhythm-Portable.zip; do
+            if [ -f "$f" ]; then FILES+=("$f"); fi
+          done
+
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No release artifacts found!"
+            exit 1
+          fi
 
           gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
           gh release create "$TAG" \
