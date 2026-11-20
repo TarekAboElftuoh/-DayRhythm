@@ -972,19 +972,39 @@ export default function App() {
         bypassSanctuary: true,
         repeatCount,
       });
+      const nowTime12 = formatCairoNow12h('ar');
       setActiveAudioAlert({
         id: `alert_${Date.now().toString(36)}`,
         title: privacyBadge,
         category,
         isContinuous: playRes.isContinuous,
       });
-      showToast(
-        playRes.isContinuous
-          ? `${privacyBadge} · ${formatCairoNow12h('ar')}`
-          : `${privacyBadge} · ${formatCairoNow12h('ar')}`
-      );
+
+      // Route alerts to the Windows Secondary Monitor (zero focus-steal on Screen 1!)
+      try {
+        const wv = (
+          window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
+        ).chrome?.webview;
+        if (wv?.postMessage) {
+          wv.postMessage(
+            JSON.stringify({
+              type: 'native-alert',
+              emoji: privacyBadge,
+              time12h: nowTime12,
+              category,
+              isHydration: category === 'water',
+              isContinuous: playRes.isContinuous,
+              cupSizeMl: lifeProfile.cupSizeMl,
+            })
+          );
+        }
+      } catch {
+        // ignore WebView2 postMessage errors
+      }
+
+      showToast(`${privacyBadge} · ${nowTime12}`);
     },
-    [activeSanctuary, lifeProfile.soundRepeats, showToast]
+    [activeSanctuary, lifeProfile.cupSizeMl, lifeProfile.soundRepeats, showToast]
   );
 
   // Auto-revert countdown for Smart Timed Quiet Modes
@@ -1100,6 +1120,9 @@ export default function App() {
                 isAllDay: Boolean(startObj.date && !startObj.dateTime),
                 htmlLink: typeof ev.htmlLink === 'string' ? ev.htmlLink : undefined,
                 status: typeof ev.status === 'string' ? ev.status : undefined,
+                isRecurring: Boolean(ev.recurringEventId),
+                recurringEventId:
+                  typeof ev.recurringEventId === 'string' ? ev.recurringEventId : undefined,
               });
             }
           } catch {
@@ -3980,6 +4003,24 @@ export default function App() {
         : Math.max(0, s.dailyCommitmentDays - 1),
     }));
   };
+
+  // Confirm hydration cup ONLY when user taps "شربت فعلاً ✓" inside notification/alert (Windows Screen 2 or Browser Notification)
+  useEffect(() => {
+    const onWaterConfirmed = () => {
+      handleLogWaterCup();
+      stopContinuousAlert();
+      setActiveAudioAlert(null);
+    };
+    const onAlertDismissed = () => {
+      handleAcknowledgeAudioAlert();
+    };
+    window.addEventListener('dayrhythm:water-confirmed', onWaterConfirmed);
+    window.addEventListener('dayrhythm:alert-dismissed', onAlertDismissed);
+    return () => {
+      window.removeEventListener('dayrhythm:water-confirmed', onWaterConfirmed);
+      window.removeEventListener('dayrhythm:alert-dismissed', onAlertDismissed);
+    };
+  }, [handleLogWaterCup, handleAcknowledgeAudioAlert]);
 
   const [capsuleNowMs, setCapsuleNowMs] = useState<number>(() => Date.now());
 

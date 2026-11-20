@@ -1321,7 +1321,18 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                setSavedCloudApiUrl(cloudUrlDraft);
+                const res = setSavedCloudApiUrl(cloudUrlDraft);
+                if (res.error) {
+                  setGeminiStatus((prev) => ({
+                    ...prev,
+                    ok: false,
+                    connected: false,
+                    status: 'offline',
+                    error: res.error,
+                  }));
+                  return;
+                }
+                setCloudUrlDraft(res.saved);
                 void runGeminiProbe(true);
               }}
               className="flex flex-wrap items-center gap-2 pt-2 border-t border-rose-500/20"
@@ -1331,7 +1342,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                 dir="ltr"
                 value={cloudUrlDraft}
                 onChange={(e) => setCloudUrlDraft(e.target.value)}
-                placeholder="https://your-deployed-app.run.app"
+                placeholder="https://dayrhythm-xxxxx.run.app (رابط Cloud Run المنشور)"
                 className="flex-1 min-w-[200px] rounded-lg border border-white/15 bg-black/60 px-3 py-1.5 text-xs text-white placeholder:text-zinc-500 focus:border-[#7FFFD4] focus:outline-none"
               />
               <button

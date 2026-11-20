@@ -94,6 +94,8 @@ export interface GoogleCalendarEventItem {
   location?: string;
   htmlLink?: string;
   status?: string;
+  isRecurring?: boolean;
+  recurringEventId?: string;
 }
 
 export interface CalendarActionProposal {

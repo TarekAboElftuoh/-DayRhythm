@@ -11,6 +11,7 @@ namespace DayRhythm
         public string RemoteWsUrl { get; set; } = "";
         public bool ShowDesktopCapsule { get; set; } = true;
         public bool CapsulePrivacyMode { get; set; } = false;
+        public bool AlertsOnSecondaryScreen { get; set; } = true;
         public int? CapsuleX { get; set; }
         public int? CapsuleY { get; set; }
     }

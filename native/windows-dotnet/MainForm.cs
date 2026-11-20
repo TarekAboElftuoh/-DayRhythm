@@ -26,8 +26,10 @@ namespace DayRhythm
         private CoreWebView2Environment _webViewEnv;
         private NotifyIcon _trayIcon;
         private DesktopCapsuleForm _capsuleForm;
+        private SecondaryMonitorToastForm _activeToastForm;
         private ToolStripMenuItem _wsStatusItem;
         private ToolStripMenuItem _capsuleMenuItem;
+        private ToolStripMenuItem _secondaryScreenMenuItem;
         private ToolStripMenuItem _updateMenuItem;
         private ToolStripMenuItem _autoLaunchMenuItem;
 
@@ -186,11 +188,24 @@ namespace DayRhythm
                 Close();
             });
 
+            _secondaryScreenMenuItem = new ToolStripMenuItem("إظهار الإشعارات على الشاشة الثانية تلقائياً")
+            {
+                CheckOnClick = true,
+                Checked = _settings.AlertsOnSecondaryScreen,
+            };
+            _secondaryScreenMenuItem.CheckedChanged += (_, __) =>
+            {
+                _settings.AlertsOnSecondaryScreen = _secondaryScreenMenuItem.Checked;
+                AppConfig.SaveSettings(_settings);
+                _capsuleForm?.SnapToMonitor(_settings.AlertsOnSecondaryScreen);
+            };
+
             menu.Items.Add(titleItem);
             menu.Items.Add(_wsStatusItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(openItem);
             menu.Items.Add(_capsuleMenuItem);
+            menu.Items.Add(_secondaryScreenMenuItem);
             menu.Items.Add(reloadItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(_updateMenuItem);
@@ -288,6 +303,14 @@ namespace DayRhythm
                                             if (_capsuleMenuItem != null) _capsuleMenuItem.Checked = true;
                                             _capsuleForm?.ShowFloating();
                                         });
+                                    }
+                                    else if (string.Equals(msgType, "native-alert", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        NativeAlertPayload alertPayload = JsonSerializer.Deserialize<NativeAlertPayload>(msg);
+                                        if (alertPayload != null)
+                                        {
+                                            RunOnUi(() => ShowSecondaryMonitorAlert(alertPayload));
+                                        }
                                     }
                                 }
                             }
@@ -527,6 +550,47 @@ namespace DayRhythm
             }
         }
 
+        private void ShowSecondaryMonitorAlert(NativeAlertPayload payload)
+        {
+            try
+            {
+                if (_activeToastForm != null && !_activeToastForm.IsDisposed)
+                {
+                    _activeToastForm.Close();
+                    _activeToastForm.Dispose();
+                    _activeToastForm = null;
+                }
+
+                _activeToastForm = new SecondaryMonitorToastForm(
+                    payload,
+                    preferSecondaryScreen: _settings.AlertsOnSecondaryScreen,
+                    onWaterConfirmed: () => RunOnUi(() =>
+                    {
+                        if (_webView?.CoreWebView2 != null)
+                        {
+                            _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                                "window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));"
+                            );
+                        }
+                    }),
+                    onDismissed: () => RunOnUi(() =>
+                    {
+                        if (_webView?.CoreWebView2 != null)
+                        {
+                            _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                                "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+                            );
+                        }
+                    })
+                );
+                _activeToastForm.Show();
+            }
+            catch
+            {
+                // ignore toast display errors
+            }
+        }
+
         private void OnMainFormClosing(object sender, FormClosingEventArgs e)
         {
             if (!_isQuitting && e.CloseReason == CloseReason.UserClosing)
@@ -535,6 +599,13 @@ namespace DayRhythm
                 Hide();
                 ShowInTaskbar = false;
                 return;
+            }
+
+            if (_activeToastForm != null && !_activeToastForm.IsDisposed)
+            {
+                _activeToastForm.Close();
+                _activeToastForm.Dispose();
+                _activeToastForm = null;
             }
 
             if (_capsuleForm != null)

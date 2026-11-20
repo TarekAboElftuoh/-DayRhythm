@@ -13,29 +13,57 @@ export function isStandaloneVirtualHost(): boolean {
   return host.endsWith('.web.app') || host.endsWith('.firebaseapp.com');
 }
 
+export function isNonApiShareUrl(rawUrl: string): boolean {
+  const lower = rawUrl.trim().toLowerCase();
+  return (
+    lower.includes('share.gemini.google') ||
+    lower.includes('aistudio.google.com') ||
+    lower.includes('gemini.google.com')
+  );
+}
+
 export function getSavedCloudApiUrl(): string {
   if (typeof window === 'undefined') return '';
   try {
-    return (localStorage.getItem(CUSTOM_API_URL_KEY) || '').trim();
+    const val = (localStorage.getItem(CUSTOM_API_URL_KEY) || '').trim();
+    if (val && isNonApiShareUrl(val)) {
+      localStorage.removeItem(CUSTOM_API_URL_KEY);
+      return '';
+    }
+    return val;
   } catch {
     return '';
   }
 }
 
-export function setSavedCloudApiUrl(rawUrl: string): string {
+export function setSavedCloudApiUrl(rawUrl: string): { saved: string; error?: string } {
   const cleaned = rawUrl.trim().replace(/\/+$/, '');
+  if (!cleaned) {
+    clearSavedCloudApiUrl();
+    return { saved: '' };
+  }
+  if (isNonApiShareUrl(cleaned)) {
+    clearSavedCloudApiUrl();
+    return {
+      saved: '',
+      error:
+        'هذا رابط مشاركة (Share) وليس رابط الخادم السحابي — اضغط «Deploy to Cloud Run» في AI Studio لنسخ رابط ينتهي بـ .run.app، أو افتح التطبيق من المتصفح ليعمل شات Gemini فوراً.',
+    };
+  }
+  if (!/^https?:\/\//i.test(cleaned)) {
+    return {
+      saved: '',
+      error: 'يرجى إدخال رابط خادم يبدأ بـ https:// (مثل https://your-app.run.app).',
+    };
+  }
   if (typeof window !== 'undefined') {
     try {
-      if (cleaned && /^https?:\/\//i.test(cleaned)) {
-        localStorage.setItem(CUSTOM_API_URL_KEY, cleaned);
-      } else {
-        localStorage.removeItem(CUSTOM_API_URL_KEY);
-      }
+      localStorage.setItem(CUSTOM_API_URL_KEY, cleaned);
     } catch {
       // ignore storage errors
     }
   }
-  return cleaned;
+  return { saved: cleaned };
 }
 
 export function clearSavedCloudApiUrl(): void {
@@ -54,12 +82,12 @@ function getApiBaseCandidates(): string[] {
 
   const candidates: string[] = [];
   const custom = getSavedCloudApiUrl();
-  if (custom && /^https?:\/\//i.test(custom)) {
+  if (custom && /^https?:\/\//i.test(custom) && !isNonApiShareUrl(custom)) {
     candidates.push(custom.replace(/\/+$/, ''));
   }
 
   const envUrl = (import.meta.env?.VITE_CLOUD_API_URL as string | undefined)?.trim();
-  if (envUrl && /^https?:\/\//i.test(envUrl)) {
+  if (envUrl && /^https?:\/\//i.test(envUrl) && !isNonApiShareUrl(envUrl)) {
     const cleanEnv = envUrl.replace(/\/+$/, '');
     if (!candidates.includes(cleanEnv)) candidates.push(cleanEnv);
   }
@@ -113,9 +141,9 @@ export async function apiFetchJson<T = Record<string, unknown>>(
         lastStatus = res.status;
         lastErrorMsg =
           res.status === 404
-            ? 'رابط الخادم السحابي يعيد 404 (التطبيق لم يُنشر بعد عبر Deploy في AI Studio).'
+            ? 'رابط الخادم السحابي يعيد 404 (لم يُنشر بعد عبر Deploy to Cloud Run).'
             : res.status === 401 || res.status === 403 || res.status === 302
-              ? 'رابط الخادم يتطلب صلاحية وصول عامة (Cloud Run Public).'
+              ? 'رابط الخادم يتطلب وصولاً عاماً (Cloud Run Public).'
               : `استجابة غير صالحة من الخادم (${res.status}).`;
         continue;
       }
@@ -137,7 +165,7 @@ export async function apiFetchJson<T = Record<string, unknown>>(
 
   throw new Error(
     isStandaloneVirtualHost()
-      ? 'خادم شات Gemini السحابي غير منشور بعد أو تغيّر رابطه — اضغط Deploy في AI Studio ثم الصق رابط الخادم المنشور هنا مرة واحدة.'
+      ? 'شات Gemini في نسخة الكمبيوتر/الموبايل يحتاج رابط خادم منشور عبر «Deploy to Cloud Run» (رابط ينتهي بـ .run.app وليس رابط share.gemini.google) — الصقه بالأسفل مرة واحدة ليشتغل فوراً.'
       : lastErrorMsg || `تعذر الاتصال بالخادم (${lastStatus || 'network'}).`
   );
 }

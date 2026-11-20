@@ -765,46 +765,58 @@ async function startServer() {
     }
 
     const startedAt = Date.now();
-    try {
-      const ai = getGeminiClient();
-      const probeRes = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: 'أجب بكلمة واحدة فقط: جاهز',
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        },
-      });
-      const latencyMs = Math.max(1, Date.now() - startedAt);
-      const connected = Boolean((probeRes.text ?? '').trim().length > 0);
-      geminiProbeCache = {
-        ok: connected,
-        connected,
-        status: connected ? 'online' : 'degraded',
-        model: 'gemini-4-hydrogen',
-        latencyMs,
-        checkedAtIso: new Date().toISOString(),
-        expiresAtMs: Date.now() + 90_000,
-      };
-      const { expiresAtMs: _ignore, ...payload } = geminiProbeCache;
-      res.json(payload);
-    } catch (err: unknown) {
-      const latencyMs = Math.max(1, Date.now() - startedAt);
-      const rawMsg = err instanceof Error ? err.message : 'تعذر الاتصال بخدمة Gemini.';
-      const statusPayload = {
-        ok: false,
-        connected: false,
-        status: 'offline' as const,
-        model: 'gemini-4-hydrogen',
-        latencyMs,
-        checkedAtIso: new Date().toISOString(),
-        error: rawMsg,
-      };
-      geminiProbeCache = {
-        ...statusPayload,
-        expiresAtMs: Date.now() + 15_000,
-      };
-      res.status(502).json(statusPayload);
+    const probeModels = ['gemini-4-hydrogen', 'gemini-2.5-flash'] as const;
+    let lastErrMsg = 'تعذر الاتصال بخدمة Gemini.';
+    for (const modelName of probeModels) {
+      try {
+        const ai = getGeminiClient();
+        const probeRes = await ai.models.generateContent({
+          model: modelName,
+          contents: 'أجب بكلمة واحدة فقط: جاهز',
+          config:
+            modelName === 'gemini-4-hydrogen'
+              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+              : undefined,
+        });
+        const latencyMs = Math.max(1, Date.now() - startedAt);
+        const connected = Boolean((probeRes.text ?? '').trim().length > 0);
+        geminiProbeCache = {
+          ok: connected,
+          connected,
+          status: connected ? 'online' : 'degraded',
+          model: modelName,
+          latencyMs,
+          checkedAtIso: new Date().toISOString(),
+          expiresAtMs: Date.now() + 90_000,
+        };
+        const { expiresAtMs: _ignore, ...payload } = geminiProbeCache;
+        res.json(payload);
+        return;
+      } catch (err: unknown) {
+        lastErrMsg = err instanceof Error ? err.message : 'تعذر الاتصال بخدمة Gemini.';
+        const isTransientOverload =
+          lastErrMsg.includes('503') ||
+          lastErrMsg.includes('UNAVAILABLE') ||
+          lastErrMsg.includes('high demand');
+        if (!isTransientOverload) break;
+      }
     }
+
+    const latencyMs = Math.max(1, Date.now() - startedAt);
+    const statusPayload = {
+      ok: false,
+      connected: false,
+      status: 'offline' as const,
+      model: 'gemini-4-hydrogen',
+      latencyMs,
+      checkedAtIso: new Date().toISOString(),
+      error: lastErrMsg,
+    };
+    geminiProbeCache = {
+      ...statusPayload,
+      expiresAtMs: Date.now() + 15_000,
+    };
+    res.status(502).json(statusPayload);
   });
 
   // 1. Read user's real Google Calendar events across ALL user calendars via @googleapis/calendar
@@ -876,6 +888,8 @@ async function startServer() {
             location: ev.location ? String(ev.location) : undefined,
             htmlLink: ev.htmlLink ? String(ev.htmlLink) : undefined,
             status: ev.status ? String(ev.status) : undefined,
+            isRecurring: Boolean(ev.recurringEventId),
+            recurringEventId: ev.recurringEventId ? String(ev.recurringEventId) : undefined,
           }));
         })
       );
@@ -893,6 +907,8 @@ async function startServer() {
         location?: string;
         htmlLink?: string;
         status?: string;
+        isRecurring?: boolean;
+        recurringEventId?: string;
       }> = [];
       const seenKeys = new Set<string>();
 
@@ -1793,43 +1809,67 @@ async function startServer() {
       const formattedHistory = normalizeGeminiHistory(payload.history);
       const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
 
-      const chat = ai.chats.create({
-        model: 'gemini-4-hydrogen',
-        history: formattedHistory,
-        config: {
-          systemInstruction,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          tools: GEMINI_CHAT_TOOLS,
-          toolConfig: {
-            includeServerSideToolInvocations: true,
-          },
-        },
-      });
-
-      const stream = await chat.sendMessageStream({ message: payload.message });
+      const modelCandidates = ['gemini-4-hydrogen', 'gemini-2.5-flash'] as const;
+      let activeModel: string = modelCandidates[0];
       let fullText = '';
       const collectedFnCalls: FunctionCall[] = [];
       const sourcesMap = new Map<string, { title: string; uri: string }>();
+      let streamCompleted = false;
+      let lastStreamErr: unknown = null;
 
-      for await (const chunk of stream) {
-        if (res.writableEnded) break;
-        const delta = chunk.text ?? '';
-        if (delta) {
-          fullText += delta;
-          writeEvent({ type: 'delta', text: delta });
-        }
-        if (Array.isArray(chunk.functionCalls) && chunk.functionCalls.length > 0) {
-          collectedFnCalls.push(...chunk.functionCalls);
-        }
-        const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
-        for (const gc of gChunks) {
-          if (gc.web?.uri && !sourcesMap.has(gc.web.uri)) {
-            sourcesMap.set(gc.web.uri, {
-              title: gc.web.title ?? gc.web.uri ?? 'مصدر ويب',
-              uri: gc.web.uri,
-            });
+      for (const candidateModel of modelCandidates) {
+        activeModel = candidateModel;
+        try {
+          const chat = ai.chats.create({
+            model: candidateModel,
+            history: formattedHistory,
+            config: {
+              systemInstruction,
+              ...(candidateModel === 'gemini-4-hydrogen'
+                ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                : {}),
+              tools: GEMINI_CHAT_TOOLS,
+              toolConfig: {
+                includeServerSideToolInvocations: true,
+              },
+            },
+          });
+
+          const stream = await chat.sendMessageStream({ message: payload.message });
+          for await (const chunk of stream) {
+            if (res.writableEnded) break;
+            const delta = chunk.text ?? '';
+            if (delta) {
+              fullText += delta;
+              writeEvent({ type: 'delta', text: delta });
+            }
+            if (Array.isArray(chunk.functionCalls) && chunk.functionCalls.length > 0) {
+              collectedFnCalls.push(...chunk.functionCalls);
+            }
+            const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+            for (const gc of gChunks) {
+              if (gc.web?.uri && !sourcesMap.has(gc.web.uri)) {
+                sourcesMap.set(gc.web.uri, {
+                  title: gc.web.title ?? gc.web.uri ?? 'مصدر ويب',
+                  uri: gc.web.uri,
+                });
+              }
+            }
           }
+          streamCompleted = true;
+          break;
+        } catch (modelErr: unknown) {
+          lastStreamErr = modelErr;
+          const mMsg = modelErr instanceof Error ? modelErr.message : String(modelErr ?? '');
+          const canFallback =
+            !fullText &&
+            (mMsg.includes('503') || mMsg.includes('UNAVAILABLE') || mMsg.includes('high demand'));
+          if (!canFallback) throw modelErr;
         }
+      }
+
+      if (!streamCompleted) {
+        throw lastStreamErr ?? new Error('تعذر الاتصال بـ Gemini حالياً.');
       }
 
       const sources = Array.from(sourcesMap.values());
@@ -1846,7 +1886,7 @@ async function startServer() {
         pendingProposal,
         latencyMs: Math.max(1, Date.now() - startedAt),
         memoriesAppliedCount,
-        model: 'gemini-4-hydrogen',
+        model: activeModel,
       });
       res.end();
     } catch (err: unknown) {

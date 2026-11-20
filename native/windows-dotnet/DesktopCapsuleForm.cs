@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace DayRhythm
@@ -18,8 +19,8 @@ namespace DayRhythm
     }
 
     /// <summary>
-    /// True free-floating always-on-top Windows desktop timer capsule outside the main app window.
-    /// Shows strictly Next/Current Task + smooth live countdown timer (zero hydration clutter).
+    /// Classic compact sleek free-floating Windows desktop timer capsule outside MainForm.
+    /// Single clean dark glass pill showing Emoji + smooth live countdown timer only.
     /// </summary>
     internal sealed class DesktopCapsuleForm : Form
     {
@@ -29,16 +30,13 @@ namespace DayRhythm
 
         private readonly Timer _tickTimer;
         private readonly ContextMenuStrip _contextMenu;
-        private readonly ToolStripMenuItem _privacyMenuItem;
 
         private string _emoji = "📅";
         private string _title = "المهمة القادمة";
-        private string _statusLabel = "المهمة القادمة";
         private string _fallbackCountdown = "--:--";
         private bool _isNow;
         private bool _isUrgent;
         private long _targetEpochMs;
-        private int _durationSeconds;
 
         private bool _isDragging;
         private Point _dragStartCursor;
@@ -59,11 +57,11 @@ namespace DayRhythm
             TopMost = true;
             ShowInTaskbar = false;
             DoubleBuffered = true;
-            Width = 282;
-            Height = 62;
-            BackColor = Color.FromArgb(8, 11, 16);
+            Width = 152;
+            Height = 42;
+            BackColor = Color.FromArgb(8, 10, 14);
             Cursor = Cursors.SizeAll;
-            Opacity = 0.96;
+            Opacity = 0.94;
 
             ApplyRoundedRegion();
             RestoreSavedPosition();
@@ -73,26 +71,14 @@ namespace DayRhythm
                 RightToLeft = RightToLeft.Yes,
             };
 
-            ToolStripMenuItem openMainItem = new ToolStripMenuItem("فتح إيقاع اليوم", null, (_, __) => _onOpenMainWindow?.Invoke());
-
-            _privacyMenuItem = new ToolStripMenuItem("وضع الخصوصية (إيموجي فقط)")
-            {
-                CheckOnClick = true,
-                Checked = _settings.CapsulePrivacyMode,
-            };
-            _privacyMenuItem.CheckedChanged += (_, __) =>
-            {
-                _settings.CapsulePrivacyMode = _privacyMenuItem.Checked;
-                AppConfig.SaveSettings(_settings);
-                Invalidate();
-            };
-
-            ToolStripMenuItem resetPosItem = new ToolStripMenuItem("إعادة للزاوية السفلية", null, (_, __) => ResetPositionToCorner());
+            ToolStripMenuItem openMainItem = new ToolStripMenuItem("فتح لوحة التحكم", null, (_, __) => _onOpenMainWindow?.Invoke());
+            ToolStripMenuItem moveSecondaryItem = new ToolStripMenuItem("نقل للشاشة الثانية", null, (_, __) => SnapToMonitor(preferSecondary: true));
+            ToolStripMenuItem movePrimaryItem = new ToolStripMenuItem("نقل للشاشة الرئيسية", null, (_, __) => SnapToMonitor(preferSecondary: false));
             ToolStripMenuItem hideItem = new ToolStripMenuItem("إخفاء الكبسولة", null, (_, __) => HideCapsuleByUser());
 
             _contextMenu.Items.Add(openMainItem);
-            _contextMenu.Items.Add(_privacyMenuItem);
-            _contextMenu.Items.Add(resetPosItem);
+            _contextMenu.Items.Add(moveSecondaryItem);
+            _contextMenu.Items.Add(movePrimaryItem);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add(hideItem);
 
@@ -107,7 +93,7 @@ namespace DayRhythm
                 }
             };
             MouseEnter += (_, __) => { _isHovered = true; Opacity = 1.0; Invalidate(); };
-            MouseLeave += (_, __) => { _isHovered = false; Opacity = 0.96; Invalidate(); };
+            MouseLeave += (_, __) => { _isHovered = false; Opacity = 0.94; Invalidate(); };
 
             _tickTimer = new Timer { Interval = 1000 };
             _tickTimer.Tick += (_, __) =>
@@ -120,7 +106,7 @@ namespace DayRhythm
             _tickTimer.Start();
         }
 
-        // Prevent stealing focus from the user's active desktop window (browser/IDE/games)
+        // Never steal focus from the user's active desktop window
         protected override bool ShowWithoutActivation => true;
 
         protected override CreateParams CreateParams
@@ -128,7 +114,7 @@ namespace DayRhythm
             get
             {
                 CreateParams cp = base.CreateParams;
-                // WS_EX_TOOLWINDOW (0x80) hides from Alt+Tab; WS_EX_TOPMOST (0x08) keeps floating above windows
+                // WS_EX_TOOLWINDOW (0x80) | WS_EX_TOPMOST (0x08) | WS_EX_NOACTIVATE (0x08000000)
                 cp.ExStyle |= 0x00000080 | 0x00000008;
                 return cp;
             }
@@ -139,14 +125,10 @@ namespace DayRhythm
             if (payload == null) return;
             _emoji = string.IsNullOrWhiteSpace(payload.emoji) ? "📅" : payload.emoji.Trim();
             _title = string.IsNullOrWhiteSpace(payload.title) ? "إيقاع اليوم" : payload.title.Trim();
-            _statusLabel = string.IsNullOrWhiteSpace(payload.statusLabel)
-                ? (payload.isNow ? "جارٍ الآن" : "المهمة القادمة")
-                : payload.statusLabel.Trim();
             _fallbackCountdown = string.IsNullOrWhiteSpace(payload.countdownText) ? "--:--" : payload.countdownText.Trim();
             _isNow = payload.isNow;
             _isUrgent = payload.isUrgent;
             _targetEpochMs = payload.targetEpochMs;
-            _durationSeconds = Math.Max(0, payload.durationSeconds);
 
             if (Visible)
             {
@@ -172,34 +154,37 @@ namespace DayRhythm
             _onVisibilityChanged?.Invoke(false);
         }
 
+        private Screen ResolveTargetScreen(bool preferSecondary)
+        {
+            if (preferSecondary)
+            {
+                Screen secondary = Screen.AllScreens.FirstOrDefault(s => !s.Primary);
+                if (secondary != null) return secondary;
+            }
+            return Screen.PrimaryScreen ?? Screen.AllScreens.First();
+        }
+
         private void RestoreSavedPosition()
         {
-            Rectangle wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
             if (_settings.CapsuleX.HasValue && _settings.CapsuleY.HasValue)
             {
                 Point saved = new Point(_settings.CapsuleX.Value, _settings.CapsuleY.Value);
-                bool insideAnyScreen = false;
                 foreach (Screen scr in Screen.AllScreens)
                 {
                     if (scr.WorkingArea.IntersectsWith(new Rectangle(saved, Size)))
                     {
-                        insideAnyScreen = true;
-                        break;
+                        Location = saved;
+                        return;
                     }
                 }
-                if (insideAnyScreen)
-                {
-                    Location = saved;
-                    return;
-                }
             }
-            Location = new Point(wa.Left + 22, wa.Bottom - Height - 22);
+            SnapToMonitor(_settings.AlertsOnSecondaryScreen);
         }
 
-        private void ResetPositionToCorner()
+        public void SnapToMonitor(bool preferSecondary)
         {
-            Rectangle wa = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
-            Location = new Point(wa.Left + 22, wa.Bottom - Height - 22);
+            Rectangle wa = ResolveTargetScreen(preferSecondary).WorkingArea;
+            Location = new Point(wa.Left + 20, wa.Bottom - Height - 20);
             _settings.CapsuleX = Location.X;
             _settings.CapsuleY = Location.Y;
             AppConfig.SaveSettings(_settings);
@@ -207,7 +192,7 @@ namespace DayRhythm
 
         private void ApplyRoundedRegion()
         {
-            using (GraphicsPath path = CreateRoundedRectPath(new Rectangle(0, 0, Width, Height), 20))
+            using (GraphicsPath path = CreateRoundedRectPath(new Rectangle(0, 0, Width, Height), 16))
             {
                 Region = new Region(path);
             }
@@ -259,11 +244,11 @@ namespace DayRhythm
             AppConfig.SaveSettings(_settings);
         }
 
-        private (string displayClock, float progressRatio, bool urgentNow) ComputeLiveClock()
+        private (string displayClock, bool urgentNow) ComputeLiveClock()
         {
             if (_targetEpochMs <= 0)
             {
-                return (_fallbackCountdown, 0f, _isUrgent);
+                return (_fallbackCountdown, _isUrgent);
             }
 
             long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -284,14 +269,7 @@ namespace DayRhythm
                 long secs = remainingSec % 60;
                 clock = $"{mins:00}:{secs:00}";
             }
-
-            float ratio = 0f;
-            if (_isNow && _durationSeconds > 0)
-            {
-                float elapsed = Math.Max(0f, _durationSeconds - remainingSec);
-                ratio = Math.Min(1f, Math.Max(0f, elapsed / _durationSeconds));
-            }
-            return (clock, ratio, urgent);
+            return (clock, urgent);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -300,7 +278,7 @@ namespace DayRhythm
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-            var (clockText, progressRatio, urgentNow) = ComputeLiveClock();
+            var (clockText, urgentNow) = ComputeLiveClock();
 
             Color accent = urgentNow
                 ? Color.FromArgb(255, 107, 107)
@@ -309,39 +287,22 @@ namespace DayRhythm
                     : Color.FromArgb(127, 255, 212);
 
             Rectangle outer = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (GraphicsPath bgPath = CreateRoundedRectPath(outer, 20))
-            using (LinearGradientBrush bgBrush = new LinearGradientBrush(
-                outer,
-                Color.FromArgb(14, 18, 26),
-                Color.FromArgb(7, 9, 13),
-                LinearGradientMode.Vertical))
+            using (GraphicsPath bgPath = CreateRoundedRectPath(outer, 16))
+            using (SolidBrush bgBrush = new SolidBrush(Color.FromArgb(10, 12, 16)))
             {
                 g.FillPath(bgBrush, bgPath);
-
-                Color borderColor = Color.FromArgb(_isHovered ? 150 : 85, accent.R, accent.G, accent.B);
-                using (Pen borderPen = new Pen(borderColor, 1.35f))
+                Color borderColor = _isHovered
+                    ? Color.FromArgb(125, accent.R, accent.G, accent.B)
+                    : Color.FromArgb(52, 255, 255, 255);
+                using (Pen borderPen = new Pen(borderColor, 1f))
                 {
                     g.DrawPath(borderPen, bgPath);
                 }
             }
 
-            // Subtle live progress accent along the bottom edge when a task is currently active
-            if (progressRatio > 0.01f)
-            {
-                int trackMargin = 18;
-                int trackWidth = Width - trackMargin * 2;
-                int fillWidth = Math.Max(8, (int)(trackWidth * progressRatio));
-                using (SolidBrush trackBg = new SolidBrush(Color.FromArgb(30, 255, 255, 255)))
-                using (SolidBrush trackFg = new SolidBrush(Color.FromArgb(190, accent.R, accent.G, accent.B)))
-                {
-                    g.FillRectangle(trackBg, trackMargin, Height - 5, trackWidth, 2);
-                    g.FillRectangle(trackFg, trackMargin + (trackWidth - fillWidth), Height - 5, fillWidth, 2);
-                }
-            }
-
-            // Left block: Crisp live tabular countdown clock
-            Rectangle clockRect = new Rectangle(12, 10, 102, Height - 20);
-            using (Font clockFont = new Font("Consolas", clockText.Length > 5 ? 13.5f : 16f, FontStyle.Bold, GraphicsUnit.Point))
+            // Classic compact layout: [Countdown]  [Emoji]
+            Rectangle clockRect = new Rectangle(14, 0, 90, Height);
+            using (Font clockFont = new Font("Consolas", clockText.Length > 5 ? 11f : 12.5f, FontStyle.Bold, GraphicsUnit.Point))
             using (SolidBrush clockBrush = new SolidBrush(accent))
             using (StringFormat leftFmt = new StringFormat
             {
@@ -353,16 +314,8 @@ namespace DayRhythm
                 g.DrawString(clockText, clockFont, clockBrush, clockRect, leftFmt);
             }
 
-            // Subtle vertical divider
-            using (Pen sepPen = new Pen(Color.FromArgb(36, 255, 255, 255), 1f))
-            {
-                g.DrawLine(sepPen, 118, 15, 118, Height - 15);
-            }
-
-            // Right block (RTL): Task Emoji + clean Title + quiet status label
-            string displayTitle = _settings.CapsulePrivacyMode ? _emoji : _title;
-            Rectangle emojiRect = new Rectangle(Width - 44, 12, 32, Height - 24);
-            using (Font emojiFont = new Font("Segoe UI Emoji", 15f, FontStyle.Regular, GraphicsUnit.Point))
+            Rectangle emojiRect = new Rectangle(Width - 42, 0, 30, Height);
+            using (Font emojiFont = new Font("Segoe UI Emoji", 13f, FontStyle.Regular, GraphicsUnit.Point))
             using (SolidBrush emojiBrush = new SolidBrush(Color.White))
             using (StringFormat centerFmt = new StringFormat
             {
@@ -371,24 +324,6 @@ namespace DayRhythm
             })
             {
                 g.DrawString(_emoji, emojiFont, emojiBrush, emojiRect, centerFmt);
-            }
-
-            Rectangle textTopRect = new Rectangle(124, 11, Width - 170, 21);
-            Rectangle textSubRect = new Rectangle(124, 33, Width - 170, 18);
-            using (Font titleFont = new Font("Segoe UI", 9.5f, FontStyle.Bold, GraphicsUnit.Point))
-            using (Font subFont = new Font("Segoe UI", 8f, FontStyle.Regular, GraphicsUnit.Point))
-            using (SolidBrush titleBrush = new SolidBrush(Color.FromArgb(244, 244, 245)))
-            using (SolidBrush subBrush = new SolidBrush(Color.FromArgb(161, 161, 170)))
-            using (StringFormat rtlFmt = new StringFormat
-            {
-                Alignment = StringAlignment.Far,
-                LineAlignment = StringAlignment.Center,
-                Trimming = StringTrimming.EllipsisCharacter,
-                FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.DirectionRightToLeft,
-            })
-            {
-                g.DrawString(displayTitle, titleFont, titleBrush, textTopRect, rtlFmt);
-                g.DrawString(_statusLabel, subFont, subBrush, textSubRect, rtlFmt);
             }
         }
 

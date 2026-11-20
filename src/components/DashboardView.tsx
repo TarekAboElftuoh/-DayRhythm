@@ -518,7 +518,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const nonRoutineUpcomingEvents = useMemo(() => {
     const routineKeywords =
-      /(نوم ليلي|استيقاظ|الصلوات|صلاة الفجر|صلاة الظهر|صلاة العصر|صلاة المغرب|صلاة العشاء|شرب المياه|ترطيب|فطار|سحور|روتين يومي|روتين صباحي|روتين مسائي|إفطار يومي|غداء يومي|عشاء يومي|قيلولة|أذكار|مشي يومي)/i;
+      /(نوم|استيقاظ|الصلوات|صلاة|صلاه|الفجر|الظهر|العصر|المغرب|العشاء|الوتر|وتر|الضحى|قيام|تراويح|الجمعة|سنن|أذكار|اذكار|قرآن|قران|ورد|شرب|ماء|ماية|مياه|ترطيب|فطار|إفطار|افطار|غداء|عشاء|سحور|وجبة|تنظيف|ترتيب|الأوضة|الاوضة|اوضة|أوضة|الغرفة|الغرفه|غرفة|غرفه|مذاكرة|مراجعة|جيم|تمرين|رياضة|مشي|روتين|قيلولة|استحمام|دش|مكمل|فيتامين|بذور اليقطين|دواء|علاج|قهوة|شاي)/i;
 
     const signatureDays = new Map<string, Set<string>>();
     const normalizeSig = (ev: GoogleCalendarEventItem): string => {
@@ -547,10 +547,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           const endMs = new Date(ev.end).getTime();
           if (!Number.isNaN(endMs) && endMs <= nowMs) return false;
         }
+        // Authoritative Google Calendar recurring series check (daily/weekly routines)
+        if (ev.isRecurring || ev.recurringEventId) return false;
         const sig = normalizeSig(ev);
         const uniqueDaysCount = signatureDays.get(sig)?.size ?? 1;
-        // Filter out routine/daily items that repeat across 3+ days or match daily routine anchors
-        if (uniqueDaysCount >= 3) return false;
+        // Filter out items appearing on 2+ days across the window or matching known routine habits/prayers/chores
+        if (uniqueDaysCount >= 2) return false;
         if (routineKeywords.test(sig)) return false;
         return true;
       })
@@ -1079,7 +1081,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Active Privacy Alert Banner (Emoji-Only so nobody sitting nearby reads details) */}
+      {/* Active Privacy Alert Banner (Emoji-Only · Direct "شربت فعلاً ✓" confirmation for water alerts) */}
       {activeAudioAlert && (
         <div
           className={`rounded-2xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
@@ -1091,20 +1093,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="flex items-center gap-2.5 text-sm">
             <span className="text-2xl">{activeAudioAlert.title || TASK_SOUND_META[activeAudioAlert.category].icon}</span>
             <span className="font-mono-tabular text-xs text-zinc-300">
-              {activeAudioAlert.isContinuous ? 'رنين نشط' : 'تنبيه'}
+              {activeAudioAlert.category === 'water'
+                ? 'تأكيد شرب الكوب'
+                : activeAudioAlert.isContinuous
+                  ? 'رنين نشط'
+                  : 'تنبيه'}
             </span>
           </div>
-          <button
-            type="button"
-            onClick={onAcknowledgeAudioAlert}
-            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${
-              activeAudioAlert.isContinuous
-                ? 'bg-amber-400 text-black hover:bg-amber-300'
-                : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
-            }`}
-          >
-            {activeAudioAlert.isContinuous ? '🔕 إيقاف ✓' : '✓ تم'}
-          </button>
+          <div className="flex items-center gap-2">
+            {activeAudioAlert.category === 'water' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onLogWaterCup();
+                    onAcknowledgeAudioAlert();
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
+                >
+                  💧 شربت فعلاً ✓
+                </button>
+                <button
+                  type="button"
+                  onClick={onAcknowledgeAudioAlert}
+                  className="px-3 py-1.5 rounded-xl border border-white/15 text-zinc-300 text-xs hover:text-white cursor-pointer"
+                >
+                  لاحقاً
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={onAcknowledgeAudioAlert}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${
+                  activeAudioAlert.isContinuous
+                    ? 'bg-amber-400 text-black hover:bg-amber-300'
+                    : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
+                }`}
+              >
+                {activeAudioAlert.isContinuous ? '🔕 إيقاف ✓' : '✓ تم'}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -1218,23 +1248,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* Instant 1-Tap Actions Bar */}
+            {/* Instant 1-Tap Actions Bar (Clean: Pomodoro + Gemini Chat · Water logs strictly via alert confirmation) */}
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={onLogWaterCup}
-                className={`${
-                  aquaTouchMode ? 'min-h-[52px] md:min-h-[40px]' : 'min-h-[40px]'
-                } px-4 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] active:scale-[0.98] flex items-center gap-1.5 cursor-pointer whitespace-nowrap`}
-              >
-                <Droplets className="w-3.5 h-3.5" />
-                <span>+1 كوب ({dailyRhythmPlan.cupSizeMl} مل) · {hydrationToday.cupsLogged}/{hydrationToday.targetCups}</span>
-              </button>
-
-              <button
-                type="button"
                 onClick={onOpenPomodoro}
-                className="min-h-[40px] px-3.5 py-2 rounded-xl border border-white/15 bg-black/50 text-zinc-200 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular"
+                className={`${
+                  aquaTouchMode ? 'min-h-[48px] md:min-h-[40px]' : 'min-h-[40px]'
+                } px-3.5 py-2 rounded-xl border border-white/15 bg-black/50 text-zinc-200 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular`}
               >
                 <Timer className="w-3.5 h-3.5 text-[#7FFFD4]" />
                 <span>
@@ -1247,9 +1268,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenAssistant}
-                className="min-h-[40px] px-3.5 py-2 rounded-xl border border-white/15 bg-black/50 text-zinc-200 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
               >
-                <MessageSquare className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                <MessageSquare className="w-3.5 h-3.5" />
                 <span>شات Gemini</span>
               </button>
             </div>
@@ -1554,6 +1575,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   >
                     جهّز الغد مع Gemini
                   </button>
+                </div>
+
+                {/* Tomorrow Hydration Reminder Plan (Always visible in Tomorrow prep tab) */}
+                <div className="rounded-xl border border-[#7FFFD4]/20 bg-[#7FFFD4]/[0.04] px-3.5 py-2.5 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 font-semibold text-[#7FFFD4]">
+                      <Droplets className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        تذكيرات المياه لغداً ({dailyRhythmPlan.hydrationSlots.length} تنبيه ·{' '}
+                        {dailyRhythmPlan.activeTargetMl} مل)
+                      </span>
+                    </div>
+                    <span className="font-mono-tabular text-[11px] text-zinc-400">
+                      {dailyRhythmPlan.hydrationSlots.length > 0
+                        ? `من ${formatMinutes12h(dailyRhythmPlan.hydrationSlots[0].timeMinutes, language)} إلى ${formatMinutes12h(
+                            dailyRhythmPlan.hydrationSlots[dailyRhythmPlan.hydrationSlots.length - 1].timeMinutes,
+                            language
+                          )}`
+                        : 'مجدول تلقائياً'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {dailyRhythmPlan.hydrationSlots.map((slot) => (
+                      <span
+                        key={`tmr-water-${slot.cupIndex}`}
+                        className="font-mono-tabular text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-black/45 text-zinc-300"
+                        title={`كوب ${slot.cupIndex} (${dailyRhythmPlan.cupSizeMl} مل) · ${slot.windowAr}`}
+                      >
+                        💧 {formatMinutes12h(slot.timeMinutes, language)}
+                      </span>
+                    ))}
+                  </div>
                 </div>
 
                 {!calendarConnected ? (
@@ -2548,7 +2601,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           </section>
 
-          {/* Scientific Hydration Engine (Weight/Height + Fasting Floor + Meds + Weekly Chart) */}
+          {/* Scientific Hydration Engine (Alert-Confirmed Only · Read-only Weight Reference) */}
           <section className={`rounded-2xl border p-5 ${cardSurface}`}>
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -2563,79 +2616,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div className="font-mono-tabular text-xs text-zinc-400 mt-0.5">
                   {totalMl} / {targetMl} ml · {hydrationToday.cupsLogged} / {hydrationToday.targetCups} ({waterPct}%)
                 </div>
-                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-400 mt-1">
-                  {editingWeight ? (
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        const parsed = Number(weightInput);
-                        if (!Number.isNaN(parsed) && parsed >= 35 && parsed <= 220) {
-                          onQuickUpdateWeight(parsed);
-                        }
-                        setEditingWeight(false);
-                      }}
-                      className="inline-flex items-center gap-1"
-                    >
-                      <input
-                        type="number"
-                        min={35}
-                        max={220}
-                        step={0.5}
-                        value={weightInput}
-                        onChange={(e) => setWeightInput(e.target.value)}
-                        className="w-16 rounded-md border border-[#7FFFD4]/60 bg-black px-1.5 py-0.5 text-[11px] text-white font-mono-tabular focus:outline-none"
-                        autoFocus
-                      />
-                      <button
-                        type="submit"
-                        className="px-1.5 py-0.5 rounded bg-[#7FFFD4] text-black font-bold cursor-pointer"
-                      >
-                        حفظ
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingWeight(false)}
-                        className="text-zinc-500 hover:text-white cursor-pointer"
-                      >
-                        ×
-                      </button>
-                    </form>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-black/50 px-1.5 py-0.5">
-                      <button
-                        type="button"
-                        onClick={() => onQuickUpdateWeight(lifeProfile.weightKg - 0.5)}
-                        className="px-1 text-zinc-400 hover:text-white cursor-pointer font-bold"
-                        title="إنقاص 0.5 كجم"
-                      >
-                        −
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setWeightInput(String(lifeProfile.weightKg));
-                          setEditingWeight(true);
-                        }}
-                        className="font-mono-tabular text-[#7FFFD4] hover:underline cursor-pointer"
-                        title="اضغط لتعديل الوزن يدوياً (أو أخبر Gemini في الشات)"
-                      >
-                        {lifeProfile.weightKg} كجم
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onQuickUpdateWeight(lifeProfile.weightKg + 0.5)}
-                        className="px-1 text-zinc-400 hover:text-white cursor-pointer font-bold"
-                        title="زيادة 0.5 كجم"
-                      >
-                        +
-                      </button>
-                    </span>
-                  )}
-                  <span className="text-zinc-500">
-                    · {lifeProfile.heightCm} سم (ثابت) · كوب {dailyRhythmPlan.cupSizeMl} مل
+                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-500 mt-1">
+                  <span>
+                    يُسجَّل الكوب تلقائياً عند تأكيدك من الإشعار · كوب {dailyRhythmPlan.cupSizeMl} مل
                     {dailyRhythmPlan.isFastingToday
                       ? ' · لا ماء بين الفجر والمغرب'
                       : ' · يتوقف قبل النوم بـ 75 د'}
+                  </span>
+                  <span
+                    className="text-zinc-500 font-mono-tabular"
+                    title="لتحديث الوزن أخبر شات Gemini مباشرة أو من قائمة الثوابت"
+                  >
+                    · المرجع {lifeProfile.weightKg} كجم
                   </span>
                   {weatherInfo && (
                     <span
@@ -2656,44 +2648,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   )}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={onLogWaterCup}
-                className={`${
-                  aquaTouchMode ? 'min-h-[52px] md:min-h-[38px]' : 'min-h-[38px]'
-                } px-4 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] active:scale-[0.98] cursor-pointer whitespace-nowrap`}
-              >
-                {t(language, 'logCupBtn')}
-              </button>
             </div>
 
-            {/* Clean Single-Row Interactive Cup Segments */}
+            {/* Clean Read-Only Cup Progress Segments (Filled strictly when confirmed via water alert) */}
             <div className="mt-4 flex items-center gap-1">
               {hydrationToday.slots.map((filled, idx) => {
                 const slotPlan = dailyRhythmPlan.hydrationSlots[idx];
                 return (
-                  <button
+                  <div
                     key={idx}
-                    type="button"
-                    onClick={() => onToggleWaterSlot(idx)}
                     title={
                       slotPlan
                         ? `كوب ${idx + 1} (${formatMinutes12h(slotPlan.timeMinutes, language)} · ${slotPlan.windowAr})`
                         : `كوب ${idx + 1} (${(idx + 1) * dailyRhythmPlan.cupSizeMl} مل)`
                     }
-                    className={`flex-1 h-7 rounded-md font-mono-tabular text-[10px] font-bold cursor-pointer transition-colors ${
+                    className={`flex-1 h-7 rounded-md font-mono-tabular text-[10px] font-bold flex items-center justify-center transition-colors ${
                       filled
                         ? 'bg-[#7FFFD4] text-black'
-                        : 'bg-white/[0.06] text-zinc-500 hover:bg-white/15 hover:text-zinc-200'
+                        : 'bg-white/[0.06] text-zinc-500'
                     }`}
                   >
                     {idx + 1}
-                  </button>
+                  </div>
                 );
               })}
             </div>
 
-            {/* Active Water Cup Reminder Bar (Fires sound + notification at every cup time) */}
+            {/* Active Water Cup Reminder Bar (Fires sound + Secondary-Monitor alert with "شربت فعلاً ✓") */}
             <div className="mt-3 rounded-xl border border-white/10 bg-black/50 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
               <div className="flex items-center gap-1.5 text-zinc-200 min-w-0">
                 <Bell
@@ -2703,7 +2684,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 />
                 {nextWaterSlot ? (
                   <span className="truncate font-mono-tabular">
-                    الكوب القادم (#{nextWaterSlot.cupIndex}):{' '}
+                    التنبيه القادم (كوب #{nextWaterSlot.cupIndex}):{' '}
                     <strong className="text-[#7FFFD4]">
                       {formatMinutes12h(nextWaterSlot.timeMinutes, language)}
                     </strong>
@@ -2740,18 +2721,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="button"
                   onClick={() =>
-                    onTriggerTaskAlert(
-                      nextWaterSlot
-                        ? `كوب الماء رقم ${nextWaterSlot.cupIndex} (${dailyRhythmPlan.cupSizeMl} مل)`
-                        : 'تنبيه شرب الماء',
-                      'water',
-                      { bypassSanctuary: true }
-                    )
+                    onTriggerTaskAlert('💧', 'water', {
+                      bypassSanctuary: true,
+                      privacyEmoji: '💧',
+                    })
                   }
                   className="px-2 py-1 rounded-lg border border-white/10 text-[10px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer"
-                  title="تجربة نغمة تنبيه كوب الماء الآن"
+                  title="تجربة تنبيه كوب الماء والتأكيد منه الآن"
                 >
-                  تجربة 🔊
+                  تجربة التنبيه 🔊
                 </button>
               </div>
             </div>
@@ -2773,24 +2751,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {dailyRhythmPlan.hydrationSlots.map((slot, idx) => {
                     const done = hydrationToday.slots[idx];
                     return (
-                      <button
+                      <div
                         key={slot.cupIndex}
-                        type="button"
-                        onClick={() => onToggleWaterSlot(idx)}
-                        className={`rounded-lg border px-2.5 py-1.5 text-right text-[11px] cursor-pointer transition-colors ${
+                        className={`rounded-lg border px-2.5 py-1.5 text-right text-[11px] ${
                           done
                             ? 'border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80]'
-                            : 'border-white/10 bg-black/40 text-zinc-300 hover:border-white/25'
+                            : 'border-white/10 bg-black/40 text-zinc-300'
                         }`}
                       >
                         <div className="flex items-center justify-between gap-1 font-mono-tabular">
-                          <span className="font-bold">كوب {slot.cupIndex}</span>
+                          <span className="font-bold">
+                            {done ? '✓ ' : ''}كوب {slot.cupIndex}
+                          </span>
                           <span>{formatMinutes12h(slot.timeMinutes, language)}</span>
                         </div>
                         <div className="text-[10px] text-zinc-500 truncate mt-0.5">
                           {slot.windowAr}
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
