@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { WebSocketServer, WebSocket } from 'ws';
 import { calendar } from '@googleapis/calendar';
@@ -23,7 +24,16 @@ interface SyncClientEntry {
   clientId: string;
 }
 
+interface ServerBatterySnapshot {
+  levelPct: number;
+  charging: boolean;
+  chargeLimitPct: number;
+  updatedAtMs: number;
+  deviceLabel: string;
+}
+
 const syncRooms = new Map<string, Set<SyncClientEntry>>();
+const latestBatteryByUid = new Map<string, ServerBatterySnapshot>();
 
 function broadcastUserSync(
   uid: string,
@@ -189,38 +199,41 @@ function computeCairoEventRange(
 }
 
 const DAYRHYTHM_SYSTEM_INSTRUCTION = `
-أنت المساعد الشخصي الذكي والمستشار العلمي الأمين لمنظومة «إيقاع اليوم | DayRhythm» المربوط مباشرة بـ Google Calendar API و Google Tasks API والبحث المباشر في Google Search والدستور الشخصي وذاكرة Gemini الدائمة في Firebase Firestore.
+أنت المساعد الشخصي الذكي والمستشار العلمي الأمين لمنظومة «إيقاع اليوم | DayRhythm» المربوط مباشرة بـ Google Calendar API و Google Tasks API والدستور الشخصي وذاكرة Gemini الدائمة في Firebase Firestore.
 التزم تماماً بهذه القواعد:
 1. قاعدة التوقيت الإلزامية (نظام 12 ساعة فقط): عند ذكر أي وقت في ردودك للمستخدم، استخدم نظام الـ 12 ساعة فقط مع (ص) أو (م) — مثال: 04:30 ص أو 03:15 م أو 09:15 م. يُمنع منعاً باتاً كتابة أوقات بنظام 24 ساعة مثل 13:15 أو 19:45 داخل الردود النصية.
-2. الهرم الصارم للأولويات وحل التضارب:
-   - الأولوية #1 (مقدّسة): الصلوات الخمس حسب الموقع الجغرافي والمنطقة الزمنية والفصل الحالي (تنبيه قبل الأذان + صمت تلقائي أثناء الصلاة 20 د للصلوات و30 د للفجر).
+2. الهرم الصارم للأولويات وحل التضارب الذكي:
+   - الأولوية #1 (مقدّسة): الصلوات الخمس حسب الموقع الجغرافي والمنطقة الزمنية والفصل الحالي (تنبيه قبل الأذان + صمت تلقائي أثناء الصلاة 20 د للصلوات و30 د للفجر و50 د للجمعة).
    - الأولوية #2 (النوم أولوية عليا): الأصل هو النوم الليلي فقط بدون نوم نهاري مع حضور الشروق والغروب يومياً.
    - استثناءات النوم المرنة عبر الشات:
      * لو أخبرك المستخدم «معرفتش أنام كويس / عندي أرق وعاوز أريّح»: لأن النوم أولوية، فرّغ له مكاناً فورياً في Google Calendar (بتقليص/إزاحة المذاكرة المرنة) وأضف له قيلولة تعويضية (20–30 د أو دورة 90 د حسب إرهاقه) دون المساس بالصلاة.
-     * لو أخبرك المستخدم أنه نام ناقص مثلاً «نمت أقل بساعة / سهرت نص ساعة زيادة» أو «عوّضت نومي / صفّر رصيد النوم»: عدّل sleepDebtMinutes عبر propose_profile_updates (يزيد بدقائق النقص أو يقل/يتصفّر عند التعويض)، وسيقوم البرنامج تلقائياً بتبكير موعد النوم 15–45 د في الليالي القادمة بسلاسة بدون ضغط.
-     * لو أخبرك «نمت على نفسي وصحيت دلوقتي — اليوم هيمشي إزاي؟»: اقرأ الوقت الحالي وأحداث التقويم المتبقية، وأعد ترتيب باقي اليوم بذكاء مع حماية الصلوات المتبقية ونوم الليلة وتقليص المذاكرة المرنة عند الحاجة.
+     * لو أخبرك المستخدم أنه نام ناقص مثلاً «نمت أقل بساعة / سهرت نص ساعة زيادة» أو «عوّضت نومي / صفّر رصيد النوم»: عدّل sleepDebtMinutes عبر propose_profile_updates.
+     * لو أخبرك «نمت على نفسي وصحيت دلوقتي — اليوم هيمشي إزاي؟»: اقرأ الوقت الحالي وأحداث التقويم المتبقية، وأعد ترتيب باقي اليوم بذكاء مع حماية الصلوات المتبقية ونوم الليلة.
    - الأولوية #3 (الالتزامات الثابتة عند تفعيلها): مواعيد الشغل الرسمي بمجرد أن يبلغك بها المستخدم.
-   - الأولوية #4 (المرونة الذكية): مسار DevOps/المذاكرة، المشي، الأنشطة الإبداعية والهوايات، العلاجات، والمهام الأخرى — وعند أي تعارض يُقلَّص وقت المذاكرة المرنة لحماية الصلاة والنوم.
-3. فهم عميق وسلس لـ Google Calendar والتفاعل الاستباقي:
-   - اقرأ أحداث Google Calendar للأسبوع كامل بدقة لفهم يوم المستخدم (أيام الجيم، الوجبات، الاجتماعات، المذاكرة، والأوقات الفارغة).
-   - إذا وجدت حدثاً غامضاً أو غير واضح أو يوجد تضارب/تداخل محتمل في تقويم المستخدم، بادِر بسؤاله بلطف لتوضيح الصورة قبل اتخاذ قرار افتراضي.
-4. مستشار علمي عام وذكي لكل العلاجات والمكملات (بدون افتراضات ثابتة أو برمجة مخصصة لصنف واحد):
-   - ينطبق هذا الأسلوب العام على أي دواء أو فيتامين أو مكمل يذكره المستخدم الآن أو مستقبلاً (مثل زيت بذور اليقطين، كرياتين، واي بروتين، فيتامين د، ماغنيسيوم، أوميجا 3، زنك، حديد، إلخ).
-   - إذا ذكر المستخدم مكملًا أو علاجاً بدون تحديد ميعاد: افحص أولاً Google Calendar والذاكرة الدائمة؛ وإن لم تجد ميعاداً مسجلاً، ابحث عبر Google Search عن أفضل توقيت علمي وامتصاص له (هل مع وجبة دهنية؟ قبل أو بعد التمرين؟ صباحاً أم مساءً؟)، وتفقّد جدول المستخدم (وجباته/أيام الجيم/الصيام) ثم اقترح التوقيت المناسب واسأله قبل التثبيت.
-   - إذا حدد المستخدم ميعاداً فيه تعارض علمي أو منطقي (مثلاً: ميعاد يقع داخل ساعات الصيام، أو مكمل منبّه قبل النوم، أو تعارض امتصاص مثل الحديد مع القهوة/الكالسيوم، أو لخبطة واضحة بين مكمل وآخر): لا تنفّذ الميعاد بشكل أعمى أبداً — بل اسأله بلطف ووضوح («ليه اخترت الميعاد ده؟ لأن علمياً...») واقترح البديل العلمي الأصح أولاً.
-   - ادعم بمرونة كاملة الجرعات المتعددة في اليوم (times24)، الأيام المحددة من الأسبوع (daysOfWeek)، بالإضافة إلى **مدة الكورس وتاريخ نهايته (courseEndDate)** و**عدد الجرعات/الحبات المتبقية (remainingDoses / totalDoses)** للتنبيه قبل النفاد.
-5. الأنشطة الإبداعية والهوايات والمشاريع (مخفية عن الشاشة حتى يطلبها المستخدم في الشات):
-   - استخدم propose_creative_actions لإضافة أو تعديل أو حذف أو تسجيل جلسة نشاط إبداعي (يومي daily أو أسبوعي weekly أو شهري monthly عبر cadence و goalCount) مع مدة الجلسة (sessionMinutes)، ويدعم الأنشطة المؤقتة عبر expiresOnDate (تاريخ انتهاء تلقائي).
-   - عند جدولة نشاط إبداعي على Google Calendar عبر propose_calendar_actions، ضعه دائماً في الأوقات الفارغة الفعلية بعيداً تماماً عن الصلوات والنوم والشغل والمواعيد المحجوزة.
-6. وضع اليوم الهادئ / الطاقة المنخفضة، وتعديل مدة الصمت لمرة واحدة، وتكرار الرنين:
-   - إذا قال المستخدم «النهارده تعبان / مرهق / طاقتي قليلة»: فعّل له وضع اليوم الهادئ بتعيين lowEnergyDateKey لتاريخ اليوم (YYYY-MM-DD) عبر propose_profile_updates، واقترح بلطف ترحيل المهام أو الأحداث غير العاجلة إلى أقرب يوم هادئ مع حماية الصلاة والنوم.
-   - إذا طلب تغيير مدة كتم الصوت للصلاة «لمرة واحدة فقط» (مثلاً 35 أو 45 دقيقة وبعدها يرجع للطبيعي): استخدم oneTimeSilenceMinutes + oneTimeSilenceDateKey (تاريخ اليوم) في propose_profile_updates، فيُطبّق لمرة واحدة ويعود تلقائياً للوضع الطبيعي (مع الحفاظ على 50 دقيقة التلقائية ليوم الجمعة).
-   - إذا طلب تغيير عدد رنات أي تنبيه (مثل: «خلّي تنبيه السحور/الاستيقاظ يرن مستمر لحد ما أوقفه» أو «خلّي تنبيه الماية يرن مرتين»): عدّل soundRepeats عبر propose_profile_updates بالقيم 1 أو 2 أو 3 أو 4 أو "continuous".
-7. تنبيهات الغد الاستباقية: إذا أتاك المستخدم من تنبيه الغد (يوم مزدحم أو فيه سفر/موعد طبي/اجتماع مميز)، راجع أحداث الغد بدقة وساعده على التجهيز المسبق وإعادة ترتيب الجدول بهدوء.
-8. قابلية تعديل جميع الثوابت والذاكرة الدائمة في Firestore:
+   - الأولوية #4 (المرونة الذكية): المذاكرة/العمل، المشي، الأنشطة الإبداعية والهوايات، العلاجات، والمهام الأخرى.
+3. الفحص الاستباقي للتعارض والمناقشة الذكية قبل الحجز في Google Calendar:
+   - قبل اقتراح حجز أي حدث جديد أو ميعاد علاج/مكمل، افحص تلقائياً: (أ) أوقات الصلوات الخمس + فترة الصمت، (ب) نافذة النوم الليلي، (ج) ساعات الصيام (الفجر–المغرب في أيام الصيام)، (د) أحداث Google Calendar المسجلة فعلياً.
+   - إذا وجدت أي تعارض مع النوم أو الصلاة أو الصيام أو حدث آخر، حذّر المستخدم بلطف ووضوح واشرح سبب التعارض واقترح عليه أنسب وقت فاضي متوافق مع شروطه للنقاش قبل التنفيذ.
+   - بمجرد أن يتفق معك المستخدم على ميعاد مناسب، اقترح العملية فوراً عبر الأدوات (propose_calendar_actions وغيرها) ليضغط «تأكيد التنفيذ» فيُحجز الموعد مباشرة في Google Calendar.
+4. مستشار علمي عام وذكي لكل العلاجات والمكملات مع الحجز التلقائي في التقويم:
+   - ينطبق هذا الأسلوب على أي دواء أو فيتامين أو مكمل يذكره المستخدم (مثل فيتامين د، ماغنيسيوم، أوميجا 3، زنك، حديد، كرياتين، أو أي علاج شخصي يضيفه في حسابه).
+   - إذا ذكر المستخدم مكملًا أو علاجاً أو سألك عن توافق ميعاده: قيّم التوقيت علمياً (الامتصاص مع وجبة دهنية/ماء، المنبهات قبل النوم، التعارض مع القهوة/الكالسيوم/الصيام) وجدولياً (بعيداً عن الصلاة والنوم والأحداث المزدحمة). لو فيه تعارض لا تثبّت أعمى بل ناقشه واقترح البديل الأصح أولاً.
+   - عند اقتراح إضافة علاج أو مكمل جديد بمواعيد محددة عبر propose_medication_actions، اقترح معه تلقائياً في نفس الرد حدثاً مرتبطاً في Google Calendar عبر propose_calendar_actions (بعنوان يبدأ بـ 💊 ⏰ ومدة 15 دقيقة وتكرار DAILY أو WEEKLY حسب أيام العلاج) حتى يُحجز له مكانه تلقائياً في التقويم.
+   - ادعم الجرعات المتعددة (times24)، الأيام المحددة (daysOfWeek)، مدة الكورس (courseEndDate)، وعدد الجرعات المتبقية (remainingDoses / totalDoses).
+5. تحديث الوزن والماء والثوابت بمرونة كاملة:
+   - الوزن متغيّر دائماً (المرجع الحالي موجود في الدستور أدناه): لو أبلغك المستخدم بتغيّر وزنه، اقترح فوراً تحديث weightKg عبر propose_profile_updates فيُعاد حساب هدف الماء العلمي وتوزيع الأكواب تلقائياً.
    - عدّل أي ثابت بلا قيود عبر propose_profile_updates، واحفظ أي قاعدة أو مبدأ دائم عبر propose_memory_actions.
+6. الأنشطة الإبداعية والهوايات والمشاريع:
+   - استخدم propose_creative_actions لإضافة أو تعديل أو حذف أو تسجيل جلسة نشاط إبداعي، وعند جدولته في Google Calendar ضعه دائماً في الأوقات الفارغة الفعلية.
+7. وضع اليوم الهادئ / الطاقة المنخفضة، وتعديل مدة الصمت لمرة واحدة، وتكرار الرنين:
+   - إذا قال المستخدم «النهارده تعبان / مرهق / طاقتي قليلة»: فعّل له وضع اليوم الهادئ بتعيين lowEnergyDateKey لتاريخ اليوم (YYYY-MM-DD) عبر propose_profile_updates، واقترح ترحيل المهام غير العاجلة بهدوء.
+   - إذا طلب تعديل مدة كتم الصوت للصلاة لمرة واحدة استخدم oneTimeSilenceMinutes + oneTimeSilenceDateKey، ولعدد الرنات استخدم soundRepeats.
+8. الذاكرة السحابية طويلة المدى كمرجع دائم لكل مستخدم:
+   - هذا التطبيق عام لكل مستخدم ويرتبط ببياناته السحابية الخاصة بحساب Google فقط؛ لا تفترض أي معلومات شخصية أو أدوية أو مدن غير موجودة فعلياً في «الدستور الشخصي» أو «الذاكرة الدائمة» أو «قائمة العلاجات» المرفقة أدناه.
+   - كلما ذكر المستخدم معلومة دائمة عن حياته (مكمل جديد، هدف طويل المدى، مجال عمله، قاعدة يومية، خطة مشروع أو قرار مهم قد يرجع له مستقبلاً)، اقترح تلقائياً حفظها في الذاكرة الدائمة عبر propose_memory_actions (أو الأداة المناسبة) حتى تصبح مرجعاً سحابياً دائماً له في كل المحادثات القادمة.
+   - إذا أشار المستخدم لموضوع تحدث عنه سابقاً، استعن بـ «ذاكرة المستخدم الدائمة» و«مقتطفات المحادثات السابقة المحفوظة في السحابة» للإجابة بدقة واستمرارية.
 9. قواعد الخصوصية: استخدم 🦷 أو 🪥 فقط للعناية الشخصية، واستخدم 🌱 فقط للالتزام اليومي دون وصف نصي صريح. وعناوين أحداث التقويم يفضل أن تبدأ بزوج إيموجي مميز.
-أجب بلغة عربية واضحة، عملية، ومختصرة.
+أجب بلغة عربية واضحة، عملية، ودودة، ومختصرة.
 `.trim();
 
 const proposeCalendarActionsDeclaration: FunctionDeclaration = {
@@ -369,7 +382,7 @@ const proposeMedicationActionsDeclaration: FunctionDeclaration = {
             },
             name: {
               type: Type.STRING,
-              description: 'اسم العلاج أو المكمل (مثال: كرياتين، واي بروتين، فيتامين د، زيت بذور اليقطين، أوميجا 3).',
+              description: 'اسم العلاج أو المكمل (مثال: فيتامين د، ماغنيسيوم، أوميجا 3، حديد، أو أي دواء يذكره المستخدم).',
             },
             time24: {
               type: Type.STRING,
@@ -402,6 +415,10 @@ const proposeMedicationActionsDeclaration: FunctionDeclaration = {
             totalDoses: {
               type: Type.NUMBER,
               description: 'إجمالي الجرعات الأصلية في العبوة/الكورس (0 إلى 500، اختياري).',
+            },
+            refillAlertDays: {
+              type: Type.NUMBER,
+              description: 'عدد الأيام قبل انتهاء العبوة لإطلاق تنبيه شراء جرعات جديدة (من 1 إلى 14، الافتراضي 3 أيام أو يومين).',
             },
           },
           required: ['operation', 'name'],
@@ -553,7 +570,7 @@ const proposeProfileUpdatesDeclaration: FunctionDeclaration = {
       },
       careerTrack: {
         type: Type.STRING,
-        description: 'المجال أو المسار المهني (مثال: DevOps · عمل وكورسات).',
+        description: 'المجال أو المسار المهني والدراسي للمستخدم (مثال: برمجة، تصميم، طب، إدارة، دراسة).',
       },
       workEnabled: {
         type: Type.BOOLEAN,
@@ -608,7 +625,7 @@ const proposeMemoryActionsDeclaration: FunctionDeclaration = {
           properties: {
             operation: {
               type: Type.STRING,
-              description: 'نوع العملية: add (إضافة قاعدة جديدة) أو remove (حذف قاعدة قديمة).',
+              description: 'نوع العملية: add (إضافة قاعدة جديدة) أو update (تعديل قاعدة موجودة) أو remove (حذف قاعدة قديمة).',
             },
             memoryId: {
               type: Type.STRING,
@@ -664,6 +681,7 @@ export interface MedicationActionProposal {
   courseEndDate?: string;
   remainingDoses?: number;
   totalDoses?: number;
+  refillAlertDays?: number;
 }
 
 export interface CreativeActivityActionProposal {
@@ -680,7 +698,7 @@ export interface CreativeActivityActionProposal {
 }
 
 export interface MemoryActionProposal {
-  operation: 'add' | 'remove';
+  operation: 'add' | 'update' | 'remove';
   memoryId?: string;
   category: 'priority' | 'sleep' | 'fasting' | 'hydration' | 'work_devops' | 'travel' | 'general';
   ruleText: string;
@@ -740,7 +758,19 @@ async function startServer() {
     });
   });
 
-  // Real Gemini connectivity & latency probe (cached briefly to avoid wasting quota)
+  function markGeminiProbeOnline(model: string, latencyMs: number): void {
+    geminiProbeCache = {
+      ok: true,
+      connected: true,
+      status: 'online',
+      model,
+      latencyMs: Math.max(1, latencyMs),
+      checkedAtIso: new Date().toISOString(),
+      expiresAtMs: Date.now() + 300_000,
+    };
+  }
+
+  // Real Gemini connectivity & latency probe (fast 5s timeout, 5m healthy cache, transient tolerance)
   app.get('/api/gemini/status', async (req, res) => {
     const forceProbe = req.query.probe === '1' || req.query.force === '1';
     const hasKey = Boolean(process.env.GEMINI_API_KEY);
@@ -749,7 +779,7 @@ async function startServer() {
         ok: false,
         connected: false,
         status: 'offline',
-        model: 'gemini-4-hydrogen',
+        model: 'gemini-3.1-flash-lite',
         latencyMs: 0,
         checkedAtIso: new Date().toISOString(),
         error: 'مفتاح Gemini API غير مهيأ في إعدادات الخادم (Settings > Secrets).',
@@ -765,56 +795,85 @@ async function startServer() {
     }
 
     const startedAt = Date.now();
-    const probeModels = ['gemini-4-hydrogen', 'gemini-2.5-flash'] as const;
+    const probeModels = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const;
     let lastErrMsg = 'تعذر الاتصال بخدمة Gemini.';
+    let sawTransientError = false;
+
     for (const modelName of probeModels) {
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
       try {
         const ai = getGeminiClient();
-        const probeRes = await ai.models.generateContent({
+        const probePromise = ai.models.generateContent({
           model: modelName,
-          contents: 'أجب بكلمة واحدة فقط: جاهز',
+          contents: 'جاهز؟ أجب بكلمة واحدة.',
           config:
             modelName === 'gemini-4-hydrogen'
               ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
               : undefined,
         });
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error('PROBE_TIMEOUT: استغرق فحص Gemini أكثر من 5 ثوانٍ')),
+            5_000
+          );
+        });
+        const probeRes = await Promise.race([probePromise, timeoutPromise]);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+
         const latencyMs = Math.max(1, Date.now() - startedAt);
         const connected = Boolean((probeRes.text ?? '').trim().length > 0);
-        geminiProbeCache = {
-          ok: connected,
-          connected,
-          status: connected ? 'online' : 'degraded',
-          model: modelName,
-          latencyMs,
-          checkedAtIso: new Date().toISOString(),
-          expiresAtMs: Date.now() + 90_000,
-        };
-        const { expiresAtMs: _ignore, ...payload } = geminiProbeCache;
-        res.json(payload);
-        return;
+        if (connected) {
+          markGeminiProbeOnline(modelName, latencyMs);
+          const { expiresAtMs: _ignore, ...payload } = geminiProbeCache!;
+          res.json(payload);
+          return;
+        }
       } catch (err: unknown) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         lastErrMsg = err instanceof Error ? err.message : 'تعذر الاتصال بخدمة Gemini.';
-        const isTransientOverload =
-          lastErrMsg.includes('503') ||
-          lastErrMsg.includes('UNAVAILABLE') ||
-          lastErrMsg.includes('high demand');
-        if (!isTransientOverload) break;
+        const isAuthFailure =
+          lastErrMsg.includes('API_KEY_INVALID') ||
+          lastErrMsg.includes('PERMISSION_DENIED') ||
+          lastErrMsg.includes('403');
+        if (isAuthFailure) {
+          sawTransientError = false;
+          break;
+        }
+        sawTransientError = true;
       }
     }
 
     const latencyMs = Math.max(1, Date.now() - startedAt);
+    if (sawTransientError) {
+      const degradedPayload = {
+        ok: true,
+        connected: true,
+        status: 'degraded' as const,
+        model: 'gemini-3.1-flash-lite',
+        latencyMs,
+        checkedAtIso: new Date().toISOString(),
+        error: 'ضغط مؤقت على Gemini — إعادة الاتصال التلقائي نشطة ويمكنك الإرسال مباشرة.',
+      };
+      geminiProbeCache = {
+        ...degradedPayload,
+        expiresAtMs: Date.now() + 20_000,
+      };
+      res.json(degradedPayload);
+      return;
+    }
+
     const statusPayload = {
       ok: false,
       connected: false,
       status: 'offline' as const,
-      model: 'gemini-4-hydrogen',
+      model: 'gemini-3.1-flash-lite',
       latencyMs,
       checkedAtIso: new Date().toISOString(),
       error: lastErrMsg,
     };
     geminiProbeCache = {
       ...statusPayload,
-      expiresAtMs: Date.now() + 15_000,
+      expiresAtMs: Date.now() + 10_000,
     };
     res.status(502).json(statusPayload);
   });
@@ -1334,8 +1393,11 @@ async function startServer() {
       }
 
       const listRes = await fetch(
-        'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=12&q=in:inbox+newer_than:7d',
-        { headers: { Authorization: authHeader } }
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=in:inbox+newer_than:7d',
+        {
+          headers: { Authorization: authHeader },
+          signal: AbortSignal.timeout(7000),
+        }
       );
 
       if (listRes.status === 401 || listRes.status === 403) {
@@ -1362,7 +1424,7 @@ async function startServer() {
       const messageIds = (listJson.messages ?? [])
         .map((m) => m.id)
         .filter((id): id is string => Boolean(id))
-        .slice(0, 12);
+        .slice(0, 10);
 
       if (messageIds.length === 0) {
         res.json({ scannedCount: 0, digestItems: [] });
@@ -1375,7 +1437,10 @@ async function startServer() {
             `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
               msgId
             )}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
-            { headers: { Authorization: authHeader } }
+            {
+              headers: { Authorization: authHeader },
+              signal: AbortSignal.timeout(6000),
+            }
           );
           if (!mRes.ok) return null;
           const mJson = (await mRes.json()) as {
@@ -1388,69 +1453,100 @@ async function startServer() {
             headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? '';
           return {
             id: String(mJson.id ?? msgId),
-            subject: getHeader('Subject').slice(0, 160),
-            from: getHeader('From').slice(0, 120),
-            date: getHeader('Date').slice(0, 80),
-            snippet: String(mJson.snippet ?? '').slice(0, 280),
+            subject: getHeader('Subject').slice(0, 140),
+            from: getHeader('From').slice(0, 100),
+            date: getHeader('Date').slice(0, 60),
+            snippet: String(mJson.snippet ?? '').slice(0, 180),
           };
         })
       );
 
-      const emails = detailResults
+      const allEmails = detailResults
         .map((r) => (r.status === 'fulfilled' ? r.value : null))
         .filter((e): e is NonNullable<typeof e> => Boolean(e && (e.subject || e.snippet)));
 
-      if (emails.length === 0) {
-        res.json({ scannedCount: 0, digestItems: [] });
+      // Pre-filter obvious OTP / security-code noise before calling Gemini
+      const noiseRegex = /(verification code|one-time password|\botp\b|security alert|رمز التحقق|كود التفعيل|unsubscribe|newsletter)/i;
+      const candidateEmails = allEmails.filter(
+        (e) => !noiseRegex.test(`${e.subject} ${e.snippet}`)
+      );
+
+      if (allEmails.length === 0 || candidateEmails.length === 0) {
+        res.json({ scannedCount: allEmails.length, digestItems: [] });
         return;
       }
 
       const todayCairo = getCairoTodayIso();
-      const emailListPrompt = emails
+      const emailListPrompt = candidateEmails
         .map(
           (e, i) =>
-            `[${i + 1}] messageId=${e.id}\nFrom: ${e.from}\nDate: ${e.date}\nSubject: ${e.subject}\nSnippet: ${e.snippet}`
+            `[${i + 1}] id=${e.id} | From:${e.from} | Date:${e.date} | Subj:${e.subject} | Text:${e.snippet}`
         )
-        .join('\n---\n');
+        .join('\n');
 
       const ai = getGeminiClient();
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: `تاريخ اليوم بتوقيت القاهرة: ${todayCairo}\n\nالرسائل الواردة (آخر 7 أيام):\n${emailListPrompt}\n\nاستخرج فقط الرسائل التي تحتوي على موعد حقيقي أو مقابلة عمل أو اجتماع أو تذكرة سفر/قطار/طيران أو موعد طبي أو موعد تسليم (deadline) أو توصيل مهم يستحق إضافته للتقويم. تجاهل النشرات الإخبارية والإعلانات والعروض الترويجية ورسائل التحقق OTP تماماً.`,
-        config: {
-          systemInstruction:
-            'أنت محلل ذكي لصندوق بريد Gmail لبرنامج إيقاع اليوم. أرجع JSON فقط وفق المخطط المحدد. استخدم اللغة العربية في العنوان والملخص، وصيغة YYYY-MM-DD للتاريخ و HH:MM لوقت البداية التقني. إذا لم توجد مواعيد حقيقية أرجع مصفوفة فارغة.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              items: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    messageId: { type: Type.STRING },
-                    category: {
-                      type: Type.STRING,
-                      description: 'meeting | travel | medical | deadline | delivery | other',
+      const digestModels = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const;
+      let rawText = '{"items":[]}';
+      let lastDigestErr: unknown = null;
+
+      for (const digestModel of digestModels) {
+        try {
+          const genPromise = ai.models.generateContent({
+            model: digestModel,
+            contents: `اليوم (القاهرة): ${todayCairo}\nرسائل البريد:\n${emailListPrompt}\nاستخرج فقط المواعيد الحقيقية (اجتماع، مقابلة، سفر، طبي، تسليم مهم، توصيل) وتجاهل الإعلانات والنشرات. أرجع JSON فقط.`,
+            config: {
+              ...(digestModel === 'gemini-4-hydrogen'
+                ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                : {}),
+              systemInstruction:
+                'محلل سريع لصندوق Gmail. أرجع JSON فقط وفق المخطط. بالعربية، YYYY-MM-DD للتاريخ و HH:MM للوقت. إذا لا توجد مواعيد أرجع items فارغة.',
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  items: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        messageId: { type: Type.STRING },
+                        category: {
+                          type: Type.STRING,
+                          description: 'meeting | travel | medical | deadline | delivery | other',
+                        },
+                        titleAr: { type: Type.STRING },
+                        sender: { type: Type.STRING },
+                        summaryAr: { type: Type.STRING },
+                        dateIso: { type: Type.STRING },
+                        startTime24: { type: Type.STRING },
+                        durationMinutes: { type: Type.NUMBER },
+                      },
+                      required: ['messageId', 'category', 'titleAr', 'sender', 'summaryAr'],
                     },
-                    titleAr: { type: Type.STRING },
-                    sender: { type: Type.STRING },
-                    summaryAr: { type: Type.STRING },
-                    dateIso: { type: Type.STRING },
-                    startTime24: { type: Type.STRING },
-                    durationMinutes: { type: Type.NUMBER },
                   },
-                  required: ['messageId', 'category', 'titleAr', 'sender', 'summaryAr'],
                 },
+                required: ['items'],
               },
             },
-            required: ['items'],
-          },
-        },
-      });
+          });
 
-      const rawText = response.text ?? '{"items":[]}';
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('انتهت مهلة تحليل Gmail مؤقتاً — أعد المحاولة.')), 14_000)
+          );
+          const response = await Promise.race([genPromise, timeoutPromise]);
+          rawText = response.text ?? '{"items":[]}';
+          lastDigestErr = null;
+          break;
+        } catch (mErr: unknown) {
+          lastDigestErr = mErr;
+        }
+      }
+
+      if (lastDigestErr) {
+        throw lastDigestErr;
+      }
+
+      const emails = allEmails;
       const parsed = JSON.parse(rawText) as {
         items?: Array<{
           messageId?: string;
@@ -1517,15 +1613,16 @@ async function startServer() {
 
       res.json({ scannedCount: emails.length, digestItems });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'تعذر تحليل ملخص Gmail.';
-      res.status(500).json({ error: msg });
+      res.status(500).json({ error: formatFriendlyGeminiErrorAr(err) });
     }
   });
 
   interface ChatRequestPayload {
     message?: string;
+    bypassCache?: boolean;
     history?: Array<{ role: 'user' | 'model'; text: string }>;
     contextSummary?: string;
+    longTermChatContext?: string;
     memories?: Array<{
       id: string;
       category: string;
@@ -1562,6 +1659,8 @@ async function startServer() {
       courseEndDate?: string;
       remainingDoses?: number;
       totalDoses?: number;
+      refillAlertDays?: number;
+      takenDates?: string[];
     }>;
     creativeActivities?: Array<{
       id: string;
@@ -1593,12 +1692,12 @@ async function startServer() {
       }
       const prev = merged[merged.length - 1];
       if (prev && prev.role === item.role) {
-        prev.text = `${prev.text}\n\n${text}`.slice(0, 4000);
+        prev.text = `${prev.text}\n\n${text}`.slice(0, 1200);
       } else {
-        merged.push({ role: item.role, text: text.slice(0, 4000) });
+        merged.push({ role: item.role, text: text.slice(0, 1200) });
       }
     }
-    const recent = merged.slice(-20);
+    const recent = merged.slice(-10);
     while (recent.length > 0 && recent[0].role !== 'user') {
       recent.shift();
     }
@@ -1625,39 +1724,33 @@ async function startServer() {
 
     const memoriesBlock =
       memoriesArr.length > 0
-        ? `\n\n=== ذاكرة المستخدم الدائمة (Memories — إلزامي مراعاتها في كل رد دون استثناء) ===\n${memoriesArr
+        ? `\n\n=== ذاكرة المستخدم الدائمة ===\n${memoriesArr
+            .slice(0, 20)
             .map(
               (m, idx) =>
-                `${idx + 1}. [memoryId=${m.id} | ${m.category}] ${m.ruleText.trim()}`
+                `${idx + 1}. [id=${m.id}|${m.category}] ${m.ruleText.trim().slice(0, 180)}`
             )
             .join('\n')}`
-        : '\n\n=== ذاكرة المستخدم الدائمة (Memories) ===\nلا توجد قواعد إضافية بعد — التزم بالدستور الشخصي أدناه.';
+        : '';
 
     const eventsListText =
       Array.isArray(payload.calendarEvents) && payload.calendarEvents.length > 0
-        ? `\n\nأحداث Google Calendar الفعلية للأسبوع (نظام 12 ساعة):\n${payload.calendarEvents
-            .slice(0, 65)
-            .map((e) => {
-              const descClean = (e.description || '')
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 160);
-              return `- [eventId=${e.id}${e.calendarId ? ` | calendarId=${e.calendarId}` : ''}${e.calendarTitle ? ` | التقويم: ${e.calendarTitle}` : ''}] ${e.summary}${descClean ? ` | التفاصيل: ${descClean}` : ''}${e.location ? ` | المكان: ${e.location}` : ''} | من: ${formatServerIsoTo12h(e.start)}${e.end ? ` | إلى: ${formatServerIsoTo12h(e.end)}` : ''}`;
-            })
+        ? `\n\nأحداث Google Calendar:\n${payload.calendarEvents
+            .slice(0, 18)
+            .map((e) => `- [id=${e.id}${e.calendarId ? `|cal=${e.calendarId}` : ''}] ${e.summary} | ${formatServerIsoTo12h(e.start)}${e.end ? `–${formatServerIsoTo12h(e.end)}` : ''}`)
             .join('\n')}`
-        : '\n\nملاحظة: لا توجد أحداث مسجلة حالياً في Google Calendar ضمن النطاق المعروض أو لم يتم ربط الحساب بعد.';
+        : '';
 
     const tasksListText =
       Array.isArray(payload.tasks) && payload.tasks.length > 0
-        ? `\n\nمهام Google Tasks الفعلية الحالية:\n${payload.tasks
-            .slice(0, 45)
+        ? `\n\nمهام Google Tasks:\n${payload.tasks
+            .slice(0, 15)
             .map(
               (t) =>
-                `- [taskId=${t.id} | taskListId=${t.taskListId}${t.taskListTitle ? ` | القائمة: ${t.taskListTitle}` : ''}] ${t.title} | الحالة: ${t.status === 'completed' ? 'مكتملة' : 'قيد التنفيذ'}${t.due ? ` | الاستحقاق: ${t.due.slice(0, 10)}` : ''}`
+                `- [taskId=${t.id}|list=${t.taskListId}] ${t.title} | ${t.status === 'completed' ? 'مكتملة' : 'قيد التنفيذ'}${t.due ? ` | ${t.due.slice(0, 10)}` : ''}`
             )
             .join('\n')}`
-        : '\n\nملاحظة: لا توجد مهام حالياً في Google Tasks أو لم يتم ربط الحساب بعد.';
+        : '';
 
     const medsListText =
       Array.isArray(payload.medications) && payload.medications.length > 0
@@ -1674,7 +1767,7 @@ async function startServer() {
               const courseStr = m.courseEndDate ? ` | ينتهي الكورس: ${m.courseEndDate}` : '';
               const refillStr =
                 typeof m.remainingDoses === 'number' && m.remainingDoses >= 0
-                  ? ` | المتبقي: ${m.remainingDoses}${typeof m.totalDoses === 'number' && m.totalDoses > 0 ? `/${m.totalDoses}` : ''} جرعة`
+                  ? ` | المتبقي: ${m.remainingDoses}${typeof m.totalDoses === 'number' && m.totalDoses > 0 ? `/${m.totalDoses}` : ''} جرعة (تنبيه قبل ${m.refillAlertDays ?? 3} أيام)`
                   : '';
               return `- [medicationId=${m.id}] ${m.name} | المواعيد: ${doses} | التكرار: ${daysStr}${courseStr}${refillStr}${m.doseNote ? ` | ${m.doseNote}` : ''} | حالة اليوم: ${m.takenToday ? 'تم التناول ✓' : m.takenDosesToday && m.takenDosesToday.length > 0 ? `أُخذ (${m.takenDosesToday.join(', ')})` : 'لم يُؤخذ بعد'}`;
             })
@@ -1692,9 +1785,23 @@ async function startServer() {
             .join('\n')}`
         : '';
 
-    const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nقاعدة حاكمة صارمة: كل رد أو اقتراح أو جدولة يجب أن يعتمد حرفياً على «الدستور الشخصي» و«ذاكرة المستخدم الدائمة (Memories)» أدناه بدون أي مخالفة. أجب بسرعة ووضوح واختصار عملي.\n\nتاريخ اليوم بتوقيت القاهرة: ${todayCairo}\nالوقت الحالي بتوقيت القاهرة: ${nowCairo12}${memoriesBlock}\n\n=== الدستور الشخصي والسياق الحي ===\n${payload.contextSummary ?? ''}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+    const longTermArchiveBlock =
+      typeof payload.longTermChatContext === 'string' && payload.longTermChatContext.trim().length > 0
+        ? `\n\n=== مقتطفات مرجعية سابقة ===\n${payload.longTermChatContext.trim().slice(0, 1400)}`
+        : '';
+
+    const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${(payload.contextSummary ?? '').slice(0, 1800)}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
 
     return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
+  }
+
+  // Smart Intent Tool-Gating: skip 6 heavy JSON FunctionDeclaration schemas on pure Q&A turns for ~2-3x faster TTFT!
+  function shouldAttachChatTools(message: string): boolean {
+    const text = (message || '').trim();
+    if (!text) return false;
+    return /(أضف|اضف|أضيف|اضيف|ضف|ضيف|احجز|حجز|حط|سجّل|سجل|عدّل|عدل|تعديل|غيّر|غير|تغيير|احذف|حذف|شيل|امسح|الغ|ألغ|رحّل|رحل|انقل|أجّل|اجل|رتّب|رتب|احفظ|حفظ|تذكر|افتكر|تثبيت|ثبّت|جدول|ميعاد|موعد|مهمة|مهام|تاسك|دواء|علاج|فيتامين|مكمل|جرعة|وزن|طول|كوب|صيام|صايم|سحور|نمت|نوم|أرق|ارق|قيلولة|تعبان|مرهق|سفر|مسافر|مدينة|هواية|نشاط|مشروع|صمت|رنين|رنة|add|create|book|schedule|update|edit|delete|remove|move|shift|save|remember|task|event|med|supplement|sleep|weight|fast|travel|done|complete)/i.test(
+      text
+    );
   }
 
   function extractPendingProposalFromFunctionCalls(fnCalls?: FunctionCall[]) {
@@ -1770,8 +1877,9 @@ async function startServer() {
     };
   }
 
+  // Dedicated function-calling tools for Chat (NO forced googleSearch grounding on every chat turn,
+  // which previously exhausted Google Search quota and caused 429 RESOURCE_EXHAUSTED on normal messages!)
   const GEMINI_CHAT_TOOLS = [
-    { googleSearch: {} },
     {
       functionDeclarations: [
         proposeCalendarActionsDeclaration,
@@ -1784,7 +1892,189 @@ async function startServer() {
     },
   ];
 
-  // 3A. Fast Streaming Multi-turn Gemini Chat (SSE)
+  // Primary ultra-fast model (gemini-3.1-flash-lite uses MINIMAL thinking for ~1s responses)
+  // with automatic failover to gemini-4-hydrogen (LOW thinking)
+  const GEMINI_CHAT_MODEL_CHAIN = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const;
+
+  function isRetryableGeminiError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message : String(err ?? '');
+    return (
+      msg.includes('429') ||
+      msg.includes('503') ||
+      msg.includes('500') ||
+      msg.includes('RESOURCE_EXHAUSTED') ||
+      msg.includes('UNAVAILABLE') ||
+      msg.includes('high demand') ||
+      msg.includes('quota') ||
+      msg.includes('overloaded') ||
+      msg.includes('NOT_FOUND')
+    );
+  }
+
+  function formatFriendlyGeminiErrorAr(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err ?? '');
+    if (raw.includes('GEMINI_API_KEY')) {
+      return 'مفتاح Gemini غير مهيأ على الخادم — تأكد من إعدادات Secrets في AI Studio.';
+    }
+    if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED') || raw.includes('quota')) {
+      return 'تم الوصول للحد المؤقت لطلبات Gemini المجانية — انتظر بضع ثوانٍ وحاول مرة أخرى أو أضف مفتاحاً بباقة أعلى في Settings > Secrets.';
+    }
+    if (raw.includes('403') || raw.includes('PERMISSION_DENIED') || raw.includes('API_KEY_INVALID')) {
+      return 'تعذر التحقق من صلاحية مفتاح Gemini في الخادم — راجع Settings > Secrets.';
+    }
+    if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
+      return 'خوادم Gemini تشهد ضغطاً مؤقتاً الآن — اضغط «إعادة المحاولة» بعد لحظات.';
+    }
+    return raw.length > 260 ? 'حدث خطأ مؤقت أثناء الاتصال بـ Gemini — جرّب إعادة المحاولة.' : raw || 'حدث خطأ أثناء الاتصال بـ Gemini.';
+  }
+
+  // Bounded In-Memory TTL + LRU Cache for Repeated Gemini Requests (Chat Q&A, Maps, Web Search)
+  interface CachedGeminiEntry<T> {
+    value: T;
+    expiresAtMs: number;
+    createdAtMs: number;
+  }
+
+  class GeminiTtlLruCache<T> {
+    private readonly store = new Map<string, CachedGeminiEntry<T>>();
+    constructor(
+      private readonly maxEntries: number,
+      private readonly defaultTtlMs: number
+    ) {}
+
+    get(key: string): T | null {
+      const entry = this.store.get(key);
+      if (!entry) return null;
+      if (Date.now() > entry.expiresAtMs) {
+        this.store.delete(key);
+        return null;
+      }
+      // Refresh LRU recency
+      this.store.delete(key);
+      this.store.set(key, entry);
+      return entry.value;
+    }
+
+    set(key: string, value: T, ttlMs = this.defaultTtlMs): void {
+      if (this.store.has(key)) {
+        this.store.delete(key);
+      } else if (this.store.size >= this.maxEntries) {
+        const oldestKey = this.store.keys().next().value;
+        if (oldestKey !== undefined) {
+          this.store.delete(oldestKey);
+        }
+      }
+      this.store.set(key, {
+        value,
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + ttlMs,
+      });
+    }
+  }
+
+  interface CachedChatValue {
+    text: string;
+    memoriesAppliedCount: number;
+    model: string;
+  }
+
+  interface CachedMapsValue {
+    text: string;
+    places: Array<{ title: string; uri: string; snippets: string[] }>;
+    memoriesAppliedCount: number;
+    model: string;
+  }
+
+  interface CachedSearchValue {
+    text: string;
+    sources: Array<{ title: string; uri: string }>;
+    memoriesAppliedCount: number;
+    model: string;
+  }
+
+  const chatResponseCache = new GeminiTtlLruCache<CachedChatValue>(80, 3 * 60_000);
+  const mapsResponseCache = new GeminiTtlLruCache<CachedMapsValue>(60, 10 * 60_000);
+  const searchResponseCache = new GeminiTtlLruCache<CachedSearchValue>(60, 5 * 60_000);
+
+  function hashCacheKey(parts: unknown[]): string {
+    return crypto
+      .createHash('sha256')
+      .update(JSON.stringify(parts))
+      .digest('hex')
+      .slice(0, 40);
+  }
+
+  function normalizeQueryForCache(raw: string): string {
+    return raw.trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  function buildChatCacheKey(payload: ChatRequestPayload, formattedHistory: Content[]): string {
+    // 5-minute time bucket so time-relative Q&A refreshes naturally while repeated queries hit cache
+    const timeBucket5m = Math.floor(Date.now() / (5 * 60_000));
+    const memoriesSig = (payload.memories ?? []).map((m) => `${m.id}:${m.category}:${m.ruleText}`);
+    const eventsSig = (payload.calendarEvents ?? [])
+      .slice(0, 36)
+      .map((e) => `${e.id}:${e.summary}:${e.start}:${e.end ?? ''}`);
+    const tasksSig = (payload.tasks ?? [])
+      .slice(0, 25)
+      .map((t) => `${t.id}:${t.title}:${t.status}:${t.due ?? ''}`);
+    const medsSig = (payload.medications ?? []).map(
+      (m) => `${m.id}:${m.name}:${m.takenToday ? 1 : 0}:${m.remainingDoses ?? -1}`
+    );
+    const historySig = formattedHistory.slice(-6).map((h) => ({
+      role: h.role,
+      text: h.parts?.[0]?.text ?? '',
+    }));
+    return hashCacheKey([
+      'chat_v1',
+      getCairoTodayIso(),
+      timeBucket5m,
+      normalizeQueryForCache(payload.message ?? ''),
+      historySig,
+      (payload.contextSummary ?? '').slice(0, 1200),
+      memoriesSig,
+      eventsSig,
+      tasksSig,
+      medsSig,
+    ]);
+  }
+
+  function buildMapsCacheKey(
+    query: string,
+    lat: number,
+    lng: number,
+    memories?: Array<{ ruleText: string; category?: string }>,
+    constitutionBrief?: string
+  ): string {
+    return hashCacheKey([
+      'maps_v1',
+      normalizeQueryForCache(query),
+      lat.toFixed(3),
+      lng.toFixed(3),
+      (constitutionBrief ?? '').slice(0, 300),
+      (memories ?? []).slice(0, 10).map((m) => m.ruleText),
+    ]);
+  }
+
+  function buildSearchCacheKey(
+    query: string,
+    lat: number,
+    lng: number,
+    memories?: Array<{ ruleText: string; category?: string }>,
+    constitutionBrief?: string
+  ): string {
+    return hashCacheKey([
+      'search_v1',
+      getCairoTodayIso(),
+      normalizeQueryForCache(query),
+      lat.toFixed(2),
+      lng.toFixed(2),
+      (constitutionBrief ?? '').slice(0, 300),
+      (memories ?? []).slice(0, 10).map((m) => m.ruleText),
+    ]);
+  }
+
+  // 3A. Fast Streaming Multi-turn Gemini Chat (SSE with TTL/LRU Caching + automatic model failover)
   app.post('/api/chat/stream', async (req, res) => {
     const startedAt = Date.now();
     const payload = req.body as ChatRequestPayload;
@@ -1805,37 +2095,72 @@ async function startServer() {
     };
 
     try {
-      const ai = getGeminiClient();
       const formattedHistory = normalizeGeminiHistory(payload.history);
+      const cacheKey = buildChatCacheKey(payload, formattedHistory);
+
+      if (!payload.bypassCache) {
+        const cached = chatResponseCache.get(cacheKey);
+        if (cached) {
+          writeEvent({ type: 'delta', text: cached.text });
+          writeEvent({
+            type: 'done',
+            text: cached.text,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            memoriesAppliedCount: cached.memoriesAppliedCount,
+            model: cached.model,
+            cached: true,
+          });
+          res.end();
+          return;
+        }
+      }
+
+      writeEvent({ type: 'status', text: 'جارٍ التفكير وفق دستورك وذاكرتك...' });
+
+      const ai = getGeminiClient();
       const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
 
-      const modelCandidates = ['gemini-4-hydrogen', 'gemini-2.5-flash'] as const;
-      let activeModel: string = modelCandidates[0];
+      let activeModel: string = GEMINI_CHAT_MODEL_CHAIN[0];
       let fullText = '';
       const collectedFnCalls: FunctionCall[] = [];
-      const sourcesMap = new Map<string, { title: string; uri: string }>();
       let streamCompleted = false;
       let lastStreamErr: unknown = null;
 
-      for (const candidateModel of modelCandidates) {
+      const needsTools = shouldAttachChatTools(payload.message);
+
+      for (const candidateModel of GEMINI_CHAT_MODEL_CHAIN) {
         activeModel = candidateModel;
+        let firstChunkTimer: ReturnType<typeof setTimeout> | null = null;
         try {
           const chat = ai.chats.create({
             model: candidateModel,
             history: formattedHistory,
             config: {
               systemInstruction,
-              ...(candidateModel === 'gemini-4-hydrogen'
-                ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
-                : {}),
-              tools: GEMINI_CHAT_TOOLS,
-              toolConfig: {
-                includeServerSideToolInvocations: true,
+              thinkingConfig: {
+                thinkingLevel:
+                  candidateModel === 'gemini-3.1-flash-lite'
+                    ? ThinkingLevel.MINIMAL
+                    : ThinkingLevel.LOW,
               },
+              ...(needsTools ? { tools: GEMINI_CHAT_TOOLS } : {}),
             },
           });
 
-          const stream = await chat.sendMessageStream({ message: payload.message });
+          // Fail over rapidly (8s) if the primary model stalls before producing its first chunk
+          const streamPromise = chat.sendMessageStream({ message: payload.message });
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            firstChunkTimer = setTimeout(
+              () => reject(new Error('503 UNAVAILABLE: stream_connect_timeout')),
+              8_000
+            );
+          });
+          const stream = await Promise.race([streamPromise, timeoutPromise]);
+          if (firstChunkTimer) {
+            clearTimeout(firstChunkTimer);
+            firstChunkTimer = null;
+          }
+
           for await (const chunk of stream) {
             if (res.writableEnded) break;
             const delta = chunk.text ?? '';
@@ -1846,25 +2171,16 @@ async function startServer() {
             if (Array.isArray(chunk.functionCalls) && chunk.functionCalls.length > 0) {
               collectedFnCalls.push(...chunk.functionCalls);
             }
-            const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
-            for (const gc of gChunks) {
-              if (gc.web?.uri && !sourcesMap.has(gc.web.uri)) {
-                sourcesMap.set(gc.web.uri, {
-                  title: gc.web.title ?? gc.web.uri ?? 'مصدر ويب',
-                  uri: gc.web.uri,
-                });
-              }
-            }
           }
           streamCompleted = true;
           break;
         } catch (modelErr: unknown) {
+          if (firstChunkTimer) clearTimeout(firstChunkTimer);
           lastStreamErr = modelErr;
-          const mMsg = modelErr instanceof Error ? modelErr.message : String(modelErr ?? '');
-          const canFallback =
-            !fullText &&
-            (mMsg.includes('503') || mMsg.includes('UNAVAILABLE') || mMsg.includes('high demand'));
-          if (!canFallback) throw modelErr;
+          if (!fullText && isRetryableGeminiError(modelErr)) {
+            continue;
+          }
+          throw modelErr;
         }
       }
 
@@ -1872,31 +2188,41 @@ async function startServer() {
         throw lastStreamErr ?? new Error('تعذر الاتصال بـ Gemini حالياً.');
       }
 
-      const sources = Array.from(sourcesMap.values());
       const pendingProposal = extractPendingProposalFromFunctionCalls(collectedFnCalls);
       const finalText =
         fullText.trim() ||
         pendingProposal?.summaryAr ||
         'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
 
+      // Cache purely informational responses (never cache mutating tool proposals)
+      if (!pendingProposal && finalText.length > 0) {
+        chatResponseCache.set(cacheKey, {
+          text: finalText,
+          memoriesAppliedCount,
+          model: activeModel,
+        });
+      }
+
+      const streamLatencyMs = Math.max(1, Date.now() - startedAt);
+      markGeminiProbeOnline(activeModel, streamLatencyMs);
+
       writeEvent({
         type: 'done',
         text: finalText,
-        sources: sources.length > 0 ? sources : undefined,
         pendingProposal,
-        latencyMs: Math.max(1, Date.now() - startedAt),
+        latencyMs: streamLatencyMs,
         memoriesAppliedCount,
         model: activeModel,
+        cached: false,
       });
       res.end();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'حدث خطأ أثناء الاتصال بـ Gemini.';
-      writeEvent({ type: 'error', error: msg });
+      writeEvent({ type: 'error', error: formatFriendlyGeminiErrorAr(err) });
       res.end();
     }
   });
 
-  // 3B. Multi-turn Gemini Chat JSON Fallback (with ThinkingLevel.LOW + normalized history + Memories)
+  // 3B. Multi-turn Gemini Chat JSON Fallback (with TTL/LRU Caching + resilient model failover + Memories)
   app.post('/api/chat', async (req, res) => {
     const startedAt = Date.now();
     try {
@@ -1906,35 +2232,77 @@ async function startServer() {
         return;
       }
 
-      const ai = getGeminiClient();
       const formattedHistory = normalizeGeminiHistory(payload.history);
+      const cacheKey = buildChatCacheKey(payload, formattedHistory);
+
+      if (!payload.bypassCache) {
+        const cached = chatResponseCache.get(cacheKey);
+        if (cached) {
+          res.json({
+            text: cached.text,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            memoriesAppliedCount: cached.memoriesAppliedCount,
+            model: cached.model,
+            cached: true,
+          });
+          return;
+        }
+      }
+
+      const ai = getGeminiClient();
       const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
 
-      const chat = ai.chats.create({
-        model: 'gemini-4-hydrogen',
-        history: formattedHistory,
-        config: {
-          systemInstruction,
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          tools: GEMINI_CHAT_TOOLS,
-          toolConfig: {
-            includeServerSideToolInvocations: true,
-          },
-        },
-      });
+      let activeModel: string = GEMINI_CHAT_MODEL_CHAIN[0];
+      let response: Awaited<ReturnType<ReturnType<GoogleGenAI['chats']['create']>['sendMessage']>> | null = null;
+      let lastErr: unknown = null;
 
-      const response = await chat.sendMessage({ message: payload.message });
-      const groundingChunks =
-        response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
-      const sources = groundingChunks
-        .filter((c) => c.web?.uri)
-        .map((c) => ({
-          title: c.web?.title ?? c.web?.uri ?? 'مصدر ويب',
-          uri: c.web?.uri ?? '',
-        }));
+      const needsTools = shouldAttachChatTools(payload.message);
+
+      for (const candidateModel of GEMINI_CHAT_MODEL_CHAIN) {
+        activeModel = candidateModel;
+        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+        try {
+          const chat = ai.chats.create({
+            model: candidateModel,
+            history: formattedHistory,
+            config: {
+              systemInstruction,
+              thinkingConfig: {
+                thinkingLevel:
+                  candidateModel === 'gemini-3.1-flash-lite'
+                    ? ThinkingLevel.MINIMAL
+                    : ThinkingLevel.LOW,
+              },
+              ...(needsTools ? { tools: GEMINI_CHAT_TOOLS } : {}),
+            },
+          });
+          const respPromise = chat.sendMessage({ message: payload.message });
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error('503 UNAVAILABLE: chat_timeout')),
+              9_000
+            );
+          });
+          response = await Promise.race([respPromise, timeoutPromise]);
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          break;
+        } catch (modelErr: unknown) {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          lastErr = modelErr;
+          if (isRetryableGeminiError(modelErr)) {
+            continue;
+          }
+          throw modelErr;
+        }
+      }
+
+      if (!response) {
+        throw lastErr ?? new Error('تعذر الاتصال بـ Gemini حالياً.');
+      }
 
       const pendingProposal = extractPendingProposalFromFunctionCalls(response.functionCalls);
       const latencyMs = Math.max(1, Date.now() - startedAt);
+      markGeminiProbeOnline(activeModel, latencyMs);
 
       if (pendingProposal) {
         res.json({
@@ -1942,38 +2310,498 @@ async function startServer() {
             response.text ||
             pendingProposal.summaryAr ||
             'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.',
-          sources: sources.length > 0 ? sources : undefined,
           pendingProposal,
           latencyMs,
           memoriesAppliedCount,
-          model: 'gemini-4-hydrogen',
+          model: activeModel,
+          cached: false,
         });
         return;
       }
 
+      const finalText = (response.text ?? '').trim();
+      if (finalText) {
+        chatResponseCache.set(cacheKey, {
+          text: finalText,
+          memoriesAppliedCount,
+          model: activeModel,
+        });
+      }
+
       res.json({
-        text: response.text ?? '',
-        sources: sources.length > 0 ? sources : undefined,
+        text: finalText,
         latencyMs,
         memoriesAppliedCount,
-        model: 'gemini-4-hydrogen',
+        model: activeModel,
+        cached: false,
       });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'حدث خطأ أثناء الاتصال بـ Gemini.';
-      res.status(500).json({ error: msg });
+      res.status(500).json({ error: formatFriendlyGeminiErrorAr(err) });
     }
   });
 
-  // 4. Google Maps Grounding Endpoint (Constitution & Memories aware)
+  function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  function extractPlaceSearchKeyword(query: string): { ar: string; en: string } {
+    const q = query.trim();
+    if (/(مسجد|مساجد|جامع|جوامع|صلاة|الجماعة|mosque)/i.test(q)) return { ar: 'مسجد', en: 'mosque' };
+    if (/(صيدلية|صيدليات|دواء|علاج|pharmacy)/i.test(q)) return { ar: 'صيدلية', en: 'pharmacy' };
+    if (/(مستشفى|مستشفيات|عيادة|طوارئ|دكتور|hospital|clinic)/i.test(q)) return { ar: 'مستشفى', en: 'hospital' };
+    if (/(مطعم|مطاعم|أكل|وجبات|طعام|استراحة|restaurant)/i.test(q)) return { ar: 'مطعم', en: 'restaurant' };
+    if (/(كافيه|قهوة|مقهى|cafe|coffee)/i.test(q)) return { ar: 'كافيه', en: 'cafe' };
+    if (/(سوبر ماركت|ماركت|بقالة|supermarket)/i.test(q)) return { ar: 'سوبر ماركت', en: 'supermarket' };
+    if (/(بنزين|وقود|محطة|fuel|gas)/i.test(q)) return { ar: 'محطة بنزين', en: 'fuel' };
+    if (/(جيم|نادي|رياضة|gym)/i.test(q)) return { ar: 'جيم', en: 'gym' };
+    if (/(بنك|صراف|atm|bank)/i.test(q)) return { ar: 'بنك', en: 'bank' };
+    const cleaned = q
+      .replace(/(أقرب|اقرب|في|بالقرب|من|موقعي|الحالي|المفتوحة|الآن|الان|طريقي)/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return { ar: cleaned || q, en: cleaned || q };
+  }
+
+  async function fetchLiveNearbyPlaces(
+    query: string,
+    lat: number,
+    lng: number
+  ): Promise<Array<{ title: string; uri: string; snippets: string[]; distanceKm: number }>> {
+    const kw = extractPlaceSearchKeyword(query);
+    const delta = 0.14;
+    const viewbox = `${(lng - delta).toFixed(4)},${(lat + delta).toFixed(4)},${(lng + delta).toFixed(4)},${(lat - delta).toFixed(4)}`;
+
+    const [photonRes, nomArRes, nomEnRes] = await Promise.allSettled([
+      fetch(
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(kw.ar)}&lat=${lat}&lon=${lng}&limit=10`,
+        {
+          headers: { 'User-Agent': 'DayRhythmApp/1.0' },
+          signal: AbortSignal.timeout(4500),
+        }
+      ).then((r) => (r.ok ? r.json() : null)),
+      fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(kw.ar)}&format=json&limit=8&viewbox=${viewbox}&bounded=1&accept-language=ar`,
+        {
+          headers: { 'User-Agent': 'DayRhythmApp/1.0' },
+          signal: AbortSignal.timeout(4500),
+        }
+      ).then((r) => (r.ok ? r.json() : null)),
+      fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(kw.en)}&format=json&limit=8&viewbox=${viewbox}&bounded=1&accept-language=ar`,
+        {
+          headers: { 'User-Agent': 'DayRhythmApp/1.0' },
+          signal: AbortSignal.timeout(4500),
+        }
+      ).then((r) => (r.ok ? r.json() : null)),
+    ]);
+
+    const rawPlaces: Array<{ title: string; lat: number; lng: number; address: string }> = [];
+
+    if (photonRes.status === 'fulfilled' && photonRes.value?.features) {
+      for (const feat of photonRes.value.features as Array<{
+        properties?: { name?: string; street?: string; city?: string; state?: string };
+        geometry?: { coordinates?: [number, number] };
+      }>) {
+        const coords = feat.geometry?.coordinates;
+        const name = (feat.properties?.name || '').trim();
+        if (!coords || !name) continue;
+        const [pLng, pLat] = coords;
+        const address = [feat.properties?.street, feat.properties?.city, feat.properties?.state]
+          .filter(Boolean)
+          .join('، ');
+        rawPlaces.push({ title: name, lat: pLat, lng: pLng, address });
+      }
+    }
+
+    for (const nomSettled of [nomArRes, nomEnRes]) {
+      if (nomSettled.status === 'fulfilled' && Array.isArray(nomSettled.value)) {
+        for (const item of nomSettled.value as Array<{
+          name?: string;
+          display_name?: string;
+          lat?: string;
+          lon?: string;
+        }>) {
+          const pLat = Number(item.lat);
+          const pLng = Number(item.lon);
+          const title = (item.name || item.display_name?.split(',')[0] || '').trim();
+          if (!title || Number.isNaN(pLat) || Number.isNaN(pLng)) continue;
+          rawPlaces.push({
+            title,
+            lat: pLat,
+            lng: pLng,
+            address: String(item.display_name ?? '').slice(0, 140),
+          });
+        }
+      }
+    }
+
+    const dedup = new Map<string, { title: string; uri: string; snippets: string[]; distanceKm: number }>();
+    for (const p of rawPlaces) {
+      const dist = haversineKm(lat, lng, p.lat, p.lng);
+      if (dist > 35) continue;
+      const key = p.title.toLowerCase().replace(/\s+/g, ' ');
+      if (dedup.has(key)) continue;
+      const distLabel = dist < 1 ? `${Math.round(dist * 1000)} متر` : `${dist.toFixed(1)} كم`;
+      dedup.set(key, {
+        title: p.title,
+        uri: `https://www.google.com/maps/search/?api=1&query=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`,
+        snippets: [`المسافة التقريبية: ${distLabel}${p.address ? ` · ${p.address}` : ''}`],
+        distanceKm: dist,
+      });
+    }
+
+    const sorted = Array.from(dedup.values())
+      .sort((a, b) => a.distanceKm - b.distanceKm)
+      .slice(0, 7);
+
+    // Always include a direct Google Maps live search link at the user's exact coordinates
+    sorted.push({
+      title: `فتح «${kw.ar}» مباشرة على خرائط Google بالقرب منك`,
+      uri: `https://www.google.com/maps/search/${encodeURIComponent(kw.ar)}/@${lat.toFixed(5)},${lng.toFixed(5)},15z`,
+      snippets: ['عرض جميع الأماكن المفتوحة والتقييمات والاتجاهات الحية على خرائط Google'],
+      distanceKm: 0,
+    });
+
+    return sorted;
+  }
+
+  function decodeXmlEntities(str: string): string {
+    return str
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  async function fetchLiveWebSearchFallback(
+    query: string,
+    lat = 31.1953,
+    lng = 31.5212
+  ): Promise<{ contextText: string; sources: Array<{ title: string; uri: string }> }> {
+    const sources: Array<{ title: string; uri: string }> = [];
+    const snippets: string[] = [];
+
+    const wantsWeather = /(طقس|حرارة|جو|مطر|رطوبة|رياح|weather|temp)/i.test(query);
+    const wantsPrayer = /(مواقيت|صلاة|أذان|اذان|الفجر|الظهر|العصر|المغرب|العشاء|prayer)/i.test(query);
+
+    const tasks: Array<Promise<void>> = [];
+
+    if (wantsWeather) {
+      tasks.push(
+        fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Africa%2FCairo&forecast_days=2`,
+          { signal: AbortSignal.timeout(4000) }
+        )
+          .then((r) => (r.ok ? r.json() : null))
+          .then((w) => {
+            if (!w?.current) return;
+            snippets.push(
+              `بيانات الطقس الحية الآن (Open-Meteo): الحرارة الحالية ${w.current.temperature_2m}°C (المحسوسة ${w.current.apparent_temperature}°C)، الرطوبة ${w.current.relative_humidity_2m}%، الرياح ${w.current.wind_speed_10m} كم/س، العظمى اليوم ${w.daily?.temperature_2m_max?.[0]}°C والصغرى ${w.daily?.temperature_2m_min?.[0]}°C، احتمال المطر ${w.daily?.precipitation_probability_max?.[0] ?? 0}%.`
+            );
+            sources.push({
+              title: 'Open-Meteo — بيانات الطقس الحية',
+              uri: `https://open-meteo.com/`,
+            });
+          })
+          .catch(() => {})
+      );
+    }
+
+    if (wantsPrayer) {
+      tasks.push(
+        fetch(
+          `https://api.aladhan.com/v1/timings?latitude=${lat}&longitude=${lng}&method=5`,
+          { signal: AbortSignal.timeout(4000) }
+        )
+          .then((r) => (r.ok ? r.json() : null))
+          .then((p) => {
+            const t = p?.data?.timings;
+            if (!t) return;
+            snippets.push(
+              `مواقيت الصلاة الحية اليوم وفق الهيئة المصرية العامة للمساحة (Aladhan): الفجر ${t.Fajr}، الشروق ${t.Sunrise}، الظهر ${t.Dhuhr}، العصر ${t.Asr}، المغرب ${t.Maghrib}، العشاء ${t.Isha} (حوّلها إلى نظام 12 ساعة ص/م في ردك).`
+            );
+            sources.push({
+              title: 'Aladhan — الهيئة المصرية للمساحة',
+              uri: 'https://aladhan.com/',
+            });
+          })
+          .catch(() => {})
+      );
+    }
+
+    // Arabic Wikipedia live search + snippet
+    tasks.push(
+      fetch(
+        `https://ar.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3`,
+        {
+          headers: { 'User-Agent': 'DayRhythmApp/1.0' },
+          signal: AbortSignal.timeout(4000),
+        }
+      )
+        .then((r) => (r.ok ? r.json() : null))
+        .then((wiki) => {
+          const hits = (wiki?.query?.search ?? []) as Array<{ title?: string; snippet?: string }>;
+          for (const h of hits.slice(0, 3)) {
+            if (!h.title) continue;
+            const cleanSnip = decodeXmlEntities(h.snippet ?? '');
+            snippets.push(`ويكيبيديا (${h.title}): ${cleanSnip}`);
+            sources.push({
+              title: `ويكيبيديا — ${h.title}`,
+              uri: `https://ar.wikipedia.org/wiki/${encodeURIComponent(h.title.replace(/\s+/g, '_'))}`,
+            });
+          }
+        })
+        .catch(() => {})
+    );
+
+    // Google News Arabic live RSS search
+    tasks.push(
+      fetch(
+        `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ar&gl=EG&ceid=EG:ar`,
+        {
+          headers: { 'User-Agent': 'DayRhythmApp/1.0' },
+          signal: AbortSignal.timeout(4000),
+        }
+      )
+        .then((r) => (r.ok ? r.text() : ''))
+        .then((xml) => {
+          if (!xml) return;
+          const items = xml.match(/<item>[\s\S]*?<\/item>/g) ?? [];
+          for (const rawItem of items.slice(0, 4)) {
+            const title = decodeXmlEntities(rawItem.match(/<title>([\s\S]*?)<\/title>/)?.[1] ?? '');
+            const link = decodeXmlEntities(rawItem.match(/<link>([\s\S]*?)<\/link>/)?.[1] ?? '');
+            const pubDate = decodeXmlEntities(rawItem.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1] ?? '');
+            if (!title || !link) continue;
+            snippets.push(`خبر/مقال (${pubDate}): ${title}`);
+            sources.push({ title: title.slice(0, 90), uri: link });
+          }
+        })
+        .catch(() => {})
+    );
+
+    await Promise.allSettled(tasks);
+
+    return {
+      contextText: snippets.join('\n'),
+      sources: sources.slice(0, 6),
+    };
+  }
+
+  // 4A. Streaming Google Maps Grounding Endpoint (SSE + TTL/LRU Cache + Native Maps + Live Photon/OSM Fallback)
+  app.post('/api/maps/stream', async (req, res) => {
+    const startedAt = Date.now();
+    const { query, lat, lng, memories, constitutionBrief, bypassCache } = req.body as {
+      query?: string;
+      lat?: number;
+      lng?: number;
+      memories?: Array<{ ruleText: string; category?: string }>;
+      constitutionBrief?: string;
+      bypassCache?: boolean;
+    };
+
+    if (!query || typeof query !== 'string') {
+      res.status(400).json({ error: 'استعلام الخرائط مطلوب.' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const writeEvent = (obj: Record<string, unknown>) => {
+      if (res.writableEnded) return;
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    };
+
+    try {
+      const latitude = typeof lat === 'number' ? lat : 31.1953;
+      const longitude = typeof lng === 'number' ? lng : 31.5212;
+      const memoriesAppliedCount = Array.isArray(memories) ? memories.length : 0;
+      const cacheKey = buildMapsCacheKey(query, latitude, longitude, memories, constitutionBrief);
+
+      if (!bypassCache) {
+        const cached = mapsResponseCache.get(cacheKey);
+        if (cached) {
+          writeEvent({ type: 'delta', text: cached.text });
+          writeEvent({
+            type: 'done',
+            text: cached.text,
+            places: cached.places,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            memoriesAppliedCount: cached.memoriesAppliedCount,
+            model: cached.model,
+            cached: true,
+          });
+          res.end();
+          return;
+        }
+      }
+
+      writeEvent({ type: 'status', text: 'جارٍ البحث في الخرائط حول موقعك...' });
+
+      const memLines =
+        Array.isArray(memories) && memories.length > 0
+          ? `\nقواعد ذاكرة المستخدم:\n${memories
+              .slice(0, 10)
+              .map((m) => `- ${m.ruleText}`)
+              .join('\n')}`
+          : '';
+
+      const ai = getGeminiClient();
+
+      // 1) Try native Gemini Google Maps grounding with streaming first
+      let nativeText = '';
+      const nativePlaces: Array<{ title: string; uri: string; snippets: string[] }> = [];
+      let nativeSucceeded = false;
+
+      try {
+        const stream = await ai.models.generateContentStream({
+          model: 'gemini-3.1-flash-lite',
+          contents: query,
+          config: {
+            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م).${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+            tools: [{ googleMaps: {} }],
+            toolConfig: {
+              retrievalConfig: {
+                latLng: { latitude, longitude },
+              },
+            },
+          },
+        });
+
+        const seenUris = new Set<string>();
+        for await (const chunk of stream) {
+          if (res.writableEnded) break;
+          const delta = chunk.text ?? '';
+          if (delta) {
+            nativeText += delta;
+            writeEvent({ type: 'delta', text: delta });
+          }
+          const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+          for (const c of gChunks) {
+            if (!c.maps?.uri || seenUris.has(c.maps.uri)) continue;
+            seenUris.add(c.maps.uri);
+            nativePlaces.push({
+              title: c.maps.title ?? 'مكان على الخريطة',
+              uri: c.maps.uri,
+              snippets:
+                c.maps.placeAnswerSources?.reviewSnippets
+                  ?.map(
+                    (s) =>
+                      (s as { review?: string; text?: string; content?: string }).review ??
+                      (s as { text?: string }).text ??
+                      ''
+                  )
+                  .filter(Boolean) ?? [],
+            });
+          }
+        }
+        if (nativeText.trim()) {
+          nativeSucceeded = true;
+        }
+      } catch {
+        // Free-tier keys often have 0 quota on built-in googleMaps grounding -> fall through cleanly
+      }
+
+      if (nativeSucceeded) {
+        const finalText = nativeText.trim();
+        mapsResponseCache.set(cacheKey, {
+          text: finalText,
+          places: nativePlaces,
+          memoriesAppliedCount,
+          model: 'gemini-3.1-flash-lite',
+        });
+        writeEvent({
+          type: 'done',
+          text: finalText,
+          places: nativePlaces,
+          latencyMs: Math.max(1, Date.now() - startedAt),
+          memoriesAppliedCount,
+          model: 'gemini-3.1-flash-lite',
+          cached: false,
+        });
+        res.end();
+        return;
+      }
+
+      // 2) Live Real Geographic Lookup (Photon + Nominatim around exact GPS) + Streaming Gemini Synthesis
+      writeEvent({ type: 'status', text: 'جارٍ رصد أقرب الأماكن والمسافات الحية...' });
+      const livePlaces = await fetchLiveNearbyPlaces(query, latitude, longitude);
+      const placesContext = livePlaces
+        .map((p, i) => `${i + 1}. ${p.title} — ${p.snippets[0] ?? ''}`)
+        .join('\n');
+
+      let streamedText = '';
+      const summaryStream = await ai.models.generateContentStream({
+        model: 'gemini-3.1-flash-lite',
+        contents: `طلب المستخدم: ${query}\nإحداثياته الحالية: (${latitude.toFixed(4)}, ${longitude.toFixed(4)})\n\nالأماكن القريبة الفعلية المرصودة الآن:\n${placesContext}\n\nقدّم إجابة عربية سريعة، منظمة، وعملية توضح أقرب الخيارات والمسافات ونصيحة سريعة (بنظام 12 ساعة ص/م عند ذكر أي وقت).`,
+        config: {
+          systemInstruction: `أنت دليل الأماكن والخرائط في إيقاع اليوم. اعتمد على الأماكن الحقيقية المرفقة أدناه بدون اختلاق أسماء، واكتب بوضوح واختصار.${memLines}`,
+        },
+      });
+
+      for await (const chunk of summaryStream) {
+        if (res.writableEnded) break;
+        const delta = chunk.text ?? '';
+        if (delta) {
+          streamedText += delta;
+          writeEvent({ type: 'delta', text: delta });
+        }
+      }
+
+      const finalText =
+        streamedText.trim() ||
+        `إليك أقرب النتائج المرصودة حول موقعك الحالي (${livePlaces.length - 1} موقع):`;
+      const cleanPlaces = livePlaces.map(({ title, uri, snippets }) => ({ title, uri, snippets }));
+
+      mapsResponseCache.set(cacheKey, {
+        text: finalText,
+        places: cleanPlaces,
+        memoriesAppliedCount,
+        model: 'gemini-3.1-flash-lite',
+      });
+
+      writeEvent({
+        type: 'done',
+        text: finalText,
+        places: cleanPlaces,
+        latencyMs: Math.max(1, Date.now() - startedAt),
+        memoriesAppliedCount,
+        model: 'gemini-3.1-flash-lite',
+        cached: false,
+      });
+      res.end();
+    } catch (err: unknown) {
+      writeEvent({ type: 'error', error: formatFriendlyGeminiErrorAr(err) });
+      res.end();
+    }
+  });
+
+  // 4B. Google Maps Grounding Endpoint JSON Fallback (with TTL/LRU Cache)
   app.post('/api/maps', async (req, res) => {
     const startedAt = Date.now();
     try {
-      const { query, lat, lng, memories, constitutionBrief } = req.body as {
+      const { query, lat, lng, memories, constitutionBrief, bypassCache } = req.body as {
         query?: string;
         lat?: number;
         lng?: number;
         memories?: Array<{ ruleText: string; category?: string }>;
         constitutionBrief?: string;
+        bypassCache?: boolean;
       };
 
       if (!query || typeof query !== 'string') {
@@ -1983,115 +2811,417 @@ async function startServer() {
 
       const latitude = typeof lat === 'number' ? lat : 31.1953;
       const longitude = typeof lng === 'number' ? lng : 31.5212;
+      const memoriesAppliedCount = Array.isArray(memories) ? memories.length : 0;
+      const cacheKey = buildMapsCacheKey(query, latitude, longitude, memories, constitutionBrief);
+
+      if (!bypassCache) {
+        const cached = mapsResponseCache.get(cacheKey);
+        if (cached) {
+          res.json({
+            text: cached.text,
+            places: cached.places,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            memoriesAppliedCount: cached.memoriesAppliedCount,
+            model: cached.model,
+            cached: true,
+          });
+          return;
+        }
+      }
 
       const memLines =
         Array.isArray(memories) && memories.length > 0
-          ? `\nقواعد ذاكرة المستخدم الدائمة:\n${memories
-              .slice(0, 12)
+          ? `\nقواعد ذاكرة المستخدم:\n${memories
+              .slice(0, 10)
               .map((m) => `- ${m.ruleText}`)
               .join('\n')}`
           : '';
 
       const ai = getGeminiClient();
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: query,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          systemInstruction: `أجب بالعربية بوضوح واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على بيانات خرائط جوجل، مع الالتزام بنظام 12 ساعة (ص/م) والدستور الشخصي وذاكرة المستخدم.${constitutionBrief ? `\n${constitutionBrief.slice(0, 800)}` : ''}${memLines}`,
-          tools: [{ googleMaps: {} }],
-          toolConfig: {
-            retrievalConfig: {
-              latLng: { latitude, longitude },
+
+      // 1) Try native Gemini Google Maps grounding first
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: query,
+          config: {
+            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م).${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+            tools: [{ googleMaps: {} }],
+            toolConfig: {
+              retrievalConfig: {
+                latLng: { latitude, longitude },
+              },
             },
           },
+        });
+
+        const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+        const places = chunks
+          .filter((c) => c.maps)
+          .map((c) => ({
+            title: c.maps?.title ?? 'مكان على الخريطة',
+            uri: c.maps?.uri ?? '',
+            snippets:
+              c.maps?.placeAnswerSources?.reviewSnippets
+                ?.map(
+                  (s) =>
+                    (s as { review?: string; text?: string; content?: string }).review ??
+                    (s as { text?: string }).text ??
+                    ''
+                )
+                .filter(Boolean) ?? [],
+          }))
+          .filter((p) => p.uri);
+
+        if ((response.text ?? '').trim()) {
+          const finalText = (response.text ?? '').trim();
+          mapsResponseCache.set(cacheKey, {
+            text: finalText,
+            places,
+            memoriesAppliedCount,
+            model: 'gemini-3.1-flash-lite',
+          });
+          res.json({
+            text: finalText,
+            places,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            memoriesAppliedCount,
+            model: 'gemini-3.1-flash-lite',
+            cached: false,
+          });
+          return;
+        }
+      } catch {
+        // Free-tier keys often have 0 quota on built-in googleMaps grounding -> fall through to live OSM/Photon + Gemini synthesis
+      }
+
+      // 2) Live Real Geographic Lookup (Photon + Nominatim around exact GPS) + Fast Gemini Summary
+      const livePlaces = await fetchLiveNearbyPlaces(query, latitude, longitude);
+      const placesContext = livePlaces
+        .map((p, i) => `${i + 1}. ${p.title} — ${p.snippets[0] ?? ''}`)
+        .join('\n');
+
+      const summaryRes = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-lite',
+        contents: `طلب المستخدم: ${query}\nإحداثياته الحالية: (${latitude.toFixed(4)}, ${longitude.toFixed(4)})\n\nالأماكن القريبة الفعلية المرصودة الآن:\n${placesContext}\n\nقدّم إجابة عربية سريعة، منظمة، وعملية توضح أقرب الخيارات والمسافات ونصيحة سريعة (بنظام 12 ساعة ص/م عند ذكر أي وقت).`,
+        config: {
+          systemInstruction: `أنت دليل الأماكن والخرائط في إيقاع اليوم. اعتمد على الأماكن الحقيقية المرفقة أدناه بدون اختلاق أسماء، واكتب بوضوح واختصار.${memLines}`,
         },
       });
 
-      const chunks =
-        response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+      const finalText =
+        (summaryRes.text ?? '').trim() ||
+        `إليك أقرب النتائج المرصودة حول موقعك الحالي (${livePlaces.length - 1} موقع):`;
+      const cleanPlaces = livePlaces.map(({ title, uri, snippets }) => ({ title, uri, snippets }));
 
-      const places = chunks
-        .filter((c) => c.maps)
-        .map((c) => ({
-          title: c.maps?.title ?? 'مكان على الخريطة',
-          uri: c.maps?.uri ?? '',
-          snippets:
-            c.maps?.placeAnswerSources?.reviewSnippets
-              ?.map(
-                (s) =>
-                  (s as { review?: string; text?: string; content?: string }).review ??
-                  (s as { text?: string }).text ??
-                  ''
-              )
-              .filter(Boolean) ?? [],
-        }))
-        .filter((p) => p.uri);
+      mapsResponseCache.set(cacheKey, {
+        text: finalText,
+        places: cleanPlaces,
+        memoriesAppliedCount,
+        model: 'gemini-3.1-flash-lite',
+      });
 
       res.json({
-        text: response.text ?? '',
-        places,
+        text: finalText,
+        places: cleanPlaces,
         latencyMs: Math.max(1, Date.now() - startedAt),
-        memoriesAppliedCount: Array.isArray(memories) ? memories.length : 0,
+        memoriesAppliedCount,
+        model: 'gemini-3.1-flash-lite',
+        cached: false,
       });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'تعذر جلب بيانات خرائط جوجل.';
-      res.status(500).json({ error: msg });
+      res.status(500).json({ error: formatFriendlyGeminiErrorAr(err) });
     }
   });
 
-  // 5. Google Search Grounding Endpoint (Constitution & Memories aware)
+  // 5A. Streaming Google Search Grounding Endpoint (SSE + TTL/LRU Cache + Live Multi-Source Fallback)
+  app.post('/api/search/stream', async (req, res) => {
+    const startedAt = Date.now();
+    const { query, lat, lng, memories, constitutionBrief, bypassCache } = req.body as {
+      query?: string;
+      lat?: number;
+      lng?: number;
+      memories?: Array<{ ruleText: string; category?: string }>;
+      constitutionBrief?: string;
+      bypassCache?: boolean;
+    };
+
+    if (!query || typeof query !== 'string') {
+      res.status(400).json({ error: 'استعلام البحث مطلوب.' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const writeEvent = (obj: Record<string, unknown>) => {
+      if (res.writableEnded) return;
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    };
+
+    try {
+      const latitude = typeof lat === 'number' ? lat : 31.1953;
+      const longitude = typeof lng === 'number' ? lng : 31.5212;
+      const memoriesAppliedCount = Array.isArray(memories) ? memories.length : 0;
+      const cacheKey = buildSearchCacheKey(query, latitude, longitude, memories, constitutionBrief);
+
+      if (!bypassCache) {
+        const cached = searchResponseCache.get(cacheKey);
+        if (cached) {
+          writeEvent({ type: 'delta', text: cached.text });
+          writeEvent({
+            type: 'done',
+            text: cached.text,
+            sources: cached.sources,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            memoriesAppliedCount: cached.memoriesAppliedCount,
+            model: cached.model,
+            cached: true,
+          });
+          res.end();
+          return;
+        }
+      }
+
+      writeEvent({ type: 'status', text: 'جارٍ البحث المباشر وتجميع المصادر الحية...' });
+
+      const memLines =
+        Array.isArray(memories) && memories.length > 0
+          ? `\nقواعد ذاكرة المستخدم:\n${memories
+              .slice(0, 10)
+              .map((m) => `- ${m.ruleText}`)
+              .join('\n')}`
+          : '';
+
+      const ai = getGeminiClient();
+
+      // 1) Try native Gemini Google Search grounding with streaming first
+      let nativeText = '';
+      const nativeSources: Array<{ title: string; uri: string }> = [];
+      let nativeSucceeded = false;
+
+      try {
+        const stream = await ai.models.generateContentStream({
+          model: 'gemini-3.1-flash-lite',
+          contents: query,
+          config: {
+            systemInstruction: `أجب بالعربية بدقة واختصار مستنداً إلى نتائج البحث الحية، مع احترام نظام 12 ساعة (ص/م) والدستور الشخصي وذاكرة المستخدم.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+            tools: [{ googleSearch: {} }],
+          },
+        });
+
+        const seenUris = new Set<string>();
+        for await (const chunk of stream) {
+          if (res.writableEnded) break;
+          const delta = chunk.text ?? '';
+          if (delta) {
+            nativeText += delta;
+            writeEvent({ type: 'delta', text: delta });
+          }
+          const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+          for (const c of gChunks) {
+            if (!c.web?.uri || seenUris.has(c.web.uri)) continue;
+            seenUris.add(c.web.uri);
+            nativeSources.push({
+              title: c.web.title ?? c.web.uri ?? 'مصدر ويب',
+              uri: c.web.uri,
+            });
+          }
+        }
+        if (nativeText.trim()) {
+          nativeSucceeded = true;
+        }
+      } catch {
+        // Free-tier keys often have 0 quota on built-in googleSearch grounding -> fall through cleanly
+      }
+
+      if (nativeSucceeded) {
+        const finalText = nativeText.trim();
+        searchResponseCache.set(cacheKey, {
+          text: finalText,
+          sources: nativeSources,
+          memoriesAppliedCount,
+          model: 'gemini-3.1-flash-lite',
+        });
+        writeEvent({
+          type: 'done',
+          text: finalText,
+          sources: nativeSources,
+          latencyMs: Math.max(1, Date.now() - startedAt),
+          memoriesAppliedCount,
+          model: 'gemini-3.1-flash-lite',
+          cached: false,
+        });
+        res.end();
+        return;
+      }
+
+      // 2) Live Multi-Source Web Search Fallback + Streaming Gemini Synthesis
+      writeEvent({ type: 'status', text: 'جارٍ تحليل المصادر وصياغة الإجابة الفورية...' });
+      const liveWeb = await fetchLiveWebSearchFallback(query, latitude, longitude);
+
+      let streamedText = '';
+      const synthStream = await ai.models.generateContentStream({
+        model: 'gemini-3.1-flash-lite',
+        contents: `سؤال البحث: ${query}\n\nنتائج ومصادر حية تم جلبها الآن:\n${liveWeb.contextText || 'لا توجد مقتطفات إضافية — أجب بدقة علمية ووضّح إن كان الأمر يحتاج متابعة حية.'}`,
+        config: {
+          systemInstruction: `أنت باحث ذكي وسريع في إيقاع اليوم. أجب بالعربية بدقة ووضوح واختصار مستنداً إلى البيانات الحية المرفقة، وحوّل أي وقت إلى نظام 12 ساعة (ص/م) مع احترام الدستور الشخصي وذاكرة المستخدم.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+        },
+      });
+
+      for await (const chunk of synthStream) {
+        if (res.writableEnded) break;
+        const delta = chunk.text ?? '';
+        if (delta) {
+          streamedText += delta;
+          writeEvent({ type: 'delta', text: delta });
+        }
+      }
+
+      const finalText = streamedText.trim() || 'تم جلب نتائج البحث.';
+      searchResponseCache.set(cacheKey, {
+        text: finalText,
+        sources: liveWeb.sources,
+        memoriesAppliedCount,
+        model: 'gemini-3.1-flash-lite',
+      });
+
+      writeEvent({
+        type: 'done',
+        text: finalText,
+        sources: liveWeb.sources,
+        latencyMs: Math.max(1, Date.now() - startedAt),
+        memoriesAppliedCount,
+        model: 'gemini-3.1-flash-lite',
+        cached: false,
+      });
+      res.end();
+    } catch (err: unknown) {
+      writeEvent({ type: 'error', error: formatFriendlyGeminiErrorAr(err) });
+      res.end();
+    }
+  });
+
+  // 5B. Google Search Grounding Endpoint JSON Fallback (with TTL/LRU Cache)
   app.post('/api/search', async (req, res) => {
     const startedAt = Date.now();
     try {
-      const { query, memories, constitutionBrief } = req.body as {
+      const { query, lat, lng, memories, constitutionBrief, bypassCache } = req.body as {
         query?: string;
+        lat?: number;
+        lng?: number;
         memories?: Array<{ ruleText: string; category?: string }>;
         constitutionBrief?: string;
+        bypassCache?: boolean;
       };
       if (!query || typeof query !== 'string') {
         res.status(400).json({ error: 'استعلام البحث مطلوب.' });
         return;
       }
 
+      const latitude = typeof lat === 'number' ? lat : 31.1953;
+      const longitude = typeof lng === 'number' ? lng : 31.5212;
+      const memoriesAppliedCount = Array.isArray(memories) ? memories.length : 0;
+      const cacheKey = buildSearchCacheKey(query, latitude, longitude, memories, constitutionBrief);
+
+      if (!bypassCache) {
+        const cached = searchResponseCache.get(cacheKey);
+        if (cached) {
+          res.json({
+            text: cached.text,
+            sources: cached.sources,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            memoriesAppliedCount: cached.memoriesAppliedCount,
+            model: cached.model,
+            cached: true,
+          });
+          return;
+        }
+      }
+
       const memLines =
         Array.isArray(memories) && memories.length > 0
-          ? `\nقواعد ذاكرة المستخدم الدائمة:\n${memories
-              .slice(0, 12)
+          ? `\nقواعد ذاكرة المستخدم:\n${memories
+              .slice(0, 10)
               .map((m) => `- ${m.ruleText}`)
               .join('\n')}`
           : '';
 
       const ai = getGeminiClient();
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: query,
+
+      // 1) Try native Gemini Google Search grounding first
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: query,
+          config: {
+            systemInstruction: `أجب بالعربية بدقة واختصار مستنداً إلى نتائج البحث الحية، مع احترام نظام 12 ساعة (ص/م) والدستور الشخصي وذاكرة المستخدم.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+            tools: [{ googleSearch: {} }],
+          },
+        });
+
+        const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+        const sources = chunks
+          .filter((c) => c.web?.uri)
+          .map((c) => ({
+            title: c.web?.title ?? c.web?.uri ?? 'مصدر ويب',
+            uri: c.web?.uri ?? '',
+          }));
+
+        if ((response.text ?? '').trim()) {
+          const finalText = (response.text ?? '').trim();
+          searchResponseCache.set(cacheKey, {
+            text: finalText,
+            sources,
+            memoriesAppliedCount,
+            model: 'gemini-3.1-flash-lite',
+          });
+          res.json({
+            text: finalText,
+            sources,
+            latencyMs: Math.max(1, Date.now() - startedAt),
+            memoriesAppliedCount,
+            model: 'gemini-3.1-flash-lite',
+            cached: false,
+          });
+          return;
+        }
+      } catch {
+        // Free-tier keys often have 0 quota on built-in googleSearch grounding -> fall through to live web sources + Gemini synthesis
+      }
+
+      // 2) Live Multi-Source Web Search Fallback (Open-Meteo + Aladhan + Wikipedia AR + Google News RSS) + Fast Gemini Synthesis
+      const liveWeb = await fetchLiveWebSearchFallback(query, latitude, longitude);
+
+      const synthRes = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-lite',
+        contents: `سؤال البحث: ${query}\n\nنتائج ومصادر حية تم جلبها الآن:\n${liveWeb.contextText || 'لا توجد مقتطفات إضافية — أجب بدقة علمية ووضّح إن كان الأمر يحتاج متابعة حية.'}`,
         config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          systemInstruction: `أجب بالعربية بدقة واختصار مستنداً إلى نتائج البحث الحية، مع احترام خصوصية المستخدم ونظام 12 ساعة (ص/م) والدستور الشخصي وذاكرة المستخدم.${constitutionBrief ? `\n${constitutionBrief.slice(0, 800)}` : ''}${memLines}`,
-          tools: [{ googleSearch: {} }],
+          systemInstruction: `أنت باحث ذكي وسريع في إيقاع اليوم. أجب بالعربية بدقة ووضوح واختصار مستنداً إلى البيانات الحية المرفقة، وحوّل أي وقت إلى نظام 12 ساعة (ص/م) مع احترام الدستور الشخصي وذاكرة المستخدم.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
         },
       });
 
-      const chunks =
-        response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
-
-      const sources = chunks
-        .filter((c) => c.web?.uri)
-        .map((c) => ({
-          title: c.web?.title ?? c.web?.uri ?? 'مصدر ويب',
-          uri: c.web?.uri ?? '',
-        }));
+      const finalText = (synthRes.text ?? '').trim() || 'تم جلب نتائج البحث.';
+      searchResponseCache.set(cacheKey, {
+        text: finalText,
+        sources: liveWeb.sources,
+        memoriesAppliedCount,
+        model: 'gemini-3.1-flash-lite',
+      });
 
       res.json({
-        text: response.text ?? '',
-        sources,
+        text: finalText,
+        sources: liveWeb.sources,
         latencyMs: Math.max(1, Date.now() - startedAt),
-        memoriesAppliedCount: Array.isArray(memories) ? memories.length : 0,
+        memoriesAppliedCount,
+        model: 'gemini-3.1-flash-lite',
+        cached: false,
       });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'تعذر إجراء البحث المباشر.';
-      res.status(500).json({ error: msg });
+      res.status(500).json({ error: formatFriendlyGeminiErrorAr(err) });
     }
   });
 
@@ -2142,6 +3272,7 @@ async function startServer() {
           action?: string;
           undoSnapshot?: unknown;
           timestampMs?: number;
+          battery?: Partial<ServerBatterySnapshot>;
         };
         if (msg.type === 'join' && typeof msg.uid === 'string' && msg.uid.length > 0 && msg.uid.length <= 128) {
           removeFromRoom();
@@ -2152,6 +3283,10 @@ async function startServer() {
           }
           syncRooms.get(joinedUid)!.add(entry);
           ws.send(JSON.stringify({ type: 'joined', uid: joinedUid, peers: syncRooms.get(joinedUid)!.size }));
+          const cachedBattery = latestBatteryByUid.get(joinedUid);
+          if (cachedBattery) {
+            ws.send(JSON.stringify({ type: 'battery', clientId: 'server_cache', battery: cachedBattery }));
+          }
         } else if (msg.type === 'broadcast' && joinedUid && entry) {
           broadcastUserSync(
             joinedUid,
@@ -2166,6 +3301,30 @@ async function startServer() {
             },
             entry.clientId
           );
+        } else if (msg.type === 'battery' && joinedUid && entry && msg.battery && typeof msg.battery === 'object') {
+          const rawLvl = Number(msg.battery.levelPct);
+          if (Number.isFinite(rawLvl)) {
+            const snapshot: ServerBatterySnapshot = {
+              levelPct: Math.max(0, Math.min(100, Math.round(rawLvl))),
+              charging: Boolean(msg.battery.charging),
+              chargeLimitPct: Math.max(
+                60,
+                Math.min(100, Math.round(Number(msg.battery.chargeLimitPct) || 90))
+              ),
+              updatedAtMs: Date.now(),
+              deviceLabel: String(msg.battery.deviceLabel ?? 'الهاتف').trim().slice(0, 40) || 'الهاتف',
+            };
+            latestBatteryByUid.set(joinedUid, snapshot);
+            broadcastUserSync(
+              joinedUid,
+              {
+                type: 'battery',
+                clientId: entry.clientId,
+                battery: snapshot,
+              },
+              entry.clientId
+            );
+          }
         } else if (msg.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
         }

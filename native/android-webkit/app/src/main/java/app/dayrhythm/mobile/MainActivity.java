@@ -14,6 +14,7 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Message;
@@ -42,7 +43,10 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.webkit.WebViewAssetLoader;
 
+import android.webkit.JavascriptInterface;
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -65,6 +69,7 @@ public class MainActivity extends Activity {
     private TextView updateBarText;
     private String pendingUpdateTag = "";
     private String pendingUpdateUrl = "";
+    private String pendingOtaZipUrl = "";
     private long activeDownloadId = -1L;
 
     private final BroadcastReceiver nativeEventsReceiver = new BroadcastReceiver() {
@@ -101,6 +106,23 @@ public class MainActivity extends Activity {
                             null
                     );
                 }
+            } else if (Intent.ACTION_BATTERY_CHANGED.equals(action)) {
+                int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                if (level >= 0 && scale > 0 && webView != null) {
+                    int pct = Math.max(0, Math.min(100, Math.round((level * 100f) / scale)));
+                    boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                            || status == BatteryManager.BATTERY_STATUS_FULL;
+                    String model = (Build.MODEL != null && !Build.MODEL.trim().isEmpty())
+                            ? Build.MODEL.replace("\\", "").replace("'", "").replace("\"", "")
+                            : "Android";
+                    String js = "window.__dayRhythmNativeBattery={levelPct:" + pct
+                            + ",charging:" + (charging ? "true" : "false")
+                            + ",deviceLabel:'" + model + "'};"
+                            + "window.dispatchEvent(new CustomEvent('dayrhythm:native-battery',{detail:window.__dayRhythmNativeBattery}));";
+                    webView.evaluateJavascript(js, null);
+                }
             }
         }
     };
@@ -121,12 +143,13 @@ public class MainActivity extends Activity {
         requestEssentialPermissions();
         promptBatteryWhitelistOnce();
 
-        // 4. Register receiver for APK downloads, update banners, and background WebSocket events
+        // 4. Register receiver for APK downloads, update banners, background WebSocket events, and live battery telemetry
         IntentFilter filter = new IntentFilter();
         filter.addAction(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
         filter.addAction(DayRhythmSyncService.ACTION_UPDATE_AVAILABLE);
         filter.addAction(DayRhythmSyncService.ACTION_WS_SYNC_MESSAGE);
         filter.addAction(DayRhythmSyncService.ACTION_NETWORK_RECOVERED);
+        filter.addAction(Intent.ACTION_BATTERY_CHANGED);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(nativeEventsReceiver, filter, Context.RECEIVER_EXPORTED);
         } else {
@@ -169,10 +192,10 @@ public class MainActivity extends Activity {
                     }
 
                     String resolved = clean;
-                    InputStream stream = tryOpenAsset("www/" + clean);
+                    InputStream stream = tryOpenOtaOrAsset(clean);
                     if (stream == null) {
                         resolved = "index.html";
-                        stream = tryOpenAsset("www/index.html");
+                        stream = tryOpenOtaOrAsset("index.html");
                     }
 
                     if (stream == null) {
@@ -201,6 +224,18 @@ public class MainActivity extends Activity {
                     );
                 })
                 .build();
+    }
+
+    private InputStream tryOpenOtaOrAsset(String relativePath) {
+        try {
+            File otaRoot = GitHubUpdater.getOtaWwwDir(this);
+            File otaFile = new File(otaRoot, relativePath);
+            if (otaFile.exists() && otaFile.isFile()) {
+                return new FileInputStream(otaFile);
+            }
+        } catch (Exception ignored) {
+        }
+        return tryOpenAsset("www/" + relativePath);
     }
 
     private InputStream tryOpenAsset(String assetPath) {
@@ -327,6 +362,26 @@ public class MainActivity extends Activity {
         CookieManager cm = CookieManager.getInstance();
         cm.setAcceptCookie(true);
         cm.setAcceptThirdPartyCookies(webView, true);
+
+        // Expose lightweight JS bridge so in-app Settings can trigger instant GitHub OTA checks
+        webView.addJavascriptInterface(new Object() {
+            @JavascriptInterface
+            public void checkForUpdates() {
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "جاري فحص تحديثات GitHub...", Toast.LENGTH_SHORT).show());
+                executor.execute(() -> {
+                    GitHubUpdater.UpdateInfo info = GitHubUpdater.checkLatestRelease(MainActivity.this);
+                    if (info != null && info.hasUpdate) {
+                        runOnUiThread(() -> showUpdateBanner(info.latestTag, info.apkDownloadUrl, info.webOtaZipUrl));
+                    } else {
+                        runOnUiThread(() -> Toast.makeText(
+                                MainActivity.this,
+                                "التطبيق محدّث بالفعل (v" + GitHubUpdater.getEffectiveLocalVersion(MainActivity.this) + ") ✓",
+                                Toast.LENGTH_SHORT
+                        ).show());
+                    }
+                });
+            }
+        }, "DayRhythmNative");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -556,18 +611,26 @@ public class MainActivity extends Activity {
 
     private void checkUpdatesOnLaunch() {
         executor.execute(() -> {
-            GitHubUpdater.UpdateInfo info = GitHubUpdater.checkLatestRelease();
+            GitHubUpdater.UpdateInfo info = GitHubUpdater.checkLatestRelease(MainActivity.this);
             if (info != null && info.hasUpdate) {
-                runOnUiThread(() -> showUpdateBanner(info.latestTag, info.apkDownloadUrl));
+                runOnUiThread(() -> showUpdateBanner(info.latestTag, info.apkDownloadUrl, info.webOtaZipUrl));
             }
         });
     }
 
     private void showUpdateBanner(String tag, String url) {
+        showUpdateBanner(tag, url, "");
+    }
+
+    private void showUpdateBanner(String tag, String apkUrl, String otaZipUrl) {
         pendingUpdateTag = tag;
-        pendingUpdateUrl = url;
+        pendingUpdateUrl = apkUrl != null ? apkUrl : "";
+        pendingOtaZipUrl = otaZipUrl != null ? otaZipUrl : "";
         if (updateBarText != null) {
-            updateBarText.setText("🚀 يتوفر إصدار جديد لإيقاع اليوم (" + tag + ")");
+            boolean isInstantOta = !pendingOtaZipUrl.isEmpty();
+            updateBarText.setText(isInstantOta
+                    ? "🚀 تحديث فوري جاهز (" + tag + ") — بدون APK"
+                    : "🚀 يتوفر إصدار جديد لإيقاع اليوم (" + tag + ")");
         }
         if (updateBar != null) {
             updateBar.setVisibility(View.VISIBLE);
@@ -575,6 +638,34 @@ public class MainActivity extends Activity {
     }
 
     private void startPendingUpdateDownload() {
+        // Fast Path: Instant 2-second Web OTA update inside filesDir/ota_www (NO APK download or reinstall!)
+        if (pendingOtaZipUrl != null && !pendingOtaZipUrl.isEmpty()) {
+            final String zipUrl = pendingOtaZipUrl;
+            final String tag = pendingUpdateTag;
+            Toast.makeText(this, "جاري تطبيق التحديث الفوري " + tag + "...", Toast.LENGTH_SHORT).show();
+            executor.execute(() -> {
+                boolean ok = GitHubUpdater.downloadAndApplyWebOta(MainActivity.this, zipUrl, tag);
+                runOnUiThread(() -> {
+                    if (ok) {
+                        if (updateBar != null) updateBar.setVisibility(View.GONE);
+                        Toast.makeText(MainActivity.this, "تم التحديث بنجاح إلى " + tag + " ✓", Toast.LENGTH_LONG).show();
+                        if (webView != null) {
+                            webView.clearCache(true);
+                            webView.loadUrl(APP_ORIGIN + "?ota=" + System.currentTimeMillis());
+                        }
+                    } else if (pendingUpdateUrl != null && !pendingUpdateUrl.isEmpty()) {
+                        startApkFallbackDownload();
+                    } else {
+                        Toast.makeText(MainActivity.this, "تعذر تنزيل التحديث الفوري — حاول مرة أخرى", Toast.LENGTH_LONG).show();
+                    }
+                });
+            });
+            return;
+        }
+        startApkFallbackDownload();
+    }
+
+    private void startApkFallbackDownload() {
         if (pendingUpdateUrl == null || pendingUpdateUrl.isEmpty()) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !getPackageManager().canRequestPackageInstalls()) {
             Toast.makeText(this, "اسمح بتثبيت التحديثات لإيقاع اليوم ثم أعد الضغط", Toast.LENGTH_LONG).show();

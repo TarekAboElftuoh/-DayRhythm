@@ -11,6 +11,9 @@ let activeRepeatTimers: number[] = [];
 let activeContinuousInterval: number | null = null;
 let activeContinuousSafetyTimeout: number | null = null;
 
+let batteryAlertInterval: number | null = null;
+let batteryAlertSafetyTimeout: number | null = null;
+
 export const DEFAULT_SOUND_REPEATS: SoundRepeatMap = {
   prayer: 3,
   water: 2,
@@ -21,6 +24,18 @@ export const DEFAULT_SOUND_REPEATS: SoundRepeatMap = {
   meeting_event: 3,
   general: 1,
 };
+
+export function stopSmartChargeCompleteAlert(): void {
+  if (typeof window === 'undefined') return;
+  if (batteryAlertInterval !== null) {
+    window.clearInterval(batteryAlertInterval);
+    batteryAlertInterval = null;
+  }
+  if (batteryAlertSafetyTimeout !== null) {
+    window.clearTimeout(batteryAlertSafetyTimeout);
+    batteryAlertSafetyTimeout = null;
+  }
+}
 
 export function stopContinuousAlert(): void {
   if (typeof window === 'undefined') return;
@@ -36,6 +51,7 @@ export function stopContinuousAlert(): void {
     window.clearTimeout(activeContinuousSafetyTimeout);
     activeContinuousSafetyTimeout = null;
   }
+  stopSmartChargeCompleteAlert();
   if (typeof navigator !== 'undefined' && navigator.vibrate) {
     try {
       navigator.vibrate(0);
@@ -398,4 +414,60 @@ export function playSoftChime(
     playTaskSignature('prayer', { sanctuary, repeatCount: 2 });
   }
 }
+
+/**
+ * Distinct crystalline ascending harmonic signature exclusively for
+ * "Smart Charge Complete" (90% phone battery reached).
+ */
+export function playBatteryFullSignature(): boolean {
+  const ctx = getCtx();
+  if (!ctx) return false;
+  // Bright ascending E-major9 crystalline power-up chime (E5 -> G#5 -> B5 -> E6 + warm shimmer)
+  scheduleTone(ctx, 659.25, 0.0, 0.22, 'triangle', 0.14);
+  scheduleTone(ctx, 830.61, 0.11, 0.24, 'triangle', 0.15);
+  scheduleTone(ctx, 987.77, 0.22, 0.28, 'sine', 0.16);
+  scheduleTone(ctx, 1318.51, 0.34, 0.52, 'sine', 0.17);
+  scheduleTone(ctx, 1975.53, 0.36, 0.42, 'sine', 0.05);
+  return true;
+}
+
+export function startSmartChargeCompleteAlert(options?: {
+  sanctuary?: ActiveSanctuaryState;
+  keepRingingUntilUnplugged?: boolean;
+  onAutoStop?: () => void;
+}): { playedAudio: boolean; suppressedBySanctuary: boolean } {
+  stopSmartChargeCompleteAlert();
+
+  const sanctuary = options?.sanctuary;
+  if (sanctuary && sanctuary.type !== 'none') {
+    if (sanctuary.vibrateOnly && typeof navigator !== 'undefined' && navigator.vibrate) {
+      try {
+        navigator.vibrate([120, 80, 120]);
+      } catch {
+        // ignore vibration errors
+      }
+    }
+    return { playedAudio: false, suppressedBySanctuary: true };
+  }
+
+  const played = playBatteryFullSignature();
+  if (typeof window !== 'undefined') {
+    // Repeat gently every 3.4s until user taps "إيقاف التنبيه" on PC or unplugs phone
+    batteryAlertInterval = window.setInterval(() => {
+      playBatteryFullSignature();
+    }, 3400);
+
+    // If user enabled "keep ringing until unplugged", keep looping until charger is disconnected or manually stopped.
+    // Otherwise apply a 2-minute gentle safety auto-stop.
+    if (!options?.keepRingingUntilUnplugged) {
+      batteryAlertSafetyTimeout = window.setTimeout(() => {
+        stopSmartChargeCompleteAlert();
+        options?.onAutoStop?.();
+      }, 120_000);
+    }
+  }
+
+  return { playedAudio: played, suppressedBySanctuary: false };
+}
+
 

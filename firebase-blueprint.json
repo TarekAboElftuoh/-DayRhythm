@@ -2,7 +2,7 @@
   "entities": {
     "UserRhythmState": {
       "title": "UserRhythmState",
-      "description": "Personal daily rhythm, hydration, commitment streaks, quiet mode, OnePlus 12R hardware preferences, and persistent Living Life Profile (priorities, biometrics, fasting days, night-only circadian sleep, DevOps/work schedule, and global location) synced in real time across phone and desktop.",
+      "description": "Personal daily rhythm, hydration, commitment streaks, quiet mode, mobile hardware preferences, and persistent Living Life Profile (priorities, biometrics, fasting days, circadian sleep, work/study schedule, and global location) synced in real time across phone and desktop.",
       "type": "object",
       "properties": {
         "uid": {
@@ -75,6 +75,10 @@
           "type": "object",
           "description": "Optional real-time cross-device workspace sync marker (opId, clientId, scope, action, timestampMs) for sub-second PC <-> Mobile Google Calendar/Tasks reconciliation."
         },
+        "phoneBattery": {
+          "type": "object",
+          "description": "Optional real-time synced mobile battery telemetry (levelPct 0..100, charging bool, chargeLimitPct 60..100, updatedAtMs int, deviceLabel string 1..40) for live desktop charging indicator and charge-limit alert."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -107,7 +111,7 @@
     },
     "MedicationRecord": {
       "title": "MedicationRecord",
-      "description": "A daily supplement or medication item (e.g., Pumpkin Seed Oil or any medication added via Gemini) synced with Google Calendar and daily completion tracking.",
+      "description": "A daily supplement or medication item synced with Google Calendar and daily completion tracking.",
       "type": "object",
       "properties": {
         "id": {
@@ -182,6 +186,14 @@
         "totalDoses": {
           "type": "integer",
           "description": "Optional initial total doses in package/course (-1 untracked, 0 to 500 tracked)."
+        },
+        "refillAlertDays": {
+          "type": "integer",
+          "description": "Optional lead days before running out to trigger low-stock refill alert (1 to 14, default 3)."
+        },
+        "takenDates": {
+          "type": "array",
+          "description": "Optional bounded list of up to 31 recent YYYY-MM-DD Cairo date keys when medication was taken for daily adherence & missed-day tracking."
         },
         "createdAt": {
           "type": "string",
@@ -332,7 +344,7 @@
         "ruleText": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 320,
+          "maxLength": 600,
           "description": "The user's explicit rule, decision principle, or preference remembered permanently by Gemini."
         },
         "source": {
@@ -361,6 +373,76 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "ChatMessageRecord": {
+      "title": "ChatMessageRecord",
+      "description": "Cloud-synced Gemini conversation message stored privately per user so long-term discussions remain retrievable across devices and sessions.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Stable identifier for the chat message."
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase UID (immutable)."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "model"],
+          "maxLength": 16,
+          "description": "Message speaker role."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["chat", "maps", "search"],
+          "maxLength": 16,
+          "description": "Assistant mode used for this message."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "description": "Message text content."
+        },
+        "timestampMs": {
+          "type": "integer",
+          "description": "Client epoch timestamp in milliseconds for chronological ordering."
+        },
+        "createdAtIso": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 40,
+          "description": "ISO timestamp string for display."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp set once on creation (immutable)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp updated on every write."
+        }
+      },
+      "required": [
+        "id",
+        "uid",
+        "role",
+        "mode",
+        "text",
+        "timestampMs",
+        "createdAtIso",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -368,7 +450,7 @@
       "schema": {
         "$ref": "#/entities/UserRhythmState"
       },
-      "description": "Private per-user real-time synced rhythm, hydration, streaks, OnePlus 12R hardware preferences, and persistent Living Life Profile."
+      "description": "Private per-user real-time synced rhythm, hydration, streaks, mobile hardware preferences, and persistent Living Life Profile."
     },
     "/users/{userId}/medications/{medicationId}": {
       "schema": {
@@ -387,6 +469,12 @@
         "$ref": "#/entities/MemoryRecord"
       },
       "description": "Private per-user permanent Gemini memory bank storing all rules, conflict resolution preferences, and lifestyle principles."
+    },
+    "/users/{userId}/chatMessages/{messageId}": {
+      "schema": {
+        "$ref": "#/entities/ChatMessageRecord"
+      },
+      "description": "Private per-user cloud-synced Gemini conversation archive for cross-device continuity and long-term reference retrieval."
     }
   }
 }

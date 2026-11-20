@@ -168,6 +168,8 @@ export interface MedicationItem {
   courseEndDate?: string; // Optional YYYY-MM-DD end of medication/supplement course
   remainingDoses?: number; // -1 = untracked, 0..500 = doses left before refill
   totalDoses?: number; // -1 = untracked, 0..500 = initial package/course doses
+  refillAlertDays?: number; // 1..14 lead days before running out (default 3)
+  takenDates?: string[]; // Up to 31 recent YYYY-MM-DD Cairo date keys when taken (adherence history)
 }
 
 export interface MedicationActionProposal {
@@ -181,6 +183,7 @@ export interface MedicationActionProposal {
   courseEndDate?: string;
   remainingDoses?: number;
   totalDoses?: number;
+  refillAlertDays?: number;
 }
 
 export interface MedicationExecutionResult {
@@ -309,7 +312,7 @@ export interface MemoryItem {
 }
 
 export interface MemoryActionProposal {
-  operation: 'add' | 'remove';
+  operation: 'add' | 'update' | 'remove';
   memoryId?: string;
   category: MemoryCategory;
   ruleText: string;
@@ -385,6 +388,13 @@ export interface HydrationScheduleSlot {
   noteAr: string;
 }
 
+export interface DailyWeatherPoint {
+  dateIso: string;
+  maxTempC: number;
+  heatExceeded: boolean;
+  heatBonusMl: number;
+}
+
 export interface WeatherHydrationInfo {
   currentTempC: number;
   maxTempC: number;
@@ -394,6 +404,7 @@ export interface WeatherHydrationInfo {
   heatBonusMl: number;
   heatNoteAr: string;
   fetchedAtIso: string;
+  dailyMaxTemps?: DailyWeatherPoint[];
 }
 
 export interface GmailDigestItem {
@@ -474,6 +485,7 @@ export interface PersistedChatMessage {
   error?: boolean;
   latencyMs?: number;
   memoriesAppliedCount?: number;
+  cached?: boolean;
   retryPrompt?: string;
 }
 
@@ -538,6 +550,14 @@ export interface BatteryGuardState {
   pcAlertActive: boolean;
   autoSilencedByDisconnect: boolean;
   bedtimeGuardTriggered: boolean;
+}
+
+export interface PhoneBatteryTelemetry {
+  levelPct: number; // 0..100
+  charging: boolean;
+  chargeLimitPct: number; // 60..100 (default 90)
+  updatedAtMs: number;
+  deviceLabel: string;
 }
 
 export interface SharedChangelogEntry {

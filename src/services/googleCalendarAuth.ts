@@ -87,10 +87,65 @@ function formatAuthErrorAr(err: unknown): string {
 }
 
 let isSigningIn = false;
-// Keep OAuth access token strictly in memory (cleared on sign-out);
-// never trigger background GIS popups outside an explicit user click.
-let cachedAccessToken: string | null = null;
 let redirectChecked = false;
+
+const OAUTH_TOKEN_STORAGE_KEY = 'dayrhythm_google_oauth_cache_v1';
+
+interface StoredOAuthToken {
+  uid: string;
+  token: string;
+  expiresAtMs: number;
+}
+
+function readStoredAccessToken(expectedUid?: string | null): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(OAUTH_TOKEN_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredOAuthToken>;
+    if (
+      typeof parsed.token !== 'string' ||
+      !parsed.token ||
+      typeof parsed.expiresAtMs !== 'number' ||
+      parsed.expiresAtMs <= Date.now() + 30_000
+    ) {
+      return null;
+    }
+    if (expectedUid && parsed.uid && parsed.uid !== expectedUid) {
+      return null;
+    }
+    return parsed.token;
+  } catch {
+    return null;
+  }
+}
+
+function persistAccessToken(uid: string, token: string): void {
+  if (typeof window === 'undefined' || !token) return;
+  try {
+    // Google OAuth access tokens typically live 60 minutes; cache for 52 minutes
+    const payload: StoredOAuthToken = {
+      uid,
+      token,
+      expiresAtMs: Date.now() + 52 * 60_000,
+    };
+    window.localStorage.setItem(OAUTH_TOKEN_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function clearStoredAccessToken(): void {
+  cachedAccessToken = null;
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(OAUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+let cachedAccessToken: string | null = readStoredAccessToken();
 
 export function observeFirebaseUser(
   onUserChange: (user: User | null) => void
@@ -102,7 +157,7 @@ export function observeFirebaseUser(
 
 export function initCalendarAuth(
   onAuthSuccess?: (user: User, token: string) => void,
-  onAuthFailure?: () => void
+  onSignedOut?: () => void
 ) {
   if (!redirectChecked) {
     redirectChecked = true;
@@ -110,9 +165,13 @@ export function initCalendarAuth(
       .then((redirectResult) => {
         if (!redirectResult) return;
         const credential = GoogleAuthProvider.credentialFromResult(redirectResult);
-        if (credential?.accessToken) {
-          cachedAccessToken = credential.accessToken;
-          onAuthSuccess?.(redirectResult.user, cachedAccessToken);
+        const token = credential?.accessToken ?? '';
+        if (token) {
+          cachedAccessToken = token;
+          persistAccessToken(redirectResult.user.uid, token);
+        }
+        if (!redirectResult.user.isAnonymous) {
+          onAuthSuccess?.(redirectResult.user, token);
         }
       })
       .catch(() => {
@@ -121,25 +180,24 @@ export function initCalendarAuth(
   }
 
   return onAuthStateChanged(auth, (user: User | null) => {
-    if (user) {
-      // Keep Firebase Auth session permanently fresh in the background (no popups)
+    if (user && !user.isAnonymous) {
+      // Keep Firebase Auth session permanently fresh in the background (works 100% offline too)
       void user.getIdToken(false).catch(() => {});
 
-      if (cachedAccessToken) {
-        onAuthSuccess?.(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        // Firestore remains live via Firebase Auth; request user click only when Calendar OAuth token is needed
-        cachedAccessToken = null;
-        onAuthFailure?.();
-      }
+      const restoredToken = cachedAccessToken || readStoredAccessToken(user.uid) || '';
+      cachedAccessToken = restoredToken || null;
+      // CRITICAL: Never sign the user out just because the 60-min Google Calendar OAuth token expired or device is offline!
+      onAuthSuccess?.(user, restoredToken);
     } else if (!isSigningIn) {
-      cachedAccessToken = null;
-      onAuthFailure?.();
+      clearStoredAccessToken();
+      onSignedOut?.();
     }
   });
 }
 
-export async function signInWithGoogleCalendar(): Promise<{
+export async function signInWithGoogleCalendar(options?: {
+  forceAccountChooser?: boolean;
+}): Promise<{
   user: User;
   accessToken: string;
 } | null> {
@@ -151,7 +209,9 @@ export async function signInWithGoogleCalendar(): Promise<{
       setPersistence(auth, browserLocalPersistence).catch(() => {})
     );
 
-    const existingEmail = auth.currentUser?.email ?? null;
+    const existingEmail = options?.forceAccountChooser
+      ? null
+      : (auth.currentUser?.email ?? null);
     const fullProvider = buildGoogleProvider(CALENDAR_SCOPES, existingEmail);
 
     try {
@@ -160,6 +220,7 @@ export async function signInWithGoogleCalendar(): Promise<{
       const token = credential?.accessToken ?? '';
       if (token) {
         cachedAccessToken = token;
+        persistAccessToken(result.user.uid, token);
       }
       return { user: result.user, accessToken: token };
     } catch (primaryErr: unknown) {
@@ -168,8 +229,6 @@ export async function signInWithGoogleCalendar(): Promise<{
           ? String((primaryErr as { code?: string }).code ?? '')
           : '';
 
-      // On Mobile / Android APK WebView (top-level), seamlessly fall back to same-tab redirect
-      // if popup is blocked or fails to bridge back to window.opener
       if (
         (code === 'auth/popup-blocked' ||
           code === 'auth/operation-not-supported-in-this-environment' ||
@@ -188,6 +247,7 @@ export async function signInWithGoogleCalendar(): Promise<{
         const token = retryCred?.accessToken ?? '';
         if (token) {
           cachedAccessToken = token;
+          persistAccessToken(retryResult.user.uid, token);
         }
         return { user: retryResult.user, accessToken: token };
       }
@@ -200,10 +260,13 @@ export async function signInWithGoogleCalendar(): Promise<{
 }
 
 export function getCalendarAccessToken(): string | null {
+  if (cachedAccessToken) return cachedAccessToken;
+  const restored = readStoredAccessToken(auth.currentUser?.uid);
+  if (restored) cachedAccessToken = restored;
   return cachedAccessToken;
 }
 
 export async function signOutGoogleCalendar(): Promise<void> {
-  cachedAccessToken = null;
+  clearStoredAccessToken();
   await auth.signOut();
 }

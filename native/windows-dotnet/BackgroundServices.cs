@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.IO.Compression;
 using Microsoft.Win32;
 
 namespace DayRhythm
@@ -17,6 +18,7 @@ namespace DayRhythm
         public string Tag { get; set; } = "";
         public string Version { get; set; } = "";
         public string DownloadUrl { get; set; } = "";
+        public string WebOtaZipUrl { get; set; } = "";
         public string HtmlUrl { get; set; } = "";
     }
 
@@ -390,6 +392,7 @@ namespace DayRhythm
                         string tag = root.TryGetProperty("tag_name", out JsonElement tEl) ? (tEl.GetString() ?? "").Trim() : "";
                         string htmlUrl = root.TryGetProperty("html_url", out JsonElement hEl) ? (hEl.GetString() ?? "").Trim() : "";
                         string downloadUrl = "";
+                        string webOtaZipUrl = "";
 
                         if (root.TryGetProperty("assets", out JsonElement assets) && assets.ValueKind == JsonValueKind.Array)
                         {
@@ -398,12 +401,16 @@ namespace DayRhythm
                             {
                                 string name = asset.TryGetProperty("name", out JsonElement nEl) ? (nEl.GetString() ?? "") : "";
                                 string dl = asset.TryGetProperty("browser_download_url", out JsonElement dEl) ? (dEl.GetString() ?? "") : "";
+                                if (name.Equals("dayrhythm-web-ota.zip", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    webOtaZipUrl = dl;
+                                    continue;
+                                }
                                 if (name.EndsWith("Setup.exe", StringComparison.OrdinalIgnoreCase))
                                 {
                                     downloadUrl = dl;
-                                    break;
                                 }
-                                if (string.IsNullOrEmpty(fallbackExe) && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                                else if (string.IsNullOrEmpty(fallbackExe) && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                                 {
                                     fallbackExe = dl;
                                 }
@@ -413,7 +420,7 @@ namespace DayRhythm
 
                         if (string.IsNullOrEmpty(tag)) return null;
                         string remoteVer = tag.TrimStart('v', 'V');
-                        if (!IsVersionNewer(remoteVer, AppConfig.GetVersionString()))
+                        if (!IsVersionNewer(remoteVer, GetEffectiveLocalVersion()))
                         {
                             return null;
                         }
@@ -423,6 +430,7 @@ namespace DayRhythm
                             Tag = tag,
                             Version = remoteVer,
                             DownloadUrl = string.IsNullOrEmpty(downloadUrl) ? htmlUrl : downloadUrl,
+                            WebOtaZipUrl = webOtaZipUrl,
                             HtmlUrl = htmlUrl,
                         };
                         LatestUpdate = info;
@@ -434,6 +442,93 @@ namespace DayRhythm
             catch
             {
                 return null;
+            }
+        }
+
+        public static string GetOtaWwwDir()
+        {
+            return Path.Combine(AppConfig.GetDataDir(), "ota_www");
+        }
+
+        public static string GetOtaVersionFile()
+        {
+            return Path.Combine(AppConfig.GetDataDir(), "ota_version.txt");
+        }
+
+        public static string GetEffectiveLocalVersion()
+        {
+            string baseVer = AppConfig.GetVersionString();
+            try
+            {
+                string verFile = GetOtaVersionFile();
+                string otaIndex = Path.Combine(GetOtaWwwDir(), "index.html");
+                if (File.Exists(verFile) && File.Exists(otaIndex))
+                {
+                    string otaVer = File.ReadAllText(verFile).Trim().TrimStart('v', 'V');
+                    if (!string.IsNullOrEmpty(otaVer) && IsVersionNewer(otaVer, baseVer))
+                    {
+                        return otaVer;
+                    }
+                }
+            }
+            catch
+            {
+                // fallback to base version
+            }
+            return baseVer;
+        }
+
+        public async Task<bool> ApplyWebOtaUpdateAsync(ReleaseUpdateInfo info)
+        {
+            if (info == null || string.IsNullOrWhiteSpace(info.WebOtaZipUrl)) return false;
+
+            string dataDir = AppConfig.GetDataDir();
+            string tmpZip = Path.Combine(dataDir, "ota_bundle.zip");
+            string stagingDir = Path.Combine(dataDir, "ota_www_staging");
+            string liveDir = GetOtaWwwDir();
+
+            try
+            {
+                Directory.CreateDirectory(dataDir);
+                if (File.Exists(tmpZip)) File.Delete(tmpZip);
+                if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true);
+
+                using (HttpClient dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(2) })
+                {
+                    dlClient.DefaultRequestHeaders.UserAgent.ParseAdd("DayRhythm-Windows/" + GetEffectiveLocalVersion());
+                    using (HttpResponseMessage resp = await dlClient.GetAsync(info.WebOtaZipUrl, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false))
+                    {
+                        resp.EnsureSuccessStatusCode();
+                        using (Stream src = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                        using (FileStream dst = new FileStream(tmpZip, FileMode.Create, FileAccess.Write, FileShare.None))
+                        {
+                            await src.CopyToAsync(dst).ConfigureAwait(false);
+                        }
+                    }
+                }
+
+                ZipFile.ExtractToDirectory(tmpZip, stagingDir, true);
+                if (!File.Exists(Path.Combine(stagingDir, "index.html")))
+                {
+                    return false;
+                }
+
+                string backupDir = Path.Combine(dataDir, "ota_www_prev");
+                if (Directory.Exists(backupDir)) Directory.Delete(backupDir, true);
+                if (Directory.Exists(liveDir)) Directory.Move(liveDir, backupDir);
+                Directory.Move(stagingDir, liveDir);
+                if (Directory.Exists(backupDir))
+                {
+                    try { Directory.Delete(backupDir, true); } catch { }
+                }
+
+                File.WriteAllText(GetOtaVersionFile(), info.Version ?? info.Tag.TrimStart('v', 'V'));
+                try { File.Delete(tmpZip); } catch { }
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 

@@ -1,224 +1,409 @@
-import React, { useMemo, useState } from 'react';
-import { HydrationDayLog } from '../types/dayrhythm';
+import React, { useMemo } from 'react';
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Bar,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ReferenceLine,
+  Cell,
+} from 'recharts';
+import { Flame, Droplets, CheckCircle2, ThermometerSun } from 'lucide-react';
+import { HydrationDayLog, WeatherHydrationInfo } from '../types/dayrhythm';
+import { HEAT_EXCEEDANCE_TEMP_C } from '../engines/weatherEngine';
 
 interface HydrationWeeklyChartProps {
   hydrationHistory: HydrationDayLog[];
+  weatherInfo?: WeatherHydrationInfo | null;
+  cupSizeMl?: number;
 }
 
 interface ChartPoint {
   labelAr: string;
+  dateKey: string;
   cups: number;
   target: number;
   ml: number;
   pct: number;
+  metTarget: boolean;
+  maxTempC: number | null;
+  heatExceeded: boolean;
+  heatBonusMl: number;
+  isToday: boolean;
 }
 
-const Y_TICKS = [0, 5, 10, 15];
-const MAX_Y = 15;
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload?: ChartPoint }>;
+}
 
-export const HydrationWeeklyChart: React.FC<HydrationWeeklyChartProps> = ({
-  hydrationHistory,
-}) => {
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
-
-  const data: ChartPoint[] = useMemo(
-    () =>
-      hydrationHistory.map((d) => ({
-        labelAr: d.labelAr,
-        cups: d.cupsLogged,
-        target: d.targetCups,
-        ml: d.cupsLogged * 177,
-        pct: Math.min(100, Math.round((d.cupsLogged / Math.max(1, d.targetCups)) * 100)),
-      })),
-    [hydrationHistory]
-  );
-
-  const avgCups = useMemo(() => {
-    const sum = data.reduce((acc, p) => acc + p.cups, 0);
-    return (sum / Math.max(1, data.length)).toFixed(1);
-  }, [data]);
-
-  // SVG layout coordinate space (responsive via viewBox)
-  const vbWidth = 420;
-  const vbHeight = 170;
-  const padLeft = 28;
-  const padRight = 10;
-  const padTop = 12;
-  const padBottom = 26;
-  const plotW = vbWidth - padLeft - padRight;
-  const plotH = vbHeight - padTop - padBottom;
-
-  const count = Math.max(1, data.length);
-  const slotW = plotW / count;
-  const barW = Math.min(26, Math.max(12, slotW * 0.48));
-
-  const yForValue = (val: number) => {
-    const clamped = Math.max(0, Math.min(MAX_Y, val));
-    return padTop + plotH - (clamped / MAX_Y) * plotH;
-  };
-
-  const targetLinePoints = data
-    .map((p, idx) => {
-      const cx = padLeft + idx * slotW + slotW / 2;
-      const cy = yForValue(p.target);
-      return `${cx.toFixed(1)},${cy.toFixed(1)}`;
-    })
-    .join(' ');
-
-  const hoveredPoint = hoveredIdx !== null ? data[hoveredIdx] : null;
+const WeeklyHydrationTooltip: React.FC<CustomTooltipProps> = ({ active, payload }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const pt = payload[0]?.payload;
+  if (!pt) return null;
 
   return (
-    <div className="mt-4 pt-4 border-t border-white/10">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-xs font-bold text-white">الأسبوع (آخر 7 أيام)</h3>
-        <span className="font-mono-tabular text-xs text-[#7FFFD4]">
-          المتوسط: {avgCups} كوب/يوم
+    <div
+      dir="rtl"
+      className="rounded-xl border border-white/15 bg-black/95 px-3 py-2 text-xs shadow-xl backdrop-blur-md space-y-1 min-w-[175px]"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <span className="font-bold text-white">
+          {pt.labelAr}
+          {pt.isToday ? ' (اليوم)' : ''}
+        </span>
+        {pt.heatExceeded && (
+          <span className="text-[10px] font-bold text-orange-300 flex items-center gap-0.5">
+            <Flame className="w-3 h-3 text-orange-400" />
+            تجاوز حراري
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between gap-3 font-mono-tabular">
+        <span className="text-zinc-400">الاستهلاك:</span>
+        <span className={pt.metTarget ? 'text-[#4ADE80] font-bold' : 'text-[#7FFFD4] font-semibold'}>
+          {pt.cups} / {pt.target} كوب ({pt.ml} مل)
         </span>
       </div>
 
-      <div
-        className="relative h-[170px] w-full select-none"
-        dir="ltr"
-        onMouseLeave={() => setHoveredIdx(null)}
-      >
-        <svg
-          viewBox={`0 0 ${vbWidth} ${vbHeight}`}
-          className="h-full w-full overflow-visible"
-          role="img"
-          aria-label="رسم بياني للترطيب الأسبوعي"
-        >
-          {/* Horizontal grid lines & Y axis ticks */}
-          {Y_TICKS.map((tick) => {
-            const y = yForValue(tick);
-            return (
-              <g key={`y-${tick}`}>
-                <line
-                  x1={padLeft}
-                  y1={y}
-                  x2={vbWidth - padRight}
-                  y2={y}
-                  stroke={tick === 0 ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.06)'}
-                  strokeWidth="1"
-                />
-                <text
-                  x={padLeft - 6}
-                  y={y + 3.5}
-                  textAnchor="end"
-                  fill="#71717a"
-                  fontSize="10"
-                >
-                  {tick}
-                </text>
-              </g>
-            );
-          })}
+      <div className="flex items-center justify-between gap-3 font-mono-tabular">
+        <span className="text-zinc-400">الالتزام بالهدف:</span>
+        <span className={pt.metTarget ? 'text-[#4ADE80] font-bold' : 'text-zinc-200'}>
+          {pt.pct}% {pt.metTarget ? '✓' : ''}
+        </span>
+      </div>
 
-          {/* Hover band + Bars + X labels */}
-          {data.map((entry, idx) => {
-            const slotX = padLeft + idx * slotW;
-            const cx = slotX + slotW / 2;
-            const barTop = yForValue(entry.cups);
-            const barBottom = yForValue(0);
-            const barH = Math.max(2, barBottom - barTop);
-            const fill = entry.cups >= entry.target ? '#4ADE80' : '#7FFFD4';
-            const fillOpacity = idx === data.length - 1 ? 1 : 0.72;
-            const isHovered = hoveredIdx === idx;
-            const r = Math.min(6, barH / 2);
-            const bx = cx - barW / 2;
+      {pt.maxTempC !== null && (
+        <div className="flex items-center justify-between gap-3 font-mono-tabular pt-1 border-t border-white/10">
+          <span className="text-zinc-400">العظمى:</span>
+          <span className={pt.heatExceeded ? 'text-orange-300 font-bold' : 'text-zinc-300'}>
+            {pt.maxTempC}°C
+            {pt.heatBonusMl > 0 ? ` (+${pt.heatBonusMl} مل)` : ' · معتدل'}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+};
 
-            // Rounded top-corners bar path
-            const barPath = `M ${bx} ${barBottom} L ${bx} ${barTop + r} Q ${bx} ${barTop} ${bx + r} ${barTop} L ${bx + barW - r} ${barTop} Q ${bx + barW} ${barTop} ${bx + barW} ${barTop + r} L ${bx + barW} ${barBottom} Z`;
+export const HydrationWeeklyChart: React.FC<HydrationWeeklyChartProps> = ({
+  hydrationHistory,
+  weatherInfo,
+  cupSizeMl = 177,
+}) => {
+  const { data, avgCups, avgCommitmentPct, daysMetTarget, heatComparison, peakTempC, hasTempData } =
+    useMemo(() => {
+      const dailyTemps = weatherInfo?.dailyMaxTemps ?? [];
+      const tempByDate = new Map(dailyTemps.map((t) => [t.dateIso, t]));
+      const totalDays = hydrationHistory.length;
 
-            return (
-              <g
-                key={`slot-${idx}`}
-                className="cursor-pointer"
-                onMouseEnter={() => setHoveredIdx(idx)}
-                onClick={() => setHoveredIdx(isHovered ? null : idx)}
-              >
-                {isHovered && (
-                  <rect
-                    x={slotX + 2}
-                    y={padTop}
-                    width={Math.max(4, slotW - 4)}
-                    height={plotH}
-                    rx="6"
-                    fill="rgba(127,255,212,0.06)"
-                  />
-                )}
-                {/* Invisible full-slot hit area */}
-                <rect
-                  x={slotX}
-                  y={padTop}
-                  width={slotW}
-                  height={plotH + padBottom}
-                  fill="transparent"
-                />
-                <path
-                  d={barPath}
-                  fill={fill}
-                  fillOpacity={isHovered ? 1 : fillOpacity}
-                />
-                <text
-                  x={cx}
-                  y={vbHeight - 8}
-                  textAnchor="middle"
-                  fill={isHovered ? '#ffffff' : '#a1a1aa'}
-                  fontSize="11"
-                >
-                  {entry.labelAr}
-                </text>
-              </g>
-            );
-          })}
+      const points: ChartPoint[] = hydrationHistory.map((d, idx) => {
+        const isToday = idx === totalDays - 1;
+        // Align temperature by exact ISO date first, then positional last-7 index, then today's maxTempC
+        const alignedTemp =
+          tempByDate.get(d.dateKey) ??
+          (dailyTemps.length >= totalDays
+            ? dailyTemps[dailyTemps.length - totalDays + idx]
+            : undefined);
 
-          {/* Target dashed line */}
-          {data.length > 1 && (
-            <polyline
-              fill="none"
-              stroke="#fbbf24"
-              strokeWidth="1.5"
-              strokeDasharray="4 4"
-              points={targetLinePoints}
-              className="pointer-events-none"
-            />
-          )}
+        const maxTempC =
+          alignedTemp?.maxTempC ?? (isToday && typeof weatherInfo?.maxTempC === 'number' ? weatherInfo.maxTempC : null);
+        const heatExceeded =
+          alignedTemp?.heatExceeded ??
+          (maxTempC !== null ? maxTempC >= HEAT_EXCEEDANCE_TEMP_C : false);
+        const heatBonusMl =
+          alignedTemp?.heatBonusMl ?? (isToday ? weatherInfo?.heatBonusMl ?? 0 : 0);
 
-          {/* Target dots */}
-          {data.map((entry, idx) => {
-            const cx = padLeft + idx * slotW + slotW / 2;
-            const cy = yForValue(entry.target);
-            return (
-              <circle
-                key={`dot-${idx}`}
-                cx={cx}
-                cy={cy}
-                r="2.6"
-                fill="#fbbf24"
-                className="pointer-events-none"
+        const target = Math.max(1, d.targetCups);
+        const pct = Math.min(100, Math.round((d.cupsLogged / target) * 100));
+
+        return {
+          labelAr: d.labelAr,
+          dateKey: d.dateKey,
+          cups: d.cupsLogged,
+          target,
+          ml: Math.round(d.cupsLogged * cupSizeMl),
+          pct,
+          metTarget: d.cupsLogged >= target,
+          maxTempC,
+          heatExceeded,
+          heatBonusMl,
+          isToday,
+        };
+      });
+
+      const sumCups = points.reduce((acc, p) => acc + p.cups, 0);
+      const sumPct = points.reduce((acc, p) => acc + p.pct, 0);
+      const metCount = points.filter((p) => p.metTarget).length;
+
+      const hotDays = points.filter((p) => p.heatExceeded);
+      const normalDays = points.filter((p) => p.maxTempC !== null && !p.heatExceeded);
+      const tempsAvailable = points
+        .map((p) => p.maxTempC)
+        .filter((t): t is number => typeof t === 'number');
+
+      const hotAvgCups =
+        hotDays.length > 0
+          ? hotDays.reduce((acc, p) => acc + p.cups, 0) / hotDays.length
+          : 0;
+      const hotAvgPct =
+        hotDays.length > 0
+          ? Math.round(hotDays.reduce((acc, p) => acc + p.pct, 0) / hotDays.length)
+          : 0;
+      const normalAvgCups =
+        normalDays.length > 0
+          ? normalDays.reduce((acc, p) => acc + p.cups, 0) / normalDays.length
+          : 0;
+      const normalAvgPct =
+        normalDays.length > 0
+          ? Math.round(normalDays.reduce((acc, p) => acc + p.pct, 0) / normalDays.length)
+          : 0;
+
+      return {
+        data: points,
+        avgCups: (sumCups / Math.max(1, points.length)).toFixed(1),
+        avgCommitmentPct: Math.round(sumPct / Math.max(1, points.length)),
+        daysMetTarget: metCount,
+        hasTempData: tempsAvailable.length > 0,
+        peakTempC: tempsAvailable.length > 0 ? Math.max(...tempsAvailable) : null,
+        heatComparison: {
+          hotCount: hotDays.length,
+          hotAvgCups: hotAvgCups.toFixed(1),
+          hotAvgPct,
+          normalCount: normalDays.length,
+          normalAvgCups: normalAvgCups.toFixed(1),
+          normalAvgPct,
+        },
+      };
+    }, [hydrationHistory, weatherInfo, cupSizeMl]);
+
+  const maxCupsAxis = useMemo(() => {
+    const highest = Math.max(12, ...data.map((d) => Math.max(d.cups, d.target)));
+    return Math.ceil(highest / 3) * 3;
+  }, [data]);
+
+  return (
+    <div className="mt-4 pt-4 border-t border-white/10 space-y-3">
+      {/* Header & Weekly Commitment KPIs */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <Droplets className="w-3.5 h-3.5 text-[#7FFFD4]" />
+          <h3 className="text-xs font-bold text-white">
+            تطور استهلاك الماء الأسبوعي ومقارنة الحرارة
+          </h3>
+        </div>
+        <div className="flex items-center gap-2 text-[11px] font-mono-tabular">
+          <span className="text-[#7FFFD4] font-semibold">المتوسط: {avgCups} كوب</span>
+          <span className="text-zinc-600">·</span>
+          <span className={daysMetTarget >= 5 ? 'text-[#4ADE80] font-bold' : 'text-zinc-300'}>
+            الالتزام: {daysMetTarget}/{data.length} ({avgCommitmentPct}%)
+          </span>
+        </div>
+      </div>
+
+      {/* Dual-Axis Recharts Visualization (Water Consumption vs Daily Target + Daily Max Temperature) */}
+      <div className="rounded-xl border border-white/[0.08] bg-black/45 p-2.5">
+        <div className="h-[195px] w-full" dir="ltr">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={data} margin={{ top: 10, right: hasTempData ? -10 : 8, left: -18, bottom: 0 }}>
+              <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+              <XAxis
+                dataKey="labelAr"
+                tick={{ fill: '#a1a1aa', fontSize: 10 }}
+                axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+                tickLine={false}
               />
-            );
-          })}
-        </svg>
+              <YAxis
+                yAxisId="cups"
+                domain={[0, maxCupsAxis]}
+                allowDecimals={false}
+                tick={{ fill: '#71717a', fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+                width={34}
+              />
+              {hasTempData && (
+                <YAxis
+                  yAxisId="temp"
+                  orientation="right"
+                  domain={[10, 48]}
+                  tick={{ fill: '#fb923c', fontSize: 10 }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v: number) => `${v}°`}
+                  width={36}
+                />
+              )}
+              <Tooltip
+                content={<WeeklyHydrationTooltip />}
+                cursor={{ fill: 'rgba(127, 255, 212, 0.06)' }}
+              />
+              {hasTempData && (
+                <ReferenceLine
+                  yAxisId="temp"
+                  y={HEAT_EXCEEDANCE_TEMP_C}
+                  stroke="rgba(249, 115, 22, 0.45)"
+                  strokeDasharray="3 3"
+                />
+              )}
 
-        {/* Interactive tooltip matching original design */}
-        {hoveredPoint && hoveredIdx !== null && (
-          <div
-            dir="rtl"
-            className="pointer-events-none absolute top-1 z-20 rounded-xl border border-white/15 bg-black/95 px-3 py-2 text-xs shadow-xl"
-            style={{
-              left: `${Math.min(72, Math.max(4, ((hoveredIdx + 0.5) / count) * 100 - 14))}%`,
-            }}
-          >
-            <div className="font-bold text-white mb-1">{hoveredPoint.labelAr}</div>
-            <div className="font-mono-tabular text-[#7FFFD4]">
-              {hoveredPoint.cups} / {hoveredPoint.target} كوب ({hoveredPoint.ml} مل)
-            </div>
-            <div className="text-[11px] text-zinc-400 mt-0.5">
-              الإنجاز: {hoveredPoint.pct}%
-            </div>
+              {/* Daily Water Consumption Bars */}
+              <Bar
+                yAxisId="cups"
+                dataKey="cups"
+                name="الأكواب المسجلة"
+                radius={[5, 5, 0, 0]}
+                maxBarSize={26}
+                isAnimationActive={false}
+              >
+                {data.map((entry) => {
+                  const fill = entry.metTarget
+                    ? '#4ADE80'
+                    : entry.heatExceeded
+                      ? '#FB923C'
+                      : '#7FFFD4';
+                  const opacity = entry.isToday ? 1 : 0.78;
+                  return (
+                    <Cell
+                      key={entry.dateKey}
+                      fill={fill}
+                      fillOpacity={opacity}
+                      stroke={entry.heatExceeded ? '#F97316' : 'none'}
+                      strokeWidth={entry.heatExceeded ? 1.2 : 0}
+                    />
+                  );
+                })}
+              </Bar>
+
+              {/* Daily Target Commitment Line */}
+              <Line
+                yAxisId="cups"
+                type="monotone"
+                dataKey="target"
+                name="الهدف اليومي"
+                stroke="#FBBF24"
+                strokeWidth={1.75}
+                strokeDasharray="4 3"
+                dot={{ r: 2.5, fill: '#FBBF24', strokeWidth: 0 }}
+                isAnimationActive={false}
+              />
+
+              {/* Daily Max Temperature Curve (Secondary Axis) */}
+              {hasTempData && (
+                <Line
+                  yAxisId="temp"
+                  type="monotone"
+                  dataKey="maxTempC"
+                  name="العظمى °C"
+                  stroke="#FB923C"
+                  strokeWidth={2}
+                  connectNulls
+                  dot={(dotProps) => {
+                    const { cx, cy, payload } = dotProps as {
+                      cx?: number;
+                      cy?: number;
+                      payload?: ChartPoint;
+                    };
+                    if (typeof cx !== 'number' || typeof cy !== 'number' || !payload || payload.maxTempC === null) {
+                      return <g key={`empty-${payload?.dateKey ?? Math.random()}`} />;
+                    }
+                    const hot = payload.heatExceeded;
+                    return (
+                      <circle
+                        key={`temp-dot-${payload.dateKey}`}
+                        cx={cx}
+                        cy={cy}
+                        r={hot ? 4.2 : 2.8}
+                        fill={hot ? '#EF4444' : '#FB923C'}
+                        stroke={hot ? '#FEF08A' : '#000000'}
+                        strokeWidth={hot ? 1.5 : 1}
+                      />
+                    );
+                  }}
+                  isAnimationActive={false}
+                />
+              )}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Compact Chart Legend */}
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-zinc-400">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-xs bg-[#4ADE80]" />
+              تحقق الهدف
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-xs bg-[#7FFFD4]" />
+              أقل من الهدف
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-3 h-0.5 border-t border-dashed border-amber-400" />
+              الهدف اليومي
+            </span>
+            {hasTempData && (
+              <span className="flex items-center gap-1 text-orange-300">
+                <span className="inline-block w-2 h-2 rounded-full bg-orange-400" />
+                الحرارة (تجاوز ≥ {HEAT_EXCEEDANCE_TEMP_C}°C)
+              </span>
+            )}
           </div>
-        )}
+        </div>
+      </div>
+
+      {/* Daily Commitment & Temperature Exceedance Comparison Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+        <div className="rounded-xl border border-white/[0.08] bg-black/45 px-3 py-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-zinc-300">
+            <CheckCircle2 className="w-3.5 h-3.5 text-[#4ADE80] shrink-0" />
+            <span>الالتزام بالأهداف اليومية</span>
+          </div>
+          <span className="font-mono-tabular font-bold text-[#4ADE80]">
+            {daysMetTarget} من {data.length} أيام ({avgCommitmentPct}%)
+          </span>
+        </div>
+
+        <div
+          className={`rounded-xl border px-3 py-2 flex items-center justify-between gap-2 ${
+            heatComparison.hotCount > 0
+              ? 'border-orange-400/35 bg-orange-500/[0.08]'
+              : 'border-white/[0.08] bg-black/45'
+          }`}
+        >
+          {heatComparison.hotCount > 0 ? (
+            <>
+              <div className="flex items-center gap-1.5 text-orange-200 min-w-0">
+                <Flame className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                <span className="truncate">
+                  أيام تجاوز الحرارة ({heatComparison.hotCount} ي ≥ {HEAT_EXCEEDANCE_TEMP_C}°C)
+                </span>
+              </div>
+              <span className="font-mono-tabular text-[10px] text-orange-200 font-bold shrink-0">
+                {heatComparison.hotAvgCups} كوب ({heatComparison.hotAvgPct}%)
+                {heatComparison.normalCount > 0
+                  ? ` vs معتدل ${heatComparison.normalAvgCups}`
+                  : ''}
+              </span>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-1.5 text-zinc-300 min-w-0">
+                <ThermometerSun className="w-3.5 h-3.5 text-orange-300 shrink-0" />
+                <span className="truncate">مقارنة درجات الحرارة (حد {HEAT_EXCEEDANCE_TEMP_C}°C)</span>
+              </div>
+              <span className="font-mono-tabular text-[10px] text-zinc-400 shrink-0">
+                {peakTempC !== null
+                  ? `أعلى حرارة ${peakTempC}°C (لا تجاوزات)`
+                  : 'بانتظار بيانات الطقس'}
+              </span>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

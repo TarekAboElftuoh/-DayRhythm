@@ -34,12 +34,24 @@ jobs:
           npm run build:native
           node scripts/png-to-ico.mjs public/pwa-512x512.png dist-icons/app.ico
 
+      - name: Package lightweight Web OTA bundle (dayrhythm-web-ota.zip)
+        run: |
+          mkdir -p release-ota
+          (cd dist && zip -qr ../release-ota/dayrhythm-web-ota.zip .)
+
       - name: Upload built web bundle
         uses: actions/upload-artifact@v4
         with:
           name: dayrhythm-web-dist
           path: dist/
           retention-days: 1
+
+      - name: Upload Web OTA zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DayRhythm-Web-OTA
+          path: release-ota/dayrhythm-web-ota.zip
+          retention-days: 30
 
       - name: Upload generated Windows ICO icon
         uses: actions/upload-artifact@v4
@@ -234,25 +246,28 @@ jobs:
           name: DayRhythm-Windows-EXE
           path: release-files
 
+      - name: Download Web OTA bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: DayRhythm-Web-OTA
+          path: release-files
+
       - name: Create latest GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v2.0.${{ github.run_number }}"
           cat <<'EOF' > release-notes.md
-          ## إيقاع اليوم | DayRhythm — الجيل الجديد (أدوات أصلية خفيفة بدون Electron وبدون 404)
+          ## إيقاع اليوم | DayRhythm — تحديثات فورية (OTA) + تطبيقات أصلية خفيفة
 
+          - **تحديث فوري بدون إعادة تثبيت (`dayrhythm-web-ota.zip`):**
+            - يقوم كل من تطبيق **الموبايل (Android)** وتطبيق **الكمبيوتر (Windows Setup & Portable)** بتنزيل وتطبيق هذا الملف تلقائياً في ثانيتين داخل التطبيق دون الحاجة لإعادة تحميل APK أو فك ضغط Portable في كل مرة.
           - **OnePlus 12R (أندرويد):** `DayRhythm-OnePlus12R.apk`
-            - مبني بأداة **AndroidX WebViewAssetLoader** الرسمية على `https://localhost/` مباشرة من داخل التطبيق (بدون خادم محلي معرّض للإغلاق وبدون خطأ 404 نهائياً).
-            - **Foreground Service** دائمة 24/7 في الخلفية مع مزامنة **WebSocket + Firestore** وإعادة تشغيل تلقائي مع الجهاز.
-            - فحص تحديثات **GitHub Releases** عبر **AndroidX WorkManager** مع إشعار وشريط تثبيت مباشر بضغطة واحدة.
-          - **الكمبيوتر (Windows 64-bit):**
-            - `DayRhythm-Setup.exe` — تطبيق أصلي خفيف مبني بـ **.NET 8 + Microsoft Edge WebView2 + Inno Setup** (أخف وأسرع بكثير من Electron)، يعمل 24/7 في **System Tray** مع التشغيل التلقائي مع ويندوز، مزامنة WebSocket/Firestore، وتحديث تلقائي مباشر من GitHub Releases.
-            - `DayRhythm-Portable.zip` — نسخة محمولة مستقلة تعمل فوراً بعد فك الضغط بدون تثبيت.
+          - **الكمبيوتر (Windows 64-bit):** `DayRhythm-Setup.exe` و `DayRhythm-Portable.zip`
           EOF
 
           FILES=()
-          for f in release-files/DayRhythm-OnePlus12R.apk release-files/DayRhythm-Setup.exe release-files/DayRhythm-Portable.zip; do
+          for f in release-files/dayrhythm-web-ota.zip release-files/DayRhythm-OnePlus12R.apk release-files/DayRhythm-Setup.exe release-files/DayRhythm-Portable.zip; do
             if [ -f "$f" ]; then FILES+=("$f"); fi
           done
 

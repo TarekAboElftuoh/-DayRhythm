@@ -1,7 +1,8 @@
-import { WeatherHydrationInfo } from '../types/dayrhythm';
+import { DailyWeatherPoint, WeatherHydrationInfo } from '../types/dayrhythm';
 
-const WEATHER_CACHE_KEY = 'dayrhythm_weather_v1';
+const WEATHER_CACHE_KEY = 'dayrhythm_weather_v2';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
+export const HEAT_EXCEEDANCE_TEMP_C = 32;
 
 interface CachedWeatherRecord {
   latKey: string;
@@ -78,7 +79,9 @@ export async function fetchOpenMeteoWeather(
       if (
         parsed?.latKey === latKey &&
         parsed?.lngKey === lngKey &&
-        parsed?.data?.fetchedAtIso
+        parsed?.data?.fetchedAtIso &&
+        Array.isArray(parsed.data.dailyMaxTemps) &&
+        parsed.data.dailyMaxTemps.length >= 7
       ) {
         const ageMs = Date.now() - new Date(parsed.data.fetchedAtIso).getTime();
         if (ageMs >= 0 && ageMs < CACHE_TTL_MS) {
@@ -95,7 +98,7 @@ export async function fetchOpenMeteoWeather(
       lat.toFixed(4)
     )}&longitude=${encodeURIComponent(
       lng.toFixed(4)
-    )}&current=temperature_2m,weather_code&daily=temperature_2m_max&timezone=auto&forecast_days=1`;
+    )}&current=temperature_2m,weather_code&daily=temperature_2m_max&timezone=auto&past_days=6&forecast_days=1`;
 
     const res = await fetch(url);
     if (!res.ok) {
@@ -103,13 +106,37 @@ export async function fetchOpenMeteoWeather(
     }
     const json = (await res.json()) as {
       current?: { temperature_2m?: number; weather_code?: number };
-      daily?: { temperature_2m_max?: number[] };
+      daily?: { time?: string[]; temperature_2m_max?: number[] };
     };
 
     const currentTempC = Math.round(Number(json.current?.temperature_2m ?? 25));
-    const maxTempC = Math.round(
-      Number(json.daily?.temperature_2m_max?.[0] ?? currentTempC)
-    );
+    const dailyTimes = Array.isArray(json.daily?.time) ? json.daily.time : [];
+    const dailyTemps = Array.isArray(json.daily?.temperature_2m_max)
+      ? json.daily.temperature_2m_max
+      : [];
+
+    const dailyMaxTemps: DailyWeatherPoint[] = dailyTimes
+      .map((dateIso, idx) => {
+        const rawTemp = dailyTemps[idx];
+        const tempC =
+          typeof rawTemp === 'number' && Number.isFinite(rawTemp)
+            ? Math.round(rawTemp)
+            : currentTempC;
+        const bonus = computeHeatHydrationBonusMl(tempC).heatBonusMl;
+        return {
+          dateIso,
+          maxTempC: tempC,
+          heatExceeded: tempC >= HEAT_EXCEEDANCE_TEMP_C,
+          heatBonusMl: bonus,
+        };
+      })
+      .slice(-7);
+
+    const todayMaxFromDaily =
+      dailyMaxTemps.length > 0
+        ? dailyMaxTemps[dailyMaxTemps.length - 1].maxTempC
+        : currentTempC;
+    const maxTempC = Math.round(todayMaxFromDaily);
     const weatherCode = Number(json.current?.weather_code ?? 0);
     const meta = weatherCodeToMeta(weatherCode);
     const { heatBonusMl, heatNoteAr } = computeHeatHydrationBonusMl(maxTempC);
@@ -123,6 +150,7 @@ export async function fetchOpenMeteoWeather(
       heatBonusMl,
       heatNoteAr,
       fetchedAtIso: new Date().toISOString(),
+      dailyMaxTemps,
     };
 
     try {

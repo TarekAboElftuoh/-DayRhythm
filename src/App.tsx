@@ -4,6 +4,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import type { User } from 'firebase/auth';
 import {
   ActiveSanctuaryState,
@@ -37,6 +38,7 @@ import {
   MemoryItem,
   PeriodicRitualStatus,
   PersistedChatMessage,
+  PhoneBatteryTelemetry,
   PomodoroState,
   QuietModeType,
   ScheduleBlock,
@@ -73,9 +75,11 @@ import {
   DEFAULT_MEDICATIONS,
   DEFAULT_MEMORIES,
   OnePlusDeviceSettings,
+  clearUserChatMessages,
   deleteCreativeActivityRecord,
   deleteMedicationRecord,
   deleteMemoryRecord,
+  publishPhoneBatteryTelemetry,
   publishWorkspaceSyncSignal,
   sanitizeCreativeActivityId,
   sanitizeCreativeActivityItem,
@@ -87,11 +91,13 @@ import {
   sanitizeMemoryItem,
   sanitizeSoundRepeats,
   saveUserRhythmState,
+  subscribeChatMessages,
   subscribeCreativeActivities,
   subscribeMedications,
   subscribeMemories,
   subscribeUserRhythmState,
   triggerFirestoreRecovery,
+  upsertChatMessageRecord,
   upsertCreativeActivityRecord,
   upsertMedicationRecord,
   upsertMemoryRecord,
@@ -105,6 +111,8 @@ import {
   formatMinutes12h,
   getCairoNowMinutes,
   getCairoTodayIso,
+  getDateIsoInTimeZone,
+  getNowMinutesInTimeZone,
   getTimeZoneUtcOffsetHours,
   getTodayCalendarMeta,
   getWeekdayInTimeZone,
@@ -125,9 +133,12 @@ import {
   TASK_SOUND_META,
   classifyTaskSound,
   evaluateAudioSanctuary,
+  playBatteryFullSignature,
   playSoftChime,
   playTaskSignature,
+  startSmartChargeCompleteAlert,
   stopContinuousAlert,
+  stopSmartChargeCompleteAlert,
 } from './engines/audioEngine';
 import { fetchOpenMeteoWeather, loadCachedWeather } from './engines/weatherEngine';
 import { triggerHapticWaveform } from './engines/hapticsEngine';
@@ -139,9 +150,13 @@ import { GeminiAssistantView } from './components/GeminiAssistantView';
 import { TravelModeModal } from './components/TravelModeModal';
 import { SmartCatchUpModal } from './components/SmartCatchUpModal';
 import { PomodoroModal } from './components/PomodoroModal';
-import { FloatingPiPCapsule } from './components/FloatingPiPCapsule';
+import { FloatingPiPCapsule, CapsuleTrackInfo } from './components/FloatingPiPCapsule';
 import { LifeProfileModal } from './components/LifeProfileModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import {
+  PersistentAlertItem,
+  PersistentAlertOverlay,
+} from './components/PersistentAlertOverlay';
 
 const STORAGE_KEY = 'dayrhythm_state_v3';
 const MEDS_STORAGE_KEY = 'dayrhythm_medications_v1';
@@ -150,15 +165,76 @@ const MEMORIES_STORAGE_KEY = 'dayrhythm_memories_v1';
 const CHAT_STORAGE_KEY = 'dayrhythm_gemini_chats_v1';
 const SILENT_NOTIFS_STORAGE_KEY = 'dayrhythm_silent_notifs_v1';
 const WATER_REMINDER_STORAGE_KEY = 'dayrhythm_water_reminders_v1';
+const ACTIVE_UID_STORAGE_KEY = 'dayrhythm_active_uid_v1';
+const SMART_CHARGE_KEEP_KEY = 'dayrhythm_smart_charge_keep_until_unplugged_v1';
+const OFFLINE_CAL_PREFIX = 'dayrhythm_offline_cal_v1_';
+const OFFLINE_TASKS_PREFIX = 'dayrhythm_offline_tasks_v1_';
+const OFFLINE_GMAIL_PREFIX = 'dayrhythm_offline_gmail_v1_';
+
+function saveOfflineWorkspaceCache<T>(prefix: string, uid: string | null | undefined, data: T): void {
+  if (!uid) return;
+  try {
+    localStorage.setItem(`${prefix}${uid}`, JSON.stringify(data));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function loadOfflineWorkspaceCache<T>(prefix: string, uid: string | null | undefined): T | null {
+  if (!uid) return null;
+  try {
+    const raw = localStorage.getItem(`${prefix}${uid}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function hasActiveSignedInSession(): boolean {
+  try {
+    return Boolean(localStorage.getItem(ACTIVE_UID_STORAGE_KEY));
+  } catch {
+    return false;
+  }
+}
+
+function clearAllPersonalLocalStorage(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(MEDS_STORAGE_KEY);
+    localStorage.removeItem(CREATIVE_STORAGE_KEY);
+    localStorage.removeItem(MEMORIES_STORAGE_KEY);
+    localStorage.removeItem(CHAT_STORAGE_KEY);
+    localStorage.removeItem(SILENT_NOTIFS_STORAGE_KEY);
+    localStorage.removeItem(ACTIVE_UID_STORAGE_KEY);
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (
+        k &&
+        (k.startsWith(OFFLINE_CAL_PREFIX) ||
+          k.startsWith(OFFLINE_TASKS_PREFIX) ||
+          k.startsWith(OFFLINE_GMAIL_PREFIX))
+      ) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+  } catch {
+    // ignore storage cleanup errors
+  }
+}
 
 const WELCOME_MESSAGE: PersistedChatMessage = {
   id: 'welcome-1',
   role: 'model',
   mode: 'chat',
-  text: 'أهلاً بك في شات «إيقاع اليوم | DayRhythm» المربوط بـ Google Calendar و Google Tasks والدستور الشخصي وذاكرة Gemini الدائمة. أخبرني بأي تغيير في الوزن أو الشغل أو قاعدة جديدة وسأحفظها دائماً وأجهز التعديلات بعد تأكيدك.',
+  text: 'أهلاً بك في شات «إيقاع اليوم | DayRhythm» المربوط بـ Google Calendar و Google Tasks والدستور الشخصي وذاكرة Gemini السحابية الدائمة. سجّل دخولك بحساب Google لسحب بياناتك وخططك وأدويتك من السحابة تلقائياً، وأخبرني بأي معلومة أو قاعدة جديدة وسأحفظها في مخزونك السحابي كمرجع دائم.',
 };
 
 function loadSavedChats(): PersistedChatMessage[] {
+  if (!hasActiveSignedInSession()) return [WELCOME_MESSAGE];
   try {
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
     if (raw) {
@@ -176,11 +252,12 @@ function loadSavedChats(): PersistedChatMessage[] {
 }
 
 function loadSavedMedications(): MedicationItem[] {
+  if (!hasActiveSignedInSession()) return DEFAULT_MEDICATIONS;
   try {
     const raw = localStorage.getItem(MEDS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         return parsed.map((m) => sanitizeMedicationItem(m));
       }
     }
@@ -191,6 +268,7 @@ function loadSavedMedications(): MedicationItem[] {
 }
 
 function loadSavedCreativeActivities(): CreativeActivityItem[] {
+  if (!hasActiveSignedInSession()) return DEFAULT_CREATIVE_ACTIVITIES;
   try {
     const raw = localStorage.getItem(CREATIVE_STORAGE_KEY);
     if (raw) {
@@ -206,11 +284,12 @@ function loadSavedCreativeActivities(): CreativeActivityItem[] {
 }
 
 function loadSavedMemories(): MemoryItem[] {
+  if (!hasActiveSignedInSession()) return DEFAULT_MEMORIES;
   try {
     const raw = localStorage.getItem(MEMORIES_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         return parsed.map((m) => sanitizeMemoryItem(m));
       }
     }
@@ -221,6 +300,7 @@ function loadSavedMemories(): MemoryItem[] {
 }
 
 function loadSavedSilentNotifications(): SilentNotificationItem[] {
+  if (!hasActiveSignedInSession()) return [];
   try {
     const raw = localStorage.getItem(SILENT_NOTIFS_STORAGE_KEY);
     if (raw) {
@@ -294,6 +374,74 @@ function rollOverHydrationHistoryIfNeeded(
   });
 }
 
+function detectIsMobileDeviceClient(): boolean {
+  if (typeof window === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return true;
+  return window.innerWidth < 768;
+}
+
+function extractTaskTimeMinutesForToday(
+  task: GoogleTaskItem,
+  todayCairoIso: string
+): { startMin: number; hasExplicitTime: boolean } | null {
+  if (task.status === 'completed') return null;
+
+  // Check if due date exists and belongs to another day
+  if (task.due) {
+    const dueDateOnly = task.due.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dueDateOnly) && dueDateOnly !== todayCairoIso) {
+      return null;
+    }
+    // Check if Google Tasks due timestamp carries a non-midnight time
+    const timePartMatch = task.due.match(/T(\d{2}):(\d{2})/);
+    if (timePartMatch && !(timePartMatch[1] === '00' && timePartMatch[2] === '00')) {
+      const parsed = parseIsoToCairoInfo(task.due);
+      if (parsed && parsed.dateIso === todayCairoIso) {
+        return { startMin: parsed.minutesSinceMidnight, hasExplicitTime: true };
+      }
+    }
+  }
+
+  // Extract explicit time from notes or title (supports ⏰ 14:30, @14:30, [14:30], 2:30 م, 2:30 pm, 14:30)
+  const combined = `${task.notes || ''} ${task.title || ''}`;
+  const tagged24 = combined.match(/(?:⏰|@|\[)\s*(\d{1,2}):(\d{2})\s*\]?/);
+  if (tagged24) {
+    const h = Number(tagged24[1]);
+    const m = Number(tagged24[2]);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return { startMin: h * 60 + m, hasExplicitTime: true };
+    }
+  }
+
+  const time12Match = combined.match(/(\d{1,2}):(\d{2})\s*(ص|صباحاً|صباحا|م|مساءً|مساءا|مساء|am|pm)\b/i);
+  if (time12Match) {
+    let h = Number(time12Match[1]);
+    const m = Number(time12Match[2]);
+    const marker = time12Match[3].toLowerCase();
+    const isPm = marker.startsWith('م') || marker === 'pm';
+    if (h >= 1 && h <= 12 && m >= 0 && m <= 59) {
+      if (isPm && h !== 12) h += 12;
+      if (!isPm && h === 12) h = 0;
+      return { startMin: h * 60 + m, hasExplicitTime: true };
+    }
+  }
+
+  const plain24 = combined.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (plain24) {
+    const h = Number(plain24[1]);
+    const m = Number(plain24[2]);
+    return { startMin: h * 60 + m, hasExplicitTime: true };
+  }
+
+  // Due today without explicit clock time
+  if (task.due && task.due.slice(0, 10) === todayCairoIso) {
+    return { startMin: -1, hasExplicitTime: false };
+  }
+
+  return null;
+}
+
 const INITIAL_TOMBSTONES: CalendarTombstone[] = [];
 
 const INITIAL_PERIODIC_RITUALS: PeriodicRitualStatus[] = [
@@ -303,47 +451,33 @@ const INITIAL_PERIODIC_RITUALS: PeriodicRitualStatus[] = [
     titleAr: 'تنظيف الغرفة الأسبوعي',
     titleEn: 'Weekly Room Cleanup',
     intervalDays: 7,
-    timeLabelAr: 'كل جمعة 03:30 م',
-    daysSinceLast: 5,
-    lastCompletedIso: '2026-11-13',
+    timeLabelAr: 'أسبوعياً',
+    daysSinceLast: 0,
+    lastCompletedIso: '',
   },
   {
     id: 'pc_biweekly',
     emojiPair: '💻 🧼',
-    titleAr: 'تنظيف الكمبيوتر كل جمعتين',
-    titleEn: 'Biweekly PC Cleanup',
+    titleAr: 'ترتيب وتنظيف المكتب/الجهاز',
+    titleEn: 'Biweekly Workspace Cleanup',
     intervalDays: 14,
-    timeLabelAr: 'كل جمعتين 04:15 م',
-    daysSinceLast: 12,
-    lastCompletedIso: '2026-11-06',
+    timeLabelAr: 'كل أسبوعين',
+    daysSinceLast: 0,
+    lastCompletedIso: '',
   },
   {
     id: 'personal_monthly',
     emojiPair: '✂️ 🚿',
-    titleAr: 'التنظيف الشخصي الدوري (كل 30 يوماً)',
-    titleEn: 'Personal Grooming Cycle (30d)',
+    titleAr: 'العناية الدورية (كل 30 يوماً)',
+    titleEn: 'Monthly Care Cycle (30d)',
     intervalDays: 30,
-    timeLabelAr: 'دورة كل 30 يوماً',
-    daysSinceLast: 24,
-    lastCompletedIso: '2026-10-25',
+    timeLabelAr: 'كل 30 يوماً',
+    daysSinceLast: 0,
+    lastCompletedIso: '',
   },
 ];
 
-const INITIAL_CHANGELOG: SharedChangelogEntry[] = [
-  { id: 'cl-13', version: 13, timestampStr: '2026-11-18 · 12:35 م', device: 'Gemini API', noteAr: 'تحويل التطبيق لنظام 12 ساعة + عرض بيانات Google Calendar و Google Tasks وشات Gemini الحقيقية', noteEn: 'Switched to 12-hour format & live Google Calendar + Tasks + Gemini Chat' },
-  { id: 'cl-12', version: 12, timestampStr: '2026-11-18 · 11:15 ص', device: 'Gemini API', noteAr: 'دمج Google Calendar API v3 المباشر مع شات Gemini والتأكيد الصريح', noteEn: 'Integrated Google Calendar API v3 with Gemini Chat' },
-  { id: 'cl-11', version: 11, timestampStr: '2026-11-18 · 10:40 ص', device: 'OnePlus 12R', noteAr: 'تفعيل بلاطات Quick Settings + حارس قبل النوم 8:35–9:10 م + الشحن التجاوزي 80%/90%', noteEn: 'Enabled Quick Settings Tiles & Bypass/Bedtime Guard' },
-  { id: 'cl-10', version: 10, timestampStr: '2026-11-18 · 10:12 ص', device: 'Web/PC', noteAr: 'إضافة التعافي من Sleep (WM_POWERBROADCAST) وقفل QLocalServer والتبديل AR/EN', noteEn: 'Added Sleep/Wake recovery, QLocalServer & AR/EN switch' },
-  { id: 'cl-9', version: 9, timestampStr: '2026-11-17 · 09:05 م', device: 'OnePlus 12R', noteAr: 'تفعيل حساس التراجع بالهز لمدة 8 ثوانٍ (gForce > 2.6f)', noteEn: 'Enabled 8s Shake-to-Undo accelerometer threshold' },
-  { id: 'cl-8', version: 8, timestampStr: '2026-11-17 · 07:30 م', device: 'Web/PC', noteAr: 'إطلاق كبسولة سطح المكتب العائمة PiP وتنظيف 14-يوم Tombstones', noteEn: 'Launched Mini Floating PiP Capsule & 14-day sweeper' },
-  { id: 'cl-7', version: 7, timestampStr: '2026-11-16 · 02:20 م', device: 'Web/PC', noteAr: 'اعتماد مرساة طقوس الجمعة (1:15 م، 3:30 م، 4:15 م) + دورة 30 يوماً', noteEn: 'Locked Friday Rituals Anchor Engine + 30d grooming cycle' },
-  { id: 'cl-6', version: 6, timestampStr: '2026-11-15 · 04:00 م', device: 'OnePlus 12R', noteAr: 'ضبط حارس شحن 100W SUPERVOOC 90% وكتم الكمبيوتر عند ACTION_POWER_DISCONNECTED', noteEn: 'Configured 100W SUPERVOOC 90% disconnect auto-dismiss' },
-  { id: 'cl-5', version: 5, timestampStr: '2026-11-14 · 09:45 ص', device: 'Web/PC', noteAr: 'إضافة الرسم البياني الأسبوعي Recharts لمحرك الترطيب (177 مل)', noteEn: 'Added Recharts weekly hydration visualization' },
-  { id: 'cl-4', version: 4, timestampStr: '2026-11-13 · 06:10 م', device: 'OnePlus 12R', noteAr: 'تطبيق قناة USAGE_ALARM لأذان الصلوات الخمس بصوت نقي فوق الصامت', noteEn: 'Enabled USAGE_ALARM pure-audio override' },
-  { id: 'cl-3', version: 3, timestampStr: '2026-11-12 · 12:30 م', device: 'Web/PC', noteAr: 'اعتماد خوارزمية امتصاص الفجوة W = T_anchor - T_now ومصفوفة السفر', noteEn: 'Finalized Collision-Free Reflow & Travel Matrix' },
-  { id: 'cl-2', version: 2, timestampStr: '2026-11-11 · 08:00 ص', device: 'OnePlus 12R', noteAr: 'تشفير مفاتيح LAN via DPAPI + Android Keystore + HMAC-SHA256', noteEn: 'Hardened Zero-Cloud LAN DPAPI/Keystore security' },
-  { id: 'cl-1', version: 1, timestampStr: '2026-11-10 · 05:00 ص', device: 'Web/PC', noteAr: 'تأسيس نواة DayRhythm ومواقيت الهيئة المصرية (-3 د) للضهرية', noteEn: 'Initialized DayRhythm Egyptian Survey (-3m) engine' },
-];
+const INITIAL_CHANGELOG: SharedChangelogEntry[] = [];
 
 function extractEmojiPair(summary: string, fallback = '📅'): string {
   const tokens = summary.trim().split(/\s+/).filter(Boolean);
@@ -398,8 +532,8 @@ export default function App() {
   const [alarmRinging, setAlarmRinging] = useState<boolean>(false);
 
   const [syncTier, setSyncTier] = useState<SyncTierMode>('google_calendar_api');
-  const [periodicRituals, setPeriodicRituals] = useState<PeriodicRitualStatus[]>(
-    INITIAL_PERIODIC_RITUALS
+  const [periodicRituals, setPeriodicRituals] = useState<PeriodicRitualStatus[]>(() =>
+    hasActiveSignedInSession() ? INITIAL_PERIODIC_RITUALS : []
   );
   const [changelog, setChangelog] = useState<SharedChangelogEntry[]>(INITIAL_CHANGELOG);
 
@@ -421,6 +555,7 @@ export default function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const [deviceSettings, setDeviceSettings] = useState<OnePlusDeviceSettings>(() => {
+    if (!hasActiveSignedInSession()) return DEFAULT_DEVICE_SETTINGS;
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -436,6 +571,7 @@ export default function App() {
   });
 
   const [lifeProfile, setLifeProfile] = useState<LifeProfile>(() => {
+    if (!hasActiveSignedInSession()) return DEFAULT_LIFE_PROFILE;
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -453,6 +589,9 @@ export default function App() {
   const [fastingOverride, setFastingOverride] = useState<'auto' | 'fasting' | 'normal'>('auto');
   const [isLifeProfileModalOpen, setIsLifeProfileModalOpen] = useState(false);
   const [isDetectingGps, setIsDetectingGps] = useState(false);
+  const [locationResolutionState, setLocationResolutionState] = useState<
+    'idle' | 'resolving_gps' | 'gps_locked' | 'timezone_fallback'
+  >('idle');
 
   // Automatic Audio Silence Sanctuaries + 1-Tap Meeting Mode + Preserved Silent Notifications
   const [meetingModeActive, setMeetingModeActive] = useState(false);
@@ -466,6 +605,7 @@ export default function App() {
     category: TaskSoundCategory;
     isContinuous?: boolean;
   } | null>(null);
+  const [persistentAlert, setPersistentAlert] = useState<PersistentAlertItem | null>(null);
 
   const clientIdRef = useRef<string>(
     `dr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -480,6 +620,7 @@ export default function App() {
 
   const skipNextRemotePushRef = useRef(false);
   const hasHydratedRemoteRef = useRef(false);
+  const localWriteLockUntilRef = useRef<number>(0);
 
   const [calendarList, setCalendarList] = useState<GoogleCalendarInfo[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<GoogleCalendarEventItem[]>([]);
@@ -521,9 +662,17 @@ export default function App() {
   );
 
   const activeLocation = travelState.active ? travelState.location : profileLocation;
+  const activeTimeZone = useMemo(() => {
+    const browserTz =
+      typeof Intl !== 'undefined'
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone
+        : 'Africa/Cairo';
+    return activeLocation.timeZone || lifeProfile.currentTimeZone || browserTz || 'Africa/Cairo';
+  }, [activeLocation.timeZone, lifeProfile.currentTimeZone]);
 
-  // Auto-sync free Open-Meteo temperature for active location (cached 60m for offline resilience)
+  // Auto-sync free Open-Meteo temperature for active location (only when signed in so signed-out state stays clean)
   useEffect(() => {
+    if (needsAuth) return;
     let cancelled = false;
     void fetchOpenMeteoWeather(activeLocation.lat, activeLocation.lng).then((info) => {
       if (!cancelled && info) {
@@ -533,7 +682,14 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeLocation.lat, activeLocation.lng]);
+  }, [needsAuth, activeLocation.lat, activeLocation.lng]);
+
+  const todayCairoIso = useMemo(
+    () => getDateIsoInTimeZone(activeTimeZone),
+    // Re-evaluate automatically when minute/hour ticks cross midnight
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeTimeZone, nowTickMin]
+  );
 
   const prayers = useMemo(
     () =>
@@ -542,20 +698,17 @@ export default function App() {
         new Date(),
         lifeProfile.adhanLeadMinutes
       ),
-    [activeLocation, lifeProfile.adhanLeadMinutes]
+    // Recalculate automatically at midnight when todayCairoIso rolls over
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeLocation, lifeProfile.adhanLeadMinutes, todayCairoIso]
   );
 
   const todayCalendarMeta: TodayCalendarMeta = useMemo(
-    () =>
-      getTodayCalendarMeta(
-        activeLocation.timeZone ?? lifeProfile.currentTimeZone ?? 'Africa/Cairo'
-      ),
+    () => getTodayCalendarMeta(activeTimeZone),
     // Refresh metadata when timezone changes or date rolls over
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [activeLocation.timeZone, lifeProfile.currentTimeZone, Math.floor(nowTickMin / 60)]
+    [activeTimeZone, todayCairoIso]
   );
-
-  const todayCairoIso = getCairoTodayIso();
 
   const tomorrowInfo = useMemo(() => {
     const tz = activeLocation.timeZone ?? lifeProfile.currentTimeZone ?? 'Africa/Cairo';
@@ -662,9 +815,60 @@ export default function App() {
     bedtimeGuardTriggered: false,
   });
 
+  const [phoneChargeLimitPct, setPhoneChargeLimitPct] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem('dayrhythm_phone_charge_limit'));
+      if (Number.isFinite(saved) && saved >= 60 && saved <= 100) return Math.round(saved);
+    } catch {
+      // ignore storage errors
+    }
+    return 90;
+  });
+
+  const [phoneBattery, setPhoneBattery] = useState<PhoneBatteryTelemetry | null>(null);
+  const [phoneChargeAlertDismissed, setPhoneChargeAlertDismissed] = useState(false);
+  const [smartChargeAudioActive, setSmartChargeAudioActive] = useState(false);
+  const [smartChargeAlertEnabled, setSmartChargeAlertEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('dayrhythm_smart_charge_alert_enabled');
+      if (saved === 'false') return false;
+    } catch {
+      // ignore storage errors
+    }
+    return true;
+  });
+  const [smartChargeKeepUntilUnplugged, setSmartChargeKeepUntilUnplugged] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(SMART_CHARGE_KEEP_KEY);
+      if (saved === 'false') return false;
+    } catch {
+      // ignore storage errors
+    }
+    return true;
+  });
+  const phoneChargeNotifiedCycleRef = useRef<boolean>(false);
+  const phoneChargeLimitRef = useRef<number>(phoneChargeLimitPct);
+  phoneChargeLimitRef.current = phoneChargeLimitPct;
+  const lowStockProactiveNotifiedKeyRef = useRef<string>('');
+
+  const handleSelectTab = useCallback((tab: ActiveTab) => {
+    if (tab === 'assistant') {
+      flushSync(() => {
+        setActiveTab('assistant');
+      });
+      window.dispatchEvent(new CustomEvent('dayrhythm:focus-chat'));
+      window.requestAnimationFrame(() => {
+        window.dispatchEvent(new CustomEvent('dayrhythm:focus-chat'));
+      });
+      return;
+    }
+    setActiveTab(tab);
+  }, []);
+
   const targetCups = dailyRhythmPlan.activeTargetCups;
 
   const [hydrationHistory, setHydrationHistory] = useState<HydrationDayLog[]>(() => {
+    if (!hasActiveSignedInSession()) return buildInitialHydrationHistory(targetCups);
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -758,6 +962,41 @@ export default function App() {
     }, 4000);
   }, []);
 
+  const handleUpdatePhoneChargeLimit = useCallback(
+    (nextLimit: number) => {
+      const clamped = Math.max(60, Math.min(100, Math.round(nextLimit)));
+      setPhoneChargeLimitPct(clamped);
+      phoneChargeNotifiedCycleRef.current = false;
+      setPhoneChargeAlertDismissed(false);
+      try {
+        localStorage.setItem('dayrhythm_phone_charge_limit', String(clamped));
+      } catch {
+        // ignore storage errors
+      }
+      setPhoneBattery((prev) => {
+        if (!prev) return prev;
+        const updated: PhoneBatteryTelemetry = {
+          ...prev,
+          chargeLimitPct: clamped,
+          updatedAtMs: Date.now(),
+        };
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          try {
+            wsRef.current.send(JSON.stringify({ type: 'battery', ...updated }));
+          } catch {
+            // ignore ws send errors
+          }
+        }
+        if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+          void publishPhoneBatteryTelemetry(firebaseUser.uid, updated).catch(() => {});
+        }
+        return updated;
+      });
+      showToast(`🔋 تم ضبط حد تنبيه شحن الموبايل على ${clamped}%`);
+    },
+    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+  );
+
   const appendChangelog = useCallback(
     (
       device: SharedChangelogEntry['device'],
@@ -786,15 +1025,16 @@ export default function App() {
     document.documentElement.lang = language;
   }, [language]);
 
-  // Persist sanitized Gemini chat messages & keep multiple tabs synchronized
+  // Persist sanitized Gemini chat messages locally only while signed in
   useEffect(() => {
+    if (!firebaseUser?.uid && !authUser) return;
     try {
       const safeChats = sanitizePersistedChats(chatMessages, WELCOME_MESSAGE);
-      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(safeChats.slice(-60)));
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(safeChats.slice(-100)));
     } catch {
       // ignore quota errors
     }
-  }, [chatMessages]);
+  }, [chatMessages, firebaseUser?.uid, authUser]);
 
   useEffect(() => {
     const onStorage = (ev: StorageEvent) => {
@@ -822,13 +1062,24 @@ export default function App() {
     }
   }, [silentNotifications]);
 
-  // Keep current minute ticking every 30s for automatic Prayer & Sleep audio sanctuaries
+  // High-precision wall-clock sync every 5s + instant visibility/focus resync (zero 30s drift!)
   useEffect(() => {
-    const id = window.setInterval(() => {
-      setNowTickMin(getCairoNowMinutes());
-    }, 30_000);
-    return () => window.clearInterval(id);
-  }, []);
+    const syncClockNow = () => {
+      setNowTickMin(getNowMinutesInTimeZone(activeTimeZone));
+    };
+    syncClockNow();
+    const id = window.setInterval(syncClockNow, 5_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncClockNow();
+    };
+    window.addEventListener('focus', syncClockNow);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('focus', syncClockNow);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [activeTimeZone]);
 
   const handleToggleMeetingMode = useCallback(() => {
     setMeetingModeActive((prev) => {
@@ -899,6 +1150,7 @@ export default function App() {
 
   const handleAcknowledgeAudioAlert = useCallback(() => {
     stopContinuousAlert();
+    setPersistentAlert(null);
     if (!activeAudioAlert) return;
     const title = activeAudioAlert.title;
     setActiveAudioAlert(null);
@@ -938,10 +1190,27 @@ export default function App() {
     (
       title: string,
       category: TaskSoundCategory,
-      options?: { bypassSanctuary?: boolean; privacyEmoji?: string }
+      options?: {
+        bypassSanctuary?: boolean;
+        privacyEmoji?: string;
+        displayTitle?: string;
+        sourceLabel?: string;
+        taskId?: string;
+        taskListId?: string;
+        durationMs?: number;
+      }
     ) => {
       const meta = TASK_SOUND_META[category];
       const privacyBadge = (options?.privacyEmoji || extractEmojiPair(title, meta.icon)).trim();
+      const visibleTitle = (options?.displayTitle || title || meta.labelAr).trim();
+      const visibleSource =
+        options?.sourceLabel ||
+        (category === 'water'
+          ? 'ترطيب يومي'
+          : category === 'medication'
+            ? 'موعد العلاج'
+            : 'تقويم ومهام اليوم');
+      const durationMs = options?.durationMs ?? 300_000; // 5 minutes persistent non-intrusive display
       const repeatCount: SoundRepeatSetting =
         (lifeProfile.soundRepeats ?? DEFAULT_SOUND_REPEATS)[category] ??
         DEFAULT_SOUND_REPEATS[category] ??
@@ -973,14 +1242,29 @@ export default function App() {
         repeatCount,
       });
       const nowTime12 = formatCairoNow12h('ar');
+      const alertId = `alert_${Date.now().toString(36)}`;
       setActiveAudioAlert({
-        id: `alert_${Date.now().toString(36)}`,
+        id: alertId,
         title: privacyBadge,
         category,
         isContinuous: playRes.isContinuous,
       });
+      setPersistentAlert({
+        id: alertId,
+        emoji: privacyBadge,
+        title: visibleTitle,
+        sourceLabel: visibleSource,
+        time12h: nowTime12,
+        category,
+        createdAtMs: Date.now(),
+        durationMs,
+        isContinuous: playRes.isContinuous,
+        isHydration: category === 'water',
+        taskId: options?.taskId,
+        taskListId: options?.taskListId,
+      });
 
-      // Route alerts to the Windows Secondary Monitor (zero focus-steal on Screen 1!)
+      // Route alerts to Windows Secondary Monitor (2 screens) or sleek side-edge dock (1 screen) — zero focus-steal!
       try {
         const wv = (
           window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
@@ -990,11 +1274,14 @@ export default function App() {
             JSON.stringify({
               type: 'native-alert',
               emoji: privacyBadge,
+              title: visibleTitle,
+              sourceLabel: visibleSource,
               time12h: nowTime12,
               category,
               isHydration: category === 'water',
               isContinuous: playRes.isContinuous,
               cupSizeMl: lifeProfile.cupSizeMl,
+              durationSeconds: Math.round(durationMs / 1000),
             })
           );
         }
@@ -1002,7 +1289,7 @@ export default function App() {
         // ignore WebView2 postMessage errors
       }
 
-      showToast(`${privacyBadge} · ${nowTime12}`);
+      showToast(`${privacyBadge} · ${visibleTitle} · ${nowTime12}`);
     },
     [activeSanctuary, lifeProfile.cupSizeMl, lifeProfile.soundRepeats, showToast]
   );
@@ -1060,8 +1347,17 @@ export default function App() {
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
-        if (Array.isArray(data.calendars)) setCalendarList(data.calendars);
-        if (Array.isArray(data.events)) setCalendarEvents(data.events);
+        const nextCals = Array.isArray(data.calendars) ? data.calendars : undefined;
+        const nextEvs = Array.isArray(data.events) ? data.events : undefined;
+        if (nextCals) setCalendarList(nextCals);
+        if (nextEvs) setCalendarEvents(nextEvs);
+        const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
+        if (nextCals || nextEvs) {
+          saveOfflineWorkspaceCache(OFFLINE_CAL_PREFIX, activeUid, {
+            calendars: nextCals ?? [],
+            events: nextEvs ?? [],
+          });
+        }
         return;
       }
     } catch {
@@ -1133,6 +1429,11 @@ export default function App() {
 
       allEvents.sort((a, b) => a.start.localeCompare(b.start));
       setCalendarEvents(allEvents);
+      const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
+      saveOfflineWorkspaceCache(OFFLINE_CAL_PREFIX, activeUid, {
+        calendars: mappedCals,
+        events: allEvents,
+      });
     } catch {
       // ignore offline errors
     } finally {
@@ -1154,8 +1455,17 @@ export default function App() {
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
-        if (Array.isArray(data.taskLists)) setGoogleTaskLists(data.taskLists);
-        if (Array.isArray(data.tasks)) setGoogleTasks(data.tasks);
+        const nextLists = Array.isArray(data.taskLists) ? data.taskLists : undefined;
+        const nextTasks = Array.isArray(data.tasks) ? data.tasks : undefined;
+        if (nextLists) setGoogleTaskLists(nextLists);
+        if (nextTasks) setGoogleTasks(nextTasks);
+        const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
+        if (nextLists || nextTasks) {
+          saveOfflineWorkspaceCache(OFFLINE_TASKS_PREFIX, activeUid, {
+            taskLists: nextLists ?? [],
+            tasks: nextTasks ?? [],
+          });
+        }
         return;
       }
     } catch {
@@ -1204,6 +1514,11 @@ export default function App() {
         })
       );
       setGoogleTasks(allTasks);
+      const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
+      saveOfflineWorkspaceCache(OFFLINE_TASKS_PREFIX, activeUid, {
+        taskLists: mappedLists,
+        tasks: allTasks,
+      });
     } catch {
       // ignore offline errors
     } finally {
@@ -1211,57 +1526,187 @@ export default function App() {
     }
   }, []);
 
-  const fetchGmailDigest = useCallback(async (tokenOverride?: string) => {
-    const token = tokenOverride ?? getCalendarAccessToken();
-    if (!token) {
-      setGmailNeedsReauth(true);
-      return;
+  const lastGmailAutoScanMsRef = useRef<number>(0);
+  const gmailNeedsReauthRef = useRef<boolean>(false);
+  const gmailRetryAttemptRef = useRef<number>(0);
+  const gmailRetryTimerRef = useRef<number | null>(null);
+  const gmailCountdownTimerRef = useRef<number | null>(null);
+  const [gmailLastSyncedIso, setGmailLastSyncedIso] = useState<string>('');
+  const [gmailNextRetryInSec, setGmailNextRetryInSec] = useState<number>(0);
+  const syncedChatTextByIdRef = useRef<Map<string, string>>(new Map());
+  const hasHydratedCloudChatRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    gmailNeedsReauthRef.current = gmailNeedsReauth;
+  }, [gmailNeedsReauth]);
+
+  const clearGmailRetryTimers = useCallback(() => {
+    if (gmailRetryTimerRef.current !== null) {
+      window.clearTimeout(gmailRetryTimerRef.current);
+      gmailRetryTimerRef.current = null;
     }
-    setLoadingGmail(true);
-    setGmailError('');
-    setGmailNeedsReauth(false);
-    try {
-      const { ok, status, data } = await apiFetchJson<{
-        needsReauth?: boolean;
-        error?: string;
-        scannedCount?: number;
-        digestItems?: GmailDigestItem[];
-      }>('/api/gmail/digest', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (status === 401 || status === 403 || data.needsReauth) {
-        setGmailNeedsReauth(true);
-        setGmailError(
-          data.error || 'يرجى إعادة تسجيل الدخول بحساب Google لتفعيل صلاحية قراءة Gmail.'
-        );
-        return;
-      }
-      if (!ok) {
-        setGmailError(data.error || 'تعذر قراءة ملخص Gmail حالياً.');
-        return;
-      }
-      setGmailScannedCount(Number(data.scannedCount ?? 0));
-      setGmailDigest(Array.isArray(data.digestItems) ? data.digestItems : []);
-    } catch (err: unknown) {
-      setGmailError(
-        err instanceof Error
-          ? err.message
-          : 'تعذر الاتصال بخدمة ملخص Gmail (تأكد من الاتصال بالإنترنت).'
-      );
-    } finally {
-      setLoadingGmail(false);
+    if (gmailCountdownTimerRef.current !== null) {
+      window.clearInterval(gmailCountdownTimerRef.current);
+      gmailCountdownTimerRef.current = null;
     }
+    setGmailNextRetryInSec(0);
   }, []);
 
+  const fetchGmailDigest = useCallback(
+    async (tokenOverride?: string, options?: { silent?: boolean }) => {
+      const token = tokenOverride ?? getCalendarAccessToken();
+      if (!token) {
+        clearGmailRetryTimers();
+        setGmailNeedsReauth(true);
+        return;
+      }
+      clearGmailRetryTimers();
+      setLoadingGmail(true);
+      if (!options?.silent) {
+        setGmailError('');
+      }
+      setGmailNeedsReauth(false);
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 18_000);
+
+      const scheduleSmartGmailRetry = (errMsg: string) => {
+        const backoffStepsSec = [15, 30, 60, 120, 300];
+        const attempt = gmailRetryAttemptRef.current;
+        if (attempt >= backoffStepsSec.length) {
+          setGmailError(errMsg);
+          return;
+        }
+        const delaySec = backoffStepsSec[attempt];
+        gmailRetryAttemptRef.current = attempt + 1;
+        setGmailError(errMsg);
+        setGmailNextRetryInSec(delaySec);
+
+        gmailCountdownTimerRef.current = window.setInterval(() => {
+          setGmailNextRetryInSec((prev) => (prev <= 1 ? 0 : prev - 1));
+        }, 1000);
+
+        gmailRetryTimerRef.current = window.setTimeout(() => {
+          clearGmailRetryTimers();
+          if (navigator.onLine !== false && !gmailNeedsReauthRef.current) {
+            void fetchGmailDigest(undefined, { silent: true });
+          }
+        }, delaySec * 1000);
+      };
+
+      try {
+        const { ok, status, data } = await apiFetchJson<{
+          needsReauth?: boolean;
+          error?: string;
+          scannedCount?: number;
+          digestItems?: GmailDigestItem[];
+        }>('/api/gmail/digest', {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        });
+        if (status === 401 || status === 403 || data.needsReauth) {
+          clearGmailRetryTimers();
+          gmailRetryAttemptRef.current = 0;
+          setGmailNeedsReauth(true);
+          setGmailError(
+            data.error || 'يرجى إعادة تسجيل الدخول بحساب Google لتفعيل صلاحية قراءة Gmail.'
+          );
+          return;
+        }
+        if (!ok) {
+          scheduleSmartGmailRetry(data.error || 'تعذر قراءة ملخص Gmail حالياً.');
+          return;
+        }
+        gmailRetryAttemptRef.current = 0;
+        lastGmailAutoScanMsRef.current = Date.now();
+        const syncedIso = new Date().toISOString();
+        const scannedCount = Number(data.scannedCount ?? 0);
+        const digestItems = Array.isArray(data.digestItems) ? data.digestItems : [];
+        setGmailError('');
+        setGmailLastSyncedIso(syncedIso);
+        setGmailScannedCount(scannedCount);
+        setGmailDigest(digestItems);
+        const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
+        saveOfflineWorkspaceCache(OFFLINE_GMAIL_PREFIX, activeUid, {
+          digestItems,
+          scannedCount,
+          syncedIso,
+        });
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          scheduleSmartGmailRetry(
+            'استغرق فحص Gmail وقتاً أطول من المعتاد — جاري إعادة المحاولة تلقائياً.'
+          );
+        } else {
+          scheduleSmartGmailRetry(
+            err instanceof Error
+              ? err.message
+              : 'انقطع الاتصال بخدمة Gmail — جاري إعادة الاتصال تلقائياً.'
+          );
+        }
+      } finally {
+        window.clearTimeout(timer);
+        setLoadingGmail(false);
+      }
+    },
+    [clearGmailRetryTimers]
+  );
+
+  useEffect(() => {
+    return () => clearGmailRetryTimers();
+  }, [clearGmailRetryTimers]);
+
   const refreshWorkspace = useCallback(
-    async (tokenOverride?: string) => {
-      await Promise.all([
+    async (tokenOverride?: string, options?: { forceGmail?: boolean }) => {
+      const tasks: Promise<unknown>[] = [
         fetchCalendarEvents(tokenOverride),
         fetchGoogleTasks(tokenOverride),
-      ]);
+      ];
+      const shouldAutoScanGmail =
+        Boolean(options?.forceGmail) ||
+        (!gmailNeedsReauthRef.current && Date.now() - lastGmailAutoScanMsRef.current >= 5 * 60_000);
+      if (shouldAutoScanGmail) {
+        lastGmailAutoScanMsRef.current = Date.now();
+        tasks.push(fetchGmailDigest(tokenOverride, { silent: !options?.forceGmail }));
+      }
+      await Promise.all(tasks);
     },
-    [fetchCalendarEvents, fetchGoogleTasks]
+    [fetchCalendarEvents, fetchGoogleTasks, fetchGmailDigest]
   );
+
+  // Automatic Background Poller for Gmail Digest (every 10m + visibility resume + instant online reconnect)
+  useEffect(() => {
+    if (!authUser || needsAuth || gmailNeedsReauth) return;
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && navigator.onLine !== false) {
+        void fetchGmailDigest(undefined, { silent: true });
+      }
+    }, 10 * 60_000);
+
+    const handleOnlineReconnect = () => {
+      gmailRetryAttemptRef.current = 0;
+      clearGmailRetryTimers();
+      void refreshWorkspace(undefined, { forceGmail: false });
+    };
+
+    const handleVisibilityResume = () => {
+      if (
+        document.visibilityState === 'visible' &&
+        navigator.onLine !== false &&
+        Date.now() - lastGmailAutoScanMsRef.current >= 10 * 60_000
+      ) {
+        void fetchGmailDigest(undefined, { silent: true });
+      }
+    };
+
+    window.addEventListener('online', handleOnlineReconnect);
+    document.addEventListener('visibilitychange', handleVisibilityResume);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('online', handleOnlineReconnect);
+      document.removeEventListener('visibilitychange', handleVisibilityResume);
+    };
+  }, [authUser, needsAuth, gmailNeedsReauth, fetchGmailDigest, refreshWorkspace, clearGmailRetryTimers]);
 
   useEffect(() => {
     const unsubCalendar = initCalendarAuth(
@@ -1269,8 +1714,47 @@ export default function App() {
         setAuthUser(user);
         setNeedsAuth(false);
         setUseOfflineDemo(false);
-        if (token) {
-          void refreshWorkspace(token);
+        // Hydrate cached Calendar/Tasks/Gmail immediately so the user can work 100% offline!
+        const cachedCal = loadOfflineWorkspaceCache<{
+          calendars?: GoogleCalendarInfo[];
+          events?: GoogleCalendarEventItem[];
+        }>(OFFLINE_CAL_PREFIX, user.uid);
+        if (cachedCal) {
+          if (Array.isArray(cachedCal.calendars) && cachedCal.calendars.length > 0) {
+            setCalendarList(cachedCal.calendars);
+          }
+          if (Array.isArray(cachedCal.events)) {
+            setCalendarEvents(cachedCal.events);
+          }
+        }
+        const cachedTasks = loadOfflineWorkspaceCache<{
+          taskLists?: GoogleTaskList[];
+          tasks?: GoogleTaskItem[];
+        }>(OFFLINE_TASKS_PREFIX, user.uid);
+        if (cachedTasks) {
+          if (Array.isArray(cachedTasks.taskLists) && cachedTasks.taskLists.length > 0) {
+            setGoogleTaskLists(cachedTasks.taskLists);
+          }
+          if (Array.isArray(cachedTasks.tasks)) {
+            setGoogleTasks(cachedTasks.tasks);
+          }
+        }
+        const cachedGmail = loadOfflineWorkspaceCache<{
+          digestItems?: GmailDigestItem[];
+          scannedCount?: number;
+          syncedIso?: string;
+        }>(OFFLINE_GMAIL_PREFIX, user.uid);
+        if (cachedGmail) {
+          if (Array.isArray(cachedGmail.digestItems)) setGmailDigest(cachedGmail.digestItems);
+          if (typeof cachedGmail.scannedCount === 'number') {
+            setGmailScannedCount(cachedGmail.scannedCount);
+          }
+          if (typeof cachedGmail.syncedIso === 'string') {
+            setGmailLastSyncedIso(cachedGmail.syncedIso);
+          }
+        }
+        if (token && navigator.onLine !== false) {
+          void refreshWorkspace(token, { forceGmail: true });
         }
       },
       () => {
@@ -1279,11 +1763,35 @@ export default function App() {
       }
     );
     const unsubFirebase = observeFirebaseUser((user) => {
-      setFirebaseUser(user);
-      if (!user) {
+      // Strictly keep Anonymous or unverified accounts isolated & empty
+      if (!user || user.isAnonymous) {
+        setFirebaseUser(null);
         hasHydratedRemoteRef.current = false;
+        hasHydratedCloudChatRef.current = false;
+        syncedChatTextByIdRef.current.clear();
         setFirestoreReady(false);
         setFirestoreSynced(false);
+        return;
+      }
+      setFirebaseUser(user);
+      try {
+        const prevUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
+        if (prevUid && prevUid !== user.uid) {
+          // Different user signed in: clear previous user's local cache immediately before hydrating cloud
+          clearAllPersonalLocalStorage();
+          setMedications(DEFAULT_MEDICATIONS);
+          setCreativeActivities(DEFAULT_CREATIVE_ACTIVITIES);
+          setMemories(DEFAULT_MEMORIES);
+          setLifeProfile(DEFAULT_LIFE_PROFILE);
+          setDeviceSettings(DEFAULT_DEVICE_SETTINGS);
+          setChatMessages([WELCOME_MESSAGE]);
+          setGmailDigest([]);
+          setGmailScannedCount(0);
+          setGmailLastSyncedIso('');
+        }
+        localStorage.setItem(ACTIVE_UID_STORAGE_KEY, user.uid);
+      } catch {
+        // ignore storage errors
       }
     });
     return () => {
@@ -1313,6 +1821,7 @@ export default function App() {
       if (payload.scope === 'alarm_dismiss') {
         stopContinuousAlert();
         setActiveAudioAlert(null);
+        setPersistentAlert(null);
         setAlarmRinging(false);
         return;
       }
@@ -1491,8 +2000,37 @@ export default function App() {
               scope?: string;
               action?: string;
               undoSnapshot?: DeletedWorkspaceSnapshot;
+              levelPct?: number;
+              charging?: boolean;
+              chargeLimitPct?: number;
+              updatedAtMs?: number;
+              deviceLabel?: string;
             };
             if (msg.type === 'pong') return;
+            if (msg.type === 'battery' && typeof msg.levelPct === 'number') {
+              const incoming: PhoneBatteryTelemetry = {
+                levelPct: Math.max(0, Math.min(100, Math.round(msg.levelPct))),
+                charging: Boolean(msg.charging),
+                chargeLimitPct:
+                  typeof msg.chargeLimitPct === 'number'
+                    ? Math.max(60, Math.min(100, Math.round(msg.chargeLimitPct)))
+                    : phoneChargeLimitRef.current,
+                updatedAtMs: typeof msg.updatedAtMs === 'number' ? msg.updatedAtMs : Date.now(),
+                deviceLabel: typeof msg.deviceLabel === 'string' && msg.deviceLabel ? msg.deviceLabel : 'الهاتف',
+              };
+              setPhoneBattery(incoming);
+              setBatteryGuard((prev) => ({
+                ...prev,
+                levelPct: incoming.levelPct,
+                cableConnected: incoming.charging,
+                pcAlertActive:
+                  incoming.charging &&
+                  incoming.levelPct >= incoming.chargeLimitPct &&
+                  prev.bypassChargingLimitPct === null,
+                autoSilencedByDisconnect: !incoming.charging && prev.cableConnected,
+              }));
+              return;
+            }
             if (msg.type === 'sync') {
               handleIncomingRemoteSync(msg);
             }
@@ -1602,9 +2140,9 @@ export default function App() {
     };
   }, [firebaseUser?.uid, firebaseUser?.emailVerified, handleIncomingRemoteSync, refreshWorkspace]);
 
-  // Real-time Firebase Firestore listener (Phone <-> PC instant sync for hydration, streaks, quiet mode & OnePlus 12R settings)
+  // Real-time Firebase Firestore listener (strictly verified non-anonymous user; auto-bootstraps new accounts immediately!)
   useEffect(() => {
-    if (!firebaseUser?.uid || !firebaseUser.emailVerified) {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified) {
       return;
     }
 
@@ -1612,20 +2150,36 @@ export default function App() {
     const unsubscribe = subscribeUserRhythmState(
       uid,
       (remote) => {
-        skipNextRemotePushRef.current = true;
         hasHydratedRemoteRef.current = true;
         setFirestoreReady(true);
         setFirestoreSynced(true);
 
+        if (remote.syncSignal) {
+          handleIncomingRemoteSync(remote.syncSignal);
+        }
+
+        if (remote.phoneBattery) {
+          setPhoneBattery((prev) =>
+            !prev || remote.phoneBattery!.updatedAtMs >= prev.updatedAtMs
+              ? remote.phoneBattery!
+              : prev
+          );
+        }
+
+        // Prevent stale server snapshot echoes from reverting an in-flight local click
+        const isOtherDeviceSignal = Boolean(
+          remote.syncSignal && remote.syncSignal.clientId !== clientIdRef.current
+        );
+        if (Date.now() < localWriteLockUntilRef.current && !isOtherDeviceSignal) {
+          return;
+        }
+
+        skipNextRemotePushRef.current = true;
         setQuietMode(remote.quietMode);
         setAdhanOverrideSilent(remote.adhanOverrideSilent);
         setSurfaceTheme(remote.surfaceTheme);
         setDeviceSettings(remote.deviceSettings);
         setLifeProfile(remote.lifeProfile);
-
-        if (remote.syncSignal) {
-          handleIncomingRemoteSync(remote.syncSignal);
-        }
 
         setStreaks({
           dailyCommitmentDays: remote.dailyCommitmentDays,
@@ -1635,7 +2189,7 @@ export default function App() {
         });
 
         const labels = getLast7CairoLabels();
-        const todayIso = getCairoTodayIso();
+        const todayIso = getDateIsoInTimeZone(remote.lifeProfile.currentTimeZone || 'Africa/Cairo');
         const isSameDay = remote.hydrationDateKey === todayIso;
         const baseCounts = isSameDay
           ? remote.hydrationWeeklyCounts
@@ -1661,10 +2215,34 @@ export default function App() {
         );
       },
       () => {
-        // First time this user connects to Firestore: seed cloud doc from current local state
+        // Brand-new account: immediately create clean root users/{uid} document so all subcollections sync right away!
         hasHydratedRemoteRef.current = true;
         setFirestoreReady(true);
-        setFirestoreSynced(false);
+        const browserTz =
+          typeof Intl !== 'undefined'
+            ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Cairo'
+            : 'Africa/Cairo';
+        const cleanProfile = sanitizeLifeProfile({
+          ...DEFAULT_LIFE_PROFILE,
+          currentTimeZone: browserTz,
+        });
+        void saveUserRhythmState(uid, {
+          hydrationDateKey: getDateIsoInTimeZone(browserTz),
+          cupsLogged: 0,
+          targetCups: 10,
+          hydrationWeeklyCounts: [0, 0, 0, 0, 0, 0, 0],
+          dailyCommitmentDays: 0,
+          dailyCommitmentDoneToday: false,
+          waterTargetDays: 0,
+          waterTargetDoneToday: false,
+          quietMode: 'normal',
+          adhanOverrideSilent: true,
+          surfaceTheme: 'amoled',
+          deviceSettings: DEFAULT_DEVICE_SETTINGS,
+          lifeProfile: cleanProfile,
+        })
+          .then(() => setFirestoreSynced(true))
+          .catch(() => setFirestoreSynced(false));
       },
       () => {
         setFirestoreSynced(false);
@@ -1672,11 +2250,11 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified, handleIncomingRemoteSync]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, handleIncomingRemoteSync]);
 
-  // Real-time Firebase Firestore subscription for user's dynamic medications & supplements
+  // Immediate real-time Firestore subscription for Medications (non-anonymous verified users only)
   useEffect(() => {
-    if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreSynced) {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreSynced) {
       return;
     }
 
@@ -1684,36 +2262,29 @@ export default function App() {
     const unsubscribe = subscribeMedications(
       uid,
       (remoteItems) => {
-        if (remoteItems.length === 0 && !seededDefaultMedRef.current) {
-          seededDefaultMedRef.current = true;
-          for (const localMed of medications) {
-            void upsertMedicationRecord(uid, localMed).catch(() => {});
-          }
-          return;
-        }
         seededDefaultMedRef.current = true;
         setMedications(remoteItems);
       },
       () => {
-        // Fallback to local state if Firestore temporarily unreachable
+        // Keep current state if Firestore temporarily unreachable
       }
     );
 
     return () => unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreSynced]);
 
   useEffect(() => {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
     try {
       localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(medications));
     } catch {
       // ignore storage errors
     }
-  }, [medications]);
+  }, [medications, firebaseUser?.uid, firebaseUser?.isAnonymous]);
 
-  // Real-time Firebase Firestore subscription for Creative Activities (hobbies & side projects)
+  // Immediate real-time Firestore subscription for Creative Activities (non-anonymous verified users only)
   useEffect(() => {
-    if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreSynced) {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreSynced) {
       return;
     }
 
@@ -1721,32 +2292,25 @@ export default function App() {
     const unsubscribe = subscribeCreativeActivities(
       uid,
       (remoteItems) => {
-        if (remoteItems.length === 0 && !seededDefaultCreativeRef.current) {
-          seededDefaultCreativeRef.current = true;
-          for (const localAct of creativeActivities) {
-            void upsertCreativeActivityRecord(uid, localAct).catch(() => {});
-          }
-          return;
-        }
         seededDefaultCreativeRef.current = true;
         setCreativeActivities(remoteItems);
       },
       () => {
-        // Fallback to local state if Firestore temporarily unreachable
+        // Keep current state if Firestore temporarily unreachable
       }
     );
 
     return () => unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreSynced]);
 
   useEffect(() => {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
     try {
       localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(creativeActivities));
     } catch {
       // ignore storage errors
     }
-  }, [creativeActivities]);
+  }, [creativeActivities, firebaseUser?.uid, firebaseUser?.isAnonymous]);
 
   useEffect(() => {
     try {
@@ -1788,9 +2352,9 @@ export default function App() {
     }
   }, [showToast]);
 
-  // Real-time Firebase Firestore subscription for Gemini's permanent long-term memory bank
+  // Immediate real-time Firestore subscription for Memories (non-anonymous verified users only)
   useEffect(() => {
-    if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreSynced) {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreSynced) {
       return;
     }
 
@@ -1798,42 +2362,124 @@ export default function App() {
     const unsubscribe = subscribeMemories(
       uid,
       (remoteItems) => {
-        if (remoteItems.length === 0 && !seededDefaultMemoriesRef.current) {
-          seededDefaultMemoriesRef.current = true;
-          for (const localMem of memories) {
-            void upsertMemoryRecord(uid, localMem).catch(() => {});
-          }
-          return;
-        }
         seededDefaultMemoriesRef.current = true;
         setMemories(remoteItems);
       },
       () => {
-        // Fallback to local state if Firestore temporarily unreachable
+        // Keep current state if Firestore temporarily unreachable
       }
     );
 
     return () => unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreSynced]);
 
   useEffect(() => {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
     try {
       localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(memories));
     } catch {
       // ignore storage errors
     }
-  }, [memories]);
+  }, [memories, firebaseUser?.uid, firebaseUser?.isAnonymous]);
+
+  // Immediate real-time Firestore cloud vault for Gemini conversation archive (non-anonymous verified users only)
+  useEffect(() => {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreSynced) {
+      return;
+    }
+
+    const uid = firebaseUser.uid;
+    const unsubscribe = subscribeChatMessages(
+      uid,
+      (remoteMsgs) => {
+        hasHydratedCloudChatRef.current = true;
+        for (const rm of remoteMsgs) {
+          syncedChatTextByIdRef.current.set(rm.id, rm.text.trim());
+        }
+        setChatMessages((prev) => {
+          const remoteById = new Map(remoteMsgs.map((m) => [m.id, m]));
+          const merged: PersistedChatMessage[] = [WELCOME_MESSAGE];
+          const seen = new Set<string>([WELCOME_MESSAGE.id]);
+
+          for (const rm of remoteMsgs) {
+            if (seen.has(rm.id)) continue;
+            seen.add(rm.id);
+            const localMatch = prev.find((p) => p.id === rm.id);
+            merged.push(
+              localMatch
+                ? {
+                    ...localMatch,
+                    text: rm.text,
+                    createdAtIso: rm.createdAtIso || localMatch.createdAtIso,
+                  }
+                : rm
+            );
+          }
+
+          // Preserve any optimistic/local-only messages (e.g. currently streaming or errors)
+          for (const localMsg of prev) {
+            if (seen.has(localMsg.id) || remoteById.has(localMsg.id)) continue;
+            seen.add(localMsg.id);
+            merged.push(localMsg);
+          }
+
+          return merged;
+        });
+      },
+      () => {
+        // Keep local chat state if Firestore temporarily unreachable
+      }
+    );
+
+    return () => unsubscribe();
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreSynced]);
+
+  // Debounced cloud sync of finalized chat messages to users/{uid}/chatMessages
+  useEffect(() => {
+    if (
+      !firebaseUser?.uid ||
+      firebaseUser.isAnonymous ||
+      !firebaseUser.emailVerified ||
+      !firestoreSynced ||
+      !hasHydratedCloudChatRef.current
+    ) {
+      return;
+    }
+
+    const uid = firebaseUser.uid;
+    const timerId = window.setTimeout(() => {
+      const candidates = chatMessages.filter(
+        (m) =>
+          m.id !== WELCOME_MESSAGE.id &&
+          !m.error &&
+          typeof m.text === 'string' &&
+          m.text.trim().length > 0
+      );
+      for (const msg of candidates.slice(-60)) {
+        const cleanText = msg.text.trim().slice(0, 4000);
+        const alreadySynced = syncedChatTextByIdRef.current.get(msg.id);
+        if (alreadySynced === cleanText) continue;
+        syncedChatTextByIdRef.current.set(msg.id, cleanText);
+        void upsertChatMessageRecord(uid, msg).catch(() => {
+          syncedChatTextByIdRef.current.delete(msg.id);
+        });
+      }
+    }, 1_400);
+
+    return () => window.clearTimeout(timerId);
+  }, [chatMessages, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]);
 
   // Persist local cache & push changes IMMEDIATELY to Firebase Firestore across devices (zero debounce lag)
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ hydrationHistory, deviceSettings, lifeProfile })
-      );
-    } catch {
-      // ignore quota errors
+    if (firebaseUser?.uid || authUser) {
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ hydrationHistory, deviceSettings, lifeProfile })
+        );
+      } catch {
+        // ignore quota errors
+      }
     }
 
     if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreReady) {
@@ -1852,6 +2498,7 @@ export default function App() {
     const todayEntry = hydrationHistory[hydrationHistory.length - 1];
     if (!todayEntry) return;
 
+    localWriteLockUntilRef.current = Date.now() + 3500;
     void saveUserRhythmState(firebaseUser.uid, {
       hydrationDateKey: getCairoTodayIso(),
       cupsLogged: todayEntry.cupsLogged,
@@ -1908,19 +2555,20 @@ export default function App() {
 
   const handleToggleLowEnergyToday = useCallback(() => {
     const todayIso = getCairoTodayIso();
-    setLifeProfile((prev) => {
-      const nextActive = prev.lowEnergyDateKey !== todayIso;
-      showToast(
-        nextActive
-          ? '🌿 تم تفعيل وضع اليوم الهادئ — الصلاة والنوم محميان ويمكنك تنسيق أي تأجيل مع Gemini'
-          : '✓ تم إنهاء وضع اليوم الهادئ وعاد الإيقاع العادي'
-      );
-      return sanitizeLifeProfile({
+    const nextActive = lifeProfile.lowEnergyDateKey !== todayIso;
+    localWriteLockUntilRef.current = Date.now() + 4500;
+    setLifeProfile((prev) =>
+      sanitizeLifeProfile({
         ...prev,
         lowEnergyDateKey: nextActive ? todayIso : '',
-      });
-    });
-  }, [showToast]);
+      })
+    );
+    showToast(
+      nextActive
+        ? '🌿 تم تفعيل وضع اليوم الهادئ — الصلاة والنوم محميان ويمكنك تنسيق أي تأجيل مع Gemini'
+        : '✓ تم إنهاء وضع اليوم الهادئ وعاد الإيقاع العادي'
+    );
+  }, [lifeProfile.lowEnergyDateKey, showToast]);
 
   const handleUpdateSoundRepeat = useCallback(
     (category: TaskSoundCategory, setting: SoundRepeatSetting) => {
@@ -2000,10 +2648,13 @@ export default function App() {
     [dailyRhythmPlan.nightlyRecoveryMin, lifeProfile.sleepDebtMinutes, showToast]
   );
 
-  const handleOpenAssistantWithPrompt = useCallback((prompt: string) => {
-    setPendingAssistantPrompt(prompt);
-    setActiveTab('assistant');
-  }, []);
+  const handleOpenAssistantWithPrompt = useCallback(
+    (prompt: string) => {
+      setPendingAssistantPrompt(prompt);
+      handleSelectTab('assistant');
+    },
+    [handleSelectTab]
+  );
 
   const handleAddMemory = useCallback(
     (input: { category: MemoryCategory; ruleText: string; source?: MemoryItem['source'] }) => {
@@ -2035,6 +2686,44 @@ export default function App() {
     [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
   );
 
+  const handleUpdateMemory = useCallback(
+    (id: string, patch: { category: MemoryCategory; ruleText: string }) => {
+      const trimmed = patch.ruleText.trim();
+      if (!trimmed) return;
+      const existing = memories.find((m) => m.id === id);
+      if (!existing) return;
+      const updatedItem = sanitizeMemoryItem({
+        ...existing,
+        category: patch.category,
+        ruleText: trimmed,
+      });
+      setMemories((prev) => prev.map((m) => (m.id === id ? updatedItem : m)));
+      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+        void upsertMemoryRecord(firebaseUser.uid, updatedItem).catch(() => {});
+      }
+      showToast('✏️ تم حفظ تعديل القاعدة في ذاكرة Gemini الدائمة ✓');
+    },
+    [memories, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+  );
+
+  const handleResetChatMode = useCallback(
+    (targetMode: 'chat' | 'maps' | 'search') => {
+      setChatMessages((prev) => {
+        const preserved = prev.filter((m) => m.mode !== targetMode);
+        if (targetMode === 'chat') {
+          return [WELCOME_MESSAGE, ...preserved];
+        }
+        return preserved.some((m) => m.mode === 'chat')
+          ? preserved
+          : [WELCOME_MESSAGE, ...preserved];
+      });
+      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+        void clearUserChatMessages(firebaseUser.uid, targetMode).catch(() => {});
+      }
+    },
+    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
+  );
+
   const handleExecuteMemoryActions = useCallback(
     (memoryActions: MemoryActionProposal[]) => {
       setMemories((prev) => {
@@ -2050,6 +2739,19 @@ export default function App() {
               next = next.filter((m) => m.id !== target.id);
               if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
                 void deleteMemoryRecord(firebaseUser.uid, target.id).catch(() => {});
+              }
+            }
+          } else if (act.operation === 'update' && act.memoryId) {
+            const targetIdx = next.findIndex((m) => m.id === act.memoryId);
+            if (targetIdx >= 0) {
+              const updated = sanitizeMemoryItem({
+                ...next[targetIdx],
+                category: act.category,
+                ruleText: act.ruleText,
+              });
+              next[targetIdx] = updated;
+              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+                void upsertMemoryRecord(firebaseUser.uid, updated).catch(() => {});
               }
             }
           } else {
@@ -2269,6 +2971,159 @@ export default function App() {
     }
   }, [lifeProfile.autoLocationSync, lifeProfile.currentTimeZone, handleDetectGpsLocation, showToast]);
 
+  // GPS-First Offline Prayer Times Resolution: keep prayers zeroed (00:00) until GPS is attempted first,
+  // falling back cleanly to device/saved timezone ONLY if GPS is unavailable or denied.
+  const gpsFirstAttemptedRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (needsAuth) {
+      gpsFirstAttemptedRef.current = false;
+      setLocationResolutionState('idle');
+      return;
+    }
+    if (gpsFirstAttemptedRef.current) return;
+    gpsFirstAttemptedRef.current = true;
+    setLocationResolutionState('resolving_gps');
+
+    const applyTimezoneFallback = () => {
+      const browserTz =
+        Intl.DateTimeFormat().resolvedOptions().timeZone ||
+        lifeProfile.currentTimeZone ||
+        'Africa/Cairo';
+      const tzPreset = PRESET_LOCATIONS.find((l) => l.timeZone === browserTz);
+      if (tzPreset) {
+        setLifeProfile((prev) =>
+          sanitizeLifeProfile({
+            ...prev,
+            currentCityName: prev.currentLat ? prev.currentCityName : tzPreset.nameAr,
+            currentTimeZone: prev.currentTimeZone || browserTz,
+            currentLat: prev.currentLat ?? tzPreset.lat,
+            currentLng: prev.currentLng ?? tzPreset.lng,
+          })
+        );
+      } else {
+        setLifeProfile((prev) =>
+          sanitizeLifeProfile({
+            ...prev,
+            currentTimeZone: prev.currentTimeZone || browserTz,
+          })
+        );
+      }
+      setLocationResolutionState('timezone_fallback');
+    };
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      applyTimezoneFallback();
+      return;
+    }
+
+    let settled = false;
+    const hardTimeoutId = window.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        applyTimezoneFallback();
+      }
+    }, 4500);
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(hardTimeoutId);
+        const lat = Math.round(pos.coords.latitude * 10000) / 10000;
+        const lng = Math.round(pos.coords.longitude * 10000) / 10000;
+        const browserTz =
+          Intl.DateTimeFormat().resolvedOptions().timeZone ||
+          lifeProfile.currentTimeZone ||
+          'Africa/Cairo';
+        const probe = {
+          id: 'gps',
+          nameAr: '',
+          nameEn: '',
+          lat,
+          lng,
+          tzOffsetHours: getTimeZoneUtcOffsetHours(browserTz),
+          timeZone: browserTz,
+        };
+        const nearest = PRESET_LOCATIONS.map((loc) => ({
+          loc,
+          dist: haversineDistanceKm(probe, loc),
+        })).sort((a, b) => a.dist - b.dist)[0];
+
+        const cityName =
+          nearest && nearest.dist <= 45
+            ? nearest.loc.nameAr
+            : `${browserTz.split('/').pop()?.replace(/_/g, ' ') || 'موقعك الحالي'} (${lat.toFixed(2)}, ${lng.toFixed(2)})`;
+
+        lastCoordsRef.current = { lat, lng };
+        setLifeProfile((prev) =>
+          sanitizeLifeProfile({
+            ...prev,
+            currentCityName: cityName,
+            currentTimeZone: browserTz,
+            currentLat: lat,
+            currentLng: lng,
+          })
+        );
+        setLocationResolutionState('gps_locked');
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(hardTimeoutId);
+        applyTimezoneFallback();
+      },
+      { enableHighAccuracy: false, maximumAge: 300_000, timeout: 4000 }
+    );
+
+    return () => {
+      window.clearTimeout(hardTimeoutId);
+    };
+  }, [needsAuth, lifeProfile.currentTimeZone]);
+
+  const prayersReady =
+    !needsAuth &&
+    (locationResolutionState === 'gps_locked' || locationResolutionState === 'timezone_fallback');
+
+  const handleCheckAppUpdates = useCallback(() => {
+    const androidBridge = (
+      window as Window & {
+        DayRhythmNative?: { checkForUpdates?: () => void };
+      }
+    ).DayRhythmNative;
+    if (androidBridge?.checkForUpdates) {
+      androidBridge.checkForUpdates();
+      showToast('🔄 جاري فحص التحديثات الفورية (OTA) من GitHub على الموبايل...');
+      return;
+    }
+    const wv = (
+      window as Window & {
+        chrome?: { webview?: { postMessage?: (msg: string) => void } };
+      }
+    ).chrome?.webview;
+    if (wv?.postMessage) {
+      wv.postMessage('check-updates');
+      showToast('🔄 جاري فحص التحديثات الفورية (OTA) من GitHub على الكمبيوتر...');
+      return;
+    }
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .getRegistration()
+        .then((reg) => {
+          if (reg) {
+            return reg.update().then(() => {
+              showToast('✓ تم فحص تحديثات الويب (PWA) — أنت على أحدث إصدار متاح');
+            });
+          }
+          showToast('✓ أنت تستخدم أحدث نسخة ويب حالياً');
+        })
+        .catch(() => {
+          showToast('✓ أنت تستخدم أحدث نسخة حالياً');
+        });
+      return;
+    }
+    showToast('✓ أنت تستخدم أحدث إصدار حالياً');
+  }, [showToast]);
+
   const handleGoogleSignIn = useCallback(async () => {
     setIsLoggingIn(true);
     try {
@@ -2277,8 +3132,8 @@ export default function App() {
         setAuthUser(result.user);
         setNeedsAuth(false);
         setUseOfflineDemo(false);
-        await refreshWorkspace(result.accessToken);
-        showToast('تم ربط حساب Google Calendar و Google Tasks بنجاح ✓');
+        await refreshWorkspace(result.accessToken, { forceGmail: true });
+        showToast('تم ربط حساب Google Calendar و Tasks و Gmail والسحابة بنجاح ✓');
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'تعذر تسجيل الدخول بحساب Google.';
@@ -2291,15 +3146,48 @@ export default function App() {
 
   const handleGoogleSignOut = useCallback(async () => {
     await signOutGoogleCalendar();
+    clearAllPersonalLocalStorage();
+    hasHydratedRemoteRef.current = false;
+    hasHydratedCloudChatRef.current = false;
+    syncedChatTextByIdRef.current.clear();
+    lastGmailAutoScanMsRef.current = 0;
+    gpsFirstAttemptedRef.current = false;
+    setLocationResolutionState('idle');
+
     setAuthUser(null);
     setNeedsAuth(true);
+    clearGmailRetryTimers();
+    gmailRetryAttemptRef.current = 0;
     setCalendarList([]);
     setCalendarEvents([]);
     setGoogleTaskLists([]);
     setGoogleTasks([]);
+    setGmailDigest([]);
+    setGmailScannedCount(0);
+    setGmailLastSyncedIso('');
+    setGmailError('');
+    setGmailNeedsReauth(false);
+    setMedications(DEFAULT_MEDICATIONS);
+    setCreativeActivities(DEFAULT_CREATIVE_ACTIVITIES);
+    setMemories(DEFAULT_MEMORIES);
+    setLifeProfile(DEFAULT_LIFE_PROFILE);
+    setDeviceSettings(DEFAULT_DEVICE_SETTINGS);
+    setChatMessages([WELCOME_MESSAGE]);
+    setSilentNotifications([]);
+    setPeriodicRituals([]);
+    setChangelog([]);
+    setPhoneBattery(null);
+    setPersistentAlert(null);
+    setStreaks({
+      dailyCommitmentDays: 0,
+      dailyCommitmentDoneToday: false,
+      waterTargetDays: 0,
+      waterTargetDoneToday: false,
+    });
+    setHydrationHistory(buildInitialHydrationHistory(10));
     setReflowedBlocksOverride(null);
-    showToast('تم فصل اتصال حساب Google.');
-  }, [showToast]);
+    showToast('تم تسجيل الخروج وتنظيف جميع البيانات الشخصية من هذا الجهاز ✓');
+  }, [showToast, clearGmailRetryTimers]);
 
   const rebuildOfflineSchedule = useCallback(
     (
@@ -2421,7 +3309,7 @@ export default function App() {
       return [...todaysGoogleBlocks, ...prayerAnchors].sort((a, b) => a.startMin - b.startMin);
     }
 
-    // Disconnected mode: NEVER show hardcoded tasks unless user explicitly activates Offline Demo!
+    // Disconnected / Anonymous mode: keep schedule 100% empty until signed in (unless explicit Offline Demo)
     if (useOfflineDemo) {
       return offlineBlocks.map((b) => ({
         ...b,
@@ -2430,7 +3318,7 @@ export default function App() {
       }));
     }
 
-    return prayerAnchors.sort((a, b) => a.startMin - b.startMin);
+    return [];
   }, [
     reflowedBlocksOverride,
     includePrayerAnchors,
@@ -2723,7 +3611,7 @@ export default function App() {
           });
           if (!ok) {
             if (status === 401) {
-              setNeedsAuth(true);
+              showToast('انتهت صلاحية جلسة مزامنة Google — حسابك لا يزال مسجلاً، أعد التحديث عند الاتصال');
             }
             await fetchCalendarEvents(token);
             throw new Error(data.error || 'تعذر تنفيذ التعديلات على Google Calendar.');
@@ -2741,7 +3629,7 @@ export default function App() {
                 { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
               );
               if (r.status === 401) {
-                setNeedsAuth(true);
+                showToast('انتهت صلاحية رمز Google Calendar — حسابك مسجل ويمكنك تجديد المزامنة بضغطة واحدة');
                 throw proxyErr;
               }
               if (!r.ok && r.status !== 404 && r.status !== 410) {
@@ -2768,13 +3656,13 @@ export default function App() {
                   body: JSON.stringify({
                     summary: act.title,
                     description: act.description || '',
-                    start: { dateTime: startDt, timeZone: 'Africa/Cairo' },
-                    end: { dateTime: endDt, timeZone: 'Africa/Cairo' },
+                    start: { dateTime: startDt, timeZone: activeTimeZone },
+                    end: { dateTime: endDt, timeZone: activeTimeZone },
                   }),
                 }
               );
               if (r.status === 401) {
-                setNeedsAuth(true);
+                showToast('انتهت صلاحية رمز Google Calendar — حسابك مسجل ويمكنك تجديد المزامنة بضغطة واحدة');
                 throw proxyErr;
               }
               if (!r.ok) throw new Error('تعذر إنشاء الحدث في Google Calendar.');
@@ -2793,8 +3681,8 @@ export default function App() {
                 const startDt = `${act.dateIso}T${act.startTime24}:00+02:00`;
                 const startMs = new Date(startDt).getTime();
                 const endDt = new Date(startMs + (act.durationMinutes || 30) * 60_000).toISOString();
-                body.start = { dateTime: startDt, timeZone: 'Africa/Cairo' };
-                body.end = { dateTime: endDt, timeZone: 'Africa/Cairo' };
+                body.start = { dateTime: startDt, timeZone: activeTimeZone };
+                body.end = { dateTime: endDt, timeZone: activeTimeZone };
               }
               const r = await fetch(
                 `https://www.googleapis.com/calendar/v3/calendars/${calId}/events/${encodeURIComponent(act.eventId)}`,
@@ -2808,7 +3696,7 @@ export default function App() {
                 }
               );
               if (r.status === 401) {
-                setNeedsAuth(true);
+                showToast('انتهت صلاحية رمز Google Calendar — حسابك مسجل ويمكنك تجديد المزامنة بضغطة واحدة');
                 throw proxyErr;
               }
               if (!r.ok) throw new Error('تعذر تحديث الحدث في Google Calendar.');
@@ -2860,6 +3748,7 @@ export default function App() {
       return { googleSynced, results };
     },
     [
+      activeTimeZone,
       appendChangelog,
       calendarEvents,
       emitCrossDeviceSync,
@@ -2920,7 +3809,7 @@ export default function App() {
         });
         if (!ok) {
           if (status === 401) {
-            setNeedsAuth(true);
+            showToast('انتهت صلاحية جلسة مزامنة Google Tasks — حسابك مسجل ويمكنك تجديد المزامنة');
           }
           await fetchGoogleTasks(token);
           throw new Error(data.error || 'تعذر تنفيذ التعديلات على Google Tasks.');
@@ -2944,7 +3833,7 @@ export default function App() {
               }
             );
             if (r.status === 401) {
-              setNeedsAuth(true);
+              showToast('انتهت صلاحية رمز Google Tasks — حسابك مسجل ويمكنك تجديد المزامنة');
               throw proxyErr;
             }
             if (!r.ok) throw new Error('تعذر إنشاء المهمة في Google Tasks.');
@@ -2962,7 +3851,7 @@ export default function App() {
               { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
             );
             if (r.status === 401) {
-              setNeedsAuth(true);
+              showToast('انتهت صلاحية رمز Google Tasks — حسابك مسجل ويمكنك تجديد المزامنة');
               throw proxyErr;
             }
             if (!r.ok && r.status !== 404) throw new Error('تعذر حذف المهمة من Google Tasks.');
@@ -2994,7 +3883,7 @@ export default function App() {
               }
             );
             if (r.status === 401) {
-              setNeedsAuth(true);
+              showToast('انتهت صلاحية رمز Google Tasks — حسابك مسجل ويمكنك تجديد المزامنة');
               throw proxyErr;
             }
             if (!r.ok) throw new Error('تعذر تحديث المهمة في Google Tasks.');
@@ -3190,7 +4079,7 @@ export default function App() {
     const expired = tombstones.filter((t) => t.ageDays > 14).length;
     setTombstones((prev) => prev.filter((t) => t.ageDays <= 14));
     if (expired > 0) {
-      appendChangelog('OnePlus 12R', `تنظيف ${expired} سجل Tombstones > 14 يوماً`, `Purged ${expired} tombstones > 14d`);
+      appendChangelog('Web/PC', `تنظيف ${expired} سجل Tombstones > 14 يوماً`, `Purged ${expired} tombstones > 14d`);
     }
     return expired;
   };
@@ -3422,7 +4311,12 @@ export default function App() {
     const tz = activeLocation.timeZone ?? lifeProfile.currentTimeZone ?? 'Africa/Cairo';
     const todayW = getWeekdayInTimeZone(tz);
 
-    const sendSystemNotification = (title: string, body: string, tag: string) => {
+    const sendSystemNotification = (
+      title: string,
+      body: string,
+      tag: string,
+      onClickAction?: () => void
+    ) => {
       if (
         activeSanctuary.type !== 'none' ||
         quietMode === 'silent_all' ||
@@ -3433,13 +4327,19 @@ export default function App() {
         return;
       }
       try {
-        new Notification(title, { body, tag, icon: '/icon-192.png' });
+        const notif = new Notification(title, { body, tag, icon: '/icon-192.png' });
+        if (onClickAction) {
+          notif.onclick = () => {
+            onClickAction();
+            notif.close();
+          };
+        }
       } catch {
         // ignore browser notification errors in restricted iframes
       }
     };
 
-    // 1. Water cup reminders (Emoji-only privacy notification so nobody nearby sees details)
+    // 1. Water cup reminders (Emoji-only privacy notification — clicking confirms drinking)
     if (waterRemindersEnabled && hydrationToday) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
         if (hydrationToday.slots[idx]) return;
@@ -3449,13 +4349,20 @@ export default function App() {
           if (firedReminderKeysRef.current.has(key)) return;
           firedReminderKeysRef.current.add(key);
           const time12 = formatMinutes12h(slot.timeMinutes, 'ar');
-          triggerTaskAlert('💧', 'water', { privacyEmoji: '💧' });
-          sendSystemNotification('💧', time12, key);
+          triggerTaskAlert('💧', 'water', {
+            privacyEmoji: '💧',
+            displayTitle: `موعد شرب كوب ماء (${dailyRhythmPlan.cupSizeMl} مل)`,
+            sourceLabel: 'ترطيب يومي',
+          });
+          sendSystemNotification('💧', `${time12} · اضغط عند الشرب ✓`, key, () => {
+            handleLogWaterCup();
+            handleAcknowledgeAudioAlert();
+          });
         }
       });
     }
 
-    // 2. Medication & Supplement reminders (Emoji-only privacy notification)
+    // 2. Medication & Supplement reminders (5-min high-visibility alert + sound)
     medications.forEach((med) => {
       if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayW)) {
         return;
@@ -3481,12 +4388,16 @@ export default function App() {
         if (firedReminderKeysRef.current.has(key)) return;
         firedReminderKeysRef.current.add(key);
         const time12 = formatMinutes12h(medMin, 'ar');
-        triggerTaskAlert('💊', 'medication', { privacyEmoji: '💊' });
-        sendSystemNotification('💊', time12, key);
+        triggerTaskAlert('💊', 'medication', {
+          privacyEmoji: '💊',
+          displayTitle: `موعد الجرعة: ${med.name}`,
+          sourceLabel: 'العلاجات والأدوية',
+        });
+        sendSystemNotification('💊', `${med.name} · ${time12}`, key);
       });
     });
 
-    // 3. Live Google Calendar event reminders (STRICTLY Emoji-only for privacy when someone sits nearby)
+    // 3. Live Google Calendar event reminders (5-min high-visibility alert on Secondary Screen / Side Dock / Mobile)
     liveBlocks.forEach((block) => {
       if (block.deleted || block.completed || block.isAllDay) return;
       const diff = nowTickMin - block.startMin;
@@ -3495,10 +4406,61 @@ export default function App() {
         if (firedReminderKeysRef.current.has(key)) return;
         firedReminderKeysRef.current.add(key);
         const emojiOnly = (block.emojiPair || '📅').trim();
+        const cleanTitle = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
         const time12 = formatMinutes12h(block.startMin, 'ar');
         const soundCat = classifyTaskSound(block.categoryAr, block.emojiPair, block.isAnchor);
-        triggerTaskAlert(emojiOnly, soundCat, { privacyEmoji: emojiOnly });
-        sendSystemNotification(emojiOnly, time12, key);
+        triggerTaskAlert(emojiOnly, soundCat, {
+          privacyEmoji: emojiOnly,
+          displayTitle: cleanTitle,
+          sourceLabel: 'تقويم Google',
+        });
+        sendSystemNotification(emojiOnly, `${cleanTitle} · ${time12}`, key);
+      }
+    });
+
+    // 3B. Timed Google Tasks reminders (fires 5-minute persistent alert + sound when a timed task arrives!)
+    googleTasks.forEach((tk) => {
+      if (tk.status === 'completed') return;
+      const info = extractTaskTimeMinutesForToday(tk, todayIso);
+      if (!info || !info.hasExplicitTime) return;
+      const diff = nowTickMin - info.startMin;
+      if (diff >= 0 && diff <= 2) {
+        const key = `${todayIso}:gtask:${tk.id}:${info.startMin}`;
+        if (firedReminderKeysRef.current.has(key)) return;
+        firedReminderKeysRef.current.add(key);
+        const cleanTitle = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
+        const time12 = formatMinutes12h(info.startMin, 'ar');
+        const soundCat = classifyTaskSound(tk.title, '☑️', false);
+        triggerTaskAlert('☑️', soundCat, {
+          privacyEmoji: '☑️',
+          displayTitle: cleanTitle,
+          sourceLabel: tk.taskListTitle ? `مهام · ${tk.taskListTitle}` : 'مهام Google',
+          taskId: tk.id,
+          taskListId: tk.taskListId,
+        });
+        sendSystemNotification('☑️ مهمة الآن', `${cleanTitle} · ${time12}`, key);
+      }
+    });
+
+    // 4. Proactive Medication Low-Stock Refill Reminder (default 3 days before running out)
+    medications.forEach((med) => {
+      if (typeof med.remainingDoses !== 'number' || med.remainingDoses < 0) return;
+      const dosesPerDay = Math.max(
+        1,
+        med.times24 && med.times24.length > 0 ? med.times24.length : 1
+      );
+      const alertLeadDays = Math.max(1, Math.min(14, med.refillAlertDays ?? 3));
+      const daysLeft = med.remainingDoses / dosesPerDay;
+      if (daysLeft <= alertLeadDays) {
+        const refillKey = `${todayIso}:med_refill:${med.id}`;
+        if (firedReminderKeysRef.current.has(refillKey)) return;
+        firedReminderKeysRef.current.add(refillKey);
+        const daysRounded = Math.ceil(daysLeft);
+        const bodyText =
+          med.remainingDoses === 0
+            ? `نفدت جرعات «${med.name}» — اشترِ عبوة جديدة اليوم`
+            : `متبقٍ ${med.remainingDoses} جرعة (حوالي ${daysRounded} ${daysRounded === 1 ? 'يوم' : 'أيام'}) — جهّز شراء جرعات جديدة`;
+        sendSystemNotification('💊 تنبيه إعادة شراء العلاج', bodyText, refillKey);
       }
     });
   }, [
@@ -3509,77 +4471,490 @@ export default function App() {
     hydrationToday,
     medications,
     liveBlocks,
+    googleTasks,
     activeLocation.timeZone,
     lifeProfile.currentTimeZone,
     activeSanctuary.type,
     quietMode,
     triggerTaskAlert,
+    handleLogWaterCup,
+    handleAcknowledgeAudioAlert,
   ]);
+
+  // Real-time Mobile Battery Publisher (Streams Phone charging % & limit to PC via WebSocket + Firestore)
+  useEffect(() => {
+    const isMobileClient = detectIsMobileDeviceClient();
+    const nativeWindow = window as Window & {
+      __dayRhythmNativeBattery?: { levelPct?: number; charging?: boolean; deviceLabel?: string };
+    };
+    if (!isMobileClient && !nativeWindow.__dayRhythmNativeBattery) return;
+
+    let lastSentKey = '';
+    let lastFirestorePushMs = 0;
+
+    const pushPhoneBattery = (levelPct: number, charging: boolean, deviceLabel: string) => {
+      const clampedLevel = Math.max(0, Math.min(100, Math.round(levelPct)));
+      const limit = phoneChargeLimitRef.current;
+      const nowMs = Date.now();
+      const snapshot: PhoneBatteryTelemetry = {
+        levelPct: clampedLevel,
+        charging,
+        chargeLimitPct: limit,
+        updatedAtMs: nowMs,
+        deviceLabel: deviceLabel || 'الهاتف',
+      };
+      setPhoneBattery(snapshot);
+
+      const dedupeKey = `${clampedLevel}:${charging ? 1 : 0}:${limit}`;
+      const changed = dedupeKey !== lastSentKey;
+      if (changed) {
+        lastSentKey = dedupeKey;
+      }
+
+      // Instant sub-second relay over WebSocket
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        try {
+          wsRef.current.send(JSON.stringify({ type: 'battery', ...snapshot }));
+        } catch {
+          // ignore ws send errors
+        }
+      }
+
+      // Persist in Firestore when changed or every 60s while charging so PC catches up across reconnects
+      if (
+        firebaseUser?.uid &&
+        firebaseUser.emailVerified &&
+        firestoreSynced &&
+        (changed || (charging && nowMs - lastFirestorePushMs > 60_000))
+      ) {
+        lastFirestorePushMs = nowMs;
+        void publishPhoneBatteryTelemetry(firebaseUser.uid, snapshot).catch(() => {});
+      }
+    };
+
+    const onNativeBattery = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ levelPct?: number; charging?: boolean; deviceLabel?: string }>).detail;
+      if (detail && typeof detail.levelPct === 'number') {
+        pushPhoneBattery(detail.levelPct, Boolean(detail.charging), detail.deviceLabel || 'OnePlus / Android');
+      }
+    };
+    window.addEventListener('dayrhythm:native-battery', onNativeBattery);
+
+    if (nativeWindow.__dayRhythmNativeBattery && typeof nativeWindow.__dayRhythmNativeBattery.levelPct === 'number') {
+      pushPhoneBattery(
+        nativeWindow.__dayRhythmNativeBattery.levelPct,
+        Boolean(nativeWindow.__dayRhythmNativeBattery.charging),
+        nativeWindow.__dayRhythmNativeBattery.deviceLabel || 'Android'
+      );
+    }
+
+    type BatteryManagerLike = {
+      level: number;
+      charging: boolean;
+      addEventListener: (type: string, listener: () => void) => void;
+      removeEventListener: (type: string, listener: () => void) => void;
+    };
+    let batteryManager: BatteryManagerLike | null = null;
+    let onWebBatteryChange: (() => void) | null = null;
+    let pollTimer: number | null = null;
+
+    const navWithBattery = navigator as Navigator & {
+      getBattery?: () => Promise<BatteryManagerLike>;
+    };
+
+    if (typeof navWithBattery.getBattery === 'function') {
+      navWithBattery
+        .getBattery()
+        .then((bm) => {
+          batteryManager = bm;
+          const emitFromWeb = () => {
+            pushPhoneBattery(Math.round(bm.level * 100), Boolean(bm.charging), 'الهاتف');
+          };
+          onWebBatteryChange = emitFromWeb;
+          emitFromWeb();
+          bm.addEventListener('levelchange', emitFromWeb);
+          bm.addEventListener('chargingchange', emitFromWeb);
+          pollTimer = window.setInterval(emitFromWeb, 25_000);
+        })
+        .catch(() => {
+          // Battery Status API unavailable on this browser
+        });
+    }
+
+    return () => {
+      window.removeEventListener('dayrhythm:native-battery', onNativeBattery);
+      if (batteryManager && onWebBatteryChange) {
+        batteryManager.removeEventListener('levelchange', onWebBatteryChange);
+        batteryManager.removeEventListener('chargingchange', onWebBatteryChange);
+      }
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+      }
+    };
+  }, [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, wsConnected]);
+
+  const handleStopSmartChargeAlert = useCallback(() => {
+    stopSmartChargeCompleteAlert();
+    setSmartChargeAudioActive(false);
+    setPhoneChargeAlertDismissed(true);
+    setPersistentAlert((prev) => (prev?.id.startsWith('charge_') ? null : prev));
+    try {
+      const wv = (
+        window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
+      ).chrome?.webview;
+      if (wv?.postMessage) {
+        wv.postMessage(JSON.stringify({ type: 'stop-alert' }));
+      }
+    } catch {
+      // ignore WebView2 postMessage errors
+    }
+    showToast('🔕 تم إيقاف التنبيه الذكي لاكتمال الشحن ✓');
+  }, [showToast]);
+
+  const handleToggleSmartChargeKeepUntilUnplugged = useCallback(() => {
+    setSmartChargeKeepUntilUnplugged((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(next));
+      } catch {
+        // ignore storage errors
+      }
+      showToast(
+        next
+          ? '🔌 سيستمر منبّه الشحن بالرنين حتى فصل الموبايل من الشاحن (أو إيقافه يدوياً)'
+          : '⏱️ سيتوقف منبّه الشحن تلقائياً بعد دقيقتين إذا لم يتم إيقافه'
+      );
+      return next;
+    });
+  }, [showToast]);
+
+  const handleToggleSmartChargeAlertEnabled = useCallback(() => {
+    setSmartChargeAlertEnabled((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(next));
+      } catch {
+        // ignore storage errors
+      }
+      if (!next) {
+        stopSmartChargeCompleteAlert();
+        setSmartChargeAudioActive(false);
+      }
+      showToast(
+        next
+          ? `🔋 تم تفعيل التنبيه الذكي عند اكتمال الشحن (${phoneChargeLimitRef.current}%)`
+          : '🔕 تم إيقاف التنبيه الصوتي التلقائي لاكتمال الشحن'
+      );
+      return next;
+    });
+  }, [showToast]);
+
+  const handleTestSmartChargeAlert = useCallback(() => {
+    if (smartChargeAudioActive) {
+      handleStopSmartChargeAlert();
+      return;
+    }
+    playBatteryFullSignature();
+    showToast(`🔊 نغمة التنبيه الذكي عند وصول الموبايل إلى ${phoneChargeLimitRef.current}%`);
+  }, [smartChargeAudioActive, handleStopSmartChargeAlert, showToast]);
+
+  // Stop smart charge audio cleanly on unmount
+  useEffect(() => {
+    return () => {
+      stopSmartChargeCompleteAlert();
+    };
+  }, []);
+
+  // Desktop Real-time Smart Charge Complete Alert when Phone reaches configured charge limit (default 90%)
+  useEffect(() => {
+    if (!phoneBattery) return;
+    const isDesktopClient = !detectIsMobileDeviceClient();
+
+    if (!phoneBattery.charging || phoneBattery.levelPct < phoneBattery.chargeLimitPct - 2) {
+      if (phoneChargeNotifiedCycleRef.current || smartChargeAudioActive) {
+        stopSmartChargeCompleteAlert();
+        setSmartChargeAudioActive(false);
+        setPersistentAlert((prev) => (prev?.id.startsWith('charge_') ? null : prev));
+      }
+      phoneChargeNotifiedCycleRef.current = false;
+      setPhoneChargeAlertDismissed(false);
+      return;
+    }
+
+    if (
+      isDesktopClient &&
+      smartChargeAlertEnabled &&
+      phoneBattery.charging &&
+      phoneBattery.levelPct >= phoneBattery.chargeLimitPct &&
+      !phoneChargeNotifiedCycleRef.current
+    ) {
+      phoneChargeNotifiedCycleRef.current = true;
+      setPhoneChargeAlertDismissed(false);
+
+      const audioResult = startSmartChargeCompleteAlert({
+        sanctuary: activeSanctuary,
+        keepRingingUntilUnplugged: smartChargeKeepUntilUnplugged,
+        onAutoStop: () => setSmartChargeAudioActive(false),
+      });
+      if (audioResult.playedAudio) {
+        setSmartChargeAudioActive(true);
+      }
+
+      const nowTime12 = formatCairoNow12h('ar');
+      setPersistentAlert({
+        id: `charge_${Date.now().toString(36)}`,
+        emoji: `🔋 ${phoneBattery.levelPct}%`,
+        title: `وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% — افصل الشاحن الآن`,
+        sourceLabel: smartChargeKeepUntilUnplugged
+          ? 'تنبيه الشحن · يستمر حتى فصل الشاحن'
+          : 'التنبيه الذكي لاكتمال الشحن',
+        time12h: nowTime12,
+        category: 'general',
+        createdAtMs: Date.now(),
+        durationMs: 300_000,
+        isContinuous: smartChargeKeepUntilUnplugged,
+      });
+
+      showToast(
+        `🔋 التنبيه الذكي: وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% (الحد ${phoneBattery.chargeLimitPct}%) — يمكنك فصله أو إيقاف التنبيه الآن`
+      );
+
+      // Desktop OS Notification
+      if (
+        typeof window !== 'undefined' &&
+        'Notification' in window &&
+        Notification.permission === 'granted'
+      ) {
+        try {
+          new Notification(`🔋 اكتمل شحن الموبايل (${phoneBattery.levelPct}%)`, {
+            body: `وصل شحن ${phoneBattery.deviceLabel || 'الهاتف'} إلى ${phoneBattery.chargeLimitPct}% — افصل الشاحن أو أوقف التنبيه من لوحة التحكم.`,
+            tag: 'dayrhythm-phone-charge-limit',
+            icon: '/icon-192.png',
+          });
+        } catch {
+          // ignore notification errors
+        }
+      }
+
+      // Windows Secondary Monitor Toast (zero focus-steal on Screen 1!)
+      try {
+        const wv = (
+          window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
+        ).chrome?.webview;
+        if (wv?.postMessage) {
+          wv.postMessage(
+            JSON.stringify({
+              type: 'native-alert',
+              emoji: `🔋 ${phoneBattery.levelPct}%`,
+              title: `وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% — افصل الشاحن`,
+              sourceLabel: 'التنبيه الذكي لاكتمال الشحن',
+              time12h: nowTime12,
+              category: 'general',
+              isHydration: false,
+              isContinuous: smartChargeKeepUntilUnplugged,
+              durationSeconds: 300,
+            })
+          );
+        }
+      } catch {
+        // ignore WebView2 postMessage errors
+      }
+    }
+  }, [
+    phoneBattery,
+    smartChargeAlertEnabled,
+    smartChargeKeepUntilUnplugged,
+    smartChargeAudioActive,
+    activeSanctuary,
+    showToast,
+  ]);
+
+  // Proactive 3-Day Low-Stock Medication Reminder (notifies once per day when any tracked medication is <= 3 days left)
+  useEffect(() => {
+    if (medications.length === 0) return;
+    const todayIso = getCairoTodayIso();
+    const lowMeds = medications.filter((m) => {
+      if (typeof m.remainingDoses !== 'number' || m.remainingDoses < 0) return false;
+      const dosesPerScheduledDay = Math.max(
+        1,
+        m.times24 && m.times24.length > 0 ? m.times24.length : 1
+      );
+      const daysPerWeek = m.daysOfWeek && m.daysOfWeek.length > 0 ? m.daysOfWeek.length : 7;
+      const dailyRate = Math.max(0.14, (dosesPerScheduledDay * daysPerWeek) / 7);
+      const alertLeadDays = Math.max(1, Math.min(14, m.refillAlertDays ?? 3));
+      return m.remainingDoses / dailyRate <= alertLeadDays;
+    });
+
+    if (lowMeds.length === 0) return;
+    const dedupKey = `${todayIso}:${lowMeds.map((m) => `${m.id}=${m.remainingDoses}`).join(',')}`;
+    if (lowStockProactiveNotifiedKeyRef.current === dedupKey) return;
+    lowStockProactiveNotifiedKeyRef.current = dedupKey;
+
+    const namesSummary = lowMeds
+      .slice(0, 2)
+      .map((m) => `«${m.name}» (${m.remainingDoses} جرعة)`)
+      .join(' و');
+    const extraCount = lowMeds.length > 2 ? ` +${lowMeds.length - 2}` : '';
+
+    showToast(
+      `💊 تنبيه استباقي: مخزون ${namesSummary}${extraCount} قارب على الانتهاء (خلال 3 أيام) — استخدم «إضافة شراء جديد»`
+    );
+  }, [medications, showToast]);
 
   const handleToggleMedication = useCallback(
     (id: string, doseTime24?: string) => {
+      const target = medications.find((m) => m.id === id);
+      if (!target) return;
+
       const todayIso = getCairoTodayIso();
+      const allTimes =
+        target.times24 && target.times24.length > 0
+          ? target.times24
+          : target.time24
+            ? [target.time24]
+            : [];
+      let updated: MedicationItem;
+      let deltaDoses = 0;
+
+      if (doseTime24 && allTimes.length > 1) {
+        const currentTaken =
+          target.takenDateKey === todayIso ? target.takenDosesToday ?? [] : [];
+        const exists = currentTaken.includes(doseTime24);
+        const nextTaken = exists
+          ? currentTaken.filter((t) => t !== doseTime24)
+          : [...currentTaken, doseTime24];
+        deltaDoses = exists ? 1 : -1;
+        updated = {
+          ...target,
+          takenDosesToday: nextTaken,
+          takenDateKey: nextTaken.length > 0 ? todayIso : '',
+        };
+      } else {
+        const isFullyTaken =
+          target.takenDateKey === todayIso &&
+          (allTimes.length <= 1 ||
+            allTimes.every((t) => (target.takenDosesToday ?? []).includes(t)));
+        const currentCount =
+          target.takenDateKey === todayIso
+            ? allTimes.length > 1
+              ? (target.takenDosesToday ?? []).length
+              : 1
+            : 0;
+        const totalToday = Math.max(1, allTimes.length);
+        deltaDoses = isFullyTaken ? currentCount : -(totalToday - currentCount);
+        updated = {
+          ...target,
+          takenDateKey: isFullyTaken ? '' : todayIso,
+          takenDosesToday: isFullyTaken ? [] : allTimes,
+        };
+      }
+
+      const isFullyTakenAfter =
+        updated.takenDateKey === todayIso &&
+        (allTimes.length <= 1 ||
+          allTimes.every((t) => (updated.takenDosesToday ?? []).includes(t)));
+      const existingDates = Array.isArray(target.takenDates) ? target.takenDates : [];
+      const nextTakenDates = isFullyTakenAfter
+        ? Array.from(new Set([...existingDates, todayIso])).sort().slice(-31)
+        : existingDates.filter((d) => d !== todayIso);
+      updated = { ...updated, takenDates: nextTakenDates };
+
       let lowStockMsg = '';
+      if (typeof target.remainingDoses === 'number' && target.remainingDoses >= 0) {
+        const maxCap =
+          typeof target.totalDoses === 'number' && target.totalDoses > 0
+            ? target.totalDoses
+            : 500;
+        const nextRem = Math.max(0, Math.min(maxCap, target.remainingDoses + deltaDoses));
+        updated = { ...updated, remainingDoses: nextRem };
+        const dosesPerDay = Math.max(1, allTimes.length);
+        const alertLeadDays = Math.max(1, Math.min(14, target.refillAlertDays ?? 3));
+        const daysLeft = nextRem / dosesPerDay;
+        if (deltaDoses < 0 && daysLeft <= alertLeadDays) {
+          const roundedDays = Math.ceil(daysLeft);
+          lowStockMsg =
+            nextRem === 0
+              ? `⚠️ نفدت جرعات «${target.name}» — حان وقت شراء عبوة جديدة`
+              : `💊 تنبيه مخزون: متبقٍ ${nextRem} جرعة من «${target.name}» (تكفي ~${roundedDays} ${roundedDays === 1 ? 'يوم' : 'أيام'}) — جهّز شراء جرعات جديدة`;
+        }
+      }
+
+      setMedications((prev) => prev.map((m) => (m.id === id ? updated : m)));
+
+      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+        void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
+      }
+
+      if (lowStockMsg) {
+        showToast(lowStockMsg);
+      } else if (!doseTime24 && isFullyTakenAfter) {
+        showToast(`✅ تم تسجيل جرعات «${target.name}» كاملة لليوم`);
+      }
+      triggerHapticWaveform('water_cup');
+    },
+    [medications, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+  );
+
+  const handleToggleMedicationDate = useCallback(
+    (id: string, dateIso: string) => {
+      const todayIso = getCairoTodayIso();
       setMedications((prev) =>
         prev.map((m) => {
           if (m.id !== id) return m;
           const allTimes =
             m.times24 && m.times24.length > 0 ? m.times24 : m.time24 ? [m.time24] : [];
-          let updated: MedicationItem;
-          let deltaDoses = 0;
-
-          if (doseTime24 && allTimes.length > 1) {
-            const currentTaken = m.takenDateKey === todayIso ? m.takenDosesToday ?? [] : [];
-            const exists = currentTaken.includes(doseTime24);
-            const nextTaken = exists
-              ? currentTaken.filter((t) => t !== doseTime24)
-              : [...currentTaken, doseTime24];
-            deltaDoses = exists ? 1 : -1;
-            updated = {
-              ...m,
-              takenDosesToday: nextTaken,
-              takenDateKey: nextTaken.length > 0 ? todayIso : '',
-            };
-          } else {
-            const isFullyTaken =
-              m.takenDateKey === todayIso &&
-              (allTimes.length <= 1 ||
-                allTimes.every((t) => (m.takenDosesToday ?? []).includes(t)));
-            const currentCount = m.takenDateKey === todayIso ? (m.takenDosesToday?.length || 1) : 0;
-            const totalToday = Math.max(1, allTimes.length);
-            deltaDoses = isFullyTaken ? currentCount : -(totalToday - currentCount);
-            updated = {
-              ...m,
-              takenDateKey: isFullyTaken ? '' : todayIso,
-              takenDosesToday: isFullyTaken ? [] : allTimes,
-            };
-          }
-
-          if (typeof m.remainingDoses === 'number' && m.remainingDoses >= 0) {
-            const maxCap =
-              typeof m.totalDoses === 'number' && m.totalDoses > 0 ? m.totalDoses : 500;
-            const nextRem = Math.max(0, Math.min(maxCap, m.remainingDoses + deltaDoses));
-            updated = { ...updated, remainingDoses: nextRem };
-            if (deltaDoses < 0 && nextRem <= 3) {
-              lowStockMsg =
-                nextRem === 0
-                  ? `⚠️ نفدت جرعات «${m.name}» — حان وقت إعادة التعبئة أو انتهاء الكورس`
-                  : `💊 تنبيه مخزون: متبقٍ ${nextRem} جرعات فقط من «${m.name}»`;
-            }
-          }
-
+          const existingDates = Array.isArray(m.takenDates) ? m.takenDates : [];
+          const hasDate = existingDates.includes(dateIso) || (dateIso === todayIso && m.takenDateKey === todayIso);
+          const nextDates = hasDate
+            ? existingDates.filter((d) => d !== dateIso)
+            : Array.from(new Set([...existingDates, dateIso])).sort().slice(-31);
+          const updated: MedicationItem = {
+            ...m,
+            takenDates: nextDates,
+            ...(dateIso === todayIso
+              ? {
+                  takenDateKey: hasDate ? '' : todayIso,
+                  takenDosesToday: hasDate ? [] : allTimes,
+                }
+              : {}),
+          };
           if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
             void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
           }
           return updated;
         })
       );
-      if (lowStockMsg) {
-        showToast(lowStockMsg);
-      }
       triggerHapticWaveform('water_cup');
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
+  );
+
+  const handleRefillMedication = useCallback(
+    (id: string, newDoses: number, refillAlertDays?: number) => {
+      const target = medications.find((m) => m.id === id);
+      if (!target) return;
+
+      const clampedDoses = Math.max(0, Math.min(500, Math.round(newDoses)));
+      const nextAlertDays =
+        typeof refillAlertDays === 'number'
+          ? Math.max(1, Math.min(14, Math.round(refillAlertDays)))
+          : target.refillAlertDays ?? 3;
+      const nextTotal = Math.max(clampedDoses, target.totalDoses ?? clampedDoses);
+      const updated = sanitizeMedicationItem({
+        ...target,
+        remainingDoses: clampedDoses,
+        totalDoses: nextTotal,
+        refillAlertDays: nextAlertDays,
+      });
+
+      setMedications((prev) => prev.map((m) => (m.id === id ? updated : m)));
+
+      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+        void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
+      }
+      showToast(`💊 تم تحديث مخزون «${target.name}» إلى ${clampedDoses} جرعة متبقية ✓`);
+    },
+    [medications, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
   );
 
   const handleAddMedication = useCallback(
@@ -3593,6 +4968,7 @@ export default function App() {
       courseEndDate?: string;
       remainingDoses?: number;
       totalDoses?: number;
+      refillAlertDays?: number;
     }) => {
       const cleanTimes =
         input.times24 && input.times24.length > 0
@@ -3617,10 +4993,15 @@ export default function App() {
         doseNote: input.doseNote ?? '',
         takenDateKey: '',
         takenDosesToday: [],
+        takenDates: [],
         calendarEventId: input.calendarEventId ?? '',
         courseEndDate: input.courseEndDate ?? '',
         remainingDoses: rem,
         totalDoses: tot,
+        refillAlertDays:
+          typeof input.refillAlertDays === 'number'
+            ? Math.max(1, Math.min(14, Math.round(input.refillAlertDays)))
+            : 3,
       });
       setMedications((prev) => [...prev, med]);
       if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
@@ -3699,6 +5080,9 @@ export default function App() {
                 ...target,
                 takenDateKey: todayIso,
                 takenDosesToday: allTimes,
+                takenDates: Array.from(new Set([...(target.takenDates ?? []), todayIso]))
+                  .sort()
+                  .slice(-31),
                 remainingDoses: nextRem,
               };
               next = next.map((m) => (m.id === target.id ? updated : m));
@@ -3730,6 +5114,10 @@ export default function App() {
                   typeof act.totalDoses === 'number'
                     ? act.totalDoses
                     : target.totalDoses,
+                refillAlertDays:
+                  typeof act.refillAlertDays === 'number'
+                    ? act.refillAlertDays
+                    : target.refillAlertDays,
               });
               next = next.map((m) => (m.id === target.id ? updated : m));
               if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
@@ -3757,6 +5145,10 @@ export default function App() {
                   typeof act.totalDoses === 'number'
                     ? act.totalDoses
                     : existing.totalDoses,
+                refillAlertDays:
+                  typeof act.refillAlertDays === 'number'
+                    ? act.refillAlertDays
+                    : existing.refillAlertDays,
               });
               next = next.map((m) => (m.id === existing.id ? updated : m));
               if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
@@ -3783,10 +5175,13 @@ export default function App() {
                 doseNote: act.doseNote ?? '',
                 takenDateKey: '',
                 takenDosesToday: [],
+                takenDates: [],
                 calendarEventId: calId,
                 courseEndDate: act.courseEndDate ?? '',
                 remainingDoses: rem,
                 totalDoses: tot,
+                refillAlertDays:
+                  typeof act.refillAlertDays === 'number' ? act.refillAlertDays : 3,
               });
               next = [...next, created];
               if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
@@ -4025,14 +5420,45 @@ export default function App() {
   const [capsuleNowMs, setCapsuleNowMs] = useState<number>(() => Date.now());
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setCapsuleNowMs(Date.now());
-    }, 1000);
-    return () => window.clearInterval(timer);
+    const syncNow = () => setCapsuleNowMs(Date.now());
+    const timer = window.setInterval(syncNow, 1000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncNow();
+    };
+    window.addEventListener('focus', syncNow);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', syncNow);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
+  // Show "الورد والالتزام اليومي" ONLY when signed in AND user actually has that habit in their account
+  const hasDailyWirdHabit = useMemo(() => {
+    if (needsAuth || !firebaseUser?.uid || firebaseUser.isAnonymous) return false;
+    if (streaks.dailyCommitmentDays > 0 || streaks.dailyCommitmentDoneToday) return true;
+    const wirdRe = /(ورد|الورد|قرآن|قران|أذكار|اذكار|تلاوة|الالتزام اليومي|🌱)/i;
+    if (calendarEvents.some((e) => wirdRe.test(`${e.summary ?? ''} ${e.description ?? ''}`))) return true;
+    if (googleTasks.some((tk) => wirdRe.test(`${tk.title ?? ''} ${tk.notes ?? ''}`))) return true;
+    if (creativeActivities.some((a) => wirdRe.test(`${a.name} ${a.emoji}`))) return true;
+    if (memories.some((m) => wirdRe.test(m.ruleText))) return true;
+    return false;
+  }, [
+    needsAuth,
+    firebaseUser?.uid,
+    firebaseUser?.isAnonymous,
+    streaks.dailyCommitmentDays,
+    streaks.dailyCommitmentDoneToday,
+    calendarEvents,
+    googleTasks,
+    creativeActivities,
+    memories,
+  ]);
+
   const nextActiveBlock = useMemo(() => {
-    const nowMin = getCairoNowMinutes();
+    if (needsAuth && !useOfflineDemo) return null;
+    const nowMin = getNowMinutesInTimeZone(activeTimeZone, new Date(capsuleNowMs));
     return (
       liveBlocks.find(
         (b) =>
@@ -4041,60 +5467,60 @@ export default function App() {
           (b.isAllDay || b.startMin + b.durationMin > nowMin)
       ) ?? null
     );
-    // Re-evaluate as seconds/minutes progress
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveBlocks, Math.floor(capsuleNowMs / 15_000)]);
+  }, [needsAuth, useOfflineDemo, liveBlocks, activeTimeZone, capsuleNowMs]);
 
   const capsuleTimerState = useMemo(() => {
     const display = resolveBlockDisplayInfo(nextActiveBlock);
-    const emoji = (nextActiveBlock?.emojiPair || '✅').split(' ')[0] || '📅';
+    const fallbackEmoji = (nextActiveBlock?.emojiPair || '✅').split(' ')[0] || '📅';
+
+    if (needsAuth && !useOfflineDemo) {
+      return {
+        emoji: '🔐',
+        title: 'سجّل الدخول بحساب Google',
+        statusLabel: 'بانتظار الربط السحابي',
+        sourceKind: 'none' as const,
+        countdownText: '00:00',
+        isNow: false,
+        isUrgent: false,
+        progressRatio: 0,
+        targetEpochMs: 0,
+        durationSeconds: 0,
+        calendarTrack: null as CapsuleTrackInfo | null,
+        taskTrack: null as CapsuleTrackInfo | null,
+      };
+    }
 
     if (simulateUnder60s) {
       const targetMs = capsuleNowMs + liveCountdownSec * 1000;
-      return {
-        emoji,
+      const simTrack: CapsuleTrackInfo = {
+        emoji: fallbackEmoji,
         title: nextActiveBlock ? display.title : 'المهمة القادمة',
         statusLabel: 'أقل من دقيقة',
+        countdownText: `00:${String(liveCountdownSec).padStart(2, '0')}`,
+        isNow: false,
+        isUrgent: true,
+        targetEpochMs: targetMs,
+        durationSeconds: 60,
+      };
+      return {
+        emoji: fallbackEmoji,
+        title: nextActiveBlock ? display.title : 'المهمة القادمة',
+        statusLabel: 'أقل من دقيقة',
+        sourceKind: (nextActiveBlock ? 'calendar' : 'none') as 'calendar' | 'task' | 'none',
         countdownText: `00:${String(liveCountdownSec).padStart(2, '0')}`,
         isNow: false,
         isUrgent: true,
         progressRatio: 0,
         targetEpochMs: targetMs,
         durationSeconds: 60,
+        calendarTrack: simTrack,
+        taskTrack: null as CapsuleTrackInfo | null,
       };
     }
 
-    if (!nextActiveBlock) {
-      return {
-        emoji: '✅',
-        title: 'أنجزت مهام اليوم',
-        statusLabel: 'يوم هادئ ومكتمل',
-        countdownText: '✓',
-        isNow: false,
-        isUrgent: false,
-        progressRatio: 0,
-        targetEpochMs: 0,
-        durationSeconds: 0,
-      };
-    }
-
-    if (nextActiveBlock.isAllDay) {
-      return {
-        emoji,
-        title: display.title,
-        statusLabel: 'طوال اليوم',
-        countdownText: 'اليوم',
-        isNow: true,
-        isUrgent: false,
-        progressRatio: 0,
-        targetEpochMs: 0,
-        durationSeconds: 0,
-      };
-    }
-
-    // Current Cairo wall-clock seconds since midnight for smooth 1-second ticking
+    // Active user timezone wall-clock seconds since midnight for smooth 1-second dual countdown
     const parts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Africa/Cairo',
+      timeZone: activeTimeZone,
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
@@ -4106,40 +5532,259 @@ export default function App() {
     const ss = Number(parts.find((p) => p.type === 'second')?.value ?? '0');
     const nowSecOfDay = hh * 3600 + mm * 60 + ss;
 
-    const startSec = nextActiveBlock.startMin * 60;
-    const durationSec = Math.max(60, nextActiveBlock.durationMin * 60);
-    const endSec = startSec + durationSec;
-    const isNow = nowSecOfDay >= startSec && nowSecOfDay < endSec;
+    interface UnifiedCapsuleCandidate {
+      sourceKind: 'calendar' | 'task';
+      emoji: string;
+      title: string;
+      startSec: number;
+      endSec: number;
+      targetSec: number;
+      isNow: boolean;
+      durationSec: number;
+    }
 
-    const remainingSec = isNow
-      ? Math.max(0, endSec - nowSecOfDay)
-      : Math.max(0, startSec - nowSecOfDay);
+    const candidates: UnifiedCapsuleCandidate[] = [];
 
-    const h = Math.floor(remainingSec / 3600);
-    const m = Math.floor((remainingSec % 3600) / 60);
-    const s = remainingSec % 60;
+    // 1. Remaining / active timed Google Calendar & rhythm blocks today
+    for (const block of liveBlocks) {
+      if (block.completed || block.deleted || block.isAllDay) continue;
+      const startSec = block.startMin * 60;
+      const durationSec = Math.max(60, block.durationMin * 60);
+      const endSec = startSec + durationSec;
+      if (endSec <= nowSecOfDay) continue;
+      const isNow = nowSecOfDay >= startSec && nowSecOfDay < endSec;
+      const bDisplay = resolveBlockDisplayInfo(block);
+      candidates.push({
+        sourceKind: 'calendar',
+        emoji: (block.emojiPair || '📅').split(' ')[0] || '📅',
+        title: bDisplay.title,
+        startSec,
+        endSec,
+        targetSec: isNow ? endSec : startSec,
+        isNow,
+        durationSec,
+      });
+    }
 
-    const countdownText =
-      h > 0
-        ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-        : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    // 2. Active / upcoming Google Tasks for today (with explicit time competing directly by nearest timestamp!)
+    let untimedTaskFallback: GoogleTaskItem | null = null;
+    for (const tk of googleTasks) {
+      const info = extractTaskTimeMinutesForToday(tk, todayCairoIso);
+      if (!info) continue;
+      if (!info.hasExplicitTime) {
+        if (!untimedTaskFallback) untimedTaskFallback = tk;
+        continue;
+      }
+      const startSec = info.startMin * 60;
+      const durationSec = 15 * 60; // 15-min active window once a timed task starts (unless completed earlier)
+      const endSec = startSec + durationSec;
+      if (endSec <= nowSecOfDay) continue;
+      const isNow = nowSecOfDay >= startSec && nowSecOfDay < endSec;
+      const cleanTitle = cleanCalendarText(tk.title) || 'مهمة';
+      candidates.push({
+        sourceKind: 'task',
+        emoji: '☑️',
+        title: cleanTitle,
+        startSec,
+        endSec,
+        targetSec: isNow ? endSec : startSec,
+        isNow,
+        durationSec,
+      });
+    }
 
-    const progressRatio = isNow
-      ? Math.min(1, Math.max(0, (nowSecOfDay - startSec) / durationSec))
-      : 0;
+    candidates.sort((a, b) => a.targetSec - b.targetSec);
+
+    const buildTrack = (c: UnifiedCapsuleCandidate): CapsuleTrackInfo => {
+      const remSec = Math.max(0, c.targetSec - nowSecOfDay);
+      const h = Math.floor(remSec / 3600);
+      const m = Math.floor((remSec % 3600) / 60);
+      const s = remSec % 60;
+      const countdownText =
+        h > 0
+          ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+          : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      const statusLabel =
+        c.sourceKind === 'task'
+          ? c.isNow
+            ? 'مهمة الآن'
+            : 'مهام'
+          : c.isNow
+            ? 'جارٍ الآن'
+            : 'تقويم';
+      return {
+        emoji: c.emoji,
+        title: c.title,
+        statusLabel,
+        countdownText,
+        isNow: c.isNow,
+        isUrgent: remSec > 0 && remSec <= 60,
+        targetEpochMs: capsuleNowMs + remSec * 1000,
+        durationSeconds: c.durationSec,
+      };
+    };
+
+    const nearestCalendar = candidates.find((c) => c.sourceKind === 'calendar') ?? null;
+    const nearestTask = candidates.find((c) => c.sourceKind === 'task') ?? null;
+
+    const calendarTrack: CapsuleTrackInfo | null = nearestCalendar
+      ? buildTrack(nearestCalendar)
+      : nextActiveBlock?.isAllDay
+        ? {
+            emoji: fallbackEmoji,
+            title: display.title,
+            statusLabel: 'طوال اليوم',
+            countdownText: 'اليوم',
+            isNow: true,
+            isUrgent: false,
+            targetEpochMs: 0,
+            durationSeconds: 0,
+          }
+        : null;
+
+    const taskTrack: CapsuleTrackInfo | null = nearestTask
+      ? buildTrack(nearestTask)
+      : untimedTaskFallback
+        ? {
+            emoji: '☑️',
+            title: cleanCalendarText(untimedTaskFallback.title) || 'مهمة اليوم',
+            statusLabel: 'مهام اليوم',
+            countdownText: 'اليوم',
+            isNow: false,
+            isUrgent: false,
+            targetEpochMs: 0,
+            durationSeconds: 0,
+          }
+        : null;
+
+    const winner = candidates[0];
+
+    if (winner) {
+      const remainingSec = Math.max(0, winner.targetSec - nowSecOfDay);
+      const h = Math.floor(remainingSec / 3600);
+      const m = Math.floor((remainingSec % 3600) / 60);
+      const s = remainingSec % 60;
+      const countdownText =
+        h > 0
+          ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+          : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      const progressRatio = winner.isNow
+        ? Math.min(1, Math.max(0, (nowSecOfDay - winner.startSec) / winner.durationSec))
+        : 0;
+
+      const statusLabel =
+        winner.sourceKind === 'task'
+          ? winner.isNow
+            ? 'مهمة الآن · مهام'
+            : 'متبقي على مهام'
+          : winner.isNow
+            ? 'جارٍ الآن · تقويم'
+            : 'المهمة القادمة · تقويم';
+
+      return {
+        emoji: winner.emoji,
+        title: winner.title,
+        statusLabel,
+        sourceKind: winner.sourceKind,
+        countdownText,
+        isNow: winner.isNow,
+        isUrgent: remainingSec > 0 && remainingSec <= 60,
+        progressRatio,
+        targetEpochMs: capsuleNowMs + remainingSec * 1000,
+        durationSeconds: winner.durationSec,
+        calendarTrack,
+        taskTrack,
+      };
+    }
+
+    if (nextActiveBlock?.isAllDay) {
+      return {
+        emoji: fallbackEmoji,
+        title: display.title,
+        statusLabel: 'طوال اليوم · تقويم',
+        sourceKind: 'calendar' as const,
+        countdownText: 'اليوم',
+        isNow: true,
+        isUrgent: false,
+        progressRatio: 0,
+        targetEpochMs: 0,
+        durationSeconds: 0,
+        calendarTrack,
+        taskTrack,
+      };
+    }
+
+    if (untimedTaskFallback) {
+      return {
+        emoji: '☑️',
+        title: cleanCalendarText(untimedTaskFallback.title) || 'مهمة اليوم',
+        statusLabel: 'مهمة اليوم · مهام',
+        sourceKind: 'task' as const,
+        countdownText: 'اليوم',
+        isNow: false,
+        isUrgent: false,
+        progressRatio: 0,
+        targetEpochMs: 0,
+        durationSeconds: 0,
+        calendarTrack,
+        taskTrack,
+      };
+    }
 
     return {
-      emoji,
-      title: display.title,
-      statusLabel: isNow ? 'جارٍ الآن · المتبقي' : 'المهمة القادمة',
-      countdownText,
-      isNow,
-      isUrgent: remainingSec > 0 && remainingSec <= 60,
-      progressRatio,
-      targetEpochMs: capsuleNowMs + remainingSec * 1000,
-      durationSeconds: durationSec,
+      emoji: '✅',
+      title: 'أنجزت مهام اليوم',
+      statusLabel: 'يوم هادئ ومكتمل',
+      sourceKind: 'none' as const,
+      countdownText: '✓',
+      isNow: false,
+      isUrgent: false,
+      progressRatio: 0,
+      targetEpochMs: 0,
+      durationSeconds: 0,
+      calendarTrack: null as CapsuleTrackInfo | null,
+      taskTrack: null as CapsuleTrackInfo | null,
     };
-  }, [nextActiveBlock, simulateUnder60s, liveCountdownSec, capsuleNowMs]);
+  }, [
+    needsAuth,
+    useOfflineDemo,
+    activeTimeZone,
+    liveBlocks,
+    googleTasks,
+    todayCairoIso,
+    nextActiveBlock,
+    simulateUnder60s,
+    liveCountdownSec,
+    capsuleNowMs,
+  ]);
+
+  // Push unified Calendar + Tasks countdown to Android Native Live Capsule Notification when running in APK
+  useEffect(() => {
+    const androidBridge = (
+      window as Window & {
+        DayRhythmNative?: {
+          updateCapsule?: (emoji: string, title: string, countdown: string, sourceLabel: string) => void;
+        };
+      }
+    ).DayRhythmNative;
+    if (androidBridge?.updateCapsule) {
+      try {
+        androidBridge.updateCapsule(
+          capsuleTimerState.emoji,
+          capsuleTimerState.title,
+          capsuleTimerState.countdownText,
+          capsuleTimerState.statusLabel
+        );
+      } catch {
+        // ignore Android bridge errors
+      }
+    }
+  }, [
+    capsuleTimerState.emoji,
+    capsuleTimerState.title,
+    capsuleTimerState.countdownText,
+    capsuleTimerState.statusLabel,
+  ]);
 
   const assistantContextSummary = useMemo(() => {
     const lifeConstitution = buildLifeProfileGeminiSummary(
@@ -4191,7 +5836,7 @@ ${lifeConstitution}
     >
       <TopBar
         activeTab={activeTab}
-        onSelectTab={setActiveTab}
+        onSelectTab={handleSelectTab}
         onOpenCatchUp={() => setIsCatchUpModalOpen(true)}
         language={language}
         onToggleLanguage={() => setLanguage((l) => (l === 'ar' ? 'en' : 'ar'))}
@@ -4237,6 +5882,8 @@ ${lifeConstitution}
             onToggleWaterSlot={handleToggleWaterSlot}
             medications={medications}
             onToggleMedication={handleToggleMedication}
+            onToggleMedicationDate={handleToggleMedicationDate}
+            onRefillMedication={handleRefillMedication}
             onAddMedication={handleAddMedication}
             onDeleteMedication={handleDeleteMedication}
             streaks={streaks}
@@ -4255,6 +5902,8 @@ ${lifeConstitution}
             simulateUnder60s={simulateUnder60s}
             onToggleSimulateUnder60s={() => setSimulateUnder60s((v) => !v)}
             calendarConnected={!needsAuth}
+            prayersReady={prayersReady}
+            locationResolutionState={locationResolutionState}
             calendarUserEmail={authUser?.email ?? undefined}
             isLoggingIn={isLoggingIn}
             loadingCalendarEvents={loadingEvents}
@@ -4269,13 +5918,22 @@ ${lifeConstitution}
             onRefreshWorkspace={() => refreshWorkspace()}
             onExecuteCalendarActions={handleExecuteCalendarActions}
             onExecuteTaskActions={handleExecuteTaskActions}
-            onOpenAssistant={() => setActiveTab('assistant')}
+            onOpenAssistant={() => handleSelectTab('assistant')}
             syncTier={syncTier}
             onChangeSyncTier={setSyncTier}
             onImportIcsBlocks={handleImportIcsBlocks}
             periodicRituals={periodicRituals}
             onCompletePeriodicRitual={handleCompletePeriodicRitual}
             batteryGuard={batteryGuard}
+            phoneBattery={phoneBattery}
+            phoneChargeLimitPct={phoneChargeLimitPct}
+            onUpdatePhoneChargeLimit={handleUpdatePhoneChargeLimit}
+            phoneChargeAlertDismissed={phoneChargeAlertDismissed}
+            onDismissPhoneChargeAlert={handleStopSmartChargeAlert}
+            smartChargeAlertEnabled={smartChargeAlertEnabled}
+            onToggleSmartChargeAlertEnabled={handleToggleSmartChargeAlertEnabled}
+            smartChargeAudioActive={smartChargeAudioActive}
+            onTestSmartChargeAlert={handleTestSmartChargeAlert}
             firestoreSynced={firestoreSynced}
             aquaTouchMode={deviceSettings.aquaTouchMode}
             alertSliderLinked={deviceSettings.alertSliderLinked}
@@ -4302,7 +5960,11 @@ ${lifeConstitution}
             loadingGmail={loadingGmail}
             gmailNeedsReauth={gmailNeedsReauth}
             gmailError={gmailError}
+            gmailLastSyncedIso={gmailLastSyncedIso}
+            gmailNextRetryInSec={gmailNextRetryInSec}
             onFetchGmailDigest={() => fetchGmailDigest()}
+            hasDailyWirdHabit={hasDailyWirdHabit}
+            activeTimeZone={activeTimeZone}
             onLogSleepQuality={handleLogSleepQuality}
             onOpenAssistantWithPrompt={handleOpenAssistantWithPrompt}
             todayCalendarMeta={todayCalendarMeta}
@@ -4378,8 +6040,10 @@ ${lifeConstitution}
           />
         )}
 
-        {activeTab === 'assistant' && (
+        {/* Keep GeminiAssistantView persistently mounted so switching to Dashboard NEVER cancels in-flight chat/search/maps queries or wipes drafts */}
+        <div className={activeTab === 'assistant' ? '' : 'hidden'}>
           <GeminiAssistantView
+            isActive={activeTab === 'assistant'}
             language={language}
             activeLocation={activeLocation}
             contextSummary={assistantContextSummary}
@@ -4394,7 +6058,7 @@ ${lifeConstitution}
             loadingTasks={loadingTasks}
             messages={chatMessages}
             onChangeMessages={setChatMessages}
-            onResetChat={() => setChatMessages([WELCOME_MESSAGE])}
+            onResetChat={handleResetChatMode}
             onGoogleSignIn={handleGoogleSignIn}
             onGoogleSignOut={handleGoogleSignOut}
             onRefreshWorkspace={() => refreshWorkspace()}
@@ -4414,22 +6078,56 @@ ${lifeConstitution}
             lifeProfile={lifeProfile}
             firestoreSynced={firestoreSynced}
             onAddMemory={handleAddMemory}
+            onUpdateMemory={handleUpdateMemory}
             onDeleteMemory={handleDeleteMemory}
           />
-        )}
+        </div>
       </main>
 
       <FloatingPiPCapsule
         nextEmoji={capsuleTimerState.emoji}
         nextTitle={capsuleTimerState.title}
         statusLabel={capsuleTimerState.statusLabel}
+        sourceKind={capsuleTimerState.sourceKind}
         countdownText={capsuleTimerState.countdownText}
         isNow={capsuleTimerState.isNow}
         isUrgent={capsuleTimerState.isUrgent}
         progressRatio={capsuleTimerState.progressRatio}
         targetEpochMs={capsuleTimerState.targetEpochMs}
         durationSeconds={capsuleTimerState.durationSeconds}
-        onOpenDashboard={() => setActiveTab('dashboard')}
+        calendarTrack={capsuleTimerState.calendarTrack}
+        taskTrack={capsuleTimerState.taskTrack}
+        phoneBattery={phoneBattery}
+        onOpenDashboard={() => handleSelectTab('dashboard')}
+      />
+
+      <PersistentAlertOverlay
+        alert={persistentAlert}
+        onDismiss={() => {
+          if (persistentAlert?.id.startsWith('charge_')) {
+            handleStopSmartChargeAlert();
+          } else {
+            handleAcknowledgeAudioAlert();
+            setPersistentAlert(null);
+          }
+        }}
+        onConfirmWater={() => {
+          handleLogWaterCup();
+          handleAcknowledgeAudioAlert();
+          setPersistentAlert(null);
+        }}
+        onCompleteTask={(taskId, taskListId) => {
+          void handleExecuteTaskActions([
+            {
+              operation: 'complete',
+              title: persistentAlert?.title || 'مهمة',
+              taskId,
+              taskListId,
+            },
+          ]).catch(() => {});
+          handleAcknowledgeAudioAlert();
+          setPersistentAlert(null);
+        }}
       />
 
       <OfflineIndicator language={language} />
@@ -4442,10 +6140,34 @@ ${lifeConstitution}
         activeLocation={activeLocation}
         memories={memories}
         onAddMemory={handleAddMemory}
+        onUpdateMemory={handleUpdateMemory}
         onDeleteMemory={handleDeleteMemory}
         onSaveProfile={handleUpdateLifeProfile}
         onDetectGpsLocation={handleDetectGpsLocation}
         isDetectingGps={isDetectingGps}
+        includePrayerAnchors={includePrayerAnchors}
+        onToggleIncludePrayerAnchors={() => setIncludePrayerAnchors((v) => !v)}
+        isFridayMode={isFridayMode}
+        onToggleFridayMode={setIsFridayMode}
+        includeBiweeklyPcCleanup={includeBiweeklyPcCleanup}
+        onToggleBiweeklyPcCleanup={setIncludeBiweeklyPcCleanup}
+        calendarConnected={!needsAuth}
+        onGoogleSignOut={handleGoogleSignOut}
+        quietMode={quietMode}
+        onSetQuietMode={handleSetQuietMode}
+        soundRepeats={lifeProfile.soundRepeats ?? DEFAULT_SOUND_REPEATS}
+        onUpdateSoundRepeat={handleUpdateSoundRepeat}
+        onTriggerTaskAlert={triggerTaskAlert}
+        phoneBattery={phoneBattery}
+        phoneChargeLimitPct={phoneChargeLimitPct}
+        onUpdatePhoneChargeLimit={handleUpdatePhoneChargeLimit}
+        smartChargeAlertEnabled={smartChargeAlertEnabled}
+        onToggleSmartChargeAlertEnabled={handleToggleSmartChargeAlertEnabled}
+        smartChargeKeepUntilUnplugged={smartChargeKeepUntilUnplugged}
+        onToggleSmartChargeKeepUntilUnplugged={handleToggleSmartChargeKeepUntilUnplugged}
+        smartChargeAudioActive={smartChargeAudioActive}
+        onTestSmartChargeAlert={handleTestSmartChargeAlert}
+        onCheckAppUpdates={handleCheckAppUpdates}
       />
 
       <TravelModeModal

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Droplets,
   Trash2,
@@ -17,7 +17,6 @@ import {
   ExternalLink,
   Plus,
   X,
-  BellOff,
   CalendarClock,
   CheckSquare,
   MessageSquare,
@@ -31,8 +30,13 @@ import {
   ChevronUp,
   Leaf,
   AlertCircle,
+  BatteryCharging,
+  Smartphone,
+  ShoppingBag,
+  BellOff,
 } from 'lucide-react';
 import { HydrationWeeklyChart } from './HydrationWeeklyChart';
+import { MedicationConsumptionChart } from './MedicationConsumptionChart';
 import {
   ActiveSanctuaryState,
   AppLanguage,
@@ -56,6 +60,7 @@ import {
   MedicationItem,
   PeriodicRitualStatus,
   PersistedChatMessage,
+  PhoneBatteryTelemetry,
   PomodoroState,
   PrayerTimeItem,
   QuietModeType,
@@ -78,12 +83,16 @@ import {
   formatIsoTo12h,
   formatMinutes12h,
   formatTime24To12h,
-  getCairoNowMinutes,
   getCairoTodayIso,
+  getNowMinutesInTimeZone,
 } from '../engines/prayerEngine';
-import { ARABIC_WEEKDAYS, formatDurationAr } from '../engines/lifeRhythmEngine';
+import {
+  ARABIC_WEEKDAYS,
+  checkSmartScheduleConflict,
+  formatDurationAr,
+} from '../engines/lifeRhythmEngine';
 import { cleanCalendarText, resolveBlockDisplayInfo } from '../services/apiClient';
-import { QUIET_MODE_LABELS, t } from '../engines/i18n';
+import { t } from '../engines/i18n';
 
 interface DashboardViewProps {
   language: AppLanguage;
@@ -117,6 +126,8 @@ interface DashboardViewProps {
   onToggleWaterSlot: (index: number) => void;
   medications: MedicationItem[];
   onToggleMedication: (id: string, doseTime24?: string) => void;
+  onToggleMedicationDate: (id: string, dateIso: string) => void;
+  onRefillMedication: (id: string, newDoses: number, refillAlertDays?: number) => void;
   onAddMedication: (input: {
     name: string;
     time24?: string;
@@ -126,6 +137,7 @@ interface DashboardViewProps {
     courseEndDate?: string;
     remainingDoses?: number;
     totalDoses?: number;
+    refillAlertDays?: number;
   }) => void;
   onDeleteMedication: (id: string) => void;
   streaks: DualStreaks;
@@ -144,6 +156,8 @@ interface DashboardViewProps {
   simulateUnder60s: boolean;
   onToggleSimulateUnder60s: () => void;
   calendarConnected: boolean;
+  prayersReady?: boolean;
+  locationResolutionState?: 'idle' | 'resolving_gps' | 'gps_locked' | 'timezone_fallback';
   calendarUserEmail?: string;
   isLoggingIn: boolean;
   loadingCalendarEvents: boolean;
@@ -169,6 +183,15 @@ interface DashboardViewProps {
   periodicRituals: PeriodicRitualStatus[];
   onCompletePeriodicRitual: (id: PeriodicRitualStatus['id']) => void;
   batteryGuard: BatteryGuardState;
+  phoneBattery: PhoneBatteryTelemetry | null;
+  phoneChargeLimitPct: number;
+  onUpdatePhoneChargeLimit: (limitPct: number) => void;
+  phoneChargeAlertDismissed: boolean;
+  onDismissPhoneChargeAlert: () => void;
+  smartChargeAlertEnabled: boolean;
+  onToggleSmartChargeAlertEnabled: () => void;
+  smartChargeAudioActive: boolean;
+  onTestSmartChargeAlert: () => void;
   firestoreSynced: boolean;
   aquaTouchMode: boolean;
   alertSliderLinked: boolean;
@@ -196,7 +219,7 @@ interface DashboardViewProps {
   onTriggerTaskAlert: (
     title: string,
     category: TaskSoundCategory,
-    options?: { bypassSanctuary?: boolean }
+    options?: { bypassSanctuary?: boolean; privacyEmoji?: string }
   ) => void;
   weatherInfo: WeatherHydrationInfo | null;
   gmailDigest: GmailDigestItem[];
@@ -204,7 +227,11 @@ interface DashboardViewProps {
   loadingGmail: boolean;
   gmailNeedsReauth: boolean;
   gmailError: string;
+  gmailLastSyncedIso?: string;
+  gmailNextRetryInSec?: number;
   onFetchGmailDigest: () => Promise<void>;
+  hasDailyWirdHabit?: boolean;
+  activeTimeZone?: string;
   onLogSleepQuality: (mode: 'good' | 'short_30' | 'short_60' | 'reset') => void;
   onOpenAssistantWithPrompt: (prompt: string) => void;
   todayCalendarMeta: TodayCalendarMeta;
@@ -270,6 +297,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onToggleWaterSlot,
   medications,
   onToggleMedication,
+  onToggleMedicationDate,
+  onRefillMedication,
   onAddMedication,
   onDeleteMedication,
   streaks,
@@ -288,6 +317,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   simulateUnder60s,
   onToggleSimulateUnder60s,
   calendarConnected,
+  prayersReady,
+  locationResolutionState,
   calendarUserEmail,
   isLoggingIn,
   loadingCalendarEvents,
@@ -309,6 +340,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   periodicRituals,
   onCompletePeriodicRitual,
   batteryGuard,
+  phoneBattery,
+  phoneChargeLimitPct,
+  onUpdatePhoneChargeLimit,
+  phoneChargeAlertDismissed,
+  onDismissPhoneChargeAlert,
+  smartChargeAlertEnabled,
+  onToggleSmartChargeAlertEnabled,
+  smartChargeAudioActive,
+  onTestSmartChargeAlert,
   firestoreSynced,
   aquaTouchMode,
   alertSliderLinked,
@@ -333,7 +373,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   loadingGmail,
   gmailNeedsReauth,
   gmailError,
+  gmailLastSyncedIso,
+  gmailNextRetryInSec = 0,
   onFetchGmailDigest,
+  hasDailyWirdHabit = false,
+  activeTimeZone = 'Africa/Cairo',
   onLogSleepQuality,
   onOpenAssistantWithPrompt,
   todayCalendarMeta,
@@ -360,16 +404,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   const [showTrash, setShowTrash] = useState(false);
   const [showSilentInbox, setShowSilentInbox] = useState(false);
-  const [showQuietAndSounds, setShowQuietAndSounds] = useState(false);
   const [showGmailDrawer, setShowGmailDrawer] = useState(false);
   const [showPeriodicRituals, setShowPeriodicRituals] = useState(false);
   const [showAllCreative, setShowAllCreative] = useState(false);
-  const [editingWeight, setEditingWeight] = useState(false);
-  const [weightInput, setWeightInput] = useState<string>(String(lifeProfile.weightKg));
-  const [showScheduleControls, setShowScheduleControls] = useState(false);
   const [showHydrationSchedule, setShowHydrationSchedule] = useState(false);
   const [showSleepCheckinEdit, setShowSleepCheckinEdit] = useState(false);
-  const [timelineFilter, setTimelineFilter] = useState<'today' | 'tomorrow' | 'special' | 'done' | 'anchors'>('today');
+  const [timelineFilter, setTimelineFilter] = useState<'today' | 'tomorrow' | 'special' | 'done'>('today');
   const [selectedTaskListId, setSelectedTaskListId] = useState<string>('all');
   const [syncLoading, setSyncLoading] = useState(false);
 
@@ -394,8 +434,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Quick Add Google Task inline input -> confirmation dialog
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskDueIso, setNewTaskDueIso] = useState('');
+  const [newTaskTime24, setNewTaskTime24] = useState('');
 
-  // Quick Add Flexible Medication / Supplement inline form (supports multi-dose, weekdays, course end & refill count)
+  // Quick Add Flexible Medication / Supplement inline form (supports multi-dose, weekdays, course end, refill count & lead days)
   const [showAddMedForm, setShowAddMedForm] = useState(false);
   const [newMedName, setNewMedName] = useState('');
   const [newMedHour12, setNewMedHour12] = useState<number>(8);
@@ -406,8 +447,174 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [newMedNote, setNewMedNote] = useState('');
   const [newMedCourseEnd, setNewMedCourseEnd] = useState('');
   const [newMedRemainingDoses, setNewMedRemainingDoses] = useState('');
+  const [newMedRefillAlertDays, setNewMedRefillAlertDays] = useState<number>(3);
+  const [newMedSyncCalendar, setNewMedSyncCalendar] = useState(true);
+  const [editingStockMedId, setEditingStockMedId] = useState<string | null>(null);
+  const [editStockDosesInput, setEditStockDosesInput] = useState<string>('');
+  const [editStockAlertDays, setEditStockAlertDays] = useState<number>(3);
+  const [purchaseMedId, setPurchaseMedId] = useState<string | null>(null);
+  const [purchaseAddDoses, setPurchaseAddDoses] = useState<string>('30');
+  const [purchaseMode, setPurchaseMode] = useState<'add' | 'set'>('add');
+  const [purchaseAlertDays, setPurchaseAlertDays] = useState<number>(3);
 
   const todayCairoIso = getCairoTodayIso();
+
+  // Last 7 Cairo dates for Medication Adherence Tracker
+  const last7CairoDays = useMemo(() => {
+    const weekdayShortAr: Record<string, string> = {
+      Sun: 'ح',
+      Mon: 'ن',
+      Tue: 'ث',
+      Wed: 'ر',
+      Thu: 'خ',
+      Fri: 'ج',
+      Sat: 'س',
+    };
+    const weekdayNumMap: Record<string, number> = {
+      Sun: 0,
+      Mon: 1,
+      Tue: 2,
+      Wed: 3,
+      Thu: 4,
+      Fri: 5,
+      Sat: 6,
+    };
+    const now = new Date();
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(now.getTime() - (6 - i) * 86_400_000);
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Africa/Cairo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(d);
+      const y = parts.find((p) => p.type === 'year')?.value ?? '2026';
+      const mo = parts.find((p) => p.type === 'month')?.value ?? '01';
+      const day = parts.find((p) => p.type === 'day')?.value ?? '01';
+      const wdEn = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Africa/Cairo',
+        weekday: 'short',
+      }).format(d);
+      return {
+        dateIso: `${y}-${mo}-${day}`,
+        shortAr: i === 6 ? 'اليوم' : weekdayShortAr[wdEn] ?? '•',
+        weekdayNum: weekdayNumMap[wdEn] ?? 0,
+        isToday: i === 6,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [todayCairoIso]);
+
+  // Low-stock medications requiring proactive alert (default <= 3 days remaining)
+  const lowStockMedications = useMemo(() => {
+    return medications
+      .filter((m) => typeof m.remainingDoses === 'number' && m.remainingDoses >= 0)
+      .map((m) => {
+        const dosesPerScheduledDay = Math.max(
+          1,
+          m.times24 && m.times24.length > 0 ? m.times24.length : 1
+        );
+        const daysPerWeek = m.daysOfWeek && m.daysOfWeek.length > 0 ? m.daysOfWeek.length : 7;
+        const dailyRate = Math.max(0.14, (dosesPerScheduledDay * daysPerWeek) / 7);
+        const alertDays = Math.max(1, Math.min(14, m.refillAlertDays ?? 3));
+        const rem = m.remainingDoses ?? 0;
+        const daysLeft = rem / dailyRate;
+        return {
+          med: m,
+          remainingDoses: rem,
+          dailyRate,
+          daysLeft,
+          daysLeftRounded: Math.ceil(daysLeft),
+          alertDays,
+          isLow: daysLeft <= alertDays,
+        };
+      })
+      .filter((item) => item.isLow)
+      .sort((a, b) => a.daysLeft - b.daysLeft);
+  }, [medications]);
+
+  // Medications warning panel (< 5 days remaining before stock runs out)
+  const expiringUnder5DaysMedications = useMemo(() => {
+    return medications
+      .filter((m) => typeof m.remainingDoses === 'number' && m.remainingDoses >= 0)
+      .map((m) => {
+        const dosesPerScheduledDay = Math.max(
+          1,
+          m.times24 && m.times24.length > 0 ? m.times24.length : 1
+        );
+        const daysPerWeek = m.daysOfWeek && m.daysOfWeek.length > 0 ? m.daysOfWeek.length : 7;
+        const dailyRate = Math.max(0.14, (dosesPerScheduledDay * daysPerWeek) / 7);
+        const rem = m.remainingDoses ?? 0;
+        const daysLeft = rem / dailyRate;
+        const defaultPackSize = m.totalDoses && m.totalDoses > 0 ? m.totalDoses : 30;
+        return {
+          med: m,
+          remainingDoses: rem,
+          dailyRate,
+          daysLeft,
+          daysLeftRounded: Math.ceil(daysLeft),
+          defaultPackSize,
+        };
+      })
+      .filter((item) => item.daysLeft < 5)
+      .sort((a, b) => a.daysLeft - b.daysLeft);
+  }, [medications]);
+
+  const openPurchaseRestockForm = (med: MedicationItem) => {
+    if (purchaseMedId === med.id) {
+      setPurchaseMedId(null);
+      return;
+    }
+    const defaultPack = med.totalDoses && med.totalDoses > 0 ? med.totalDoses : 30;
+    setPurchaseMedId(med.id);
+    setPurchaseAddDoses(String(defaultPack));
+    setPurchaseMode('add');
+    setPurchaseAlertDays(med.refillAlertDays ?? 3);
+  };
+
+  // Medication adherence summary (Today + last 7 days)
+  const medAdherenceSummary = useMemo(() => {
+    const todayWeekday = last7CairoDays[last7CairoDays.length - 1]?.weekdayNum ?? 0;
+    const dueTodayMeds = medications.filter(
+      (m) => !m.daysOfWeek || m.daysOfWeek.length === 0 || m.daysOfWeek.includes(todayWeekday)
+    );
+    const takenTodayCount = dueTodayMeds.filter((m) => {
+      const times = m.times24 && m.times24.length > 0 ? m.times24 : m.time24 ? [m.time24] : [];
+      const takenDoses = m.takenDateKey === todayCairoIso ? m.takenDosesToday ?? [] : [];
+      const isDateInHistory = (m.takenDates ?? []).includes(todayCairoIso);
+      return (
+        isDateInHistory ||
+        (m.takenDateKey === todayCairoIso &&
+          (times.length <= 1 || times.every((t) => takenDoses.includes(t))))
+      );
+    }).length;
+
+    let totalSlots = 0;
+    let takenSlots = 0;
+    let missedPastSlots = 0;
+    for (const med of medications) {
+      const dateSet = new Set(med.takenDates ?? []);
+      if (med.takenDateKey === todayCairoIso) dateSet.add(todayCairoIso);
+      for (const d of last7CairoDays) {
+        const scheduled =
+          !med.daysOfWeek || med.daysOfWeek.length === 0 || med.daysOfWeek.includes(d.weekdayNum);
+        if (!scheduled) continue;
+        totalSlots += 1;
+        if (dateSet.has(d.dateIso)) {
+          takenSlots += 1;
+        } else if (!d.isToday) {
+          missedPastSlots += 1;
+        }
+      }
+    }
+    const adherencePct = totalSlots > 0 ? Math.round((takenSlots / totalSlots) * 100) : 0;
+    return {
+      dueTodayCount: dueTodayMeds.length,
+      takenTodayCount,
+      missedPastSlots,
+      adherencePct,
+    };
+  }, [medications, last7CairoDays, todayCairoIso]);
 
   const cardSurface =
     surfaceTheme === 'amoled'
@@ -423,7 +630,44 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [blocks]
   );
 
-  const nowMinutes = getCairoNowMinutes();
+  // Live 1-second wall-clock ticker with instant visibility/focus resync (eliminates timing drift!)
+  const [liveNowMs, setLiveNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const syncNow = () => setLiveNowMs(Date.now());
+    const id = window.setInterval(syncNow, 1000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncNow();
+    };
+    window.addEventListener('focus', syncNow);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('focus', syncNow);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+
+  const liveClockParts = useMemo(() => {
+    const nowDate = new Date(liveNowMs);
+    const nowMin = getNowMinutesInTimeZone(activeTimeZone, nowDate);
+    let secOfMin = nowDate.getSeconds();
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: activeTimeZone,
+        second: '2-digit',
+      }).formatToParts(nowDate);
+      const sVal = Number(parts.find((p) => p.type === 'second')?.value);
+      if (Number.isFinite(sVal)) secOfMin = sVal;
+    } catch {
+      // keep local seconds
+    }
+    return {
+      nowMinutes: nowMin,
+      nowSecOfDay: nowMin * 60 + secOfMin,
+    };
+  }, [liveNowMs, activeTimeZone]);
+
+  const nowMinutes = liveClockParts.nowMinutes;
 
   const isBlockFinishedOrPassed = (b: ScheduleBlock): boolean => {
     if (b.completed) return true;
@@ -570,11 +814,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (timelineFilter === 'done') {
       return finishedTodayBlocks;
     }
-    if (timelineFilter === 'anchors') {
-      return activeBlocks.filter((b) => b.isAnchor);
-    }
     return remainingTodayBlocks;
-  }, [activeBlocks, finishedTodayBlocks, remainingTodayBlocks, timelineFilter]);
+  }, [finishedTodayBlocks, remainingTodayBlocks, timelineFilter]);
 
   // Always pick the currently-active or next remaining task today (never loop back to passed 3 AM events!)
   const nextAlarmBlock = useMemo(() => {
@@ -594,6 +835,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   );
 
   const countdownMeta = useMemo(() => {
+    if (!calendarConnected) {
+      return {
+        clock: '00:00',
+        caption: language === 'ar' ? 'سجّل الدخول لعرض جدولك' : 'Sign in to sync schedule',
+      };
+    }
     if (simulateUnder60s) {
       return {
         clock: `00:${String(liveCountdownSec).padStart(2, '0')}`,
@@ -606,12 +853,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         caption: language === 'ar' ? 'انتهى اليوم' : 'All done',
       };
     }
+    const formatSecClock = (totalSec: number) => {
+      const safe = Math.max(0, Math.floor(totalSec));
+      const h = Math.floor(safe / 3600);
+      const m = Math.floor((safe % 3600) / 60);
+      const s = safe % 60;
+      if (h > 0) {
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      }
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+
     if (isNextBlockHappeningNow) {
-      const rem = Math.max(1, nextAlarmBlock.startMin + nextAlarmBlock.durationMin - nowMinutes);
-      const h = Math.floor(rem / 60);
-      const m = rem % 60;
+      const endSec = (nextAlarmBlock.startMin + nextAlarmBlock.durationMin) * 60;
+      const remSec = Math.max(1, endSec - liveClockParts.nowSecOfDay);
+      const remMin = Math.ceil(remSec / 60);
+      const h = Math.floor(remMin / 60);
+      const m = remMin % 60;
       return {
-        clock: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+        clock: formatSecClock(remSec),
         caption:
           language === 'ar'
             ? h > 0
@@ -622,11 +882,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               : `Left now (${m}m)`,
       };
     }
-    const diffMin = Math.max(0, nextAlarmBlock.startMin - nowMinutes);
+    const startSec = nextAlarmBlock.startMin * 60;
+    const diffSec = Math.max(0, startSec - liveClockParts.nowSecOfDay);
+    const diffMin = Math.ceil(diffSec / 60);
     const h = Math.floor(diffMin / 60);
     const m = diffMin % 60;
     return {
-      clock: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`,
+      clock: formatSecClock(diffSec),
       caption:
         language === 'ar'
           ? h > 0
@@ -636,7 +898,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             ? `Starts in ${h}h ${m}m`
             : `Starts in ${m}m`,
     };
-  }, [nextAlarmBlock, isNextBlockHappeningNow, nowMinutes, simulateUnder60s, liveCountdownSec, language]);
+  }, [
+    calendarConnected,
+    nextAlarmBlock,
+    isNextBlockHappeningNow,
+    liveClockParts.nowSecOfDay,
+    simulateUnder60s,
+    liveCountdownSec,
+    language,
+  ]);
 
   const totalMl = hydrationToday.cupsLogged * dailyRhythmPlan.cupSizeMl;
   const targetMl = hydrationToday.targetCups * dailyRhythmPlan.cupSizeMl;
@@ -667,8 +937,107 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const newEventTime24 = useMemo(() => {
     let h24 = newEvHour12 % 12;
     if (newEvPeriod === 'PM') h24 += 12;
-    return `${String(h24).padStart(2, '0')}:${String(newEvMinute).padStart(2, '0')}`;
+    const clampedMin = Math.max(0, Math.min(59, Math.round(Number(newEvMinute) || 0)));
+    return `${String(h24).padStart(2, '0')}:${String(clampedMin).padStart(2, '0')}`;
   }, [newEvHour12, newEvMinute, newEvPeriod]);
+
+  const applyTime24To12hPicker = (
+    time24: string,
+    setHour12: React.Dispatch<React.SetStateAction<number>>,
+    setMinute: React.Dispatch<React.SetStateAction<number>>,
+    setPeriod: React.Dispatch<React.SetStateAction<'AM' | 'PM'>>
+  ) => {
+    const match = time24.match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return;
+    const h24 = Number(match[1]);
+    const min = Number(match[2]);
+    setPeriod(h24 >= 12 ? 'PM' : 'AM');
+    const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+    setHour12(h12);
+    setMinute(Math.max(0, Math.min(59, min)));
+  };
+
+  const newMedCurrentTime24 = useMemo(() => {
+    let h24 = newMedHour12 % 12;
+    if (newMedPeriod === 'PM') h24 += 12;
+    const clampedMin = Math.max(0, Math.min(59, Math.round(Number(newMedMinute) || 0)));
+    return `${String(h24).padStart(2, '0')}:${String(clampedMin).padStart(2, '0')}`;
+  }, [newMedHour12, newMedMinute, newMedPeriod]);
+
+  const newEventConflict = useMemo(() => {
+    if (!newEventModalOpen) {
+      return { hasConflict: false, warnings: [] as string[], suggestedTime24: null, suggestedTime12Ar: null };
+    }
+    return checkSmartScheduleConflict({
+      time24: newEventTime24,
+      durationMinutes: Math.max(5, Math.min(480, Math.round(Number(newEvDuration) || 30))),
+      dateIso: newEvDate,
+      prayers,
+      plan: dailyRhythmPlan,
+      profile: lifeProfile,
+      occupiedBlocks: newEvDate === todayCairoIso ? activeBlocks : [],
+    });
+  }, [
+    newEventModalOpen,
+    newEventTime24,
+    newEvDuration,
+    newEvDate,
+    prayers,
+    dailyRhythmPlan,
+    lifeProfile,
+    todayCairoIso,
+    activeBlocks,
+  ]);
+
+  const newMedConflict = useMemo(() => {
+    if (!showAddMedForm) {
+      return { hasConflict: false, warnings: [] as string[], suggestedTime24: null, suggestedTime12Ar: null };
+    }
+    const timesToCheck = newMedTimes24.length > 0 ? newMedTimes24 : [newMedCurrentTime24];
+    const allWarnings: string[] = [];
+    let firstSuggested24: string | null = null;
+    let firstSuggested12: string | null = null;
+
+    for (const t24 of timesToCheck) {
+      const res = checkSmartScheduleConflict({
+        time24: t24,
+        durationMinutes: 15,
+        daysOfWeek: newMedDaysOfWeek,
+        isOralMedication: true,
+        prayers,
+        plan: dailyRhythmPlan,
+        profile: lifeProfile,
+        occupiedBlocks: activeBlocks,
+      });
+      if (res.hasConflict) {
+        for (const w of res.warnings) {
+          const prefixed = timesToCheck.length > 1 ? `(${formatTime24To12h(t24, language)}) ${w}` : w;
+          if (!allWarnings.includes(prefixed)) allWarnings.push(prefixed);
+        }
+        if (!firstSuggested24 && res.suggestedTime24) {
+          firstSuggested24 = res.suggestedTime24;
+          firstSuggested12 = res.suggestedTime12Ar;
+        }
+      }
+    }
+
+    return {
+      hasConflict: allWarnings.length > 0,
+      warnings: allWarnings,
+      suggestedTime24: firstSuggested24,
+      suggestedTime12Ar: firstSuggested12,
+    };
+  }, [
+    showAddMedForm,
+    newMedTimes24,
+    newMedCurrentTime24,
+    newMedDaysOfWeek,
+    prayers,
+    dailyRhythmPlan,
+    lifeProfile,
+    activeBlocks,
+    language,
+  ]);
 
   const handleConfirmCreateGoogleEvent = async () => {
     if (!newEvTitle.trim()) return;
@@ -719,6 +1088,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       if (pendingTaskConfirmation.operation === 'create') {
         setNewTaskTitle('');
         setNewTaskDueIso('');
+        setNewTaskTime24('');
       }
       setPendingTaskConfirmation(null);
     } finally {
@@ -748,13 +1118,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       setSyncLoading(false);
     }
   };
-
-  const quietCountdownText = useMemo(() => {
-    if (quietRemainingSec <= 0) return '';
-    const m = Math.floor(quietRemainingSec / 60);
-    const s = quietRemainingSec % 60;
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  }, [quietRemainingSec]);
 
   return (
     <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6">
@@ -882,9 +1245,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               type="button"
               onClick={onOpenLifeProfile}
               className="min-h-[34px] px-2.5 py-1.5 rounded-xl border border-white/10 bg-white/[0.02] text-xs font-medium text-zinc-300 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              title="الإعدادات والثوابت والجدول والأصوات وذاكرة Gemini"
             >
               <SlidersHorizontal className="w-3.5 h-3.5" />
-              <span>الثوابت ({memoryCount})</span>
+              <span>الإعدادات ({memoryCount})</span>
             </button>
 
             {calendarConnected ? (
@@ -1138,6 +1502,280 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
+      {/* Smart Charge Complete 90% Alert Banner (Custom audio alert + 1-click stop from PC dashboard) */}
+      {(smartChargeAudioActive ||
+        (phoneBattery &&
+          phoneBattery.charging &&
+          phoneBattery.levelPct >= phoneBattery.chargeLimitPct &&
+          !phoneChargeAlertDismissed)) && (
+        <div className="rounded-2xl border border-[#4ADE80]/70 bg-[#4ADE80]/15 px-4 py-3 text-xs text-emerald-100 flex flex-wrap items-center justify-between gap-3 shadow-[0_0_24px_rgba(74,222,128,0.16)]">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <BatteryCharging className="w-5 h-5 text-[#4ADE80] shrink-0 animate-pulse" />
+            <div className="min-w-0">
+              <div className="font-bold text-white text-sm flex items-center gap-2 flex-wrap">
+                <span>
+                  🔋 التنبيه الذكي عند اكتمال الشحن ·{' '}
+                  {phoneBattery?.deviceLabel || 'الموبايل'}{' '}
+                  <span className="font-mono-tabular text-[#4ADE80]">
+                    {phoneBattery?.levelPct ?? phoneChargeLimitPct}%
+                  </span>
+                </span>
+                {smartChargeAudioActive && (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#7FFFD4] animate-pulse">
+                    <Volume2 className="w-3.5 h-3.5" />
+                    إشعار صوتي خاص نشط
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-emerald-200/85 mt-0.5">
+                وصل الموبايل إلى الحد المحدد ({phoneBattery?.chargeLimitPct ?? phoneChargeLimitPct}%) — افصل الشاحن أو أوقف التنبيه الصوتي بضغطة واحدة.
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onDismissPhoneChargeAlert}
+            className="px-4 py-2 rounded-xl bg-[#4ADE80] text-black font-bold text-xs hover:bg-emerald-300 flex items-center gap-1.5 cursor-pointer shrink-0 shadow-md"
+          >
+            <BellOff className="w-3.5 h-3.5" />
+            <span>إيقاف التنبيه</span>
+          </button>
+        </div>
+      )}
+
+      {/* Proactive 3-Day Medication Low-Stock Alert Banner (Top of Dashboard) */}
+      {lowStockMedications.length > 0 && (
+        <div className="rounded-2xl border border-amber-400/50 bg-amber-400/[0.09] px-4 py-3 text-xs space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-amber-200 font-bold">
+              <AlertCircle className="w-4 h-4 text-amber-300 shrink-0" />
+              <span>
+                تنبيه استباقي لمخزون العلاجات ({lowStockMedications.length} دواء قارب على النفاد خلال 3 أيام)
+              </span>
+            </div>
+            <span className="text-[10px] text-amber-200/75">
+              جهّز الشراء مبكراً وحدّث الرصيد فوراً
+            </span>
+          </div>
+          <div className="space-y-2">
+            {lowStockMedications.map(({ med, remainingDoses, daysLeftRounded, dailyRate }) => {
+              const isOpen = purchaseMedId === med.id;
+              const enteredQty = Math.max(0, Math.min(500, Math.round(Number(purchaseAddDoses) || 0)));
+              const previewTotal =
+                purchaseMode === 'add'
+                  ? Math.min(500, remainingDoses + enteredQty)
+                  : enteredQty;
+              const previewDays = Math.ceil(previewTotal / Math.max(0.14, dailyRate));
+              return (
+                <div
+                  key={`top-low-${med.id}`}
+                  className="rounded-xl border border-amber-400/25 bg-black/55 p-2.5 space-y-2"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span>💊</span>
+                      <span className="font-bold text-white truncate">{med.name}</span>
+                      <span
+                        className={`font-mono-tabular text-[11px] shrink-0 ${
+                          remainingDoses === 0 ? 'text-rose-300 font-bold' : 'text-amber-200'
+                        }`}
+                      >
+                        {remainingDoses === 0
+                          ? 'نفد المخزون (0 جرعة)'
+                          : `متبقٍ ${remainingDoses} جرعة (~${daysLeftRounded} ${daysLeftRounded === 1 ? 'يوم' : 'أيام'})`}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openPurchaseRestockForm(med)}
+                      className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black text-[11px] font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <ShoppingBag className="w-3.5 h-3.5" />
+                      <span>إضافة شراء جديد</span>
+                    </button>
+                  </div>
+
+                  {isOpen && (
+                    <div className="rounded-lg border border-[#7FFFD4]/35 bg-black/80 p-2.5 space-y-2 text-[11px]">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-zinc-400">الكمية المشتراة:</span>
+                        {[14, 20, 30, 60].map((qty) => (
+                          <button
+                            key={qty}
+                            type="button"
+                            onClick={() => setPurchaseAddDoses(String(qty))}
+                            className={`px-2 py-0.5 rounded-md border font-mono-tabular text-[10px] cursor-pointer ${
+                              purchaseAddDoses === String(qty)
+                                ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
+                                : 'border-white/10 text-zinc-400 hover:text-white'
+                            }`}
+                          >
+                            +{qty}
+                          </button>
+                        ))}
+                        <input
+                          type="number"
+                          min={1}
+                          max={500}
+                          value={purchaseAddDoses}
+                          onChange={(e) => setPurchaseAddDoses(e.target.value)}
+                          className="w-20 rounded-lg border border-white/15 bg-black px-2 py-0.5 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                          aria-label="عدد الجرعات المشتراة"
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setPurchaseMode('add')}
+                            className={`px-2 py-0.5 rounded-md border text-[10px] cursor-pointer ${
+                              purchaseMode === 'add'
+                                ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                : 'border-white/10 text-zinc-400'
+                            }`}
+                          >
+                            إضافة للمتبقي ({remainingDoses} + {enteredQty})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPurchaseMode('set')}
+                            className={`px-2 py-0.5 rounded-md border text-[10px] cursor-pointer ${
+                              purchaseMode === 'set'
+                                ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                : 'border-white/10 text-zinc-400'
+                            }`}
+                          >
+                            تعيين إجمالي جديد
+                          </button>
+                        </div>
+                        <span className="font-mono-tabular text-[10px] text-[#4ADE80]">
+                          الرصيد بعد التحديث: {previewTotal} جرعة (~{previewDays} ي)
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-white/10">
+                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                          <span>التنبيه القادم قبل:</span>
+                          {[2, 3, 5].map((d) => (
+                            <button
+                              key={d}
+                              type="button"
+                              onClick={() => setPurchaseAlertDays(d)}
+                              className={`px-1.5 py-0.5 rounded border cursor-pointer ${
+                                purchaseAlertDays === d
+                                  ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
+                                  : 'border-white/10 text-zinc-400'
+                              }`}
+                            >
+                              {d} ي
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setPurchaseMedId(null)}
+                            className="px-2.5 py-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
+                          >
+                            إلغاء
+                          </button>
+                          <button
+                            type="button"
+                            disabled={previewTotal <= 0}
+                            onClick={() => {
+                              onRefillMedication(med.id, previewTotal, purchaseAlertDays);
+                              setPurchaseMedId(null);
+                            }}
+                            className="px-3 py-1 rounded-lg bg-[#4ADE80] text-black font-bold hover:bg-emerald-300 disabled:opacity-40 cursor-pointer"
+                          >
+                            تأكيد الشراء ✓
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Compact Live Real Phone Battery Readout (Smart Charge settings live inside Settings modal) */}
+      {calendarConnected && phoneBattery && (
+        <div
+          className={`rounded-2xl border px-3.5 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs ${
+            phoneBattery.charging
+              ? phoneBattery.levelPct >= phoneBattery.chargeLimitPct
+                ? 'border-[#4ADE80]/40 bg-[#4ADE80]/[0.07]'
+                : 'border-[#7FFFD4]/25 bg-[#7FFFD4]/[0.04]'
+              : 'border-white/10 bg-white/[0.02]'
+          }`}
+        >
+          <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
+            {phoneBattery.charging ? (
+              <BatteryCharging className="w-4 h-4 text-[#7FFFD4] shrink-0" />
+            ) : (
+              <Smartphone className="w-4 h-4 text-zinc-400 shrink-0" />
+            )}
+            <span className="font-semibold text-zinc-200">
+              {phoneBattery.deviceLabel || 'بطارية الهاتف'}
+            </span>
+            <span
+              className={`font-mono-tabular font-bold text-sm ${
+                phoneBattery.levelPct >= phoneBattery.chargeLimitPct && phoneBattery.charging
+                  ? 'text-[#4ADE80]'
+                  : phoneBattery.charging
+                    ? 'text-[#7FFFD4]'
+                    : 'text-white'
+              }`}
+            >
+              {phoneBattery.charging ? '⚡ ' : ''}
+              {phoneBattery.levelPct}%
+            </span>
+            <span className="text-[11px] text-zinc-400 font-mono-tabular">
+              {phoneBattery.levelPct >= 100
+                ? 'ممتلئة بالكامل (100%) ✓'
+                : phoneBattery.charging
+                  ? phoneBattery.levelPct < phoneChargeLimitPct
+                    ? `متبقي ${100 - phoneBattery.levelPct}% للامتلاء (${phoneChargeLimitPct - phoneBattery.levelPct}% للتنبيه عند ${phoneChargeLimitPct}%)`
+                    : `متبقي ${100 - phoneBattery.levelPct}% للامتلاء · تجاوز حد ${phoneChargeLimitPct}% ✓`
+                  : `متبقي ${100 - phoneBattery.levelPct}% للامتلاء`}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="hidden sm:block relative w-28 h-1.5 rounded-full bg-white/10 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${
+                  phoneBattery.levelPct >= phoneChargeLimitPct ? 'bg-[#4ADE80]' : 'bg-[#7FFFD4]'
+                }`}
+                style={{ width: `${Math.min(100, Math.max(0, phoneBattery.levelPct))}%` }}
+              />
+            </div>
+            {smartChargeAudioActive && (
+              <button
+                type="button"
+                onClick={onDismissPhoneChargeAlert}
+                className="px-2.5 py-1 rounded-lg bg-rose-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+              >
+                <BellOff className="w-3 h-3" />
+                <span>إيقاف التنبيه</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onOpenLifeProfile}
+              className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer"
+              title="ضبط التنبيه الذكي من الإعدادات"
+            >
+              إعدادات الشحن
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Bedtime Battery Guard Alert Banner (08:35 PM - 09:10 PM <= 25%) */}
       {batteryGuard.bedtimeGuardTriggered && (
         <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs text-rose-200 flex items-center justify-between gap-3">
@@ -1276,30 +1914,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          {/* 5 Prayers Strip (Strict 12-Hour · Calibrated for OnePlus 12R 360-412px) */}
+          {/* 5 Prayers Strip (Zeroed 00:00 until GPS check completes or falls back to timezone) */}
           <div className="lg:col-span-6 lg:border-r lg:border-white/10 lg:pr-5 min-w-0">
             <div className="grid grid-cols-5 gap-1 sm:gap-2 text-center">
               {prayers
                 .filter((p) => p.isObligatory)
-                .map((p) => (
-                  <div
-                    key={p.id}
-                    className="rounded-xl border border-white/10 bg-black/45 py-2 px-0.5 sm:px-1.5 min-w-0"
-                  >
-                    <div className="text-xs sm:text-sm leading-none">{p.emojiPair.split(' ')[1]}</div>
-                    <div className="text-[10px] sm:text-[11px] font-medium text-zinc-300 mt-1 truncate">
-                      {language === 'ar' ? p.nameAr : p.nameEn}
+                .map((p) => {
+                  const showLivePrayer = prayersReady ?? calendarConnected;
+                  return (
+                    <div
+                      key={p.id}
+                      className="rounded-xl border border-white/10 bg-black/45 py-2 px-0.5 sm:px-1.5 min-w-0"
+                    >
+                      <div className="text-xs sm:text-sm leading-none">{p.emojiPair.split(' ')[1]}</div>
+                      <div className="text-[10px] sm:text-[11px] font-medium text-zinc-300 mt-1 truncate">
+                        {language === 'ar' ? p.nameAr : p.nameEn}
+                      </div>
+                      <div
+                        className={`font-mono-tabular text-[10px] sm:text-[11px] font-semibold mt-0.5 whitespace-nowrap ${
+                          showLivePrayer ? 'text-[#7FFFD4]' : 'text-zinc-500'
+                        }`}
+                      >
+                        {showLivePrayer ? formatMinutes12h(p.alarmMinutes, language) : '00:00'}
+                      </div>
+                      <div className="font-mono-tabular text-[8.5px] sm:text-[9px] text-zinc-500 mt-0.5 whitespace-nowrap truncate">
+                        <span className="hidden sm:inline">{language === 'ar' ? 'أذان ' : 'Adhan '}</span>
+                        {showLivePrayer ? formatMinutes12h(p.adhanMinutes, language) : '00:00'}
+                      </div>
                     </div>
-                    <div className="font-mono-tabular text-[10px] sm:text-[11px] font-semibold text-[#7FFFD4] mt-0.5 whitespace-nowrap">
-                      {formatMinutes12h(p.alarmMinutes, language)}
-                    </div>
-                    <div className="font-mono-tabular text-[8.5px] sm:text-[9px] text-zinc-500 mt-0.5 whitespace-nowrap truncate">
-                      <span className="hidden sm:inline">{language === 'ar' ? 'أذان ' : 'Adhan '}</span>
-                      {formatMinutes12h(p.adhanMinutes, language)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
+            {!(prayersReady ?? calendarConnected) && (
+              <div className="mt-2 text-[10px] text-zinc-500 text-center">
+                {!calendarConnected
+                  ? 'مواقيت الصلاة صفرية حتى تسجيل الدخول وتحديد الموقع عبر الـ GPS أوفلاين (أو المنطقة الزمنية احتياطياً)'
+                  : locationResolutionState === 'resolving_gps'
+                    ? '📡 جاري تحديد موقعك عبر الـ GPS أوفلاين لحساب مواقيت الصلاة بدقة...'
+                    : 'بانتظار تحديد الموقع لحساب مواقيت الصلاة أوفلاين'}
+              </div>
+            )}
 
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px]">
               <button
@@ -1364,77 +2018,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </button>
                 )}
 
-                <button
-                  type="button"
-                  onClick={() => setShowScheduleControls((v) => !v)}
-                  className={`min-h-[36px] px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                    showScheduleControls
-                      ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                      : 'border-white/10 text-zinc-300 hover:border-white/25'
-                  }`}
-                >
-                  <SlidersHorizontal className="w-3.5 h-3.5" />
-                  <span>إعدادات الجدول</span>
-                </button>
               </div>
             </div>
-
-            {/* Collapsible Schedule Settings Drawer (clean, user-facing only) */}
-            {showScheduleControls && (
-              <div className="mt-4 rounded-xl border border-white/10 bg-black/50 p-3.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={onToggleIncludePrayerAnchors}
-                      className={`px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
-                        includePrayerAnchors
-                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                          : 'border-white/10 text-zinc-400 hover:text-white'
-                      }`}
-                    >
-                      🕌 مراسي الصلاة (-3 د)
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => onToggleFridayMode(!isFridayMode)}
-                      className={`px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
-                        isFridayMode
-                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                          : 'border-white/10 text-zinc-400 hover:text-white'
-                      }`}
-                    >
-                      🕌 طقوس الجمعة
-                    </button>
-
-                    {isFridayMode && (
-                      <button
-                        type="button"
-                        onClick={() => onToggleBiweeklyPcCleanup(!includeBiweeklyPcCleanup)}
-                        className={`px-2.5 py-1.5 rounded-lg border text-[11px] cursor-pointer ${
-                          includeBiweeklyPcCleanup
-                            ? 'border-indigo-400/50 bg-indigo-400/15 text-indigo-200'
-                            : 'border-white/10 text-zinc-400'
-                        }`}
-                      >
-                        💻 كل جمعتين 04:15 م
-                      </button>
-                    )}
-                  </div>
-
-                  {calendarConnected && (
-                    <button
-                      type="button"
-                      onClick={() => onGoogleSignOut()}
-                      className="px-2.5 py-1.5 rounded-lg border border-white/10 text-[11px] text-zinc-400 hover:text-rose-400 cursor-pointer"
-                    >
-                      فصل حساب Google
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
 
             {/* Single Clean Filter & Quick-Action Toolbar */}
             <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
@@ -1445,7 +2030,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     { id: 'tomorrow', label: `غداً (${tomorrowEvents.length})` },
                     { id: 'special', label: `غير الروتيني (${nonRoutineUpcomingEvents.length})` },
                     { id: 'done', label: `المنتهي (${finishedTodayBlocks.length})` },
-                    { id: 'anchors', label: 'المراسي' },
                   ] as const
                 ).map((tab) => (
                   <button
@@ -2159,11 +2743,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             ) : (
               <>
-                {/* Quick Add Task Bar -> triggers explicit confirmation modal */}
+                {/* Quick Add Task Bar -> triggers explicit confirmation modal (optional time syncs to Capsule countdown!) */}
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
                     if (!newTaskTitle.trim()) return;
+                    const resolvedDueIso = newTaskDueIso || (newTaskTime24 ? todayCairoIso : '');
+                    const timeNote = newTaskTime24 ? `⏰ ${newTaskTime24}` : undefined;
                     setPendingTaskConfirmation({
                       operation: 'create',
                       taskListId:
@@ -2171,7 +2757,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           ? selectedTaskListId
                           : googleTaskLists[0]?.id ?? '@default',
                       title: newTaskTitle.trim(),
-                      dueDateIso: newTaskDueIso || undefined,
+                      notes: timeNote,
+                      dueDateIso: resolvedDueIso || undefined,
                     });
                   }}
                   className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2"
@@ -2183,12 +2770,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     placeholder="اكتب مهمة جديدة لإضافتها إلى Google Tasks..."
                     className="w-full sm:w-auto sm:flex-1 min-w-0 rounded-xl border border-white/10 bg-black/60 px-3.5 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
                   />
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                     <input
                       type="date"
                       value={newTaskDueIso}
                       onChange={(e) => setNewTaskDueIso(e.target.value)}
-                      className="flex-1 sm:flex-none min-w-0 rounded-xl border border-white/10 bg-black/60 px-3 py-2 text-xs text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
+                      className="flex-1 sm:flex-none min-w-0 rounded-xl border border-white/10 bg-black/60 px-2.5 py-2 text-xs text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
+                      title="تاريخ المهمة (اختياري)"
+                    />
+                    <input
+                      type="time"
+                      value={newTaskTime24}
+                      onChange={(e) => setNewTaskTime24(e.target.value)}
+                      className="w-28 rounded-xl border border-white/10 bg-black/60 px-2.5 py-2 text-xs font-mono-tabular text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
+                      title="وقت المهمة للعد التنازلي في الكبسولة (اختياري)"
                     />
                     <button
                       type="submit"
@@ -2299,7 +2894,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     )}
                   </div>
                   <div className="text-[11px] text-zinc-500">
-                    للقراءة فقط · استخراج المواعيد والرحلات بعد تأكيدك
+                    {calendarConnected && !gmailNeedsReauth
+                      ? gmailNextRetryInSec > 0
+                        ? `إعادة الفحص التلقائي خلال ${gmailNextRetryInSec} ث...`
+                        : gmailLastSyncedIso
+                          ? `فحص تلقائي نشط · آخر تحديث ${formatIsoTo12h(gmailLastSyncedIso, language, { includeDate: false })}`
+                          : 'فحص تلقائي في الخلفية · استخراج المواعيد والرحلات بعد تأكيدك'
+                      : 'للقراءة فقط · استخراج المواعيد والرحلات تلقائياً بعد تسجيل الدخول'}
                   </div>
                 </div>
               </button>
@@ -2315,7 +2916,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   className="min-h-[32px] px-3 py-1 rounded-xl border border-white/15 bg-white/[0.03] text-xs font-medium text-zinc-200 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${loadingGmail ? 'animate-spin' : ''}`} />
-                  <span>{loadingGmail ? 'جارٍ الفحص...' : 'فحص البريد'}</span>
+                  <span>{loadingGmail ? 'جارٍ الفحص التلقائي...' : 'تحديث الآن'}</span>
                 </button>
               ) : (
                 <button
@@ -2334,16 +2935,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {(showGmailDrawer || gmailDigest.length > 0 || Boolean(gmailError)) && (
               <div className="mt-3 pt-3 border-t border-white/10 space-y-2.5">
                 {gmailError && (
-                  <div className="rounded-xl border border-amber-400/35 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
-                    {gmailError}
+                  <div className="rounded-xl border border-amber-400/35 bg-amber-400/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                    <span>{gmailError}</span>
+                    {gmailNextRetryInSec > 0 && (
+                      <span className="font-mono-tabular text-[11px] text-amber-300">
+                        إعادة محاولة تلقائية خلال {gmailNextRetryInSec} ث
+                      </span>
+                    )}
                   </div>
                 )}
 
                 {gmailDigest.length === 0 ? (
                   <div className="text-xs text-zinc-400">
                     {gmailScannedCount > 0
-                      ? `تم فحص ${gmailScannedCount} رسالة حديثة — لا توجد مواعيد أو رحلات جديدة.`
-                      : 'اضغط «فحص البريد» ليستخرج Gemini أي موعد أو مقابلة أو رحلة ويقترح إضافتها لتقويمك.'}
+                      ? `تم فحص ${gmailScannedCount} رسالة حديثة تلقائياً — لا توجد مواعيد أو رحلات جديدة.`
+                      : calendarConnected
+                        ? 'الفحص التلقائي في الخلفية مفعّل — ستظهر هنا أي مواعيد أو رحلات فور وصولها.'
+                        : 'سجّل الدخول بحساب Google ليبدأ الفحص التلقائي للمواعيد والرحلات.'}
                   </div>
                 ) : (
                   <div className="divide-y divide-white/[0.06]">
@@ -2618,14 +3226,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-500 mt-1">
                   <span>
-                    يُسجَّل الكوب تلقائياً عند تأكيدك من الإشعار · كوب {dailyRhythmPlan.cupSizeMl} مل
+                    يُسجَّل الكوب من الإشعار (أو اضغط رقم الكوب يدوياً لو نسيت تأكيده) · كوب {dailyRhythmPlan.cupSizeMl} مل
                     {dailyRhythmPlan.isFastingToday
                       ? ' · لا ماء بين الفجر والمغرب'
                       : ' · يتوقف قبل النوم بـ 75 د'}
                   </span>
                   <span
                     className="text-zinc-500 font-mono-tabular"
-                    title="لتحديث الوزن أخبر شات Gemini مباشرة أو من قائمة الثوابت"
+                    title="لتحديث الوزن أخبر شات Gemini مباشرة أو من قائمة الإعدادات"
                   >
                     · المرجع {lifeProfile.weightKg} كجم
                   </span>
@@ -2650,26 +3258,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* Clean Read-Only Cup Progress Segments (Filled strictly when confirmed via water alert) */}
+            {/* Hybrid Cup Progress Segments (Primary: alert confirmation; Fallback: click cup # to log/unlog manually) */}
             <div className="mt-4 flex items-center gap-1">
               {hydrationToday.slots.map((filled, idx) => {
                 const slotPlan = dailyRhythmPlan.hydrationSlots[idx];
                 return (
-                  <div
+                  <button
                     key={idx}
+                    type="button"
+                    onClick={() => onToggleWaterSlot(idx)}
                     title={
                       slotPlan
-                        ? `كوب ${idx + 1} (${formatMinutes12h(slotPlan.timeMinutes, language)} · ${slotPlan.windowAr})`
-                        : `كوب ${idx + 1} (${(idx + 1) * dailyRhythmPlan.cupSizeMl} مل)`
+                        ? `كوب ${idx + 1} (${formatMinutes12h(slotPlan.timeMinutes, language)}) — اضغط لتسجيل أو إلغاء الشرب يدوياً`
+                        : `كوب ${idx + 1} — اضغط لتسجيل أو إلغاء الشرب يدوياً`
                     }
-                    className={`flex-1 h-7 rounded-md font-mono-tabular text-[10px] font-bold flex items-center justify-center transition-colors ${
+                    className={`flex-1 h-7 rounded-md font-mono-tabular text-[10px] font-bold flex items-center justify-center transition-colors cursor-pointer ${
                       filled
-                        ? 'bg-[#7FFFD4] text-black'
-                        : 'bg-white/[0.06] text-zinc-500'
+                        ? 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
+                        : 'bg-white/[0.06] text-zinc-400 hover:bg-white/[0.14] hover:text-white'
                     }`}
                   >
                     {idx + 1}
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -2688,7 +3298,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <strong className="text-[#7FFFD4]">
                       {formatMinutes12h(nextWaterSlot.timeMinutes, language)}
                     </strong>
-                    <span className="text-zinc-400"> · {nextWaterSlot.windowAr}</span>
+                    {nextWaterSlot.windowAr ? (
+                      <span className="text-zinc-400"> · {nextWaterSlot.windowAr}</span>
+                    ) : null}
                   </span>
                 ) : (
                   <span className="text-[#4ADE80] font-semibold">
@@ -2734,7 +3346,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* Collapsible Scientific Water Timing Distribution */}
+            {/* Collapsible Scientific Water Timing Distribution (Clickable manual fallback, zero confusing labels) */}
             <div className="mt-3">
               <button
                 type="button"
@@ -2742,8 +3354,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
               >
                 {showHydrationSchedule
-                  ? 'إخفاء توزيع مواعيد الأكواب العلمية ▲'
-                  : `عرض التوزيع العلمي لـ ${dailyRhythmPlan.activeTargetCups} كوب اليوم (12 ساعة) ▼`}
+                  ? 'إخفاء مواعيد الأكواب ▲'
+                  : `عرض مواعيد الأكواب اليوم (${dailyRhythmPlan.activeTargetCups} كوب) ▼`}
               </button>
 
               {showHydrationSchedule && (
@@ -2751,12 +3363,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {dailyRhythmPlan.hydrationSlots.map((slot, idx) => {
                     const done = hydrationToday.slots[idx];
                     return (
-                      <div
+                      <button
                         key={slot.cupIndex}
-                        className={`rounded-lg border px-2.5 py-1.5 text-right text-[11px] ${
+                        type="button"
+                        onClick={() => onToggleWaterSlot(idx)}
+                        className={`rounded-lg border px-2.5 py-2 text-right text-[11px] transition-colors cursor-pointer ${
                           done
                             ? 'border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80]'
-                            : 'border-white/10 bg-black/40 text-zinc-300'
+                            : 'border-white/10 bg-black/40 text-zinc-300 hover:border-[#7FFFD4]/45'
                         }`}
                       >
                         <div className="flex items-center justify-between gap-1 font-mono-tabular">
@@ -2765,10 +3379,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </span>
                           <span>{formatMinutes12h(slot.timeMinutes, language)}</span>
                         </div>
-                        <div className="text-[10px] text-zinc-500 truncate mt-0.5">
-                          {slot.windowAr}
-                        </div>
-                      </div>
+                        {slot.windowAr ? (
+                          <div className="text-[10px] text-zinc-500 truncate mt-0.5">
+                            {slot.windowAr}
+                          </div>
+                        ) : null}
+                      </button>
                     );
                   })}
                 </div>
@@ -2778,9 +3394,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {/* Universal Flexible Medications & Supplements (Supports Multi-Dose, Specific Weekdays & Scientific Gemini Advice) */}
             <div className="mt-4 pt-3.5 border-t border-white/10 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-bold text-white">
-                  💊 العلاجات والمكملات الغذائية
-                </span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-bold text-white">
+                    💊 العلاجات والمكملات الغذائية
+                  </span>
+                  {medications.length > 0 && (
+                    <span
+                      className={`px-2 py-0.5 rounded-lg border text-[10px] font-mono-tabular font-semibold ${
+                        medAdherenceSummary.takenTodayCount >= medAdherenceSummary.dueTodayCount &&
+                        medAdherenceSummary.dueTodayCount > 0
+                          ? 'border-[#4ADE80]/40 bg-[#4ADE80]/15 text-[#4ADE80]'
+                          : 'border-amber-400/35 bg-amber-400/10 text-amber-200'
+                      }`}
+                    >
+                      اليوم {medAdherenceSummary.takenTodayCount}/{medAdherenceSummary.dueTodayCount}
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -2805,35 +3435,259 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
+              {/* Adherence Overview Bar (Today + 7-day compliance + missed days counter) */}
+              {medications.length > 0 && (
+                <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <div className="flex items-center gap-2">
+                    <span className="text-zinc-400">مؤشر الالتزام (7 أيام):</span>
+                    <span
+                      className={`font-mono-tabular font-bold ${
+                        medAdherenceSummary.adherencePct >= 80
+                          ? 'text-[#4ADE80]'
+                          : medAdherenceSummary.adherencePct >= 50
+                            ? 'text-amber-300'
+                            : 'text-rose-300'
+                      }`}
+                    >
+                      {medAdherenceSummary.adherencePct}%
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    {medAdherenceSummary.missedPastSlots > 0 ? (
+                      <span className="text-rose-300 font-semibold">
+                        أيام فائتة: {medAdherenceSummary.missedPastSlots}
+                      </span>
+                    ) : (
+                      <span className="text-[#4ADE80] font-semibold">
+                        التزام كامل بدون أيام فائتة ✓
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Medications Stock Warning Panel (< 5 Days Remaining + Fast Stock Reset after New Pack Purchase) */}
+              {expiringUnder5DaysMedications.length > 0 && (
+                <div className="rounded-xl border border-amber-400/50 bg-amber-400/10 p-2.5 space-y-2 text-[11px]">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-bold text-amber-200">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                      <span>لوحة تحذيرية · أدوية ينتهي مخزونها خلال أقل من 5 أيام:</span>
+                    </div>
+                    <span className="font-mono-tabular text-[10px] text-amber-300 font-bold">
+                      {expiringUnder5DaysMedications.length} دواء
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {expiringUnder5DaysMedications.map(
+                      ({ med, remainingDoses, daysLeft, daysLeftRounded, dailyRate, defaultPackSize }) => {
+                        const isOpen = purchaseMedId === med.id;
+                        const enteredQty = Math.max(
+                          0,
+                          Math.min(500, Math.round(Number(purchaseAddDoses) || 0))
+                        );
+                        const previewTotal =
+                          purchaseMode === 'add'
+                            ? Math.min(500, remainingDoses + enteredQty)
+                            : enteredQty;
+                        const previewDays = Math.ceil(previewTotal / Math.max(0.14, dailyRate));
+                        const isCritical = remainingDoses === 0 || daysLeft <= 3;
+
+                        return (
+                          <div
+                            key={med.id}
+                            className={`rounded-lg border p-2 space-y-2 ${
+                              remainingDoses === 0
+                                ? 'border-rose-500/45 bg-rose-500/10'
+                                : isCritical
+                                  ? 'border-amber-400/35 bg-black/50'
+                                  : 'border-amber-300/20 bg-black/40'
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="text-amber-100 min-w-0">
+                                <span className="font-bold">{med.name}</span>
+                                <span
+                                  className={`font-mono-tabular ${
+                                    remainingDoses === 0
+                                      ? 'text-rose-300 font-bold'
+                                      : isCritical
+                                        ? 'text-amber-300'
+                                        : 'text-zinc-300'
+                                  }`}
+                                >
+                                  {' '}
+                                  ·{' '}
+                                  {remainingDoses === 0
+                                    ? 'نفدت العبوة (0 جرعة)'
+                                    : `متبقٍ ${remainingDoses} جرعة (~${daysLeftRounded} ${daysLeftRounded === 1 ? 'يوم' : 'أيام'})`}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onRefillMedication(med.id, defaultPackSize, med.refillAlertDays ?? 3);
+                                    if (purchaseMedId === med.id) setPurchaseMedId(null);
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-[#4ADE80] text-black text-[10px] font-bold hover:bg-emerald-300 flex items-center gap-1 cursor-pointer"
+                                  title={`إعادة تعيين المخزون فوراً إلى عبوة جديدة كاملة (${defaultPackSize} جرعة)`}
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>إعادة تعيين ({defaultPackSize})</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openPurchaseRestockForm(med)}
+                                  className="px-2 py-1 rounded-lg border border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4] text-[10px] font-bold hover:bg-[#7FFFD4] hover:text-black flex items-center gap-1 cursor-pointer"
+                                >
+                                  <ShoppingBag className="w-3 h-3" />
+                                  <span>إضافة شراء جديد</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {isOpen && (
+                              <div className="rounded-lg border border-[#7FFFD4]/35 bg-black/80 p-2 space-y-2 text-[11px]">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="text-zinc-400 text-[10px]">الكمية الجديدة:</span>
+                                  {[14, 20, 30, 60].map((qty) => (
+                                    <button
+                                      key={qty}
+                                      type="button"
+                                      onClick={() => setPurchaseAddDoses(String(qty))}
+                                      className={`px-1.5 py-0.5 rounded border font-mono-tabular text-[10px] cursor-pointer ${
+                                        purchaseAddDoses === String(qty)
+                                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
+                                          : 'border-white/10 text-zinc-400'
+                                      }`}
+                                    >
+                                      +{qty}
+                                    </button>
+                                  ))}
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={500}
+                                    value={purchaseAddDoses}
+                                    onChange={(e) => setPurchaseAddDoses(e.target.value)}
+                                    className="w-16 rounded border border-white/15 bg-black px-1.5 py-0.5 text-white font-mono-tabular text-[11px] focus:outline-none focus:border-[#7FFFD4]"
+                                  />
+                                </div>
+
+                                <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px]">
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => setPurchaseMode('add')}
+                                      className={`px-1.5 py-0.5 rounded border cursor-pointer ${
+                                        purchaseMode === 'add'
+                                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                          : 'border-white/10 text-zinc-400'
+                                      }`}
+                                    >
+                                      إضافة للمتبقي ({remainingDoses} + {enteredQty})
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setPurchaseMode('set')}
+                                      className={`px-1.5 py-0.5 rounded border cursor-pointer ${
+                                        purchaseMode === 'set'
+                                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                          : 'border-white/10 text-zinc-400'
+                                      }`}
+                                    >
+                                      تعيين إجمالي
+                                    </button>
+                                  </div>
+                                  <span className="font-mono-tabular text-[#4ADE80]">
+                                    الجديد: {previewTotal} جرعة (~{previewDays} ي)
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-white/10">
+                                  <button
+                                    type="button"
+                                    onClick={() => setPurchaseMedId(null)}
+                                    className="px-2 py-0.5 text-zinc-400 hover:text-white cursor-pointer"
+                                  >
+                                    إلغاء
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={previewTotal <= 0}
+                                    onClick={() => {
+                                      onRefillMedication(med.id, previewTotal, purchaseAlertDays);
+                                      setPurchaseMedId(null);
+                                    }}
+                                    className="px-2.5 py-0.5 rounded-lg bg-[#4ADE80] text-black font-bold hover:bg-emerald-300 disabled:opacity-40 cursor-pointer"
+                                  >
+                                    تأكيد الشراء ✓
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+                    )}
+                  </div>
+                </div>
+              )}
+
               {showAddMedForm && (
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
                     if (!newMedName.trim()) return;
-                    let h24 = newMedHour12 % 12;
-                    if (newMedPeriod === 'PM') h24 += 12;
-                    const currentPicked = `${String(h24).padStart(2, '0')}:${String(newMedMinute).padStart(2, '0')}`;
+                    const trimmedName = newMedName.trim();
+                    const trimmedNote = newMedNote.trim();
                     const finalTimes =
-                      newMedTimes24.length > 0 ? newMedTimes24 : [currentPicked];
+                      newMedTimes24.length > 0 ? newMedTimes24 : [newMedCurrentTime24];
                     const parsedRem = newMedRemainingDoses.trim()
                       ? Math.max(0, Math.min(500, Math.round(Number(newMedRemainingDoses))))
                       : -1;
                     onAddMedication({
-                      name: newMedName.trim(),
+                      name: trimmedName,
                       time24: finalTimes[0],
                       times24: finalTimes,
                       daysOfWeek: newMedDaysOfWeek,
-                      doseNote: newMedNote.trim() || '',
+                      doseNote: trimmedNote || '',
                       courseEndDate: newMedCourseEnd.trim() || '',
                       remainingDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
                       totalDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
+                      refillAlertDays: newMedRefillAlertDays,
                     });
+
+                    if (calendarConnected && newMedSyncCalendar) {
+                      const DAY_CODE_MAP = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+                      const byDays =
+                        newMedDaysOfWeek.length > 0
+                          ? newMedDaysOfWeek.map((d) => DAY_CODE_MAP[d]).filter(Boolean)
+                          : undefined;
+                      const calendarActions: CalendarActionProposal[] = finalTimes.map((t24) => ({
+                        operation: 'create',
+                        calendarId: 'primary',
+                        title: `💊 ⏰ ${trimmedName}`,
+                        dateIso: todayCairoIso,
+                        startTime24: t24,
+                        durationMinutes: 15,
+                        recurrenceRule: byDays && byDays.length > 0 ? 'WEEKLY' : 'DAILY',
+                        byDays,
+                        description: trimmedNote
+                          ? `موعد علاج/مكمل: ${trimmedName} · ${trimmedNote}`
+                          : `موعد علاج/مكمل مجدول عبر إيقاع اليوم | DayRhythm`,
+                      }));
+                      void onExecuteCalendarActions(calendarActions);
+                    }
+
                     setNewMedName('');
                     setNewMedNote('');
                     setNewMedTimes24([]);
                     setNewMedDaysOfWeek([]);
                     setNewMedCourseEnd('');
                     setNewMedRemainingDoses('');
+                    setNewMedRefillAlertDays(3);
                     setShowAddMedForm(false);
                   }}
                   className="rounded-xl border border-white/15 bg-black/70 p-3 space-y-2.5 text-xs"
@@ -2855,7 +3709,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     />
                   </div>
 
-                  {/* Optional Course End Date & Refill Dose Counter */}
+                  {/* Optional Course End Date & Refill Dose Counter + Lead-Time Alert */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <label className="flex items-center justify-between gap-2 rounded-lg border border-white/15 bg-black px-2.5 py-1 text-[11px] text-zinc-400">
                       <span>نهاية الكورس:</span>
@@ -2872,12 +3726,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       max={500}
                       value={newMedRemainingDoses}
                       onChange={(e) => setNewMedRemainingDoses(e.target.value)}
-                      placeholder="عدد الجرعات بالعبوة (اختياري، مثل 30)"
+                      placeholder="عدد الجرعات بالعبوة (مثل 30 لتنبيه الشراء)"
                       className="rounded-lg border border-white/15 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4] font-mono-tabular"
                     />
                   </div>
 
-                  {/* Multi-dose time builder */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
+                    <span>التنبيه قبل نفاد العبوة بـ:</span>
+                    <div className="flex items-center gap-1">
+                      {[2, 3, 5, 7].map((days) => (
+                        <button
+                          key={days}
+                          type="button"
+                          onClick={() => setNewMedRefillAlertDays(days)}
+                          className={`px-2 py-0.5 rounded-lg border text-[10px] cursor-pointer ${
+                            newMedRefillAlertDays === days
+                              ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                              : 'border-white/10 text-zinc-400 hover:text-white'
+                          }`}
+                        >
+                          {days} {days === 2 ? 'يومين' : 'أيام'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Flexible Multi-dose Time Builder (Free 0-59 minutes) */}
                   <div className="space-y-1.5">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-[10px] text-zinc-400">ميعاد الجرعة:</span>
@@ -2885,6 +3759,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         value={newMedHour12}
                         onChange={(e) => setNewMedHour12(Number(e.target.value))}
                         className="rounded-lg border border-white/15 bg-black px-2 py-1 text-white font-mono-tabular"
+                        aria-label="الساعة"
                       >
                         {[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => (
                           <option key={h} value={h}>
@@ -2892,17 +3767,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </option>
                         ))}
                       </select>
-                      <select
+                      <span className="text-zinc-500 font-mono-tabular">:</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={59}
                         value={newMedMinute}
-                        onChange={(e) => setNewMedMinute(Number(e.target.value))}
-                        className="rounded-lg border border-white/15 bg-black px-2 py-1 text-white font-mono-tabular"
-                      >
-                        {[0, 15, 30, 45].map((m) => (
-                          <option key={m} value={m}>
-                            {String(m).padStart(2, '0')}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setNewMedMinute(Number.isFinite(v) ? Math.max(0, Math.min(59, v)) : 0);
+                        }}
+                        className="w-14 rounded-lg border border-white/15 bg-black px-2 py-1 text-center text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                        aria-label="الدقائق"
+                        title="أي دقيقة من 0 إلى 59"
+                      />
                       <button
                         type="button"
                         onClick={() => setNewMedPeriod((p) => (p === 'AM' ? 'PM' : 'AM'))}
@@ -2913,11 +3791,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          let h24 = newMedHour12 % 12;
-                          if (newMedPeriod === 'PM') h24 += 12;
-                          const t24 = `${String(h24).padStart(2, '0')}:${String(newMedMinute).padStart(2, '0')}`;
                           setNewMedTimes24((prev) =>
-                            prev.includes(t24) ? prev : [...prev, t24].slice(0, 6)
+                            prev.includes(newMedCurrentTime24)
+                              ? prev
+                              : [...prev, newMedCurrentTime24].slice(0, 6)
                           );
                         }}
                         className="px-2 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[10px] text-[#7FFFD4] font-semibold cursor-pointer"
@@ -2947,6 +3824,56 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </div>
                     )}
                   </div>
+
+                  {/* Live Smart Conflict Warning + Gemini Negotiation for Medications */}
+                  {newMedConflict.hasConflict && (
+                    <div className="rounded-xl border border-amber-400/45 bg-amber-400/10 p-2.5 space-y-2 text-[11px] text-amber-100">
+                      <div className="flex items-start gap-1.5 font-semibold text-amber-200">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
+                        <span>تحذير ذكي — هذا الموعد يتعارض مع ثوابتك أو جدولك:</span>
+                      </div>
+                      <ul className="space-y-0.5 pr-4 list-disc text-[10px] text-amber-100/90">
+                        {newMedConflict.warnings.map((w, idx) => (
+                          <li key={idx}>{w}</li>
+                        ))}
+                      </ul>
+                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                        {newMedConflict.suggestedTime24 && newMedConflict.suggestedTime12Ar && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              applyTime24To12hPicker(
+                                newMedConflict.suggestedTime24!,
+                                setNewMedHour12,
+                                setNewMedMinute,
+                                setNewMedPeriod
+                              );
+                              if (newMedTimes24.length > 0) {
+                                setNewMedTimes24([newMedConflict.suggestedTime24!]);
+                              }
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[10px] font-bold hover:bg-[#66eec2] cursor-pointer"
+                          >
+                            ✓ تطبيق {newMedConflict.suggestedTime12Ar}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const medLabel = newMedName.trim() || 'علاج جديد';
+                            const pickedLabel = formatTime24To12h(newMedCurrentTime24, 'ar');
+                            const conflictList = newMedConflict.warnings.join('، ');
+                            onOpenAssistantWithPrompt(
+                              `عاوز أضيف «${medLabel}»${newMedNote.trim() ? ` (${newMedNote.trim()})` : ''} الساعة ${pickedLabel}، بس النظام نبّهني إن فيه تعارض: ${conflictList}. ناقشني واقترح أنسب ميعاد علمي متوافق مع الصلاة والنوم والصيام والتقويم، ولما أوافق احجزه في التقويم.`
+                            );
+                          }}
+                          className="px-2.5 py-1 rounded-lg border border-amber-300/50 bg-black/50 text-amber-200 hover:text-white text-[10px] font-semibold cursor-pointer"
+                        >
+                          💬 ناقش أنسب موعد مع Gemini
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Specific days selector (empty = every day) */}
                   <div className="space-y-1">
@@ -2989,21 +3916,50 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-end gap-1.5 pt-1">
+                  {/* Auto-book linked event in Google Calendar */}
+                  {calendarConnected && (
+                    <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer select-none pt-0.5">
+                      <input
+                        type="checkbox"
+                        checked={newMedSyncCalendar}
+                        onChange={(e) => setNewMedSyncCalendar(e.target.checked)}
+                        className="accent-[#7FFFD4] rounded"
+                      />
+                      <span>حجز موعد تلقائياً في Google Calendar (💊 ⏰)</span>
+                    </label>
+                  )}
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                     <button
                       type="button"
-                      onClick={() => setShowAddMedForm(false)}
-                      className="px-2.5 py-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
+                      onClick={() => {
+                        const medLabel = newMedName.trim() || 'علاج أو مكمل جديد';
+                        const pickedLabel = formatTime24To12h(newMedCurrentTime24, 'ar');
+                        onOpenAssistantWithPrompt(
+                          `هل ميعاد الساعة ${pickedLabel} مناسب لـ «${medLabel}»${newMedNote.trim() ? ` (${newMedNote.trim()})` : ''}؟ راجع توافقه مع الصلوات والنوم والصيام وجدولي في التقويم وأخبرني علمياً قبل تثبيته.`
+                        );
+                      }}
+                      className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
                     >
-                      إلغاء
+                      💬 اسأل Gemini عن توافق الموعد
                     </button>
-                    <button
-                      type="submit"
-                      disabled={!newMedName.trim()}
-                      className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold disabled:opacity-40 cursor-pointer"
-                    >
-                      حفظ
-                    </button>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddMedForm(false)}
+                        className="px-2.5 py-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
+                      >
+                        إلغاء
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={!newMedName.trim()}
+                        className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold disabled:opacity-40 cursor-pointer"
+                      >
+                        حفظ
+                      </button>
+                    </div>
                   </div>
                 </form>
               )}
@@ -3057,17 +4013,46 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               ({daysLabel})
                             </span>
                           )}
-                          {takenToday && <span className="font-bold shrink-0">✓</span>}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => onDeleteMedication(med.id)}
-                          className="p-1 text-zinc-500 hover:text-rose-400 cursor-pointer shrink-0"
-                          title={`حذف ${med.name}`}
-                          aria-label={`حذف ${med.name}`}
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onToggleMedication(med.id)}
+                            aria-pressed={takenToday}
+                            title={
+                              takenToday
+                                ? `تم تسجيل كل جرعات «${med.name}» اليوم — اضغط للتراجع`
+                                : `تسجيل كل جرعات «${med.name}» لليوم بضغطة واحدة`
+                            }
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                              takenToday
+                                ? 'border-[#4ADE80] bg-[#4ADE80] text-black shadow-[0_0_12px_rgba(74,222,128,0.28)]'
+                                : 'border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4] hover:bg-[#7FFFD4] hover:text-black'
+                            }`}
+                          >
+                            {takenToday ? (
+                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            ) : (
+                              <Circle className="w-3 h-3 shrink-0" />
+                            )}
+                            <span>
+                              {takenToday
+                                ? 'تم اليوم'
+                                : doseTimes.length > 1 && takenDoses.length > 0
+                                  ? `تم اليوم (${takenDoses.length}/${doseTimes.length})`
+                                  : 'تم اليوم'}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteMedication(med.id)}
+                            className="p-1 text-zinc-500 hover:text-rose-400 cursor-pointer shrink-0"
+                            title={`حذف ${med.name}`}
+                            aria-label={`حذف ${med.name}`}
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       {doseTimes.length > 1 && (
@@ -3109,24 +4094,108 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </div>
                       )}
 
+                      {/* 7-Day Adherence Strip (click any day to mark taken / missed) */}
+                      <div className="mt-2 flex items-center justify-between gap-1.5 pt-2 border-t border-white/[0.06]">
+                        <div className="flex items-center gap-1">
+                          {last7CairoDays.map((day) => {
+                            const scheduled =
+                              !med.daysOfWeek ||
+                              med.daysOfWeek.length === 0 ||
+                              med.daysOfWeek.includes(day.weekdayNum);
+                            const wasTaken =
+                              (med.takenDates ?? []).includes(day.dateIso) ||
+                              (day.isToday && takenToday);
+                            if (!scheduled) {
+                              return (
+                                <span
+                                  key={day.dateIso}
+                                  className="w-6 h-6 rounded-md border border-white/5 bg-white/[0.02] text-[9px] text-zinc-600 flex items-center justify-center"
+                                  title={`${day.dateIso} — راحة`}
+                                >
+                                  –
+                                </span>
+                              );
+                            }
+                            return (
+                              <button
+                                key={day.dateIso}
+                                type="button"
+                                onClick={() => onToggleMedicationDate(med.id, day.dateIso)}
+                                className={`h-6 min-w-[24px] px-1 rounded-md border text-[9px] font-bold flex items-center justify-center cursor-pointer transition-colors ${
+                                  wasTaken
+                                    ? 'border-[#4ADE80]/50 bg-[#4ADE80]/20 text-[#4ADE80]'
+                                    : day.isToday
+                                      ? 'border-amber-400/50 bg-amber-400/15 text-amber-200'
+                                      : 'border-rose-500/35 bg-rose-500/10 text-rose-300 hover:border-rose-400'
+                                }`}
+                                title={
+                                  wasTaken
+                                    ? `${day.dateIso}: تم الأخذ ✓ (اضغط للتعديل)`
+                                    : day.isToday
+                                      ? `اليوم: لم يؤخذ بعد (اضغط للتأكيد)`
+                                      : `${day.dateIso}: يوم فائت × (اضغط لتسجيل الأخذ)`
+                                }
+                              >
+                                {day.isToday
+                                  ? wasTaken
+                                    ? 'اليوم ✓'
+                                    : 'اليوم ○'
+                                  : wasTaken
+                                    ? `${day.shortAr}✓`
+                                    : `${day.shortAr}×`}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (editingStockMedId === med.id) {
+                              setEditingStockMedId(null);
+                            } else {
+                              setEditingStockMedId(med.id);
+                              setEditStockDosesInput(
+                                typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
+                                  ? String(med.remainingDoses)
+                                  : '30'
+                              );
+                              setEditStockAlertDays(med.refillAlertDays ?? 3);
+                            }
+                          }}
+                          className="text-[10px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer shrink-0"
+                          title="إدارة مخزون الجرعات وتنبيه إعادة الشراء"
+                        >
+                          {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
+                            ? 'تعديل المخزون'
+                            : '+ تتبع المخزون'}
+                        </button>
+                      </div>
+
+                      {/* Stock status & lead-time indicator */}
                       {((typeof med.remainingDoses === 'number' && med.remainingDoses >= 0) ||
                         Boolean(med.courseEndDate)) && (
                         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-mono-tabular text-zinc-400">
-                          {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0 && (
-                            <span
-                              className={
-                                med.remainingDoses === 0
-                                  ? 'text-rose-400 font-semibold'
-                                  : med.remainingDoses <= 3
-                                    ? 'text-amber-300 font-semibold'
-                                    : 'text-zinc-400'
-                              }
-                            >
-                              {med.remainingDoses === 0
-                                ? 'نفدت العبوة (0 جرعة)'
-                                : `متبقٍ ${med.remainingDoses}${med.totalDoses && med.totalDoses > 0 ? `/${med.totalDoses}` : ''} جرعة`}
-                            </span>
-                          )}
+                          {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0 && (() => {
+                            const dosesPerDay = Math.max(1, doseTimes.length || 1);
+                            const daysLeft = med.remainingDoses / dosesPerDay;
+                            const alertDays = med.refillAlertDays ?? 3;
+                            const isLowStock = daysLeft <= alertDays;
+                            return (
+                              <span
+                                className={
+                                  med.remainingDoses === 0
+                                    ? 'text-rose-400 font-semibold'
+                                    : isLowStock
+                                      ? 'text-amber-300 font-semibold'
+                                      : 'text-zinc-400'
+                                }
+                              >
+                                {med.remainingDoses === 0
+                                  ? 'نفدت العبوة (0 جرعة) · اشترِ جديد'
+                                  : `متبقٍ ${med.remainingDoses}${med.totalDoses && med.totalDoses > 0 ? `/${med.totalDoses}` : ''} جرعة (~${Math.ceil(daysLeft)} ي · تنبيه قبل ${alertDays} ي)`}
+                              </span>
+                            );
+                          })()}
                           {med.courseEndDate && (
                             <span
                               className={
@@ -3145,206 +4214,133 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           )}
                         </div>
                       )}
+
+                      {/* Inline Stock & Refill Alert Lead-Time Editor */}
+                      {editingStockMedId === med.id && (
+                        <div className="mt-2 rounded-lg border border-[#7FFFD4]/30 bg-black/75 p-2 space-y-2 text-[11px]">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="text-zinc-400">الجرعات المتبقية:</label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={500}
+                              value={editStockDosesInput}
+                              onChange={(e) => setEditStockDosesInput(e.target.value)}
+                              className="w-20 rounded-lg border border-white/15 bg-black px-2 py-1 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                            />
+                            <span className="text-zinc-400">تنبيه قبل:</span>
+                            {[2, 3, 5].map((d) => (
+                              <button
+                                key={d}
+                                type="button"
+                                onClick={() => setEditStockAlertDays(d)}
+                                className={`px-1.5 py-0.5 rounded border text-[10px] cursor-pointer ${
+                                  editStockAlertDays === d
+                                    ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
+                                    : 'border-white/10 text-zinc-400'
+                                }`}
+                              >
+                                {d} ي
+                              </button>
+                            ))}
+                          </div>
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setEditingStockMedId(null)}
+                              className="px-2 py-0.5 text-zinc-400 hover:text-white cursor-pointer"
+                            >
+                              إلغاء
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const parsed = Math.max(
+                                  0,
+                                  Math.min(500, Math.round(Number(editStockDosesInput) || 0))
+                                );
+                                onRefillMedication(med.id, parsed, editStockAlertDays);
+                                setEditingStockMedId(null);
+                              }}
+                              className="px-2.5 py-0.5 rounded-lg bg-[#7FFFD4] text-black font-bold cursor-pointer"
+                            >
+                              حفظ المخزون ✓
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
+
+              <MedicationConsumptionChart
+                medications={medications}
+                todayCairoIso={todayCairoIso}
+              />
             </div>
 
-            <HydrationWeeklyChart hydrationHistory={hydrationHistory} />
+            <HydrationWeeklyChart
+              hydrationHistory={hydrationHistory}
+              weatherInfo={weatherInfo}
+              cupSizeMl={lifeProfile.cupSizeMl}
+            />
           </section>
 
-          {/* Calm Collapsible Audio, Quiet Modes & Configurable Alert Ring Repeats (No Auto-Revert Timer Clutter) */}
-          <section className={`rounded-2xl border p-4 ${cardSurface}`}>
-            <button
-              type="button"
-              onClick={() => setShowQuietAndSounds((v) => !v)}
-              className="w-full flex items-center justify-between gap-2 text-right cursor-pointer"
-            >
-              <div className="min-w-0">
-                <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                  <BellOff className="w-4 h-4 text-[#7FFFD4]" />
-                  <span>الأصوات وتكرار الرنين والهدوء</span>
-                </h2>
-                <div className="text-[11px] text-zinc-400 mt-0.5 truncate">
-                  كتم تلقائي: الصلاة {lifeProfile.prayerSilenceMinutes} د (الجمعة 50 د) · الفجر{' '}
-                  {lifeProfile.fajrSilenceMinutes} د · وقت النوم كاملاً
-                </div>
-                {activeOneTimeSilenceMinutes >= 5 && (
-                  <div className="text-[10px] text-amber-300 mt-0.5">
-                    تعديل مؤقت لمرة واحدة: {activeOneTimeSilenceMinutes} د (يعود للوضع الطبيعي تلقائياً)
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-2 shrink-0 text-xs text-zinc-400">
-                {quietMode !== 'normal' && quietCountdownText && (
-                  <span className="font-mono-tabular text-amber-300">{quietCountdownText}</span>
-                )}
-                {showQuietAndSounds ? (
-                  <ChevronUp className="w-4 h-4 text-[#7FFFD4]" />
-                ) : (
-                  <ChevronDown className="w-4 h-4 text-zinc-500" />
-                )}
-              </div>
-            </button>
-
-            {showQuietAndSounds && (
-              <div className="mt-4 pt-3.5 border-t border-white/10 space-y-4">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
-                    <span>وضع الهدوء السريع</span>
-                    <span className="text-zinc-500">
-                      {alertSliderLinked ? 'Alert Slider مربوط' : 'Alert Slider مستقل'}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(['normal', 'mute_audio', 'vibrate_only', 'silent_all'] as const).map(
-                      (qm) => {
-                        const active = quietMode === qm;
-                        return (
-                          <button
-                            key={qm}
-                            type="button"
-                            onClick={() => onSetQuietMode(qm, 0)}
-                            className={`rounded-xl border p-2.5 text-right transition-colors cursor-pointer ${
-                              active
-                                ? 'border-[#7FFFD4] bg-[#7FFFD4]/10'
-                                : 'border-white/10 bg-black/40 hover:border-white/25'
-                            }`}
-                          >
-                            <div className="text-xs font-semibold text-white">
-                              {QUIET_MODE_LABELS[qm][language]}
-                            </div>
-                            <div className="text-[10px] text-zinc-500 mt-0.5">
-                              {language === 'ar'
-                                ? QUIET_MODE_LABELS[qm].descAr
-                                : QUIET_MODE_LABELS[qm].descEn}
-                            </div>
-                          </button>
-                        );
-                      }
-                    )}
-                  </div>
-                </div>
-
-                {/* Configurable Alert Ring Repeats (1x, 2x, 3x, 4x, or ∞ Continuous until Stopped) */}
-                <div className="space-y-2 pt-2 border-t border-white/10">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-semibold text-zinc-200">
-                      تكرار رنين التنبيهات (أو مستمر حتى الإيقاف)
-                    </span>
-                    <span className="text-[10px] text-zinc-500">∞ = رنين مستمر</span>
-                  </div>
-                  <div className="divide-y divide-white/[0.06]">
-                    {(
-                      [
-                        'sleep_suhoor',
-                        'prayer',
-                        'water',
-                        'medication',
-                        'meeting_event',
-                        'focus_work',
-                        'walk_health',
-                      ] as const
-                    ).map((cat) => {
-                      const meta = TASK_SOUND_META[cat];
-                      const currentRepeat = soundRepeats[cat] ?? 1;
-                      const repeatOptions: SoundRepeatSetting[] = [1, 2, 3, 4, 'continuous'];
-                      return (
-                        <div
-                          key={cat}
-                          className="py-2 flex flex-wrap items-center justify-between gap-2 text-xs"
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onTriggerTaskAlert(meta.labelAr, cat, { bypassSanctuary: true })
-                            }
-                            className="flex items-center gap-1.5 text-zinc-200 hover:text-[#7FFFD4] cursor-pointer"
-                            title="تشغيل وتجربة النغمة الآن"
-                          >
-                            <span>{meta.icon}</span>
-                            <span className="font-medium">{meta.labelAr}</span>
-                            <Volume2 className="w-3 h-3 text-zinc-500" />
-                          </button>
-
-                          <div className="flex items-center gap-1 font-mono-tabular">
-                            {repeatOptions.map((opt) => {
-                              const selected = currentRepeat === opt;
-                              return (
-                                <button
-                                  key={String(opt)}
-                                  type="button"
-                                  onClick={() => onUpdateSoundRepeat(cat, opt)}
-                                  className={`px-2 py-0.5 rounded-md border text-[10px] cursor-pointer transition-colors ${
-                                    selected
-                                      ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
-                                      : 'border-white/10 text-zinc-400 hover:text-zinc-200'
-                                  }`}
-                                  title={
-                                    opt === 'continuous'
-                                      ? 'رنين مستمر حتى تضغط إيقاف أو تهز الهاتف'
-                                      : `تكرار ${opt} مرة`
-                                  }
-                                >
-                                  {opt === 'continuous' ? '∞' : `${opt}×`}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Compact Habits & Collapsible Periodic Maintenance Card */}
+          {/* Compact Habits & Collapsible Periodic Maintenance Card (Daily Wird shown ONLY if user has it) */}
           <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
                 <CalendarClock className="w-4 h-4 text-[#7FFFD4]" />
-                <span>{t(language, 'dualStreaksTitle')}</span>
+                <span>
+                  {calendarConnected && hasDailyWirdHabit
+                    ? t(language, 'dualStreaksTitle')
+                    : language === 'ar'
+                      ? 'سلسلة الالتزام اليومي'
+                      : 'Daily Commitment Streak'}
+                </span>
               </h2>
-              <button
-                type="button"
-                onClick={() => setShowPeriodicRituals((v) => !v)}
-                className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer"
-              >
-                <span>المهام الدورية ({periodicRituals.length})</span>
-                {showPeriodicRituals ? (
-                  <ChevronUp className="w-3.5 h-3.5" />
-                ) : (
-                  <ChevronDown className="w-3.5 h-3.5" />
-                )}
-              </button>
+              {calendarConnected && periodicRituals.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowPeriodicRituals((v) => !v)}
+                  className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer"
+                >
+                  <span>المهام الدورية ({periodicRituals.length})</span>
+                  {showPeriodicRituals ? (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={onToggleDailyCommitmentStreak}
-                className={`rounded-xl border p-3 text-right transition-colors cursor-pointer ${
-                  streaks.dailyCommitmentDoneToday
-                    ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/[0.08]'
-                    : 'border-white/10 bg-black/40 hover:border-white/25'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-base">📖 🌱</span>
-                  <span className="font-mono-tabular text-base font-bold text-[#7FFFD4]">
-                    {streaks.dailyCommitmentDays}
-                  </span>
-                </div>
-                <div className="text-xs font-semibold text-white mt-1">
-                  الورد والالتزام اليومي
-                </div>
-                <div className="text-[10px] text-zinc-400 mt-0.5">
-                  {streaks.dailyCommitmentDoneToday ? 'مكتمل اليوم ✓' : 'تأكيد الإنجاز'}
-                </div>
-              </button>
+            <div className={`grid gap-3 ${calendarConnected && hasDailyWirdHabit ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              {calendarConnected && hasDailyWirdHabit && (
+                <button
+                  type="button"
+                  onClick={onToggleDailyCommitmentStreak}
+                  className={`rounded-xl border p-3 text-right transition-colors cursor-pointer ${
+                    streaks.dailyCommitmentDoneToday
+                      ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/[0.08]'
+                      : 'border-white/10 bg-black/40 hover:border-white/25'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-base">📖 🌱</span>
+                    <span className="font-mono-tabular text-base font-bold text-[#7FFFD4]">
+                      {streaks.dailyCommitmentDays}
+                    </span>
+                  </div>
+                  <div className="text-xs font-semibold text-white mt-1">
+                    الورد والالتزام اليومي
+                  </div>
+                  <div className="text-[10px] text-zinc-400 mt-0.5">
+                    {streaks.dailyCommitmentDoneToday ? 'مكتمل اليوم ✓' : 'تأكيد الإنجاز'}
+                  </div>
+                </button>
+              )}
 
               <div
                 className={`rounded-xl border p-3 text-right ${
@@ -3356,14 +4352,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-base">💧 🥤</span>
                   <span className="font-mono-tabular text-base font-bold text-[#4ADE80]">
-                    {streaks.waterTargetDays}
+                    {calendarConnected ? streaks.waterTargetDays : 0}
                   </span>
                 </div>
                 <div className="text-xs font-semibold text-white mt-1">
                   سلسلة الترطيب
                 </div>
                 <div className="font-mono-tabular text-[10px] text-zinc-400 mt-0.5">
-                  {hydrationToday.cupsLogged}/{hydrationToday.targetCups} ({waterPct}%)
+                  {calendarConnected
+                    ? `${hydrationToday.cupsLogged}/${hydrationToday.targetCups} (${waterPct}%)`
+                    : '0/0 (0%)'}
                 </div>
               </div>
             </div>
@@ -3446,31 +4444,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       type="date"
                       value={newEvDate}
                       onChange={(e) => setNewEvDate(e.target.value)}
-                      className="w-full rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white"
+                      className="w-full rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white font-mono-tabular"
                     />
                   </div>
                   <div>
-                    <label className="block text-zinc-400 mb-1">المدة (دقائق)</label>
-                    <select
+                    <label className="block text-zinc-400 mb-1">المدة (أي عدد دقائق)</label>
+                    <input
+                      type="number"
+                      min={5}
+                      max={480}
                       value={newEvDuration}
-                      onChange={(e) => setNewEvDuration(Number(e.target.value))}
-                      className="w-full rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white"
-                    >
-                      {[15, 30, 45, 60, 90, 120].map((d) => (
-                        <option key={d} value={d}>
-                          {d} دقيقة
-                        </option>
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setNewEvDuration(Number.isFinite(v) ? Math.max(5, Math.min(480, v)) : 30);
+                      }}
+                      className="w-full rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                    />
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {[15, 30, 45, 60, 90].map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setNewEvDuration(preset)}
+                          className={`px-2 py-0.5 rounded-md border text-[10px] font-mono-tabular cursor-pointer ${
+                            newEvDuration === preset
+                              ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                              : 'border-white/10 text-zinc-400 hover:text-white'
+                          }`}
+                        >
+                          {preset}د
+                        </button>
                       ))}
-                    </select>
+                    </div>
                   </div>
                 </div>
                 <div>
-                  <label className="block text-zinc-400 mb-1">وقت البداية (نظام 12 ساعة ص / م)</label>
+                  <label className="block text-zinc-400 mb-1">وقت البداية (نظام 12 ساعة — أي دقيقة 0–59)</label>
                   <div className="grid grid-cols-3 gap-2">
                     <select
                       value={newEvHour12}
                       onChange={(e) => setNewEvHour12(Number(e.target.value))}
                       className="rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white font-mono-tabular"
+                      aria-label="الساعة"
                     >
                       {[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => (
                         <option key={h} value={h}>
@@ -3478,17 +4493,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </option>
                       ))}
                     </select>
-                    <select
+                    <input
+                      type="number"
+                      min={0}
+                      max={59}
                       value={newEvMinute}
-                      onChange={(e) => setNewEvMinute(Number(e.target.value))}
-                      className="rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white font-mono-tabular"
-                    >
-                      {[0, 15, 30, 45].map((m) => (
-                        <option key={m} value={m}>
-                          {String(m).padStart(2, '0')}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setNewEvMinute(Number.isFinite(v) ? Math.max(0, Math.min(59, v)) : 0);
+                      }}
+                      className="rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-center text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                      aria-label="الدقائق"
+                      placeholder="00"
+                    />
                     <div className="grid grid-cols-2 gap-1 p-1 rounded-xl border border-white/15 bg-black/70">
                       <button
                         type="button"
@@ -3512,7 +4529,72 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 pt-2">
+                {/* Live Smart Conflict Detection + Gemini Negotiation */}
+                {newEventConflict.hasConflict && (
+                  <div className="rounded-xl border border-amber-400/45 bg-amber-400/10 p-3 space-y-2 text-[11px] text-amber-100">
+                    <div className="flex items-start gap-1.5 font-semibold text-amber-200">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
+                      <span>تحذير ذكي — هذا التوقيت يتعارض مع ثوابتك أو جدولك:</span>
+                    </div>
+                    <ul className="space-y-0.5 pr-4 list-disc text-[10px] text-amber-100/90">
+                      {newEventConflict.warnings.map((w, idx) => (
+                        <li key={idx}>{w}</li>
+                      ))}
+                    </ul>
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      {newEventConflict.suggestedTime24 && newEventConflict.suggestedTime12Ar && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            applyTime24To12hPicker(
+                              newEventConflict.suggestedTime24!,
+                              setNewEvHour12,
+                              setNewEvMinute,
+                              setNewEvPeriod
+                            )
+                          }
+                          className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[10px] font-bold hover:bg-[#66eec2] cursor-pointer"
+                        >
+                          ✓ تطبيق {newEventConflict.suggestedTime12Ar}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const titleLabel = newEvTitle.trim() || 'حدث جديد';
+                          const pickedLabel = formatTime24To12h(newEventTime24, 'ar');
+                          const conflictList = newEventConflict.warnings.join('، ');
+                          setNewEventModalOpen(false);
+                          onOpenAssistantWithPrompt(
+                            `عاوز أضيف حدث «${titleLabel}» يوم ${newEvDate} الساعة ${pickedLabel} لمدة ${newEvDuration} دقيقة، بس النظام نبّهني إن فيه تعارض: ${conflictList}. اقترح عليّ أنسب وقت فاضي بدون تضارب مع الصلاة والنوم وأحداثي.`
+                          );
+                        }}
+                        className="px-2.5 py-1 rounded-lg border border-amber-300/50 bg-black/50 text-amber-200 hover:text-white text-[10px] font-semibold cursor-pointer"
+                      >
+                        💬 ناقش أنسب وقت مع Gemini
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const titleLabel = newEvTitle.trim() || 'حدث جديد';
+                      const pickedLabel = formatTime24To12h(newEventTime24, 'ar');
+                      setNewEventModalOpen(false);
+                      onOpenAssistantWithPrompt(
+                        `عاوز أضيف حدث «${titleLabel}» يوم ${newEvDate} لمدة ${newEvDuration} دقيقة (أفكر في الساعة ${pickedLabel}) — شوف تقويمي وتوافقه مع الصلاة والنوم واقترح أنسب ميعاد قبل الإضافة.`
+                      );
+                    }}
+                    className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
+                  >
+                    💬 أو رتّبه مباشرة عبر شات Gemini
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
                   <button
                     type="button"
                     disabled={!newEvTitle.trim()}

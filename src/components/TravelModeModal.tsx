@@ -131,7 +131,7 @@ export const TravelModeModal: React.FC<TravelModeModalProps> = ({
               1. الموقع الجغرافي وفارق المواقيت
             </h3>
             <span className="font-mono-tabular text-xs text-[#7FFFD4]">
-              {distanceKm} كم من الضهرية
+              {distanceKm} كم من الموقع الأساسي
             </span>
           </div>
 
@@ -288,7 +288,7 @@ export const TravelModeModal: React.FC<TravelModeModalProps> = ({
                 <span className="text-zinc-500">محفوظة 100% أينما كنت</span>
               </div>
               <div className="text-xs text-zinc-400 leading-relaxed">
-                الصلوات الخمس (-3 د) · {groupCBlocks.slice(0, 6).map((b) => b.emojiPair).join(' · ')} · هدف الترطيب (177 مل/كوب)
+                الصلوات الخمس (-3 د) · {groupCBlocks.slice(0, 6).map((b) => b.emojiPair).join(' · ')} · هدف الترطيب اليومي
               </div>
             </div>
           </div>

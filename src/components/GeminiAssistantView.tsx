@@ -18,11 +18,12 @@ import {
   Square,
   BookOpen,
   Plus,
-  Trash2,
   SlidersHorizontal,
   WifiOff,
   PanelLeftOpen,
+  Zap,
 } from 'lucide-react';
+import { MemoryItemCard } from './MemoryItemCard';
 import type { User } from 'firebase/auth';
 import {
   AppLanguage,
@@ -51,10 +52,13 @@ import {
   GeminiConnectionStatus,
   apiFetchJson,
   apiFetchStream,
+  buildClientGeminiCacheKey,
   checkGeminiStatus,
   cleanCalendarText,
+  getCachedGeminiResponse,
   getSavedCloudApiUrl,
   isStandaloneVirtualHost,
+  setCachedGeminiResponse,
   setSavedCloudApiUrl,
 } from '../services/apiClient';
 
@@ -62,6 +66,7 @@ type AssistantMode = 'chat' | 'maps' | 'search';
 type SidebarTab = 'memories' | 'events' | 'tasks';
 
 interface GeminiAssistantViewProps {
+  isActive: boolean;
   language: AppLanguage;
   activeLocation: GeoLocation;
   contextSummary: string;
@@ -76,7 +81,7 @@ interface GeminiAssistantViewProps {
   loadingTasks: boolean;
   messages: PersistedChatMessage[];
   onChangeMessages: React.Dispatch<React.SetStateAction<PersistedChatMessage[]>>;
-  onResetChat: () => void;
+  onResetChat: (targetMode: AssistantMode) => void;
   onGoogleSignIn: () => Promise<void>;
   onGoogleSignOut: () => Promise<void>;
   onRefreshWorkspace: () => Promise<void>;
@@ -110,14 +115,15 @@ interface GeminiAssistantViewProps {
     ruleText: string;
     source?: MemoryItem['source'];
   }) => void;
+  onUpdateMemory: (id: string, patch: { category: MemoryCategory; ruleText: string }) => void;
   onDeleteMemory: (id: string) => void;
 }
 
 const SUGGESTED_PROMPTS: Record<AssistantMode, string[]> = {
   chat: [
-    'اقرأ تقويمي المتبقي اليوم وفق دستوري وذاكرتي ونبهني لأي تضارب',
-    'أضف جلسة تركيز جديدة في أقرب وقت فاضي اليوم بما يناسب أولوياتي',
-    'احفظ في ذاكرتي الدائمة قاعدة جديدة وأكدها معي',
+    'راجع جدولي المتبقي اليوم وفق دستوري ونبهني لو فيه أي تضارب',
+    'عاوز أضيف علاج أو مكمل جديد — ناقش معايا أنسب ميعاد علمي وجدولي واحجزه في التقويم',
+    'وزني اتغيّر — عدّل الوزن في الدستور وأعد حساب أكواب المياه اليومية',
   ],
   maps: [
     'أقرب المساجد المفتوحة لصلاة الجماعة بالقرب من موقعي الحالي',
@@ -125,9 +131,9 @@ const SUGGESTED_PROMPTS: Record<AssistantMode, string[]> = {
     'أقرب صيدلية بالقرب من موقعي الآن',
   ],
   search: [
-    'حالة الطقس اليوم في الدقهلية وتأثيرها على احتياج شرب المياه',
-    'مواقيت الصلاة اليوم في شربين الدقهلية وفق الهيئة المصرية للمساحة',
-    'فوائد زيت بذور اليقطين وأفضل وقت علمي لتناوله',
+    'حالة الطقس اليوم في موقعي وتأثيرها على احتياج شرب المياه',
+    'مواقيت الصلاة اليوم في مدينتي',
+    'أفضل الأوقات العلمية لتناول الفيتامينات والمكملات اليومية',
   ],
 };
 
@@ -140,6 +146,92 @@ const MEMORY_CATEGORIES: MemoryCategory[] = [
   'travel',
   'general',
 ];
+
+function normalizeArabicSearchText(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const ARCHIVE_STOPWORDS = new Set([
+  'في', 'من', 'علي', 'الي', 'عن', 'مع', 'هل', 'ما', 'هذا', 'هذه', 'انا', 'انت', 'هو', 'هي',
+  'كان', 'يكون', 'تم', 'اللي', 'الذي', 'التي', 'عشان', 'علشان', 'عاوز', 'عايز', 'ممكن', 'لو',
+  'بس', 'مش', 'لا', 'نعم', 'كل', 'اي', 'ايه', 'ازاي', 'فين', 'امتي', 'ليه', 'كمان', 'جدا',
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'what', 'when', 'how',
+]);
+
+/**
+ * Searches older cloud-synced messages (beyond the active 12-turn recent history window)
+ * so Gemini can accurately reference plans, health notes, or decisions discussed long ago.
+ */
+function buildLongTermChatContext(
+  allMessages: PersistedChatMessage[],
+  currentQuery: string
+): string {
+  const cleanChat = allMessages.filter(
+    (m) => m.mode === 'chat' && !m.error && m.id !== 'welcome-1' && (m.text || '').trim().length > 0
+  );
+  // Recent 14 messages are already sent verbatim in `history`
+  if (cleanChat.length <= 14) return '';
+  const older = cleanChat.slice(0, -14);
+
+  const queryTokens = normalizeArabicSearchText(currentQuery)
+    .split(' ')
+    .filter((tok) => tok.length >= 3 && !ARCHIVE_STOPWORDS.has(tok));
+
+  const scored = older.map((msg, idx) => {
+    const norm = normalizeArabicSearchText(msg.text);
+    let score = 0;
+    for (const tok of queryTokens) {
+      if (norm.includes(tok)) {
+        score += tok.length >= 5 ? 3 : 2;
+      }
+    }
+    return { idx, msg, score };
+  });
+
+  const matched = scored
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || b.idx - a.idx)
+    .slice(0, 6);
+
+  const selectedIndices = new Set<number>();
+  if (matched.length > 0) {
+    for (const m of matched) {
+      selectedIndices.add(m.idx);
+      // Include immediate reply/question pair for full context
+      if (m.msg.role === 'user' && m.idx + 1 < older.length && older[m.idx + 1].role === 'model') {
+        selectedIndices.add(m.idx + 1);
+      } else if (m.msg.role === 'model' && m.idx - 1 >= 0 && older[m.idx - 1].role === 'user') {
+        selectedIndices.add(m.idx - 1);
+      }
+    }
+  } else {
+    // Fallback: include a few compact highlights from earlier cloud history
+    const startIdx = Math.max(0, older.length - 4);
+    for (let i = startIdx; i < older.length; i += 1) {
+      selectedIndices.add(i);
+    }
+  }
+
+  const ordered = Array.from(selectedIndices)
+    .sort((a, b) => a - b)
+    .slice(0, 10)
+    .map((idx) => {
+      const m = older[idx];
+      const dateTag = m.createdAtIso ? m.createdAtIso.slice(0, 10) : 'سابقاً';
+      const speaker = m.role === 'user' ? 'المستخدم' : 'Gemini';
+      return `[${dateTag} · ${speaker}]: ${m.text.replace(/\s+/g, ' ').trim().slice(0, 280)}`;
+    });
+
+  return ordered.join('\n').slice(0, 3000);
+}
 
 function buildNormalizedHistory(
   msgs: PersistedChatMessage[]
@@ -164,6 +256,7 @@ function buildNormalizedHistory(
 }
 
 export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
+  isActive,
   language,
   activeLocation,
   contextSummary,
@@ -198,27 +291,82 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   lifeProfile,
   firestoreSynced,
   onAddMemory,
+  onUpdateMemory,
   onDeleteMemory,
 }) => {
   const [mode, setMode] = useState<AssistantMode>('chat');
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('memories');
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
 
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
+  // Separate drafts, loading flags, and abort controllers per mode (chat / maps / search)
+  const [draftsByMode, setDraftsByMode] = useState<Record<AssistantMode, string>>({
+    chat: '',
+    maps: '',
+    search: '',
+  });
+  const [loadingByMode, setLoadingByMode] = useState<Record<AssistantMode, boolean>>({
+    chat: false,
+    maps: false,
+    search: false,
+  });
+  const [streamingMsgIdByMode, setStreamingMsgIdByMode] = useState<
+    Record<AssistantMode, string | null>
+  >({
+    chat: null,
+    maps: null,
+    search: null,
+  });
+  const [streamStatusByMode, setStreamStatusByMode] = useState<Record<AssistantMode, string>>({
+    chat: '',
+    maps: '',
+    search: '',
+  });
   const [executingProposalId, setExecutingProposalId] = useState<string | null>(null);
+
+  // Instant Auto-Execute Mode (default ON so direct commands run immediately without a second wait/click)
+  const [autoExecute, setAutoExecute] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('dayrhythm_chat_auto_execute');
+      return saved === null ? true : saved === '1';
+    } catch {
+      return true;
+    }
+  });
+  const autoExecuteRef = useRef(autoExecute);
+  useEffect(() => {
+    autoExecuteRef.current = autoExecute;
+    try {
+      localStorage.setItem('dayrhythm_chat_auto_execute', autoExecute ? '1' : '0');
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [autoExecute]);
+
+  const input = draftsByMode[mode];
+  const loading = loadingByMode[mode];
+  const setInputForMode = useCallback((targetMode: AssistantMode, value: string) => {
+    setDraftsByMode((prev) => ({ ...prev, [targetMode]: value }));
+  }, []);
+  const setInput = useCallback(
+    (value: string) => {
+      setDraftsByMode((prev) => ({ ...prev, [mode]: value }));
+    },
+    [mode]
+  );
 
   // Real live Gemini connectivity state
   const [geminiStatus, setGeminiStatus] = useState<GeminiConnectionStatus>({
     ok: false,
     connected: false,
     status: 'checking',
-    model: 'gemini-4-hydrogen',
+    model: 'gemini-3.1-flash-lite',
     latencyMs: 0,
   });
 
-  // Inline Quick Memory form inside the chat sidebar
+  const streamingMsgId = streamingMsgIdByMode[mode];
+  const streamStatusText = streamStatusByMode[mode];
+
+  // Inline Quick Memory form inside the chat sidebar (inline editing handled directly by MemoryItemCard)
   const [newMemoryCat, setNewMemoryCat] = useState<MemoryCategory>('general');
   const [newMemoryRule, setNewMemoryRule] = useState('');
   const [memorySearch, setMemorySearch] = useState('');
@@ -231,8 +379,12 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   const recognitionRef = useRef<{ stop: () => void; abort: () => void } | null>(null);
   const voiceBaseInputRef = useRef('');
 
-  // AbortController for instant Stop Generation
-  const abortControllerRef = useRef<AbortController | null>(null);
+  // Independent AbortControllers per mode for instant Stop Generation
+  const abortControllersRef = useRef<Record<AssistantMode, AbortController | null>>({
+    chat: null,
+    maps: null,
+    search: null,
+  });
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const threadEndRef = useRef<HTMLDivElement | null>(null);
@@ -244,32 +396,112 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   });
   const [gpsStatus, setGpsStatus] = useState<string>(activeLocation.nameAr);
 
-  const runGeminiProbe = useCallback(async (forceProbe = false) => {
-    setGeminiStatus((prev) => ({ ...prev, status: 'checking' }));
-    const res = await checkGeminiStatus(forceProbe);
-    setGeminiStatus(res);
+  const probeInFlightRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const geminiStatusRef = useRef<GeminiConnectionStatus>(geminiStatus);
+
+  useEffect(() => {
+    geminiStatusRef.current = geminiStatus;
+  }, [geminiStatus]);
+
+  const runGeminiProbe = useCallback(async (forceProbe = false, silentCheck = false) => {
+    if (probeInFlightRef.current) return;
+    probeInFlightRef.current = true;
+    if (!silentCheck) {
+      setGeminiStatus((prev) => ({ ...prev, status: 'checking' }));
+    }
+    try {
+      const res = await checkGeminiStatus(forceProbe);
+      setGeminiStatus(res);
+      if (res.status === 'online') {
+        reconnectAttemptsRef.current = 0;
+      }
+    } finally {
+      probeInFlightRef.current = false;
+    }
   }, []);
 
-  // Verify real Gemini connection on mount + periodically every 2 minutes when online
+  // Verify real Gemini connection on mount + silent health check + auto-reconnect on online/focus/tab-open
   useEffect(() => {
-    void runGeminiProbe(false);
+    void runGeminiProbe(false, false);
+
     const intervalId = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void runGeminiProbe(false);
+      if (document.visibilityState === 'visible' && navigator.onLine !== false) {
+        void runGeminiProbe(false, true);
       }
-    }, 120_000);
-    const onOnline = () => void runGeminiProbe(true);
-    window.addEventListener('online', onOnline);
+    }, 180_000);
+
+    const handleNetworkRecover = () => {
+      reconnectAttemptsRef.current = 0;
+      void runGeminiProbe(true, true);
+    };
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        const cur = geminiStatusRef.current;
+        if (cur.status === 'offline' || cur.status === 'degraded') {
+          void runGeminiProbe(false, true);
+        }
+      }
+    };
+
+    window.addEventListener('online', handleNetworkRecover);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
     return () => {
       window.clearInterval(intervalId);
-      window.removeEventListener('online', onOnline);
+      window.removeEventListener('online', handleNetworkRecover);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
     };
   }, [runGeminiProbe]);
 
+  // Automatic exponential-backoff reconnect whenever Gemini is offline or degraded (zero manual clicks needed)
   useEffect(() => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    if (geminiStatus.status === 'online' || geminiStatus.status === 'checking') {
+      return;
+    }
+
+    const backoffDelaysMs = [3_000, 6_000, 12_000, 20_000, 30_000];
+    const attemptIdx = Math.min(reconnectAttemptsRef.current, backoffDelaysMs.length - 1);
+    const delayMs = backoffDelaysMs[attemptIdx];
+
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectAttemptsRef.current += 1;
+      if (navigator.onLine !== false && document.visibilityState === 'visible') {
+        void runGeminiProbe(geminiStatus.status === 'offline', true);
+      }
+    }, delayMs);
+
+    return () => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+  }, [geminiStatus.status, geminiStatus.checkedAtIso, runGeminiProbe]);
+
+  // Auto-probe immediately if user switches to Assistant tab while disconnected
+  useEffect(() => {
+    if (!isActive) return;
+    if (geminiStatusRef.current.status === 'offline' || geminiStatusRef.current.status === 'degraded') {
+      void runGeminiProbe(false, true);
+    }
+  }, [isActive, runGeminiProbe]);
+
+  useEffect(() => {
+    const controllers = abortControllersRef.current;
     return () => {
       recognitionRef.current?.abort();
-      abortControllerRef.current?.abort();
+      controllers.chat?.abort();
+      controllers.maps?.abort();
+      controllers.search?.abort();
     };
   }, []);
 
@@ -292,6 +524,37 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     el.style.height = '44px';
     el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
   }, [input]);
+
+  // Immediately focus chat input whenever Chat tab opens or mode switches (Desktop & Mobile ready-to-type)
+  const focusComposerInput = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    try {
+      el.focus({ preventScroll: true });
+      const len = el.value.length;
+      el.setSelectionRange(len, len);
+    } catch {
+      el.focus();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isActive) return;
+    const rafId = window.requestAnimationFrame(() => focusComposerInput());
+    const timerId = window.setTimeout(() => focusComposerInput(), 80);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.clearTimeout(timerId);
+    };
+  }, [isActive, mode, focusComposerInput]);
+
+  useEffect(() => {
+    const onFocusChat = () => {
+      window.requestAnimationFrame(() => focusComposerInput());
+    };
+    window.addEventListener('dayrhythm:focus-chat', onFocusChat);
+    return () => window.removeEventListener('dayrhythm:focus-chat', onFocusChat);
+  }, [focusComposerInput]);
 
   const handleThreadScroll = () => {
     const el = scrollContainerRef.current;
@@ -387,9 +650,9 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   useEffect(() => {
     if (!initialPrompt) return;
     setMode('chat');
-    setInput(initialPrompt);
+    setInputForMode('chat', initialPrompt);
     onConsumeInitialPrompt?.();
-  }, [initialPrompt, onConsumeInitialPrompt]);
+  }, [initialPrompt, onConsumeInitialPrompt, setInputForMode]);
 
   useEffect(() => {
     if (!autoStartVoice) return;
@@ -406,11 +669,12 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStartVoice, onConsumeAutoStartVoice]);
 
-  const stopGeneration = () => {
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-    setLoading(false);
-    setStreamingMsgId(null);
+  const stopGeneration = (targetMode: AssistantMode = mode) => {
+    abortControllersRef.current[targetMode]?.abort();
+    abortControllersRef.current[targetMode] = null;
+    setLoadingByMode((prev) => ({ ...prev, [targetMode]: false }));
+    setStreamingMsgIdByMode((prev) => ({ ...prev, [targetMode]: null }));
+    setStreamStatusByMode((prev) => ({ ...prev, [targetMode]: '' }));
   };
 
   const handleSignInClick = async () => {
@@ -427,7 +691,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
   const requestBrowserGps = () => {
     if (!navigator.geolocation) {
-      setGpsStatus('المتصفح لا يدعم GPS — استخدام الضهرية');
+      setGpsStatus(`المتصفح لا يدعم GPS — استخدام ${activeLocation.nameAr}`);
       return;
     }
     setGpsStatus('جارٍ تحديد الموقع...');
@@ -562,11 +826,16 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     [memories]
   );
 
-  const sendMessage = async (overrideText?: string, overrideMode?: AssistantMode) => {
+  const sendMessage = async (
+    overrideText?: string,
+    overrideMode?: AssistantMode,
+    options?: { bypassCache?: boolean }
+  ) => {
     const activeMode = overrideMode ?? mode;
-    const query = (overrideText ?? input).trim();
-    if (!query || loading) return;
+    const query = (overrideText ?? draftsByMode[activeMode]).trim();
+    if (!query || loadingByMode[activeMode]) return;
 
+    const bypassCache = Boolean(options?.bypassCache);
     userScrolledUpRef.current = false;
     const userMsg: PersistedChatMessage = {
       id: `u-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -576,24 +845,102 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       createdAtIso: new Date().toISOString(),
     };
 
-    const nextMessages = [...messages, userMsg];
-    onChangeMessages(nextMessages);
-    if (!overrideText) setInput('');
-    setLoading(true);
+    onChangeMessages((prev) => [...prev, userMsg]);
+    if (!overrideText) setInputForMode(activeMode, '');
+    setLoadingByMode((prev) => ({ ...prev, [activeMode]: true }));
+    setStreamStatusByMode((prev) => ({
+      ...prev,
+      [activeMode]:
+        activeMode === 'maps'
+          ? 'جارٍ البحث في الخرائط حول موقعك...'
+          : activeMode === 'search'
+            ? 'جارٍ البحث المباشر وتجميع المصادر...'
+            : 'جارٍ التفكير وفق دستورك وذاكرتك...',
+    }));
 
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    abortControllersRef.current[activeMode] = controller;
     const startedAt = Date.now();
+    const normalizedQueryKey = query.replace(/\s+/g, ' ').toLowerCase();
+
+    const maybeAutoExecuteProposal = (
+      msgId: string,
+      proposal?: PersistedChatMessage['pendingProposal']
+    ) => {
+      if (!proposal || !autoExecuteRef.current) return;
+      const totalItems =
+        proposal.actions.length +
+        (proposal.taskActions?.length ?? 0) +
+        (proposal.medicationActions?.length ?? 0) +
+        (proposal.creativeActions?.length ?? 0) +
+        (proposal.profileUpdates ? 1 : 0) +
+        (proposal.memoryActions?.length ?? 0);
+      if (totalItems === 0) return;
+      // Execute immediately so user never waits for a second confirmation round-trip
+      window.setTimeout(() => {
+        void handleConfirmProposal(
+          msgId,
+          proposal.actions,
+          proposal.taskActions ?? [],
+          proposal.medicationActions ?? [],
+          proposal.creativeActions ?? [],
+          proposal.profileUpdates,
+          proposal.memoryActions ?? []
+        );
+      }, 0);
+    };
 
     try {
+      const streamId = `m-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
       if (activeMode === 'chat') {
         const chatHistory = buildNormalizedHistory(messages);
+        const timeBucket5m = Math.floor(Date.now() / (5 * 60_000));
+        const clientCacheKey = buildClientGeminiCacheKey([
+          'chat',
+          getCairoTodayIso(),
+          timeBucket5m,
+          normalizedQueryKey,
+          chatHistory.slice(-4),
+          contextSummary.slice(0, 800),
+          serializedMemories.map((m) => `${m.id}:${m.category}:${m.ruleText}`),
+          calendarEvents.slice(0, 30).map((e) => `${e.id}:${e.start}:${e.summary}`),
+          googleTasks.slice(0, 20).map((t) => `${t.id}:${t.status}:${t.title}`),
+          medications.map((m) => `${m.id}:${m.takenDateKey}:${m.remainingDoses ?? -1}`),
+        ]);
+
+        if (!bypassCache) {
+          const hit = getCachedGeminiResponse(clientCacheKey);
+          if (hit) {
+            onChangeMessages((prev) => [
+              ...prev,
+              {
+                id: streamId,
+                role: 'model',
+                mode: 'chat',
+                text: hit.text,
+                createdAtIso: new Date().toISOString(),
+                sources: hit.sources,
+                latencyMs: 1,
+                memoriesAppliedCount: hit.memoriesAppliedCount ?? memories.length,
+                cached: true,
+                retryPrompt: query,
+              },
+            ]);
+            return;
+          }
+        }
+
+        const longTermChatContext = buildLongTermChatContext(messages, query);
+
         const requestBody = {
           message: query,
+          bypassCache,
           history: chatHistory,
           contextSummary,
+          longTermChatContext,
           memories: serializedMemories,
-          calendarEvents: calendarEvents.map((e) => ({
+          calendarEvents: calendarEvents.slice(0, 40).map((e) => ({
             id: e.id,
             calendarId: e.calendarId,
             calendarTitle: e.calendarTitle,
@@ -603,7 +950,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             start: e.start,
             end: e.end,
           })),
-          tasks: googleTasks.map((t) => ({
+          tasks: googleTasks.slice(0, 30).map((t) => ({
             id: t.id,
             taskListId: t.taskListId,
             taskListTitle: t.taskListTitle,
@@ -623,6 +970,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             courseEndDate: m.courseEndDate,
             remainingDoses: m.remainingDoses,
             totalDoses: m.totalDoses,
+            refillAlertDays: m.refillAlertDays ?? 3,
+            takenDates: m.takenDates ?? [],
           })),
           creativeActivities: creativePlacements.map((p) => ({
             id: p.activity.id,
@@ -640,17 +989,19 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           })),
         };
 
-        const streamId = `m-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         let streamInserted = false;
         let streamedSuccessfully = false;
 
         try {
           streamedSuccessfully = await apiFetchStream('/api/chat/stream', requestBody, {
             signal: controller.signal,
+            onStatus: (statusText) => {
+              setStreamStatusByMode((prev) => ({ ...prev, chat: statusText }));
+            },
             onDelta: (deltaText) => {
               if (!streamInserted) {
                 streamInserted = true;
-                setStreamingMsgId(streamId);
+                setStreamingMsgIdByMode((prev) => ({ ...prev, chat: streamId }));
                 onChangeMessages((prev) => [
                   ...prev,
                   {
@@ -673,25 +1024,45 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                 ok: true,
                 connected: true,
                 status: 'online',
-                model: payload.model || 'gemini-4-hydrogen',
+                model: payload.model || 'gemini-3.1-flash-lite',
                 latencyMs,
                 checkedAtIso: new Date().toISOString(),
               });
+              const preparedProposal = payload.pendingProposal
+                ? { ...payload.pendingProposal, status: 'pending' as const }
+                : undefined;
+              const finalText = payload.text || 'تم إعداد التعديل.';
+              const finalSources =
+                Array.isArray(payload.sources) && payload.sources.length > 0
+                  ? payload.sources
+                  : undefined;
+
+              // Cache non-mutating responses locally for instant repeated lookups
+              if (!preparedProposal && finalText.trim()) {
+                setCachedGeminiResponse(
+                  clientCacheKey,
+                  {
+                    text: finalText,
+                    sources: finalSources,
+                    memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
+                    model: payload.model,
+                  },
+                  2 * 60_000
+                );
+              }
+
               const finalMsg: PersistedChatMessage = {
                 id: streamId,
                 role: 'model',
                 mode: 'chat',
-                text: payload.text || 'تم إعداد الاقتراح.',
+                text: finalText,
                 createdAtIso: new Date().toISOString(),
-                sources:
-                  Array.isArray(payload.sources) && payload.sources.length > 0
-                    ? payload.sources
-                    : undefined,
-                pendingProposal: payload.pendingProposal
-                  ? { ...payload.pendingProposal, status: 'pending' as const }
-                  : undefined,
+                sources: finalSources,
+                pendingProposal: preparedProposal,
                 latencyMs,
                 memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
+                cached: Boolean(payload.cached),
+                retryPrompt: payload.cached ? query : undefined,
               };
               if (!streamInserted) {
                 streamInserted = true;
@@ -699,6 +1070,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               } else {
                 onChangeMessages((prev) => prev.map((m) => (m.id === streamId ? finalMsg : m)));
               }
+              maybeAutoExecuteProposal(streamId, preparedProposal);
             },
           });
         } catch (streamErr: unknown) {
@@ -720,6 +1092,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             latencyMs?: number;
             memoriesAppliedCount?: number;
             model?: string;
+            cached?: boolean;
           }>('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -732,122 +1105,415 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             ok: true,
             connected: true,
             status: 'online',
-            model: data.model || 'gemini-4-hydrogen',
+            model: data.model || 'gemini-3.1-flash-lite',
             latencyMs,
             checkedAtIso: new Date().toISOString(),
           });
+          const preparedProposal = data.pendingProposal
+            ? { ...data.pendingProposal, status: 'pending' as const }
+            : undefined;
+          const finalText = data.text || 'تم إعداد التعديل.';
+          const finalSources =
+            Array.isArray(data.sources) && data.sources.length > 0 ? data.sources : undefined;
+
+          if (!preparedProposal && finalText.trim()) {
+            setCachedGeminiResponse(
+              clientCacheKey,
+              {
+                text: finalText,
+                sources: finalSources,
+                memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
+                model: data.model,
+              },
+              2 * 60_000
+            );
+          }
+
           onChangeMessages((prev) => [
             ...prev,
             {
               id: streamId,
               role: 'model',
               mode: 'chat',
-              text: data.text || 'تم إعداد الاقتراح.',
+              text: finalText,
               createdAtIso: new Date().toISOString(),
-              sources:
-                Array.isArray(data.sources) && data.sources.length > 0 ? data.sources : undefined,
-              pendingProposal: data.pendingProposal
-                ? { ...data.pendingProposal, status: 'pending' as const }
-                : undefined,
+              sources: finalSources,
+              pendingProposal: preparedProposal,
               latencyMs,
               memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
+              cached: Boolean(data.cached),
+              retryPrompt: data.cached ? query : undefined,
+            },
+          ]);
+          maybeAutoExecuteProposal(streamId, preparedProposal);
+        }
+      } else if (activeMode === 'maps') {
+        const clientCacheKey = buildClientGeminiCacheKey([
+          'maps',
+          normalizedQueryKey,
+          userCoords.lat.toFixed(3),
+          userCoords.lng.toFixed(3),
+          serializedMemories.slice(0, 10).map((m) => m.ruleText),
+        ]);
+
+        if (!bypassCache) {
+          const hit = getCachedGeminiResponse(clientCacheKey);
+          if (hit) {
+            onChangeMessages((prev) => [
+              ...prev,
+              {
+                id: streamId,
+                role: 'model',
+                mode: 'maps',
+                text: hit.text,
+                createdAtIso: new Date().toISOString(),
+                places: hit.places ?? [],
+                latencyMs: 1,
+                memoriesAppliedCount: hit.memoriesAppliedCount ?? memories.length,
+                cached: true,
+                retryPrompt: query,
+              },
+            ]);
+            return;
+          }
+        }
+
+        const requestBody = {
+          query,
+          bypassCache,
+          lat: userCoords.lat,
+          lng: userCoords.lng,
+          memories: serializedMemories,
+          constitutionBrief: contextSummary.slice(0, 600),
+        };
+
+        let streamInserted = false;
+        let streamedSuccessfully = false;
+
+        try {
+          streamedSuccessfully = await apiFetchStream('/api/maps/stream', requestBody, {
+            signal: controller.signal,
+            onStatus: (statusText) => {
+              setStreamStatusByMode((prev) => ({ ...prev, maps: statusText }));
+            },
+            onDelta: (deltaText) => {
+              if (!streamInserted) {
+                streamInserted = true;
+                setStreamingMsgIdByMode((prev) => ({ ...prev, maps: streamId }));
+                onChangeMessages((prev) => [
+                  ...prev,
+                  {
+                    id: streamId,
+                    role: 'model',
+                    mode: 'maps',
+                    text: deltaText,
+                    createdAtIso: new Date().toISOString(),
+                  },
+                ]);
+              } else {
+                onChangeMessages((prev) =>
+                  prev.map((m) => (m.id === streamId ? { ...m, text: m.text + deltaText } : m))
+                );
+              }
+            },
+            onDone: (payload) => {
+              const latencyMs = payload.latencyMs ?? Math.max(1, Date.now() - startedAt);
+              setGeminiStatus((prev) => ({
+                ...prev,
+                ok: true,
+                connected: true,
+                status: 'online',
+                latencyMs,
+                checkedAtIso: new Date().toISOString(),
+              }));
+              const finalText = payload.text || 'تم العثور على النتائج التالية:';
+              const finalPlaces = Array.isArray(payload.places) ? payload.places : [];
+              setCachedGeminiResponse(
+                clientCacheKey,
+                {
+                  text: finalText,
+                  places: finalPlaces,
+                  memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
+                  model: payload.model,
+                },
+                8 * 60_000
+              );
+              const finalMsg: PersistedChatMessage = {
+                id: streamId,
+                role: 'model',
+                mode: 'maps',
+                text: finalText,
+                createdAtIso: new Date().toISOString(),
+                places: finalPlaces,
+                latencyMs,
+                memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
+                cached: Boolean(payload.cached),
+                retryPrompt: payload.cached ? query : undefined,
+              };
+              if (!streamInserted) {
+                streamInserted = true;
+                onChangeMessages((prev) => [...prev, finalMsg]);
+              } else {
+                onChangeMessages((prev) => prev.map((m) => (m.id === streamId ? finalMsg : m)));
+              }
+            },
+          });
+        } catch (streamErr: unknown) {
+          if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
+            throw streamErr;
+          }
+          if (streamInserted) {
+            throw streamErr;
+          }
+        }
+
+        if (!streamedSuccessfully) {
+          const { ok, data } = await apiFetchJson<{
+            text?: string;
+            error?: string;
+            places?: Array<{ title: string; uri: string; snippets?: string[] }>;
+            latencyMs?: number;
+            memoriesAppliedCount?: number;
+            cached?: boolean;
+          }>('/api/maps', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          });
+          if (!ok) throw new Error(data.error || 'تعذر جلب نتائج الخرائط.');
+          const latencyMs = data.latencyMs ?? Math.max(1, Date.now() - startedAt);
+          setGeminiStatus((prev) => ({
+            ...prev,
+            ok: true,
+            connected: true,
+            status: 'online',
+            latencyMs,
+            checkedAtIso: new Date().toISOString(),
+          }));
+          const finalText = data.text || 'تم العثور على النتائج التالية:';
+          const finalPlaces = Array.isArray(data.places) ? data.places : [];
+          setCachedGeminiResponse(
+            clientCacheKey,
+            {
+              text: finalText,
+              places: finalPlaces,
+              memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
+            },
+            8 * 60_000
+          );
+          onChangeMessages((prev) => [
+            ...prev,
+            {
+              id: streamId,
+              role: 'model',
+              mode: 'maps',
+              text: finalText,
+              createdAtIso: new Date().toISOString(),
+              places: finalPlaces,
+              latencyMs,
+              memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
+              cached: Boolean(data.cached),
+              retryPrompt: data.cached ? query : undefined,
             },
           ]);
         }
-      } else if (activeMode === 'maps') {
-        const { ok, data } = await apiFetchJson<{
-          text?: string;
-          error?: string;
-          places?: Array<{ title: string; uri: string }>;
-          latencyMs?: number;
-          memoriesAppliedCount?: number;
-        }>('/api/maps', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query,
-            lat: userCoords.lat,
-            lng: userCoords.lng,
-            memories: serializedMemories,
-            constitutionBrief: contextSummary.slice(0, 750),
-          }),
-          signal: controller.signal,
-        });
-        if (!ok) throw new Error(data.error || 'تعذر جلب نتائج الخرائط.');
-        const latencyMs = data.latencyMs ?? Math.max(1, Date.now() - startedAt);
-        setGeminiStatus((prev) => ({
-          ...prev,
-          ok: true,
-          connected: true,
-          status: 'online',
-          latencyMs,
-          checkedAtIso: new Date().toISOString(),
-        }));
-        onChangeMessages((prev) => [
-          ...prev,
-          {
-            id: `m-${Date.now()}`,
-            role: 'model',
-            mode: 'maps',
-            text: data.text || 'تم العثور على النتائج التالية:',
-            createdAtIso: new Date().toISOString(),
-            places: Array.isArray(data.places) ? data.places : [],
-            latencyMs,
-            memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
-          },
-        ]);
       } else {
-        const { ok, data } = await apiFetchJson<{
-          text?: string;
-          error?: string;
-          sources?: Array<{ title: string; uri: string }>;
-          latencyMs?: number;
-          memoriesAppliedCount?: number;
-        }>('/api/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query,
-            memories: serializedMemories,
-            constitutionBrief: contextSummary.slice(0, 750),
-          }),
-          signal: controller.signal,
-        });
-        if (!ok) throw new Error(data.error || 'تعذر إجراء البحث المباشر.');
-        const latencyMs = data.latencyMs ?? Math.max(1, Date.now() - startedAt);
-        setGeminiStatus((prev) => ({
-          ...prev,
-          ok: true,
-          connected: true,
-          status: 'online',
-          latencyMs,
-          checkedAtIso: new Date().toISOString(),
-        }));
-        onChangeMessages((prev) => [
-          ...prev,
-          {
-            id: `m-${Date.now()}`,
-            role: 'model',
-            mode: 'search',
-            text: data.text || 'نتائج البحث:',
-            createdAtIso: new Date().toISOString(),
-            sources: Array.isArray(data.sources) ? data.sources : [],
-            latencyMs,
-            memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
-          },
+        const clientCacheKey = buildClientGeminiCacheKey([
+          'search',
+          getCairoTodayIso(),
+          normalizedQueryKey,
+          userCoords.lat.toFixed(2),
+          userCoords.lng.toFixed(2),
+          serializedMemories.slice(0, 10).map((m) => m.ruleText),
         ]);
+
+        if (!bypassCache) {
+          const hit = getCachedGeminiResponse(clientCacheKey);
+          if (hit) {
+            onChangeMessages((prev) => [
+              ...prev,
+              {
+                id: streamId,
+                role: 'model',
+                mode: 'search',
+                text: hit.text,
+                createdAtIso: new Date().toISOString(),
+                sources: hit.sources ?? [],
+                latencyMs: 1,
+                memoriesAppliedCount: hit.memoriesAppliedCount ?? memories.length,
+                cached: true,
+                retryPrompt: query,
+              },
+            ]);
+            return;
+          }
+        }
+
+        const requestBody = {
+          query,
+          bypassCache,
+          lat: userCoords.lat,
+          lng: userCoords.lng,
+          memories: serializedMemories,
+          constitutionBrief: contextSummary.slice(0, 600),
+        };
+
+        let streamInserted = false;
+        let streamedSuccessfully = false;
+
+        try {
+          streamedSuccessfully = await apiFetchStream('/api/search/stream', requestBody, {
+            signal: controller.signal,
+            onStatus: (statusText) => {
+              setStreamStatusByMode((prev) => ({ ...prev, search: statusText }));
+            },
+            onDelta: (deltaText) => {
+              if (!streamInserted) {
+                streamInserted = true;
+                setStreamingMsgIdByMode((prev) => ({ ...prev, search: streamId }));
+                onChangeMessages((prev) => [
+                  ...prev,
+                  {
+                    id: streamId,
+                    role: 'model',
+                    mode: 'search',
+                    text: deltaText,
+                    createdAtIso: new Date().toISOString(),
+                  },
+                ]);
+              } else {
+                onChangeMessages((prev) =>
+                  prev.map((m) => (m.id === streamId ? { ...m, text: m.text + deltaText } : m))
+                );
+              }
+            },
+            onDone: (payload) => {
+              const latencyMs = payload.latencyMs ?? Math.max(1, Date.now() - startedAt);
+              setGeminiStatus((prev) => ({
+                ...prev,
+                ok: true,
+                connected: true,
+                status: 'online',
+                latencyMs,
+                checkedAtIso: new Date().toISOString(),
+              }));
+              const finalText = payload.text || 'نتائج البحث:';
+              const finalSources = Array.isArray(payload.sources) ? payload.sources : [];
+              setCachedGeminiResponse(
+                clientCacheKey,
+                {
+                  text: finalText,
+                  sources: finalSources,
+                  memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
+                  model: payload.model,
+                },
+                4 * 60_000
+              );
+              const finalMsg: PersistedChatMessage = {
+                id: streamId,
+                role: 'model',
+                mode: 'search',
+                text: finalText,
+                createdAtIso: new Date().toISOString(),
+                sources: finalSources,
+                latencyMs,
+                memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
+                cached: Boolean(payload.cached),
+                retryPrompt: payload.cached ? query : undefined,
+              };
+              if (!streamInserted) {
+                streamInserted = true;
+                onChangeMessages((prev) => [...prev, finalMsg]);
+              } else {
+                onChangeMessages((prev) => prev.map((m) => (m.id === streamId ? finalMsg : m)));
+              }
+            },
+          });
+        } catch (streamErr: unknown) {
+          if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
+            throw streamErr;
+          }
+          if (streamInserted) {
+            throw streamErr;
+          }
+        }
+
+        if (!streamedSuccessfully) {
+          const { ok, data } = await apiFetchJson<{
+            text?: string;
+            error?: string;
+            sources?: Array<{ title: string; uri: string }>;
+            latencyMs?: number;
+            memoriesAppliedCount?: number;
+            cached?: boolean;
+          }>('/api/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          });
+          if (!ok) throw new Error(data.error || 'تعذر إجراء البحث المباشر.');
+          const latencyMs = data.latencyMs ?? Math.max(1, Date.now() - startedAt);
+          setGeminiStatus((prev) => ({
+            ...prev,
+            ok: true,
+            connected: true,
+            status: 'online',
+            latencyMs,
+            checkedAtIso: new Date().toISOString(),
+          }));
+          const finalText = data.text || 'نتائج البحث:';
+          const finalSources = Array.isArray(data.sources) ? data.sources : [];
+          setCachedGeminiResponse(
+            clientCacheKey,
+            {
+              text: finalText,
+              sources: finalSources,
+              memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
+            },
+            4 * 60_000
+          );
+          onChangeMessages((prev) => [
+            ...prev,
+            {
+              id: streamId,
+              role: 'model',
+              mode: 'search',
+              text: finalText,
+              createdAtIso: new Date().toISOString(),
+              sources: finalSources,
+              latencyMs,
+              memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
+              cached: Boolean(data.cached),
+              retryPrompt: data.cached ? query : undefined,
+            },
+          ]);
+        }
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        // User intentionally stopped generation
         return;
       }
-      const errMsg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع.';
+      const rawMsg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع.';
+      const errMsg =
+        rawMsg.includes('RESOURCE_EXHAUSTED') || rawMsg.includes('429')
+          ? 'تم الوصول للحد المؤقت لطلبات Gemini — انتظر بضع ثوانٍ ثم اضغط «إعادة المحاولة».'
+          : rawMsg.includes('UNAVAILABLE') || rawMsg.includes('503')
+            ? 'خوادم Gemini مشغولة لحظياً — اضغط «إعادة المحاولة» الآن.'
+            : rawMsg.startsWith('{') && rawMsg.length > 180
+              ? 'تعذر استلام الرد من Gemini لحظياً — اضغط «إعادة المحاولة».'
+              : rawMsg;
+      const isTransientRate =
+        rawMsg.includes('429') ||
+        rawMsg.includes('503') ||
+        rawMsg.includes('RESOURCE_EXHAUSTED') ||
+        rawMsg.includes('UNAVAILABLE');
       setGeminiStatus((prev) => ({
         ...prev,
         ok: false,
-        connected: false,
-        status: 'offline',
+        connected: isTransientRate ? prev.connected : false,
+        status: isTransientRate ? 'degraded' : 'offline',
         error: errMsg,
         checkedAtIso: new Date().toISOString(),
       }));
@@ -864,9 +1530,10 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         },
       ]);
     } finally {
-      abortControllerRef.current = null;
-      setLoading(false);
-      setStreamingMsgId(null);
+      abortControllersRef.current[activeMode] = null;
+      setLoadingByMode((prev) => ({ ...prev, [activeMode]: false }));
+      setStreamingMsgIdByMode((prev) => ({ ...prev, [activeMode]: null }));
+      setStreamStatusByMode((prev) => ({ ...prev, [activeMode]: '' }));
     }
   };
 
@@ -881,6 +1548,11 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   const pendingTasks = useMemo(
     () => googleTasks.filter((t) => t.status !== 'completed'),
     [googleTasks]
+  );
+
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => m.mode === mode),
+    [messages, mode]
   );
 
   const filteredMemories = useMemo(() => {
@@ -1048,26 +1720,15 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                   : 'لا توجد قواعد مطابقة للبحث.'}
               </p>
             ) : (
-              <ul className="divide-y divide-white/10 max-h-[320px] overflow-y-auto pl-1">
+              <ul className="divide-y divide-white/10 max-h-[340px] overflow-y-auto pl-1">
                 {filteredMemories.map((mem) => (
-                  <li key={mem.id} className="py-2.5 first:pt-0 flex items-start justify-between gap-2">
-                    <div className="min-w-0 space-y-0.5">
-                      <div className="text-[10px] text-zinc-500">
-                        {MEMORY_CATEGORY_LABELS[mem.category] ?? 'قواعد عامة'}
-                      </div>
-                      <p className="text-xs text-zinc-200 leading-relaxed break-words">
-                        {mem.ruleText}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onDeleteMemory(mem.id)}
-                      aria-label="حذف القاعدة"
-                      title="حذف من الذاكرة"
-                      className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-white/5 cursor-pointer shrink-0"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                  <li key={mem.id}>
+                    <MemoryItemCard
+                      memory={mem}
+                      onSave={onUpdateMemory}
+                      onDelete={onDeleteMemory}
+                      variant="sidebar"
+                    />
                   </li>
                 ))}
               </ul>
@@ -1278,6 +1939,26 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             ))}
           </div>
 
+          {mode === 'chat' && (
+            <button
+              type="button"
+              onClick={() => setAutoExecute((v) => !v)}
+              title={
+                autoExecute
+                  ? 'التنفيذ الفوري مفعّل: أوامر التقويم والمهام والعلاجات والوزن تُنفَّذ فوراً بدون خطوة تأكيد إضافية'
+                  : 'التأكيد اليدوي مفعّل: يعرض زر تأكيد قبل كل تعديل'
+              }
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
+                autoExecute
+                  ? 'border-[#7FFFD4]/60 bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                  : 'border-white/10 text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>{autoExecute ? 'تنفيذ فوري' : 'تأكيد يدوي'}</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setMobilePanelOpen((v) => !v)}
@@ -1289,12 +1970,24 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
           <button
             type="button"
-            onClick={onResetChat}
+            onClick={() => onResetChat(mode)}
             className="min-h-[40px] px-3 py-1.5 rounded-xl border border-white/10 text-xs text-zinc-300 hover:border-white/25 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
-            title="بدء محادثة جديدة"
+            title={
+              mode === 'chat'
+                ? 'بدء محادثة شات جديدة (دون مسح نتائج الخرائط أو البحث)'
+                : mode === 'maps'
+                  ? 'مسح سجل الخرائط فقط (دون مسح الشات أو البحث)'
+                  : 'مسح سجل البحث فقط (دون مسح الشات أو الخرائط)'
+            }
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>محادثة جديدة</span>
+            <span>
+              {mode === 'chat'
+                ? 'محادثة جديدة'
+                : mode === 'maps'
+                  ? 'مسح الخرائط'
+                  : 'مسح البحث'}
+            </span>
           </button>
         </div>
       </header>
@@ -1383,13 +2076,32 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             </div>
           )}
 
-          {/* Message Thread */}
+          {/* Message Thread (Strictly Isolated per Active Mode: Chat vs Maps vs Search) */}
           <div
             ref={scrollContainerRef}
             onScroll={handleThreadScroll}
             className="flex-1 overflow-y-auto px-3.5 sm:px-5 py-4 space-y-4"
           >
-            {messages.map((m) => {
+            {visibleMessages.length === 0 && (
+              <div className="rounded-2xl border border-white/10 bg-[#0D1118] px-4 py-4 text-xs text-zinc-300 space-y-1.5 leading-relaxed">
+                <div className="font-bold text-white">
+                  {mode === 'maps'
+                    ? '📍 خرائط الأماكن القريبة (محادثة مستقلة)'
+                    : mode === 'search'
+                      ? '🔎 بحث الويب المباشر (محادثة مستقلة)'
+                      : '💬 شات إيقاع اليوم · Gemini'}
+                </div>
+                <p className="text-zinc-400">
+                  {mode === 'maps'
+                    ? 'اسأل عن أقرب مسجد، صيدلية، مطعم أو مكان حول موقعك الحالي — ستحصل على المسافات وروابط خرائط Google مباشرة بدون التأثير على شات المهام.'
+                    : mode === 'search'
+                      ? 'ابحث عن الطقس، مواقيت الصلاة، المكملات أو أي معلومة حية مع المصادر الموثقة في سجل مستقل تماماً عن شات التقويم.'
+                      : 'ابدأ محادثة جديدة مع Gemini لإدارة تقويمك، مهامك، علاجاتك ووزنك بسرعة فورية.'}
+                </p>
+              </div>
+            )}
+
+            {visibleMessages.map((m) => {
               const isStreamingThis = streamingMsgId === m.id;
               return (
                 <div
@@ -1434,7 +2146,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                       )}
                     </div>
 
-                    {/* 1-Click Retry on Failed Message */}
+                    {/* 1-Click Retry on Failed Message (always bypasses cache) */}
                     {m.error && m.retryPrompt && (
                       <div className="mt-2.5 pt-2 border-t border-rose-500/20 flex items-center justify-between gap-2">
                         <span className="text-[11px] text-rose-300/80">
@@ -1443,7 +2155,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                         <button
                           type="button"
                           disabled={loading}
-                          onClick={() => void sendMessage(m.retryPrompt, m.mode)}
+                          onClick={() => void sendMessage(m.retryPrompt, m.mode, { bypassCache: true })}
                           className="px-3 py-1 rounded-lg bg-rose-500/20 border border-rose-400/40 text-xs text-rose-100 font-semibold hover:bg-rose-500/30 flex items-center gap-1.5 cursor-pointer disabled:opacity-40 whitespace-nowrap"
                         >
                           <RefreshCw className="w-3 h-3" />
@@ -1453,16 +2165,35 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                     )}
 
                     {/* Subtle Grounding Footer for Model Replies */}
-                    {m.role === 'model' && !m.error && !isStreamingThis && m.id !== 'welcome-1' && (m.latencyMs || m.memoriesAppliedCount !== undefined) && (
-                      <div className="mt-2 pt-1.5 border-t border-white/[0.06] flex flex-wrap items-center gap-x-2 text-[10px] text-zinc-500 font-mono-tabular">
-                        <span>
-                          معتمد على الدستور و {m.memoriesAppliedCount ?? memories.length} ذاكرة
-                        </span>
-                        {typeof m.latencyMs === 'number' && m.latencyMs > 0 && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span>{(m.latencyMs / 1000).toFixed(1)} ث</span>
-                          </>
+                    {m.role === 'model' && !m.error && !isStreamingThis && m.id !== 'welcome-1' && (m.latencyMs || m.memoriesAppliedCount !== undefined || m.cached) && (
+                      <div className="mt-2 pt-1.5 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-[10px] text-zinc-500 font-mono-tabular">
+                        <div className="flex flex-wrap items-center gap-x-2">
+                          <span>
+                            معتمد على الدستور و {m.memoriesAppliedCount ?? memories.length} ذاكرة
+                          </span>
+                          {m.cached ? (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-[#7FFFD4]">استجابة مؤقتة فورية</span>
+                            </>
+                          ) : typeof m.latencyMs === 'number' && m.latencyMs > 0 ? (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span>{(m.latencyMs / 1000).toFixed(1)} ث</span>
+                            </>
+                          ) : null}
+                        </div>
+                        {m.cached && m.retryPrompt && (
+                          <button
+                            type="button"
+                            disabled={loading}
+                            onClick={() => void sendMessage(m.retryPrompt, m.mode, { bypassCache: true })}
+                            className="inline-flex items-center gap-1 text-[10px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer disabled:opacity-40"
+                            title="توليد رد جديد وتجاوز الذاكرة المؤقتة"
+                          >
+                            <RefreshCw className="w-2.5 h-2.5" />
+                            <span>تحديث الرد</span>
+                          </button>
                         )}
                       </div>
                     )}
@@ -1782,12 +2513,12 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               );
             })}
 
-            {/* Pending Indicator (only before first streamed chunk arrives) */}
+            {/* Live Streaming Status Indicator (only before first streamed token arrives) */}
             {loading && !streamingMsgId && (
               <div className="flex justify-end">
                 <div className="rounded-2xl border border-white/10 bg-[#0D1118] px-4 py-3 text-xs text-zinc-300 flex items-center gap-2.5">
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-[#7FFFD4]" />
-                  <span>جارٍ الرد وفق دستوري وذاكرتي...</span>
+                  <span>{streamStatusText || 'جارٍ الرد وفق دستوري وذاكرتي...'}</span>
                 </div>
               </div>
             )}
@@ -1886,7 +2617,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             {loading ? (
               <button
                 type="button"
-                onClick={stopGeneration}
+                onClick={() => stopGeneration(mode)}
                 aria-label="إيقاف التوليد"
                 className="min-h-[44px] px-4 rounded-xl border border-rose-400/50 bg-rose-500/15 text-rose-200 text-xs font-bold hover:bg-rose-500/25 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
               >

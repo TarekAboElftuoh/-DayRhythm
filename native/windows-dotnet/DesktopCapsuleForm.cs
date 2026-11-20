@@ -11,16 +11,27 @@ namespace DayRhythm
         public string emoji { get; set; } = "📅";
         public string title { get; set; } = "إيقاع اليوم";
         public string statusLabel { get; set; } = "المهمة القادمة";
+        public string sourceKind { get; set; } = "calendar";
         public string countdownText { get; set; } = "--:--";
         public bool isNow { get; set; }
         public bool isUrgent { get; set; }
         public long targetEpochMs { get; set; }
         public int durationSeconds { get; set; }
+        public bool hasSecondaryTimer { get; set; }
+        public string secondaryEmoji { get; set; } = "☑️";
+        public string secondaryTitle { get; set; } = "";
+        public string secondaryCountdownText { get; set; } = "";
+        public long secondaryTargetEpochMs { get; set; }
+        public bool secondaryIsNow { get; set; }
+        public bool secondaryIsUrgent { get; set; }
+        public int phoneBatteryPct { get; set; } = -1;
+        public bool phoneCharging { get; set; }
+        public int phoneChargeLimitPct { get; set; } = 90;
     }
 
     /// <summary>
-    /// Classic compact sleek free-floating Windows desktop timer capsule outside MainForm.
-    /// Single clean dark glass pill showing Emoji + smooth live countdown timer only.
+    /// Compact sleek free-floating Windows desktop timer capsule outside MainForm.
+    /// Supports simultaneous Dual Timers (Google Calendar + Google Tasks) plus live Phone Charging %.
     /// </summary>
     internal sealed class DesktopCapsuleForm : Form
     {
@@ -37,6 +48,17 @@ namespace DayRhythm
         private bool _isNow;
         private bool _isUrgent;
         private long _targetEpochMs;
+
+        private bool _hasSecondaryTimer;
+        private string _secondaryEmoji = "☑️";
+        private string _secondaryFallbackCountdown = "";
+        private long _secondaryTargetEpochMs;
+        private bool _secondaryIsNow;
+        private bool _secondaryIsUrgent;
+
+        private int _phoneBatteryPct = -1;
+        private bool _phoneCharging;
+        private int _phoneChargeLimitPct = 90;
 
         private bool _isDragging;
         private Point _dragStartCursor;
@@ -114,7 +136,6 @@ namespace DayRhythm
             get
             {
                 CreateParams cp = base.CreateParams;
-                // WS_EX_TOOLWINDOW (0x80) | WS_EX_TOPMOST (0x08) | WS_EX_NOACTIVATE (0x08000000)
                 cp.ExStyle |= 0x00000080 | 0x00000008;
                 return cp;
             }
@@ -129,6 +150,27 @@ namespace DayRhythm
             _isNow = payload.isNow;
             _isUrgent = payload.isUrgent;
             _targetEpochMs = payload.targetEpochMs;
+
+            _hasSecondaryTimer = payload.hasSecondaryTimer && !string.IsNullOrWhiteSpace(payload.secondaryCountdownText);
+            _secondaryEmoji = string.IsNullOrWhiteSpace(payload.secondaryEmoji) ? "☑️" : payload.secondaryEmoji.Trim();
+            _secondaryFallbackCountdown = payload.secondaryCountdownText?.Trim() ?? "";
+            _secondaryTargetEpochMs = payload.secondaryTargetEpochMs;
+            _secondaryIsNow = payload.secondaryIsNow;
+            _secondaryIsUrgent = payload.secondaryIsUrgent;
+
+            _phoneBatteryPct = payload.phoneBatteryPct;
+            _phoneCharging = payload.phoneCharging;
+            _phoneChargeLimitPct = payload.phoneChargeLimitPct > 0 ? payload.phoneChargeLimitPct : 90;
+
+            bool showBatt = _phoneCharging && _phoneBatteryPct >= 0;
+            int desiredWidth = _hasSecondaryTimer
+                ? (showBatt ? 326 : 268)
+                : (showBatt ? 210 : 152);
+            if (Width != desiredWidth)
+            {
+                Width = desiredWidth;
+                ApplyRoundedRegion();
+            }
 
             if (Visible)
             {
@@ -244,16 +286,16 @@ namespace DayRhythm
             AppConfig.SaveSettings(_settings);
         }
 
-        private (string displayClock, bool urgentNow) ComputeLiveClock()
+        private static (string displayClock, bool urgentNow) ComputeClock(long targetEpochMs, string fallback, bool baseUrgent)
         {
-            if (_targetEpochMs <= 0)
+            if (targetEpochMs <= 0)
             {
-                return (_fallbackCountdown, _isUrgent);
+                return (fallback, baseUrgent);
             }
 
             long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            long remainingSec = Math.Max(0, (_targetEpochMs - nowMs + 500) / 1000);
-            bool urgent = _isUrgent || (remainingSec > 0 && remainingSec <= 60);
+            long remainingSec = Math.Max(0, (targetEpochMs - nowMs + 500) / 1000);
+            bool urgent = baseUrgent || (remainingSec > 0 && remainingSec <= 60);
 
             string clock;
             if (remainingSec >= 3600)
@@ -278,7 +320,7 @@ namespace DayRhythm
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-            var (clockText, urgentNow) = ComputeLiveClock();
+            var (clockText, urgentNow) = ComputeClock(_targetEpochMs, _fallbackCountdown, _isUrgent);
 
             Color accent = urgentNow
                 ? Color.FromArgb(255, 107, 107)
@@ -300,30 +342,83 @@ namespace DayRhythm
                 }
             }
 
-            // Classic compact layout: [Countdown]  [Emoji]
-            Rectangle clockRect = new Rectangle(14, 0, 90, Height);
-            using (Font clockFont = new Font("Consolas", clockText.Length > 5 ? 11f : 12.5f, FontStyle.Bold, GraphicsUnit.Point))
-            using (SolidBrush clockBrush = new SolidBrush(accent))
             using (StringFormat leftFmt = new StringFormat
             {
                 Alignment = StringAlignment.Near,
                 LineAlignment = StringAlignment.Center,
                 FormatFlags = StringFormatFlags.NoWrap,
             })
-            {
-                g.DrawString(clockText, clockFont, clockBrush, clockRect, leftFmt);
-            }
-
-            Rectangle emojiRect = new Rectangle(Width - 42, 0, 30, Height);
-            using (Font emojiFont = new Font("Segoe UI Emoji", 13f, FontStyle.Regular, GraphicsUnit.Point))
-            using (SolidBrush emojiBrush = new SolidBrush(Color.White))
             using (StringFormat centerFmt = new StringFormat
             {
                 Alignment = StringAlignment.Center,
                 LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap,
             })
             {
-                g.DrawString(_emoji, emojiFont, emojiBrush, emojiRect, centerFmt);
+                int cursorX = 12;
+
+                // Primary Timer (Calendar / Next item): [Emoji] [Countdown]
+                using (Font emojiFont = new Font("Segoe UI Emoji", 12f, FontStyle.Regular, GraphicsUnit.Point))
+                using (SolidBrush emojiBrush = new SolidBrush(Color.White))
+                {
+                    g.DrawString(_emoji, emojiFont, emojiBrush, new Rectangle(cursorX, 0, 26, Height), centerFmt);
+                }
+                cursorX += 26;
+
+                using (Font clockFont = new Font("Consolas", clockText.Length > 5 ? 10.5f : 12f, FontStyle.Bold, GraphicsUnit.Point))
+                using (SolidBrush clockBrush = new SolidBrush(accent))
+                {
+                    int clockW = clockText.Length > 5 ? 82 : 66;
+                    g.DrawString(clockText, clockFont, clockBrush, new Rectangle(cursorX, 0, clockW, Height), leftFmt);
+                    cursorX += clockW + 6;
+                }
+
+                // Secondary Timer (Google Tasks): | [☑️] [Task Countdown]
+                if (_hasSecondaryTimer)
+                {
+                    using (Pen sepPen = new Pen(Color.FromArgb(55, 255, 255, 255), 1f))
+                    {
+                        g.DrawLine(sepPen, cursorX, 10, cursorX, Height - 10);
+                    }
+                    cursorX += 8;
+
+                    var (secClock, secUrgent) = ComputeClock(_secondaryTargetEpochMs, _secondaryFallbackCountdown, _secondaryIsUrgent);
+                    Color secAccent = secUrgent
+                        ? Color.FromArgb(255, 107, 107)
+                        : _secondaryIsNow
+                            ? Color.FromArgb(74, 222, 128)
+                            : Color.FromArgb(252, 211, 77);
+
+                    using (Font secEmojiFont = new Font("Segoe UI Emoji", 11.5f, FontStyle.Regular, GraphicsUnit.Point))
+                    using (SolidBrush secEmojiBrush = new SolidBrush(Color.White))
+                    {
+                        g.DrawString(_secondaryEmoji, secEmojiFont, secEmojiBrush, new Rectangle(cursorX, 0, 24, Height), centerFmt);
+                    }
+                    cursorX += 24;
+
+                    using (Font secClockFont = new Font("Consolas", secClock.Length > 5 ? 10.5f : 12f, FontStyle.Bold, GraphicsUnit.Point))
+                    using (SolidBrush secClockBrush = new SolidBrush(secAccent))
+                    {
+                        int secW = secClock.Length > 5 ? 82 : 66;
+                        g.DrawString(secClock, secClockFont, secClockBrush, new Rectangle(cursorX, 0, secW, Height), leftFmt);
+                        cursorX += secW + 4;
+                    }
+                }
+
+                // Phone Charging % badge (when charging)
+                if (_phoneCharging && _phoneBatteryPct >= 0)
+                {
+                    bool reachedLimit = _phoneBatteryPct >= _phoneChargeLimitPct;
+                    Color battColor = reachedLimit
+                        ? Color.FromArgb(74, 222, 128)
+                        : Color.FromArgb(252, 211, 77);
+                    Rectangle battRect = new Rectangle(Width - 62, 0, 54, Height);
+                    using (Font battFont = new Font("Consolas", 9.5f, FontStyle.Bold, GraphicsUnit.Point))
+                    using (SolidBrush battBrush = new SolidBrush(battColor))
+                    {
+                        g.DrawString($"⚡{_phoneBatteryPct}%", battFont, battBrush, battRect, centerFmt);
+                    }
+                }
             }
         }
 

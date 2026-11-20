@@ -12,13 +12,23 @@ import {
   Brain,
   Plus,
   VolumeX,
+  Volume2,
+  SlidersHorizontal,
+  BatteryCharging,
+  BellOff,
 } from 'lucide-react';
+import { MemoryItemCard } from './MemoryItemCard';
 import {
   GeoLocation,
   LifeProfile,
   MemoryCategory,
   MemoryItem,
+  PhoneBatteryTelemetry,
   PrayerTimeItem,
+  QuietModeType,
+  SoundRepeatMap,
+  SoundRepeatSetting,
+  TaskSoundCategory,
 } from '../types/dayrhythm';
 import {
   ARABIC_WEEKDAYS,
@@ -26,6 +36,8 @@ import {
   computeDailyRhythmPlan,
   formatDurationAr,
 } from '../engines/lifeRhythmEngine';
+import { TASK_SOUND_META } from '../engines/audioEngine';
+import { QUIET_MODE_LABELS } from '../engines/i18n';
 import {
   PRESET_LOCATIONS,
   formatMinutes12h,
@@ -41,10 +53,38 @@ interface LifeProfileModalProps {
   activeLocation: GeoLocation;
   memories: MemoryItem[];
   onAddMemory: (input: { category: MemoryCategory; ruleText: string }) => void;
+  onUpdateMemory?: (id: string, patch: { category: MemoryCategory; ruleText: string }) => void;
   onDeleteMemory: (id: string) => void;
   onSaveProfile: (next: LifeProfile) => void;
   onDetectGpsLocation: () => Promise<void>;
   isDetectingGps: boolean;
+  includePrayerAnchors?: boolean;
+  onToggleIncludePrayerAnchors?: () => void;
+  isFridayMode?: boolean;
+  onToggleFridayMode?: (v: boolean) => void;
+  includeBiweeklyPcCleanup?: boolean;
+  onToggleBiweeklyPcCleanup?: (v: boolean) => void;
+  calendarConnected?: boolean;
+  onGoogleSignOut?: () => Promise<void>;
+  quietMode?: QuietModeType;
+  onSetQuietMode?: (mode: QuietModeType, durationMinutes: number) => void;
+  soundRepeats?: SoundRepeatMap;
+  onUpdateSoundRepeat?: (category: TaskSoundCategory, setting: SoundRepeatSetting) => void;
+  onTriggerTaskAlert?: (
+    title: string,
+    category: TaskSoundCategory,
+    options?: { bypassSanctuary?: boolean; privacyEmoji?: string }
+  ) => void;
+  phoneBattery?: PhoneBatteryTelemetry | null;
+  phoneChargeLimitPct?: number;
+  onUpdatePhoneChargeLimit?: (limitPct: number) => void;
+  smartChargeAlertEnabled?: boolean;
+  onToggleSmartChargeAlertEnabled?: () => void;
+  smartChargeKeepUntilUnplugged?: boolean;
+  onToggleSmartChargeKeepUntilUnplugged?: () => void;
+  smartChargeAudioActive?: boolean;
+  onTestSmartChargeAlert?: () => void;
+  onCheckAppUpdates?: () => void;
 }
 
 export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
@@ -54,10 +94,34 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   prayers,
   memories,
   onAddMemory,
+  onUpdateMemory,
   onDeleteMemory,
   onSaveProfile,
   onDetectGpsLocation,
   isDetectingGps,
+  includePrayerAnchors = true,
+  onToggleIncludePrayerAnchors,
+  isFridayMode = false,
+  onToggleFridayMode,
+  includeBiweeklyPcCleanup = true,
+  onToggleBiweeklyPcCleanup,
+  calendarConnected = false,
+  onGoogleSignOut,
+  quietMode = 'normal',
+  onSetQuietMode,
+  soundRepeats,
+  onUpdateSoundRepeat,
+  onTriggerTaskAlert,
+  phoneBattery = null,
+  phoneChargeLimitPct = 90,
+  onUpdatePhoneChargeLimit,
+  smartChargeAlertEnabled = true,
+  onToggleSmartChargeAlertEnabled,
+  smartChargeKeepUntilUnplugged = true,
+  onToggleSmartChargeKeepUntilUnplugged,
+  smartChargeAudioActive = false,
+  onTestSmartChargeAlert,
+  onCheckAppUpdates,
 }) => {
   const [draft, setDraft] = useState<LifeProfile>(profile);
   const [unlockHeight, setUnlockHeight] = useState(false);
@@ -123,10 +187,10 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <div>
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-[#7FFFD4]" />
-              <span>الثوابت المرنة وذاكرة Gemini الدائمة</span>
+              <span>الإعدادات والثوابت وذاكرة Gemini</span>
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              محفوظة سحابياً في Firestore وقابلة لتعديل أي رقم بحرية من هنا أو عبر شات Gemini في أي ظرف
+              كل الإعدادات والقياسات محفوظة سحابياً — الأولوية لتحديثها عبر شات Gemini مع كامل الحرية اليدوية من هنا
             </p>
           </div>
           <button
@@ -164,7 +228,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={0.5}
                 value={draft.weightKg}
                 onChange={(e) =>
-                  setDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 75 }))
+                  setDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 69 }))
                 }
                 className="w-full rounded-lg border border-[#7FFFD4]/45 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
@@ -536,39 +600,291 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             </button>
           </div>
 
-          <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5">
+          <div className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
             {memories.map((mem) => (
-              <div
+              <MemoryItemCard
                 key={mem.id}
-                className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 flex items-start justify-between gap-2.5"
-              >
-                <div className="space-y-1 min-w-0">
-                  <div className="flex flex-wrap items-center gap-2 text-[10px]">
-                    <span className="text-[#7FFFD4] font-semibold">
-                      {MEMORY_CATEGORY_LABELS[mem.category]}
-                    </span>
-                    <span className="text-zinc-500">
-                      {mem.source === 'gemini'
-                        ? '· محفوظ من الشات'
-                        : mem.source === 'system_seed'
-                          ? '· قاعدة أساسية'
-                          : '· يدوي'}
-                    </span>
-                  </div>
-                  <p className="text-zinc-200 leading-relaxed">{mem.ruleText}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onDeleteMemory(mem.id)}
-                  className="p-1 rounded-md text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
-                  title="حذف القاعدة"
-                  aria-label="حذف القاعدة"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
+                memory={mem}
+                onSave={onUpdateMemory}
+                onDelete={onDeleteMemory}
+                variant="modal"
+              />
             ))}
           </div>
+        </section>
+
+        {/* 6. Schedule, Audio & Account Settings (Moved cleanly out of the Main Dashboard) */}
+        <section className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-4 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <SlidersHorizontal className="w-4 h-4 text-[#7FFFD4]" />
+              <span>6. إعدادات الجدول والأصوات والحساب</span>
+            </h3>
+            {calendarConnected && onGoogleSignOut && (
+              <button
+                type="button"
+                onClick={() => {
+                  void onGoogleSignOut();
+                  onClose();
+                }}
+                className="px-2.5 py-1 rounded-lg border border-rose-500/30 text-[11px] text-rose-300 hover:bg-rose-500/10 cursor-pointer"
+              >
+                فصل حساب Google
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {onToggleIncludePrayerAnchors && (
+              <button
+                type="button"
+                onClick={onToggleIncludePrayerAnchors}
+                className={`px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
+                  includePrayerAnchors
+                    ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                    : 'border-white/10 text-zinc-400 hover:text-white'
+                }`}
+              >
+                🕌 مراسي الصلاة (-3 د)
+              </button>
+            )}
+            {onToggleFridayMode && (
+              <button
+                type="button"
+                onClick={() => onToggleFridayMode(!isFridayMode)}
+                className={`px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
+                  isFridayMode
+                    ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                    : 'border-white/10 text-zinc-400 hover:text-white'
+                }`}
+              >
+                🕌 طقوس الجمعة
+              </button>
+            )}
+            {isFridayMode && onToggleBiweeklyPcCleanup && (
+              <button
+                type="button"
+                onClick={() => onToggleBiweeklyPcCleanup(!includeBiweeklyPcCleanup)}
+                className={`px-2.5 py-1.5 rounded-lg border text-[11px] cursor-pointer ${
+                  includeBiweeklyPcCleanup
+                    ? 'border-indigo-400/50 bg-indigo-400/15 text-indigo-200'
+                    : 'border-white/10 text-zinc-400'
+                }`}
+              >
+                💻 كل جمعتين 04:15 م
+              </button>
+            )}
+          </div>
+
+          {onSetQuietMode && (
+            <div className="space-y-2 pt-2 border-t border-white/10">
+              <div className="text-[11px] text-zinc-400">وضع الهدوء السريع</div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {(['normal', 'mute_audio', 'vibrate_only', 'silent_all'] as const).map((qm) => {
+                  const active = quietMode === qm;
+                  return (
+                    <button
+                      key={qm}
+                      type="button"
+                      onClick={() => onSetQuietMode(qm, 0)}
+                      className={`rounded-xl border p-2 text-right transition-colors cursor-pointer ${
+                        active
+                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/10 text-white'
+                          : 'border-white/10 bg-black/40 text-zinc-300 hover:border-white/25'
+                      }`}
+                    >
+                      <div className="text-[11px] font-semibold">{QUIET_MODE_LABELS[qm].ar}</div>
+                      <div className="text-[10px] text-zinc-500 mt-0.5 truncate">
+                        {QUIET_MODE_LABELS[qm].descAr}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {soundRepeats && onUpdateSoundRepeat && (
+            <div className="space-y-2 pt-2 border-t border-white/10">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-zinc-200">
+                  تكرار رنين التنبيهات (∞ = مستمر حتى الإيقاف)
+                </span>
+              </div>
+              <div className="divide-y divide-white/[0.06]">
+                {(
+                  [
+                    'sleep_suhoor',
+                    'prayer',
+                    'water',
+                    'medication',
+                    'meeting_event',
+                    'focus_work',
+                    'walk_health',
+                  ] as const
+                ).map((cat) => {
+                  const meta = TASK_SOUND_META[cat];
+                  const currentRepeat = soundRepeats[cat] ?? 1;
+                  const repeatOptions: SoundRepeatSetting[] = [1, 2, 3, 4, 'continuous'];
+                  return (
+                    <div
+                      key={cat}
+                      className="py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs"
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onTriggerTaskAlert?.(meta.labelAr, cat, { bypassSanctuary: true })
+                        }
+                        className="flex items-center gap-1.5 text-zinc-200 hover:text-[#7FFFD4] cursor-pointer"
+                        title="تجربة النغمة الآن"
+                      >
+                        <span>{meta.icon}</span>
+                        <span className="font-medium">{meta.labelAr}</span>
+                        <Volume2 className="w-3 h-3 text-zinc-500" />
+                      </button>
+                      <div className="flex items-center gap-1 font-mono-tabular">
+                        {repeatOptions.map((opt) => {
+                          const selected = currentRepeat === opt;
+                          return (
+                            <button
+                              key={String(opt)}
+                              type="button"
+                              onClick={() => onUpdateSoundRepeat(cat, opt)}
+                              className={`px-2 py-0.5 rounded-md border text-[10px] cursor-pointer transition-colors ${
+                                selected
+                                  ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                  : 'border-white/10 text-zinc-400 hover:text-zinc-200'
+                              }`}
+                            >
+                              {opt === 'continuous' ? '∞' : `${opt}×`}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Smart Charge Complete Alert Settings (Moved Inside Settings) */}
+          {onToggleSmartChargeAlertEnabled && onUpdatePhoneChargeLimit && (
+            <div className="space-y-2.5 pt-3 border-t border-white/10">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-white">
+                  <BatteryCharging className="w-4 h-4 text-[#7FFFD4]" />
+                  <span>التنبيه الذكي عند اكتمال شحن الهاتف</span>
+                </div>
+                {phoneBattery && (
+                  <span className="font-mono-tabular text-[11px] text-[#7FFFD4]">
+                    {phoneBattery.charging ? '⚡ ' : ''}
+                    {phoneBattery.levelPct}% · متبقي {Math.max(0, 100 - phoneBattery.levelPct)}% للامتلاء
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                يصدر إشعاراً صوتياً خاصاً على الكمبيوتر عند وصول شحن الهاتف إلى النسبة المحددة، مع إمكانية إيقافه بضغطة واحدة.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={onToggleSmartChargeAlertEnabled}
+                  className={`px-3 py-1.5 rounded-lg border font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                    smartChargeAlertEnabled
+                      ? 'border-[#4ADE80]/50 bg-[#4ADE80]/15 text-[#4ADE80]'
+                      : 'border-white/10 bg-black/40 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  {smartChargeAlertEnabled ? (
+                    <Volume2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <VolumeX className="w-3.5 h-3.5" />
+                  )}
+                  <span>{smartChargeAlertEnabled ? 'التنبيه الذكي مفعّل' : 'التنبيه الذكي متوقف'}</span>
+                </button>
+
+                <span className="text-[11px] text-zinc-400">حد التنبيه:</span>
+                {[80, 85, 90, 95, 100].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => onUpdatePhoneChargeLimit(pct)}
+                    className={`px-2.5 py-1 rounded-lg border font-mono-tabular text-[11px] cursor-pointer transition-colors ${
+                      phoneChargeLimitPct === pct
+                        ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
+                        : 'border-white/10 text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    {pct}%
+                  </button>
+                ))}
+
+                {onToggleSmartChargeKeepUntilUnplugged && (
+                  <button
+                    type="button"
+                    onClick={onToggleSmartChargeKeepUntilUnplugged}
+                    className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                      smartChargeKeepUntilUnplugged
+                        ? 'border-amber-400/60 bg-amber-500/15 text-amber-200'
+                        : 'border-white/10 bg-black/40 text-zinc-400 hover:text-white'
+                    }`}
+                    title="عند التفعيل: يستمر رنين التنبيه دون توقف مؤقت حتى تفصل الشاحن عن الموبايل أو توقفه يدوياً"
+                  >
+                    <span>
+                      {smartChargeKeepUntilUnplugged
+                        ? '🔔 مستمر حتى فصل الشاحن ✓'
+                        : '⏱️ يتوقف تلقائياً بعد دقيقتين'}
+                    </span>
+                  </button>
+                )}
+
+                {onTestSmartChargeAlert && (
+                  <button
+                    type="button"
+                    onClick={onTestSmartChargeAlert}
+                    className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                      smartChargeAudioActive
+                        ? 'border-rose-400 bg-rose-500/20 text-rose-200 font-bold'
+                        : 'border-white/15 text-zinc-200 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4]'
+                    }`}
+                  >
+                    {smartChargeAudioActive ? (
+                      <>
+                        <BellOff className="w-3.5 h-3.5" />
+                        <span>إيقاف التنبيه</span>
+                      </>
+                    ) : (
+                      <>
+                        <Volume2 className="w-3.5 h-3.5" />
+                        <span>تجربة الصوت</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Direct In-App GitHub OTA Updater (Android + Windows + PWA) */}
+          {onCheckAppUpdates && (
+            <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div>
+                <div className="font-semibold text-white">التحديث الفوري المباشر من GitHub (OTA)</div>
+                <p className="text-[11px] text-zinc-400">
+                  يحدّث واجهة التطبيق مباشرة على الموبايل والكمبيوتر بدون إعادة تنزيل APK أو Portable في كل مرة.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onCheckAppUpdates}
+                className="px-3.5 py-1.5 rounded-lg border border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4] text-xs font-bold hover:bg-[#7FFFD4]/25 cursor-pointer"
+              >
+                فحص التحديثات الآن
+              </button>
+            </div>
+          )}
         </section>
 
         {/* Footer */}

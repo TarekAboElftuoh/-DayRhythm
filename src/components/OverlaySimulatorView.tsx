@@ -277,7 +277,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
                   <BatteryCharging className="w-7 h-7 text-[#4ADE80]" />
                   <div>
                     <div className="text-sm font-bold text-white">
-                      ⚡ بطارية OnePlus 12R وصلت إلى {batteryGuard.levelPct}%
+                      ⚡ بطارية الهاتف وصلت إلى {batteryGuard.levelPct}%
                     </div>
                     <div className="text-xs text-[#4ADE80]">
                       افصل كابل الشاحن من الهاتف الآن — سيتم كتم التنبيه وإغلاق هذه البطاقة تلقائياً

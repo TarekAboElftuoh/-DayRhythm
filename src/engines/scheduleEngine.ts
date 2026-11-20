@@ -137,7 +137,7 @@ export function buildBaseSchedule(
       {
         id: 'breakfast_pumpkin',
         emojiPair: '🍳 💊',
-        categoryAr: 'إفطار + زيت بذور اليقطين',
+        categoryAr: 'وجبة الإفطار',
         startMin: hm(8, 50),
         durationMin: 30,
         minDurationMin: 20,
@@ -606,7 +606,7 @@ export function buildBaseSchedule(
     {
       id: 'iftar_pumpkin_tea',
       emojiPair: '🌴 🍽️',
-      categoryAr: 'إفطار + زيت بذور اليقطين + شاي',
+      categoryAr: 'وجبة الإفطار',
       startMin: maghribAlarm + 20,
       durationMin: 40,
       minDurationMin: 30,

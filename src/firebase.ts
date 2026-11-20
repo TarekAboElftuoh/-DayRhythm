@@ -8,11 +8,13 @@ import {
 import {
   collection,
   deleteDoc,
+  deleteField,
   disableNetwork,
   doc,
   enableNetwork,
   getDoc,
   getDocFromServer,
+  getDocs,
   getFirestore,
   initializeFirestore,
   limit,
@@ -35,6 +37,8 @@ import {
   MedicationItem,
   MemoryCategory,
   MemoryItem,
+  PersistedChatMessage,
+  PhoneBatteryTelemetry,
   QuietModeType,
   SleepStrategy,
   SoundRepeatMap,
@@ -356,19 +360,7 @@ export const DEFAULT_DEVICE_SETTINGS: OnePlusDeviceSettings = {
   pocketProtectionEnabled: true,
 };
 
-export const DEFAULT_MEDICATIONS: MedicationItem[] = [
-  {
-    id: 'pumpkin_seed_oil',
-    name: 'زيت بذور اليقطين',
-    time24: '',
-    times24: [],
-    daysOfWeek: [],
-    takenDosesToday: [],
-    doseNote: 'اسأل Gemini أو اضبط ميعادها',
-    takenDateKey: '',
-    calendarEventId: '',
-  },
-];
+export const DEFAULT_MEDICATIONS: MedicationItem[] = [];
 
 export const DEFAULT_CREATIVE_ACTIVITIES: CreativeActivityItem[] = [];
 
@@ -387,6 +379,7 @@ export interface SyncedRhythmPayload {
   deviceSettings: OnePlusDeviceSettings;
   lifeProfile: LifeProfile;
   syncSignal?: WorkspaceSyncSignal;
+  phoneBattery?: PhoneBatteryTelemetry;
 }
 
 const VALID_LEAD_MINUTES: readonly LiveAlertsLeadMinutes[] = [5, 10, 15, 20, 30];
@@ -495,6 +488,27 @@ export function sanitizeSyncSignal(raw: unknown): WorkspaceSyncSignal | undefine
     scope: scopeRaw as WorkspaceSyncSignal['scope'],
     action,
     timestampMs,
+  };
+}
+
+export function sanitizePhoneBattery(raw: unknown): PhoneBatteryTelemetry | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.levelPct !== 'number' || !Number.isFinite(r.levelPct)) return undefined;
+  const levelPct = clampInt(r.levelPct, 0, 100, 0);
+  const charging = Boolean(r.charging);
+  const chargeLimitPct = clampInt(r.chargeLimitPct, 60, 100, 90);
+  const updatedAtMs =
+    typeof r.updatedAtMs === 'number' && Number.isFinite(r.updatedAtMs) && r.updatedAtMs >= 0
+      ? Math.round(r.updatedAtMs)
+      : Date.now();
+  const deviceLabel = String(r.deviceLabel ?? 'الهاتف').trim().slice(0, 40) || 'الهاتف';
+  return {
+    levelPct,
+    charging,
+    chargeLimitPct,
+    updatedAtMs,
+    deviceLabel,
   };
 }
 
@@ -701,6 +715,20 @@ export function sanitizeMedicationItem(raw: Partial<MedicationItem>): Medication
     typeof raw.totalDoses === 'number' && Number.isFinite(raw.totalDoses)
       ? clampInt(raw.totalDoses, -1, 500, -1)
       : -1;
+  const refillAlertDays = clampInt(raw.refillAlertDays, 1, 14, 3);
+  const takenDatesSet = new Set<string>();
+  if (Array.isArray(raw.takenDates)) {
+    for (const d of raw.takenDates) {
+      const s = String(d ?? '').trim();
+      if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(s)) {
+        takenDatesSet.add(s);
+      }
+    }
+  }
+  if (takenDateKey) {
+    takenDatesSet.add(takenDateKey);
+  }
+  const takenDates = Array.from(takenDatesSet).sort().slice(-31);
   return {
     id,
     name,
@@ -714,6 +742,8 @@ export function sanitizeMedicationItem(raw: Partial<MedicationItem>): Medication
     courseEndDate,
     remainingDoses,
     totalDoses,
+    refillAlertDays,
+    takenDates,
   };
 }
 
@@ -797,6 +827,7 @@ function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayloa
     : 'amoled';
 
   const cleanSignal = sanitizeSyncSignal(payload.syncSignal);
+  const cleanBattery = sanitizePhoneBattery(payload.phoneBattery);
 
   return {
     hydrationDateKey: safeDateKey,
@@ -813,6 +844,7 @@ function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayloa
     deviceSettings: sanitizeDeviceSettings(payload.deviceSettings),
     lifeProfile: sanitizeLifeProfile(payload.lifeProfile),
     ...(cleanSignal ? { syncSignal: cleanSignal } : {}),
+    ...(cleanBattery ? { phoneBattery: cleanBattery } : {}),
   };
 }
 
@@ -866,6 +898,7 @@ export function subscribeUserRhythmState(
                 data.lifeProfile as Partial<LifeProfile> | undefined
               ),
               syncSignal: sanitizeSyncSignal(data.syncSignal),
+              phoneBattery: sanitizePhoneBattery(data.phoneBattery),
             })
           );
         },
@@ -895,13 +928,52 @@ export async function publishWorkspaceSyncSignal(
   }
 }
 
+export async function publishPhoneBatteryTelemetry(
+  uid: string,
+  telemetry: PhoneBatteryTelemetry
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+  const clean = sanitizePhoneBattery(telemetry);
+  if (!clean) return;
+  try {
+    const docRef = doc(db, 'users', uid);
+    await updateDoc(docRef, {
+      phoneBattery: clean,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-blocking: WebSocket still delivers instant live updates
+  }
+}
+
+const ALLOWED_USER_DOC_KEYS = new Set([
+  'uid',
+  'hydrationDateKey',
+  'cupsLogged',
+  'targetCups',
+  'hydrationWeeklyCounts',
+  'dailyCommitmentDays',
+  'dailyCommitmentDoneToday',
+  'waterTargetDays',
+  'waterTargetDoneToday',
+  'quietMode',
+  'adhanOverrideSilent',
+  'surfaceTheme',
+  'deviceSettings',
+  'lifeProfile',
+  'syncSignal',
+  'phoneBattery',
+  'createdAt',
+  'updatedAt',
+]);
+
 const pendingUserSaves = new Map<string, Promise<void>>();
 
 export async function saveUserRhythmState(
   uid: string,
   payload: SyncedRhythmPayload
 ): Promise<void> {
-  if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+  if (!auth.currentUser || auth.currentUser.uid !== uid || !auth.currentUser.emailVerified) return;
   const path = `users/${uid}`;
   const docRef = doc(db, 'users', uid);
   const clean = sanitizeRhythmPayload(payload);
@@ -917,50 +989,87 @@ export async function saveUserRhythmState(
     const exists = existingSnap.exists();
     const existingData = exists ? (existingSnap.data() ?? {}) : null;
 
-    let preservedCreatedAt: Timestamp | null = null;
     if (existingData?.createdAt instanceof Timestamp) {
-      preservedCreatedAt = existingData.createdAt;
-      knownCreatedAtByUid.set(uid, preservedCreatedAt);
-    } else if (exists && knownCreatedAtByUid.has(uid)) {
-      preservedCreatedAt = knownCreatedAtByUid.get(uid) ?? null;
+      knownCreatedAtByUid.set(uid, existingData.createdAt);
     }
 
-    const preservedSignal =
-      clean.syncSignal ?? (existingData ? sanitizeSyncSignal(existingData.syncSignal) : undefined);
+    const runWrite = async () => {
+      if (exists && existingData) {
+        // Use updateDoc on existing documents so Firestore preserves the server's exact immutable createdAt
+        // and never races with concurrent phoneBattery / syncSignal writes from another device.
+        const updatePatch: Record<string, unknown> = {
+          uid,
+          ...clean,
+          updatedAt: serverTimestamp(),
+        };
 
-    // Atomic full-document setDoc (no merge): guarantees ZERO legacy/unknown fields can survive
-    // while preserving the server's immutable createdAt Timestamp when present.
-    const fullDoc: Record<string, unknown> = {
-      uid,
-      ...clean,
-      ...(preservedSignal ? { syncSignal: preservedSignal } : {}),
-      createdAt: preservedCreatedAt ?? serverTimestamp(),
-      updatedAt: serverTimestamp(),
+        // Repair missing or non-Timestamp legacy createdAt (matches rules fallback)
+        if (!(existingData.createdAt instanceof Timestamp)) {
+          updatePatch.createdAt = serverTimestamp();
+        }
+
+        // Clean up any malformed optional maps or legacy unknown keys so hasOnly() always passes
+        if ('syncSignal' in existingData && !('syncSignal' in updatePatch)) {
+          const validSig = sanitizeSyncSignal(existingData.syncSignal);
+          updatePatch.syncSignal = validSig ?? deleteField();
+        }
+        if ('phoneBattery' in existingData && !('phoneBattery' in updatePatch)) {
+          const validBat = sanitizePhoneBattery(existingData.phoneBattery);
+          updatePatch.phoneBattery = validBat ?? deleteField();
+        }
+        for (const key of Object.keys(existingData)) {
+          if (!ALLOWED_USER_DOC_KEYS.has(key)) {
+            updatePatch[key] = deleteField();
+          }
+        }
+
+        await updateDoc(docRef, updatePatch);
+      } else {
+        const fullDoc: Record<string, unknown> = {
+          uid,
+          ...clean,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+        await setDoc(docRef, fullDoc);
+      }
     };
 
     try {
-      await withFirestoreWriteRetry(() => setDoc(docRef, fullDoc), OperationType.WRITE, path);
+      if (!isRetry) {
+        // Run first attempt directly so a recoverable create-vs-update race across PC <-> Mobile
+        // can retry cleanly before surfacing a Firestore permission error.
+        let attempt = 0;
+        while (true) {
+          try {
+            await runWrite();
+            return;
+          } catch (err) {
+            if (attempt < 2 && isTransientFirestoreError(err)) {
+              const delayMs = computeExponentialBackoffMs(attempt, 800, 5_000);
+              attempt += 1;
+              await recoverFirestoreNetwork(false);
+              await new Promise((r) => setTimeout(r, delayMs));
+              continue;
+            }
+            throw err;
+          }
+        }
+      } else {
+        await withFirestoreWriteRetry(runWrite, OperationType.WRITE, path);
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      if (!isRetry && msg.toLowerCase().includes('permission')) {
-        // Handle simultaneous first-create race across PC <-> Mobile by re-fetching server createdAt once
+      if (
+        !isRetry &&
+        (msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('not-found'))
+      ) {
         await attemptAtomicSave(true);
         return;
       }
-      console.warn('DayRhythm Firestore write diagnostic:', {
-        hadExistingDoc: exists,
-        existingCreatedAtType: existingData
-          ? existingData.createdAt instanceof Timestamp
-            ? 'Timestamp'
-            : existingData.createdAt === null
-              ? 'null'
-              : typeof existingData.createdAt
-          : 'no_doc',
-        existingUidMatches: existingData ? existingData.uid === uid : false,
-        existingKeys: existingData ? Object.keys(existingData) : [],
-        fullDocKeys: Object.keys(fullDoc),
-        lifeProfileKeys: Object.keys(clean.lifeProfile),
-      });
+      if (!isRetry) {
+        handleFirestoreError(error, OperationType.WRITE, path);
+      }
       throw error;
     }
   };
@@ -1007,6 +1116,9 @@ export function subscribeMedications(
               remainingDoses:
                 typeof data.remainingDoses === 'number' ? data.remainingDoses : -1,
               totalDoses: typeof data.totalDoses === 'number' ? data.totalDoses : -1,
+              refillAlertDays:
+                typeof data.refillAlertDays === 'number' ? data.refillAlertDays : 3,
+              takenDates: Array.isArray(data.takenDates) ? data.takenDates.map(String) : undefined,
             });
           });
           items.sort((a, b) => (a.time24 || '99:99').localeCompare(b.time24 || '99:99'));
@@ -1046,12 +1158,14 @@ export async function upsertMedicationRecord(
           times24: clean.times24 ?? [],
           daysOfWeek: clean.daysOfWeek ?? [],
           takenDosesToday: clean.takenDosesToday ?? [],
+          takenDates: clean.takenDates ?? [],
           doseNote: clean.doseNote,
           takenDateKey: clean.takenDateKey,
           calendarEventId: clean.calendarEventId,
           courseEndDate: clean.courseEndDate ?? '',
           remainingDoses: clean.remainingDoses ?? -1,
           totalDoses: clean.totalDoses ?? -1,
+          refillAlertDays: clean.refillAlertDays ?? 3,
           updatedAt: serverTimestamp(),
         });
       }
@@ -1191,7 +1305,7 @@ export function sanitizeMemoryItem(raw: Partial<MemoryItem>): MemoryItem {
       : 'general';
   const ruleText =
     typeof raw.ruleText === 'string' && raw.ruleText.trim().length > 0
-      ? raw.ruleText.trim().slice(0, 320)
+      ? raw.ruleText.trim().slice(0, 600)
       : 'قاعدة شخصية';
   const source: MemoryItem['source'] =
     raw.source && VALID_MEMORY_SOURCES.includes(raw.source)
@@ -1210,7 +1324,7 @@ export function subscribeMemories(
   const colQuery = query(
     collection(db, 'users', uid, 'memories'),
     where('uid', '==', uid),
-    limit(50)
+    limit(150)
   );
 
   return createResilientSnapshot(
@@ -1228,16 +1342,7 @@ export function subscribeMemories(
               source: data.source as MemoryItem['source'],
             });
           });
-          // Keep system_seed foundational memories in stable order, newest custom rules at the top
-          const seedOrder = DEFAULT_MEMORIES.map((m) => m.id);
-          items.sort((a, b) => {
-            const ia = seedOrder.indexOf(a.id);
-            const ib = seedOrder.indexOf(b.id);
-            if (ia !== -1 && ib !== -1) return ia - ib;
-            if (ia !== -1) return 1;
-            if (ib !== -1) return -1;
-            return b.id.localeCompare(a.id);
-          });
+          items.sort((a, b) => b.id.localeCompare(a.id));
           onMemories(items);
         },
         onError
@@ -1293,4 +1398,138 @@ export async function deleteMemoryRecord(
     path
   );
 }
+
+const VALID_CHAT_MODES: ReadonlyArray<PersistedChatMessage['mode']> = ['chat', 'maps', 'search'];
+
+export function sanitizeChatMessageId(raw: string): string {
+  const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 56);
+  return cleaned || `msg_${Date.now().toString(36)}`;
+}
+
+export function subscribeChatMessages(
+  uid: string,
+  onMessages: (items: PersistedChatMessage[]) => void,
+  onSyncError?: (message: string) => void
+): Unsubscribe {
+  const path = `users/${uid}/chatMessages`;
+  const colQuery = query(
+    collection(db, 'users', uid, 'chatMessages'),
+    where('uid', '==', uid),
+    limit(100)
+  );
+
+  return createResilientSnapshot(
+    (onHealthy, onError) =>
+      onSnapshot(
+        colQuery,
+        (snapshot) => {
+          onHealthy();
+          const rows = snapshot.docs
+            .map((d) => {
+              const data = d.data();
+              const text = typeof data.text === 'string' ? data.text.trim() : '';
+              if (!text) return null;
+              const role: 'user' | 'model' = data.role === 'user' ? 'user' : 'model';
+              const rawMode = String(data.mode ?? 'chat') as PersistedChatMessage['mode'];
+              const mode: PersistedChatMessage['mode'] = VALID_CHAT_MODES.includes(rawMode)
+                ? rawMode
+                : 'chat';
+              const timestampMs =
+                typeof data.timestampMs === 'number' && Number.isFinite(data.timestampMs)
+                  ? data.timestampMs
+                  : Date.now();
+              const createdAtIso =
+                typeof data.createdAtIso === 'string' && data.createdAtIso
+                  ? data.createdAtIso
+                  : new Date(timestampMs).toISOString();
+              return {
+                timestampMs,
+                msg: {
+                  id: String(data.id ?? d.id),
+                  role,
+                  mode,
+                  text,
+                  createdAtIso,
+                } as PersistedChatMessage,
+              };
+            })
+            .filter((item): item is { timestampMs: number; msg: PersistedChatMessage } => item !== null);
+
+          rows.sort((a, b) => a.timestampMs - b.timestampMs);
+          onMessages(rows.map((r) => r.msg));
+        },
+        onError
+      ),
+    OperationType.LIST,
+    path,
+    onSyncError
+  );
+}
+
+export async function upsertChatMessageRecord(
+  uid: string,
+  message: PersistedChatMessage
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+  const trimmedText = (message.text ?? '').trim().slice(0, 4000);
+  if (!trimmedText) return;
+  const cleanId = sanitizeChatMessageId(message.id);
+  const role: 'user' | 'model' = message.role === 'user' ? 'user' : 'model';
+  const mode: PersistedChatMessage['mode'] = VALID_CHAT_MODES.includes(message.mode)
+    ? message.mode
+    : 'chat';
+  const parsedTs = message.createdAtIso ? Date.parse(message.createdAtIso) : NaN;
+  const timestampMs =
+    Number.isFinite(parsedTs) && parsedTs >= 1_000_000_000_000 && parsedTs <= 4_102_444_800_000
+      ? Math.round(parsedTs)
+      : Date.now();
+  const createdAtIso = (message.createdAtIso || new Date(timestampMs).toISOString()).slice(0, 40);
+  const path = `users/${uid}/chatMessages/${cleanId}`;
+  const docRef = doc(db, 'users', uid, 'chatMessages', cleanId);
+
+  await withFirestoreWriteRetry(
+    async () => {
+      const existingSnap = await getDoc(docRef);
+      if (!existingSnap.exists()) {
+        await setDoc(docRef, {
+          id: cleanId,
+          uid,
+          role,
+          mode,
+          text: trimmedText,
+          timestampMs,
+          createdAtIso,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(docRef, {
+          text: trimmedText,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    },
+    OperationType.WRITE,
+    path
+  );
+}
+
+export async function clearUserChatMessages(
+  uid: string,
+  targetMode?: PersistedChatMessage['mode']
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+  const colQuery = query(
+    collection(db, 'users', uid, 'chatMessages'),
+    where('uid', '==', uid),
+    limit(100)
+  );
+  const snap = await getDocs(colQuery);
+  await Promise.all(
+    snap.docs
+      .filter((d) => !targetMode || String(d.data()?.mode ?? 'chat') === targetMode)
+      .map((d) => deleteDoc(doc(db, 'users', uid, 'chatMessages', d.id)).catch(() => {}))
+  );
+}
+
 

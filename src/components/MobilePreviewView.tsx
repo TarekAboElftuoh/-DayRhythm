@@ -119,7 +119,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
     <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-4 sm:py-6">
       <div className="mb-5 pb-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-base sm:text-lg font-bold text-white">إعدادات OnePlus 12R</h1>
+          <h1 className="text-base sm:text-lg font-bold text-white">إعدادات الهاتف</h1>
           {firestoreSynced && (
             <span className="inline-flex items-center gap-1 text-xs font-medium text-[#4ADE80]">
               <Cloud className="w-3.5 h-3.5" />
@@ -367,7 +367,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                     } rounded-2xl bg-[#7FFFD4] text-black font-bold text-xs flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer transition-all`}
                   >
                     <Droplets className="w-4 h-4" />
-                    <span>+1 كوب ماء (177 مل) · {hydrationToday.cupsLogged}/{hydrationToday.targetCups}</span>
+                    <span>+1 كوب ماء · {hydrationToday.cupsLogged}/{hydrationToday.targetCups}</span>
                   </button>
 
                   <div className="grid grid-cols-3 gap-2">

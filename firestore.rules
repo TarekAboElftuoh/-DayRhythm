@@ -158,6 +158,17 @@ service cloud.firestore {
         && s.timestampMs is int && s.timestampMs >= 0;
     }
 
+    function isValidPhoneBattery(b) {
+      return b is map
+        && b.keys().hasAll(['levelPct', 'charging', 'chargeLimitPct', 'updatedAtMs', 'deviceLabel'])
+        && b.keys().hasOnly(['levelPct', 'charging', 'chargeLimitPct', 'updatedAtMs', 'deviceLabel'])
+        && b.levelPct is int && b.levelPct >= 0 && b.levelPct <= 100
+        && b.charging is bool
+        && b.chargeLimitPct is int && b.chargeLimitPct >= 60 && b.chargeLimitPct <= 100
+        && b.updatedAtMs is int && b.updatedAtMs >= 0
+        && b.deviceLabel is string && b.deviceLabel.size() >= 1 && b.deviceLabel.size() <= 40;
+    }
+
     function isValidLifeProfile(p) {
       return p is map
         && p.keys().hasAll([
@@ -285,6 +296,7 @@ service cloud.firestore {
           'deviceSettings',
           'lifeProfile',
           'syncSignal',
+          'phoneBattery',
           'createdAt',
           'updatedAt'
         ])
@@ -318,6 +330,7 @@ service cloud.firestore {
         && isValidDeviceSettings(data.deviceSettings)
         && isValidLifeProfile(data.lifeProfile)
         && (!('syncSignal' in data) || isValidSyncSignal(data.syncSignal))
+        && (!('phoneBattery' in data) || isValidPhoneBattery(data.phoneBattery))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -348,6 +361,8 @@ service cloud.firestore {
           'courseEndDate',
           'remainingDoses',
           'totalDoses',
+          'refillAlertDays',
+          'takenDates',
           'createdAt',
           'updatedAt'
         ])
@@ -375,6 +390,8 @@ service cloud.firestore {
         && (!('courseEndDate' in data) || (data.courseEndDate is string && data.courseEndDate.size() <= 20 && (data.courseEndDate == '' || data.courseEndDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'))))
         && (!('remainingDoses' in data) || (data.remainingDoses is int && data.remainingDoses >= -1 && data.remainingDoses <= 500))
         && (!('totalDoses' in data) || (data.totalDoses is int && data.totalDoses >= -1 && data.totalDoses <= 500))
+        && (!('refillAlertDays' in data) || (data.refillAlertDays is int && data.refillAlertDays >= 1 && data.refillAlertDays <= 14))
+        && (!('takenDates' in data) || isValidDateKeysList(data.takenDates))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -468,10 +485,56 @@ service cloud.firestore {
         && data.category in ['priority', 'sleep', 'fasting', 'hydration', 'work_devops', 'travel', 'general']
         && data.ruleText is string
         && data.ruleText.size() >= 1
-        && data.ruleText.size() <= 320
+        && data.ruleText.size() <= 600
         && data.source is string
         && data.source.size() <= 20
         && data.source in ['user', 'gemini', 'system_seed']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessageRecord(data, userId, messageId) {
+      return data.keys().hasAll([
+          'id',
+          'uid',
+          'role',
+          'mode',
+          'text',
+          'timestampMs',
+          'createdAtIso',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'uid',
+          'role',
+          'mode',
+          'text',
+          'timestampMs',
+          'createdAtIso',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidSubId(data.id)
+        && data.id == messageId
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.uid == userId
+        && data.role is string
+        && data.role.size() <= 16
+        && data.role in ['user', 'model']
+        && data.mode is string
+        && data.mode.size() <= 16
+        && data.mode in ['chat', 'maps', 'search']
+        && data.text is string
+        && data.text.size() >= 1
+        && data.text.size() <= 4000
+        && data.timestampMs is int
+        && data.timestampMs >= 1000000000000
+        && data.timestampMs <= 4102444800000
+        && data.createdAtIso is string
+        && data.createdAtIso.size() <= 40
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -527,6 +590,7 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly([
               'takenDateKey',
               'takenDosesToday',
+              'takenDates',
               'remainingDoses',
               'updatedAt'
             ])
@@ -537,12 +601,14 @@ service cloud.firestore {
               'times24',
               'daysOfWeek',
               'takenDosesToday',
+              'takenDates',
               'doseNote',
               'takenDateKey',
               'calendarEventId',
               'courseEndDate',
               'remainingDoses',
               'totalDoses',
+              'refillAlertDays',
               'updatedAt'
             ])
           );
@@ -601,7 +667,7 @@ service cloud.firestore {
         allow list: if isOwner(userId)
           && resource.data.uid == request.auth.uid
           && request.query.limit != null
-          && request.query.limit <= 50;
+          && request.query.limit <= 150;
 
         allow create: if isOwner(userId)
           && isValidSubId(memoryId)
@@ -628,6 +694,39 @@ service cloud.firestore {
           );
 
         allow delete: if isOwner(userId) && isValidSubId(memoryId) && parentUserExists(userId);
+      }
+
+      match /chatMessages/{messageId} {
+        allow get: if isOwner(userId) && isValidSubId(messageId) && parentUserExists(userId);
+        allow list: if isOwner(userId)
+          && resource.data.uid == request.auth.uid
+          && request.query.limit != null
+          && request.query.limit <= 100;
+
+        allow create: if isOwner(userId)
+          && isValidSubId(messageId)
+          && isValidChatMessageRecord(incoming(), userId, messageId)
+          && parentUserExists(userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+
+        allow update: if isOwner(userId)
+          && isValidSubId(messageId)
+          && isValidChatMessageRecord(incoming(), userId, messageId)
+          && parentUserExists(userId)
+          && incoming().id == existing().id
+          && incoming().uid == existing().uid
+          && incoming().role == existing().role
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'text',
+              'updatedAt'
+            ])
+          );
+
+        allow delete: if isOwner(userId) && isValidSubId(messageId) && parentUserExists(userId);
       }
     }
   }

@@ -1,11 +1,11 @@
 import { GeoLocation, PrayerTimeItem } from '../types/dayrhythm';
 
 export const HOME_LOCATION: GeoLocation = {
-  id: 'aldahriya',
-  nameAr: 'الضهرية · شربين · الدقهلية',
-  nameEn: 'Al-Dahriya, Sherbin, Dakahlia',
-  lat: 31.1953,
-  lng: 31.5212,
+  id: 'cairo',
+  nameAr: 'القاهرة',
+  nameEn: 'Cairo, Egypt',
+  lat: 30.0444,
+  lng: 31.2357,
   tzOffsetHours: 2,
   timeZone: 'Africa/Cairo',
 };
@@ -13,31 +13,22 @@ export const HOME_LOCATION: GeoLocation = {
 export const PRESET_LOCATIONS: GeoLocation[] = [
   HOME_LOCATION,
   {
-    id: 'mansoura',
-    nameAr: 'المنصورة · الدقهلية',
-    nameEn: 'Mansoura, Dakahlia',
-    lat: 31.0409,
-    lng: 31.3785,
-    tzOffsetHours: 2,
-    timeZone: 'Africa/Cairo',
-  },
-  {
-    id: 'cairo',
-    nameAr: 'القاهرة · وسط البلد',
-    nameEn: 'Cairo, Egypt',
-    lat: 30.0444,
-    lng: 31.2357,
-    tzOffsetHours: 2,
-    timeZone: 'Africa/Cairo',
-  },
-  {
     id: 'alexandria',
-    nameAr: 'الإسكندرية · الكورنيش',
+    nameAr: 'الإسكندرية · مصر',
     nameEn: 'Alexandria, Egypt',
     lat: 31.2001,
     lng: 29.9187,
     tzOffsetHours: 2,
     timeZone: 'Africa/Cairo',
+  },
+  {
+    id: 'riyadh',
+    nameAr: 'الرياض · السعودية',
+    nameEn: 'Riyadh, Saudi Arabia',
+    lat: 24.7136,
+    lng: 46.6753,
+    tzOffsetHours: 3,
+    timeZone: 'Asia/Riyadh',
   },
   {
     id: 'makkah',

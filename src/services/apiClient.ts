@@ -1,4 +1,4 @@
-import { PersistedChatMessage, ScheduleBlock } from '../types/dayrhythm';
+import { GroundingPlace, PersistedChatMessage, ScheduleBlock } from '../types/dayrhythm';
 
 const DEFAULT_CLOUD_API_URLS = [
   'https://ais-pre-nldzeytdlkfysmfvrz4pkn-146281240493.europe-west2.run.app',
@@ -75,15 +75,21 @@ export function clearSavedCloudApiUrl(): void {
   }
 }
 
+let lastHealthyApiBase: string | null = null;
+
 function getApiBaseCandidates(): string[] {
   if (!isStandaloneVirtualHost()) {
     return [''];
   }
 
   const candidates: string[] = [];
+  if (lastHealthyApiBase !== null) {
+    candidates.push(lastHealthyApiBase);
+  }
   const custom = getSavedCloudApiUrl();
   if (custom && /^https?:\/\//i.test(custom) && !isNonApiShareUrl(custom)) {
-    candidates.push(custom.replace(/\/+$/, ''));
+    const cleanCustom = custom.replace(/\/+$/, '');
+    if (!candidates.includes(cleanCustom)) candidates.push(cleanCustom);
   }
 
   const envUrl = (import.meta.env?.VITE_CLOUD_API_URL as string | undefined)?.trim();
@@ -149,6 +155,7 @@ export async function apiFetchJson<T = Record<string, unknown>>(
       }
 
       const data = (await res.json()) as T;
+      lastHealthyApiBase = base;
       return {
         ok: res.ok,
         status: res.status,
@@ -171,63 +178,199 @@ export async function apiFetchJson<T = Record<string, unknown>>(
 }
 
 /**
- * Queries real live Gemini backend connectivity and latency via /api/gemini/status.
+ * Queries real live Gemini backend connectivity and latency via /api/gemini/status
+ * with a strict 7-second timeout so connection probes never hang.
  */
 export async function checkGeminiStatus(forceProbe = false): Promise<GeminiConnectionStatus> {
   const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId =
+    typeof window !== 'undefined' ? window.setTimeout(() => controller.abort(), 7_000) : null;
   try {
     const query = forceProbe ? '?probe=1' : '';
     const { ok, data } = await apiFetchJson<Partial<GeminiConnectionStatus>>(
       `/api/gemini/status${query}`,
-      { method: 'GET', cache: 'no-store' }
+      { method: 'GET', cache: 'no-store', signal: controller.signal }
     );
     const roundTrip = Math.max(1, Date.now() - startedAt);
+    const isConnected = Boolean(ok && data.connected);
+    const resolvedStatus: GeminiConnectionStatus['status'] =
+      data.status === 'degraded' && isConnected
+        ? 'degraded'
+        : isConnected
+          ? 'online'
+          : data.status === 'degraded'
+            ? 'degraded'
+            : 'offline';
     return {
-      ok: Boolean(ok && data.connected),
-      connected: Boolean(ok && data.connected),
-      status: ok && data.connected ? 'online' : data.status === 'degraded' ? 'degraded' : 'offline',
-      model: data.model || 'gemini-4-hydrogen',
+      ok: isConnected,
+      connected: isConnected,
+      status: resolvedStatus,
+      model: data.model || 'gemini-3.1-flash-lite',
       latencyMs: typeof data.latencyMs === 'number' && data.latencyMs > 0 ? data.latencyMs : roundTrip,
       checkedAtIso: data.checkedAtIso || new Date().toISOString(),
       error: data.error,
     };
   } catch (err: unknown) {
+    const isTimeout = err instanceof DOMException && err.name === 'AbortError';
     return {
       ok: false,
       connected: false,
       status: 'offline',
-      model: 'gemini-4-hydrogen',
+      model: 'gemini-3.1-flash-lite',
       latencyMs: Math.max(1, Date.now() - startedAt),
       checkedAtIso: new Date().toISOString(),
-      error: err instanceof Error ? err.message : 'تعذر الوصول إلى خادم Gemini.',
+      error: isTimeout
+        ? 'استغرق التحقق وقتاً طويلاً — ستتم إعادة المحاولة تلقائياً.'
+        : err instanceof Error
+          ? err.message
+          : 'تعذر الوصول إلى خادم Gemini.',
     };
+  } finally {
+    if (timeoutId !== null && typeof window !== 'undefined') {
+      window.clearTimeout(timeoutId);
+    }
   }
 }
 
 export interface GeminiStreamDonePayload {
   text: string;
+  places?: GroundingPlace[];
   sources?: Array<{ title: string; uri: string }>;
   pendingProposal?: PersistedChatMessage['pendingProposal'];
   latencyMs?: number;
   memoriesAppliedCount?: number;
   model?: string;
+  cached?: boolean;
+}
+
+export interface ClientCachedGeminiResponse {
+  text: string;
+  places?: GroundingPlace[];
+  sources?: Array<{ title: string; uri: string }>;
+  memoriesAppliedCount?: number;
+  model?: string;
+}
+
+interface ClientCacheEntry {
+  value: ClientCachedGeminiResponse;
+  expiresAtMs: number;
+}
+
+const CLIENT_GEMINI_CACHE_MAX = 60;
+const clientGeminiCache = new Map<string, ClientCacheEntry>();
+
+function fnv1aHash(str: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < str.length; i += 1) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+export function buildClientGeminiCacheKey(parts: unknown[]): string {
+  return fnv1aHash(JSON.stringify(parts));
+}
+
+export function getCachedGeminiResponse(key: string): ClientCachedGeminiResponse | null {
+  const entry = clientGeminiCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAtMs) {
+    clientGeminiCache.delete(key);
+    return null;
+  }
+  // Refresh LRU position
+  clientGeminiCache.delete(key);
+  clientGeminiCache.set(key, entry);
+  return entry.value;
+}
+
+export function setCachedGeminiResponse(
+  key: string,
+  value: ClientCachedGeminiResponse,
+  ttlMs: number
+): void {
+  if (clientGeminiCache.has(key)) {
+    clientGeminiCache.delete(key);
+  } else if (clientGeminiCache.size >= CLIENT_GEMINI_CACHE_MAX) {
+    const oldest = clientGeminiCache.keys().next().value;
+    if (oldest !== undefined) clientGeminiCache.delete(oldest);
+  }
+  clientGeminiCache.set(key, {
+    value,
+    expiresAtMs: Date.now() + ttlMs,
+  });
+}
+
+export function clearGeminiClientCache(): void {
+  clientGeminiCache.clear();
 }
 
 /**
- * Streams Server-Sent Events (SSE) chunks from /api/chat/stream with automatic
- * host failover and AbortSignal cancellation support.
+ * Streams Server-Sent Events (SSE) chunks from /api/chat/stream, /api/maps/stream,
+ * and /api/search/stream with automatic host failover and AbortSignal cancellation.
  */
 export async function apiFetchStream(
   path: string,
   body: Record<string, unknown>,
   handlers: {
     signal?: AbortSignal;
+    onStatus?: (statusText: string) => void;
     onDelta: (deltaText: string) => void;
     onDone: (payload: GeminiStreamDonePayload) => void;
   }
 ): Promise<boolean> {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const bases = getApiBaseCandidates();
+
+  const processEventBlock = (evt: string): boolean => {
+    const dataLine = evt
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .join('');
+    if (!dataLine) return false;
+
+    const parsed = JSON.parse(dataLine) as {
+      type?: string;
+      text?: string;
+      error?: string;
+      places?: GroundingPlace[];
+      sources?: Array<{ title: string; uri: string }>;
+      pendingProposal?: PersistedChatMessage['pendingProposal'];
+      latencyMs?: number;
+      memoriesAppliedCount?: number;
+      model?: string;
+      cached?: boolean;
+    };
+
+    if (parsed.type === 'status' && typeof parsed.text === 'string') {
+      handlers.onStatus?.(parsed.text);
+      return false;
+    }
+    if (parsed.type === 'delta' && typeof parsed.text === 'string') {
+      handlers.onDelta(parsed.text);
+      return false;
+    }
+    if (parsed.type === 'error') {
+      throw new Error(parsed.error || 'حدث خطأ أثناء بث الرد من Gemini.');
+    }
+    if (parsed.type === 'done') {
+      handlers.onDone({
+        text: parsed.text || '',
+        places: parsed.places,
+        sources: parsed.sources,
+        pendingProposal: parsed.pendingProposal,
+        latencyMs: parsed.latencyMs,
+        memoriesAppliedCount: parsed.memoriesAppliedCount,
+        model: parsed.model,
+        cached: Boolean(parsed.cached),
+      });
+      return true;
+    }
+    return false;
+  };
 
   for (let i = 0; i < bases.length; i += 1) {
     const url = `${bases[i]}${normalizedPath}`;
@@ -261,39 +404,17 @@ export async function apiFetchStream(
         buffer = events.pop() ?? '';
 
         for (const evt of events) {
-          const dataLine = evt
-            .split('\n')
-            .filter((line) => line.startsWith('data:'))
-            .map((line) => line.slice(5).trim())
-            .join('');
-          if (!dataLine) continue;
-
-          const parsed = JSON.parse(dataLine) as {
-            type?: string;
-            text?: string;
-            error?: string;
-            sources?: Array<{ title: string; uri: string }>;
-            pendingProposal?: PersistedChatMessage['pendingProposal'];
-            latencyMs?: number;
-            memoriesAppliedCount?: number;
-            model?: string;
-          };
-
-          if (parsed.type === 'delta' && typeof parsed.text === 'string') {
-            handlers.onDelta(parsed.text);
-          } else if (parsed.type === 'error') {
-            throw new Error(parsed.error || 'حدث خطأ أثناء بث الرد من Gemini.');
-          } else if (parsed.type === 'done') {
+          if (processEventBlock(evt)) {
             doneReceived = true;
-            handlers.onDone({
-              text: parsed.text || '',
-              sources: parsed.sources,
-              pendingProposal: parsed.pendingProposal,
-              latencyMs: parsed.latencyMs,
-              memoriesAppliedCount: parsed.memoriesAppliedCount,
-              model: parsed.model,
-            });
           }
+        }
+      }
+
+      // Flush any trailing SSE event when stream closes without double newline
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        if (processEventBlock(buffer)) {
+          doneReceived = true;
         }
       }
 
@@ -387,6 +508,10 @@ export function sanitizePersistedChats(
       sources: Array.isArray(obj.sources) ? obj.sources : undefined,
       pendingProposal,
       executionLinks: Array.isArray(obj.executionLinks) ? obj.executionLinks : undefined,
+      latencyMs: typeof obj.latencyMs === 'number' ? obj.latencyMs : undefined,
+      memoriesAppliedCount:
+        typeof obj.memoriesAppliedCount === 'number' ? obj.memoriesAppliedCount : undefined,
+      cached: Boolean(obj.cached),
       error: Boolean(obj.error),
     });
   }

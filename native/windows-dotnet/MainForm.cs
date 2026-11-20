@@ -92,6 +92,12 @@ namespace DayRhythm
 
         private static string ResolveWwwDirectory()
         {
+            // Prefer live OTA updated web bundle if present and newer/equal to bundled build
+            string otaWww = BackgroundServices.GetOtaWwwDir();
+            if (File.Exists(Path.Combine(otaWww, "index.html")))
+            {
+                return otaWww;
+            }
             string baseWww = Path.Combine(AppContext.BaseDirectory, "www");
             if (File.Exists(Path.Combine(baseWww, "index.html")))
             {
@@ -277,6 +283,18 @@ namespace DayRhythm
                         if (string.Equals(msg, "install-update", StringComparison.OrdinalIgnoreCase))
                         {
                             RunOnUi(() => _ = InstallPendingUpdateAsync());
+                            return;
+                        }
+                        if (string.Equals(msg, "check-updates", StringComparison.OrdinalIgnoreCase))
+                        {
+                            RunOnUi(async () =>
+                            {
+                                ReleaseUpdateInfo found = await _bgServices.CheckForUpdateAsync();
+                                if (found == null)
+                                {
+                                    ShowTrayBalloon("إيقاع اليوم محدّث ✓", $"أنت تستخدم أحدث إصدار (v{BackgroundServices.GetEffectiveLocalVersion()}).");
+                                }
+                            });
                             return;
                         }
                         if (msg.StartsWith("{", StringComparison.Ordinal))
@@ -512,6 +530,39 @@ namespace DayRhythm
         {
             if (_isDownloadingUpdate || _pendingUpdate == null) return;
             _isDownloadingUpdate = true;
+
+            // Fast Path: Instant Web OTA hot-swap (~1.5 MB zip) — works identically on Portable ZIP & Setup EXE with zero reinstall!
+            if (!string.IsNullOrWhiteSpace(_pendingUpdate.WebOtaZipUrl))
+            {
+                ShowTrayBalloon("جاري التحديث الفوري (OTA)...", $"جاري تحديث إيقاع اليوم إلى {_pendingUpdate.Tag} مباشرة...");
+                bool otaOk = await _bgServices.ApplyWebOtaUpdateAsync(_pendingUpdate);
+                if (otaOk)
+                {
+                    string tagDone = _pendingUpdate.Tag;
+                    _pendingUpdate = null;
+                    _isDownloadingUpdate = false;
+                    RunOnUi(() =>
+                    {
+                        if (_updateMenuItem != null)
+                        {
+                            _updateMenuItem.Text = "فحص التحديثات من GitHub الآن";
+                        }
+                        if (_webView?.CoreWebView2 != null)
+                        {
+                            _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                                VirtualAppHost,
+                                BackgroundServices.GetOtaWwwDir(),
+                                CoreWebView2HostResourceAccessKind.Allow
+                            );
+                            _webView.CoreWebView2.Navigate(VirtualAppUrl + "?v=" + Uri.EscapeDataString(tagDone));
+                        }
+                        ShowTrayBalloon("تم التحديث بنجاح ✓", $"تم تحديث إيقاع اليوم فوراً إلى {tagDone} بدون إعادة تثبيت!");
+                    });
+                    return;
+                }
+            }
+
+            // Fallback: Full Setup EXE installer download
             ShowTrayBalloon("جاري تنزيل التحديث...", $"جاري تحميل الإصدار {_pendingUpdate.Tag} من GitHub Releases.");
             bool started = await _bgServices.DownloadAndLaunchUpdateAsync(_pendingUpdate);
             _isDownloadingUpdate = false;

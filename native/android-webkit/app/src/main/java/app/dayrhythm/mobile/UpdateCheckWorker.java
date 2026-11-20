@@ -52,15 +52,18 @@ public class UpdateCheckWorker extends Worker {
     @NonNull
     @Override
     public Result doWork() {
-        GitHubUpdater.UpdateInfo info = GitHubUpdater.checkLatestRelease();
+        Context ctx = getApplicationContext();
+        GitHubUpdater.UpdateInfo info = GitHubUpdater.checkLatestRelease(ctx);
         if (info != null && info.hasUpdate) {
-            Context ctx = getApplicationContext();
             ensureUpdateChannel(ctx);
+            String bestUrl = (info.webOtaZipUrl != null && !info.webOtaZipUrl.isEmpty())
+                    ? info.webOtaZipUrl
+                    : info.apkDownloadUrl;
 
             Intent broadcast = new Intent(DayRhythmSyncService.ACTION_UPDATE_AVAILABLE);
             broadcast.setPackage(ctx.getPackageName());
             broadcast.putExtra(DayRhythmSyncService.EXTRA_UPDATE_TAG, info.latestTag);
-            broadcast.putExtra(DayRhythmSyncService.EXTRA_UPDATE_URL, info.apkDownloadUrl);
+            broadcast.putExtra(DayRhythmSyncService.EXTRA_UPDATE_URL, bestUrl);
             ctx.sendBroadcast(broadcast);
 
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
@@ -68,7 +71,7 @@ public class UpdateCheckWorker extends Worker {
                 Intent openIntent = new Intent(ctx, MainActivity.class);
                 openIntent.putExtra("trigger_update", true);
                 openIntent.putExtra(DayRhythmSyncService.EXTRA_UPDATE_TAG, info.latestTag);
-                openIntent.putExtra(DayRhythmSyncService.EXTRA_UPDATE_URL, info.apkDownloadUrl);
+                openIntent.putExtra(DayRhythmSyncService.EXTRA_UPDATE_URL, bestUrl);
                 openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
 
                 PendingIntent pi = PendingIntent.getActivity(
@@ -79,8 +82,8 @@ public class UpdateCheckWorker extends Worker {
                 );
 
                 Notification notif = new NotificationCompat.Builder(ctx, CHANNEL_UPDATES)
-                        .setContentTitle("🚀 يتوفر إصدار جديد من إيقاع اليوم (" + info.latestTag + ")")
-                        .setContentText("اضغط هنا لتنزيل وتثبيت التحديث مباشرة من التطبيق")
+                        .setContentTitle("🚀 يتوفر تحديث فوري لإيقاع اليوم (" + info.latestTag + ")")
+                        .setContentText("اضغط للتحديث السريع داخل التطبيق بدون تنزيل APK جديد")
                         .setSmallIcon(R.mipmap.ic_launcher)
                         .setAutoCancel(true)
                         .setContentIntent(pi)

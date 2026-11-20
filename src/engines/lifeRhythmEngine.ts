@@ -39,17 +39,17 @@ export const MEMORY_CATEGORY_LABELS: Record<MemoryCategory, string> = {
   sleep: 'النوم الليلي والشروق',
   fasting: 'الصيام والسحور',
   hydration: 'الماء والقياسات',
-  work_devops: 'DevOps والشغل',
+  work_devops: 'العمل والدراسة',
   travel: 'السفر والفصول',
   general: 'قواعد عامة',
 };
 
 export const DEFAULT_LIFE_PROFILE: LifeProfile = {
-  weightKg: 75,
-  heightCm: 175,
-  cupSizeMl: 177,
-  fastingDays: [1, 4], // Monday & Thursday
-  suhoorLeadMinutes: 50,
+  weightKg: 70,
+  heightCm: 170,
+  cupSizeMl: 250,
+  fastingDays: [],
+  suhoorLeadMinutes: 45,
   sleepTargetMinutes: 450, // 7.5 hours (5 full 90-min circadian cycles)
   sleepStrategy: 'night_only_strict',
   sleepDebtMinutes: 0,
@@ -61,59 +61,22 @@ export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   oneTimeSilenceDateKey: '',
   lowEnergyDateKey: '',
   soundRepeats: { ...DEFAULT_SOUND_REPEATS },
-  careerTrack: 'DevOps · كورسات وتطبيق عملي',
+  careerTrack: '',
   workEnabled: false,
   workStart24: '09:00',
   workEnd24: '17:00',
   workDays: [0, 1, 2, 3, 4], // Sun-Thu
   autoLocationSync: true,
-  currentCityName: 'الضهرية · شربين · الدقهلية',
+  currentCityName: 'القاهرة',
   currentTimeZone: 'Africa/Cairo',
-  currentLat: 31.1953,
-  currentLng: 31.5212,
+  currentLat: 30.0444,
+  currentLng: 31.2357,
   priorityOrderAr:
-    '1. الصلاة ← 2. النوم الليلي ← 3. الشغل الثابت (عند البدء) ← 4. المذاكرة المرنة والمشي والماء والعلاجات',
-  personalNotes:
-    'النوم ليلي فقط مع حضور الشروق والغروب؛ وتُسمح قيلولة تعويضية عبر الشات فقط عند الأرق أو سوء النوم. صمت تلقائي وقت الصلاة والنوم مع حفظ الإشعارات.',
+    '1. الصلاة ← 2. النوم الليلي ← 3. العمل الثابت ← 4. المهام المرنة والماء والعلاجات',
+  personalNotes: '',
 };
 
-export const DEFAULT_MEMORIES: MemoryItem[] = [
-  {
-    id: 'mem_night_sleep_only',
-    category: 'sleep',
-    ruleText:
-      'النوم ليلي فقط بدون نوم نهاري مع حضور الشروق والغروب. الاستثناء الوحيد: لو أبلغت Gemini بأرق أو قلة نوم، يفضّي لي مكاناً لقيلولة تعويضية لأن النوم أولوية.',
-    source: 'system_seed',
-  },
-  {
-    id: 'mem_conflict_hierarchy',
-    category: 'priority',
-    ruleText:
-      'هرم حل التضارب: الصلاة أولاً، ثم النوم الليلي، ثم الشغل الثابت. عند أي تعارض يُقلَّل وقت المذاكرة المرنة، ويشاورني Gemini بصراحة لو طلبي فيه تناقض علمي أو منطقي.',
-    source: 'system_seed',
-  },
-  {
-    id: 'mem_sanctuary_silence',
-    category: 'priority',
-    ruleText:
-      'كتم صوت تلقائي تام أثناء الصلاة (20 د من الأذان و30 د للفجر) وأثناء النوم وأثناء الاجتماعات، حتى لو وضعت موعداً بالخطأ — مع اهتزاز فقط وحفظ الإشعار كي لا يفوتني.',
-    source: 'system_seed',
-  },
-  {
-    id: 'mem_fasting_suhoor',
-    category: 'fasting',
-    ruleText:
-      'صيام الإثنين والخميس تلقائياً: لا ماء بين الفجر والمغرب، يُخفّض الماء للحد الأدنى الآمن، والسحور قبل الفجر بـ 50 د (وقابل لأي تعديل مرن عبر الشات كـ 40 د وغيرها).',
-    source: 'system_seed',
-  },
-  {
-    id: 'mem_flexible_constants',
-    category: 'work_devops',
-    ruleText:
-      'مجالي DevOps ويُعامل كوقت تركيز/عمل موحّد حتى أبلغ الشات بوظيفة جديدة. كل الثوابت (حجم الكوب، السحور، الوزن، النوم، كتم الصلاة) قابلة للتعديل المرن من شات Gemini في أي ظرف.',
-    source: 'system_seed',
-  },
-];
+export const DEFAULT_MEMORIES: MemoryItem[] = [];
 
 function wrap1440(min: number): number {
   return ((Math.round(min) % 1440) + 1440) % 1440;
@@ -270,13 +233,13 @@ export function computeDailyRhythmPlan(
   if (profile.sleepStrategy === 'night_only_strict') {
     // STRICT NIGHT-ONLY SLEEP: Zero daytime sleep; protect Sunrise & Sunset attendance.
     // On conflict (fasting suhoor or short summer night), pull bedtime earlier right after Isha
-    // and trim flexible evening DevOps study time instead of touching Prayer or Sleep.
+    // and trim flexible evening study/work time instead of touching Prayer or Sleep.
     if (maxNightWindowMin < profile.sleepTargetMinutes) {
       bedtimeMin = earliestBedAfterIsha;
       const deficit = profile.sleepTargetMinutes - maxNightWindowMin;
       eveningStudyTrimMin = Math.min(180, Math.max(45, deficit + 30));
-      conflictWarningAr = `الليل الفلكي بين العشاء و${suhoorStartMin !== null ? 'السحور' : 'الفجر'} هو ${formatDurationAr(maxNightWindowMin)} فقط (أقل من هدف ${formatDurationAr(profile.sleepTargetMinutes)} بـ ${formatDurationAr(deficit)}). لأنك ضد النوم النهاري، تم تثبيت النوم مباشرة بعد العشاء (${formatMinutes12h(bedtimeMin)}) وإغلاق المذاكرة المسائية باكراً.`;
-      autoAdaptationProposalAr = `اقتراح التكيّف الذاتي: نقل جلسات DevOps المسائية للصباح بعد الشروق (${formatMinutes12h(sunrise + 20)}) وتقليل وقت المذاكرة المرنة بـ ${eveningStudyTrimMin} د لحماية نومك الليلي دون أي نوم نهاري.`;
+      conflictWarningAr = `الليل الفلكي بين العشاء و${suhoorStartMin !== null ? 'السحور' : 'الفجر'} هو ${formatDurationAr(maxNightWindowMin)} فقط (أقل من هدف ${formatDurationAr(profile.sleepTargetMinutes)} بـ ${formatDurationAr(deficit)}). تم تثبيت النوم مباشرة بعد العشاء (${formatMinutes12h(bedtimeMin)}) وتقليص الجلسات المسائية باكراً.`;
+      autoAdaptationProposalAr = `اقتراح التكيّف الذاتي: نقل جلسات العمل أو الدراسة المسائية للصباح بعد الشروق (${formatMinutes12h(sunrise + 20)}) وتقليل وقت المهام المرنة بـ ${eveningStudyTrimMin} د لحماية نومك الليلي دون أي نوم نهاري.`;
       sleepAdviceAr = `نوم ليلي حصري بعد العشاء مباشرة (${formatDurationAr(maxNightWindowMin)}) مع حضور الشروق (${formatMinutes12h(sunrise)}) والغروب (${formatMinutes12h(maghrib)}).`;
     } else {
       bedtimeMin = idealBedForTarget;
@@ -375,23 +338,14 @@ export function computeDailyRhythmPlan(
 
     for (let i = 0; i < eveningCups; i++) {
       const tMin = wrap1440(eveningStart + i * step);
-      let windowAr = 'المساء';
-      let noteAr = 'رشف تدريجي لامتصاص أفضل';
-      if (i === 0) {
-        windowAr = 'عند الإفطار (المغرب)';
-        noteAr = 'كوب الإفطار الأول';
-      } else if (i === 1) {
-        windowAr = 'بعد صلاة المغرب';
-        noteAr = 'تعويض أولي هادئ';
-      } else if (i === eveningCups - 1) {
-        windowAr = 'قبل النوم بـ 45 د';
-        noteAr = 'آخر كوب مسائي لنوم متواصل';
-      }
+      let windowAr = '';
+      if (i === 0) windowAr = 'عند الإفطار';
+      else if (i === eveningCups - 1) windowAr = 'قبل النوم';
       hydrationSlots.push({
         cupIndex: i + 1,
         timeMinutes: tMin,
         windowAr,
-        noteAr,
+        noteAr: '',
       });
     }
 
@@ -402,8 +356,8 @@ export function computeDailyRhythmPlan(
       hydrationSlots.push({
         cupIndex: eveningCups + s + 1,
         timeMinutes: wrap1440(suhoorBegin + offset),
-        windowAr: 'نافذة السحور',
-        noteAr: s === 0 ? 'مع بداية السحور' : 'قبل أذان الفجر بـ 10 د',
+        windowAr: 'السحور',
+        noteAr: '',
       });
     }
   } else {
@@ -415,32 +369,11 @@ export function computeDailyRhythmPlan(
 
     for (let i = 0; i < total; i++) {
       const tMin = wrap1440(startMin + Math.round(i * step));
-      let windowAr = 'خلال اليوم';
-      let noteAr = 'ترطيب منتظم';
-      if (i === 0) {
-        windowAr = 'بعد الفجر';
-        noteAr = 'تنشيط الصباح';
-      } else if (tMin < dhuhr) {
-        windowAr = 'صباحاً · DevOps';
-        noteAr = 'دعم التركيز';
-      } else if (tMin < asr) {
-        windowAr = 'الظهر';
-        noteAr = 'منتصف اليوم';
-      } else if (tMin < maghrib) {
-        windowAr = 'العصر';
-        noteAr = 'قبل المشي / الغروب';
-      } else if (i === total - 1) {
-        windowAr = 'قبل النوم بـ 75 د';
-        noteAr = 'إغلاق الترطيب لحماية النوم الليلي';
-      } else {
-        windowAr = 'المساء';
-        noteAr = 'ترطيب خفيف';
-      }
       hydrationSlots.push({
         cupIndex: i + 1,
         timeMinutes: tMin,
-        windowAr,
-        noteAr,
+        windowAr: '',
+        noteAr: '',
       });
     }
   }
@@ -757,6 +690,152 @@ export function findFreeTimeSlotsForToday(
     free.push({ startMin: cursor, endMin: dayEnd, durationMin: dayEnd - cursor });
   }
   return free;
+}
+
+export interface SmartScheduleConflictResult {
+  hasConflict: boolean;
+  warnings: string[];
+  suggestedTime24: string | null;
+  suggestedTime12Ar: string | null;
+}
+
+/**
+ * Checks whether a proposed event or medication time conflicts with:
+ * 1) Any of the 5 obligatory prayers (lead + silence buffer)
+ * 2) Night sleep window (bedtime -> wake)
+ * 3) Fasting hours (Fajr -> Maghrib) when scheduling oral medications/supplements on fasting days
+ * 4) Existing Google Calendar / Schedule blocks on the target date
+ * Also suggests the nearest conflict-free time slot automatically.
+ */
+export function checkSmartScheduleConflict(params: {
+  time24: string;
+  durationMinutes?: number;
+  dateIso?: string;
+  daysOfWeek?: number[];
+  isOralMedication?: boolean;
+  prayers: PrayerTimeItem[];
+  plan: DailyRhythmPlan;
+  profile: LifeProfile;
+  occupiedBlocks: ScheduleBlock[];
+}): SmartScheduleConflictResult {
+  const m = params.time24.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) {
+    return { hasConflict: false, warnings: [], suggestedTime24: null, suggestedTime12Ar: null };
+  }
+  const startMin = Math.min(1439, Math.max(0, Number(m[1]) * 60 + Number(m[2])));
+  const dur = Math.max(10, Math.min(480, Math.round(params.durationMinutes ?? 15)));
+  const endMin = startMin + dur;
+  const warnings: string[] = [];
+
+  const { prayers, plan, profile, occupiedBlocks } = params;
+
+  // 1. Obligatory Prayer conflict
+  for (const p of prayers) {
+    if (!p.isObligatory) continue;
+    const silenceLen = p.id === 'fajr' ? profile.fajrSilenceMinutes : profile.prayerSilenceMinutes;
+    const pStart = Math.max(0, p.adhanMinutes - profile.adhanLeadMinutes);
+    const pEnd = p.adhanMinutes + silenceLen;
+    if (startMin < pEnd && endMin > pStart) {
+      warnings.push(
+        `يتعارض مع وقت صلاة ${p.nameAr} (${formatMinutes12h(p.adhanMinutes)} – ${formatMinutes12h(pEnd)})`
+      );
+      break;
+    }
+  }
+
+  // 2. Night Sleep conflict (handles bedtime before midnight -> wake after midnight)
+  const bed = plan.bedtimeMin;
+  const wake = plan.wakeMin;
+  const inSleep = (min: number): boolean => {
+    const w = wrap1440(min);
+    if (bed > wake) {
+      return w >= bed || w < wake;
+    }
+    return w >= bed && w < wake;
+  };
+  if (inSleep(startMin) || inSleep(endMin - 1)) {
+    warnings.push(
+      `يقع داخل وقت النوم الليلي (${formatMinutes12h(bed)} – ${formatMinutes12h(wake)})`
+    );
+  }
+
+  // 3. Fasting window conflict for oral medications/supplements
+  if (params.isOralMedication) {
+    const fajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
+    const maghribMin = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
+    const targetDays =
+      Array.isArray(params.daysOfWeek) && params.daysOfWeek.length > 0
+        ? params.daysOfWeek
+        : [0, 1, 2, 3, 4, 5, 6];
+    const hitsFastingDay =
+      profile.fastingDays.some((fd) => targetDays.includes(fd)) || plan.isFastingToday;
+    if (hitsFastingDay && startMin >= fajrMin && startMin < maghribMin) {
+      warnings.push(
+        `يتعارض مع ساعات الصيام (الفجر ${formatMinutes12h(fajrMin)} – المغرب ${formatMinutes12h(maghribMin)}) في أيام صيامك`
+      );
+    }
+  }
+
+  // 4. Existing schedule / Calendar event overlap (checked for today or recurring daily items)
+  for (const blk of occupiedBlocks) {
+    if (blk.deleted || blk.isAllDay || blk.isAnchor || blk.source === 'creative') continue;
+    const bStart = blk.startMin;
+    const bEnd = blk.startMin + Math.max(15, blk.durationMin);
+    if (startMin < bEnd && endMin > bStart) {
+      const blkLabel = (blk.categoryAr || blk.emojiPair || 'موعد آخر').trim().slice(0, 42);
+      warnings.push(
+        `يتداخل مع «${blkLabel}» (${formatMinutes12h(bStart)} – ${formatMinutes12h(bEnd)})`
+      );
+      break;
+    }
+  }
+
+  if (warnings.length === 0) {
+    return { hasConflict: false, warnings: [], suggestedTime24: null, suggestedTime12Ar: null };
+  }
+
+  // Suggest nearest conflict-free slot from today's genuine free windows
+  const freeSlots = findFreeTimeSlotsForToday(prayers, plan, profile, occupiedBlocks, Math.min(dur, 20));
+  const fajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
+  const maghribMin = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
+
+  let bestStart: number | null = null;
+  let bestDist = Number.POSITIVE_INFINITY;
+
+  for (const slot of freeSlots) {
+    if (slot.durationMin < dur) continue;
+    let candidate = Math.max(slot.startMin, Math.min(startMin, slot.endMin - dur));
+    if (params.isOralMedication && profile.fastingDays.length > 0) {
+      if (candidate >= fajrMin && candidate < maghribMin) {
+        // Prefer after Maghrib if fasting conflict exists
+        if (slot.endMin - dur >= maghribMin + 15) {
+          candidate = Math.max(slot.startMin, maghribMin + 15);
+        } else {
+          continue;
+        }
+      }
+    }
+    const dist = Math.abs(candidate - startMin);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestStart = candidate;
+    }
+  }
+
+  // Fallback suggestion right after Maghrib for oral meds during fasting if no slot matched
+  if (bestStart === null && params.isOralMedication) {
+    bestStart = wrap1440(maghribMin + 25);
+  }
+
+  const suggestedTime24 = bestStart !== null ? formatMinutes24h(bestStart) : null;
+  const suggestedTime12Ar = bestStart !== null ? formatMinutes12h(bestStart, 'ar') : null;
+
+  return {
+    hasConflict: true,
+    warnings,
+    suggestedTime24,
+    suggestedTime12Ar,
+  };
 }
 
 /**
