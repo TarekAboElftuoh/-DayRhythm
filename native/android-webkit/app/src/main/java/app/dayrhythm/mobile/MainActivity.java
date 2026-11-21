@@ -106,26 +106,76 @@ public class MainActivity extends Activity {
                             null
                     );
                 }
+            } else if (ReminderAlarmReceiver.ACTION_PENDING_QUEUE_UPDATED.equals(action)) {
+                dispatchPendingQuickActionsToWebView();
             } else if (Intent.ACTION_BATTERY_CHANGED.equals(action)) {
-                int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-                int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-                int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
-                if (level >= 0 && scale > 0 && webView != null) {
-                    int pct = Math.max(0, Math.min(100, Math.round((level * 100f) / scale)));
-                    boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
-                            || status == BatteryManager.BATTERY_STATUS_FULL;
-                    String model = (Build.MODEL != null && !Build.MODEL.trim().isEmpty())
-                            ? Build.MODEL.replace("\\", "").replace("'", "").replace("\"", "")
-                            : "Android";
-                    String js = "window.__dayRhythmNativeBattery={levelPct:" + pct
-                            + ",charging:" + (charging ? "true" : "false")
-                            + ",deviceLabel:'" + model + "'};"
-                            + "window.dispatchEvent(new CustomEvent('dayrhythm:native-battery',{detail:window.__dayRhythmNativeBattery}));";
-                    webView.evaluateJavascript(js, null);
-                }
+                dispatchBatteryIntentToWebView(intent);
             }
         }
     };
+
+    private int computeChargeTimeRemainingMinutes(boolean charging, int pct) {
+        if (!charging) return -1;
+        if (pct >= 100) return 0;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                BatteryManager bm = (BatteryManager) getSystemService(BATTERY_SERVICE);
+                if (bm != null) {
+                    long ms = bm.computeChargeTimeRemaining();
+                    if (ms >= 0L) {
+                        return (int) Math.max(1L, Math.min(1440L, Math.round(ms / 60_000.0)));
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return -1;
+    }
+
+    private String buildBatterySnapshotJson(Intent batteryIntent) {
+        if (batteryIntent == null) return "";
+        int level = batteryIntent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = batteryIntent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+        int status = batteryIntent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        if (level < 0 || scale <= 0) return "";
+        int pct = Math.max(0, Math.min(100, Math.round((level * 100f) / scale)));
+        boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                || status == BatteryManager.BATTERY_STATUS_FULL;
+        int etaMin = computeChargeTimeRemainingMinutes(charging, pct);
+        String model = (Build.MODEL != null && !Build.MODEL.trim().isEmpty())
+                ? Build.MODEL.replace("\\", "").replace("'", "").replace("\"", "")
+                : "OnePlus 12R";
+        return "{\"levelPct\":" + pct
+                + ",\"charging\":" + (charging ? "true" : "false")
+                + ",\"chargeTimeRemainingMin\":" + etaMin
+                + ",\"deviceLabel\":\"" + model + "\"}";
+    }
+
+    private void dispatchBatteryIntentToWebView(Intent batteryIntent) {
+        if (webView == null) return;
+        Intent resolved = batteryIntent != null
+                ? batteryIntent
+                : registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        String json = buildBatterySnapshotJson(resolved);
+        if (json.isEmpty()) return;
+        String js = "window.__dayRhythmNativeBattery=" + json + ";"
+                + "window.dispatchEvent(new CustomEvent('dayrhythm:native-battery',{detail:window.__dayRhythmNativeBattery}));";
+        webView.evaluateJavascript(js, null);
+    }
+
+    private void dispatchPendingQuickActionsToWebView() {
+        if (webView == null) return;
+        try {
+            String pending = ReminderAlarmReceiver.consumePendingQuickActionsJson(MainActivity.this);
+            if (pending != null && !pending.equals("[]")) {
+                webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('dayrhythm:native-quick-actions', { detail: " + pending + " }));",
+                        null
+                );
+            }
+        } catch (Exception ignored) {
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -143,12 +193,13 @@ public class MainActivity extends Activity {
         requestEssentialPermissions();
         promptBatteryWhitelistOnce();
 
-        // 4. Register receiver for APK downloads, update banners, background WebSocket events, and live battery telemetry
+        // 4. Register receiver for APK downloads, update banners, background WebSocket events, notification actions, and live battery telemetry
         IntentFilter filter = new IntentFilter();
         filter.addAction(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
         filter.addAction(DayRhythmSyncService.ACTION_UPDATE_AVAILABLE);
         filter.addAction(DayRhythmSyncService.ACTION_WS_SYNC_MESSAGE);
         filter.addAction(DayRhythmSyncService.ACTION_NETWORK_RECOVERED);
+        filter.addAction(ReminderAlarmReceiver.ACTION_PENDING_QUEUE_UPDATED);
         filter.addAction(Intent.ACTION_BATTERY_CHANGED);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(nativeEventsReceiver, filter, Context.RECEIVER_EXPORTED);
@@ -399,6 +450,63 @@ public class MainActivity extends Activity {
             }
 
             @JavascriptInterface
+            public void dismissActiveAlerts() {
+                executor.execute(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(MainActivity.this));
+            }
+
+            @JavascriptInterface
+            public void updateLiveStatus(String statusJson) {
+                executor.execute(() -> {
+                    try {
+                        org.json.JSONObject obj = new org.json.JSONObject(statusJson);
+                        String emoji = obj.optString("emoji", "📅");
+                        String title = obj.optString("title", "");
+                        String statusLabel = obj.optString("statusLabel", "المهمة القادمة");
+                        long targetEpochMs = obj.optLong("targetEpochMs", 0L);
+                        boolean liveEnabled = obj.optBoolean("liveAlertsEnabled", true);
+                        int leadMin = obj.optInt("liveAlertsLeadMinutes", 10);
+                        boolean persistentNotif = obj.optBoolean("persistentCountdownNotif", true);
+                        DayRhythmSyncService.pushLiveStatus(
+                                MainActivity.this,
+                                emoji,
+                                title,
+                                statusLabel,
+                                targetEpochMs,
+                                liveEnabled,
+                                leadMin,
+                                persistentNotif
+                        );
+                    } catch (Exception ignored) {
+                    }
+                });
+            }
+
+            @JavascriptInterface
+            public void updateCapsule(String emoji, String title, String countdown, String statusLabel) {
+                // Legacy 4-arg fallback mapped to persistent notification
+                executor.execute(() -> DayRhythmSyncService.pushLiveStatus(
+                        MainActivity.this,
+                        emoji,
+                        title,
+                        statusLabel,
+                        0L,
+                        true,
+                        10,
+                        true
+                ));
+            }
+
+            @JavascriptInterface
+            public String getBatterySnapshotJson() {
+                try {
+                    Intent sticky = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                    return buildBatterySnapshotJson(sticky);
+                } catch (Exception ignored) {
+                    return "";
+                }
+            }
+
+            @JavascriptInterface
             public String consumePendingNativeActions() {
                 return ReminderAlarmReceiver.consumePendingQuickActionsJson(MainActivity.this);
             }
@@ -408,16 +516,8 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                try {
-                    String pending = ReminderAlarmReceiver.consumePendingQuickActionsJson(MainActivity.this);
-                    if (pending != null && !pending.equals("[]")) {
-                        view.evaluateJavascript(
-                                "window.dispatchEvent(new CustomEvent('dayrhythm:native-quick-actions', { detail: " + pending + " }));",
-                                null
-                        );
-                    }
-                } catch (Exception ignored) {
-                }
+                dispatchPendingQuickActionsToWebView();
+                dispatchBatteryIntentToWebView(null);
             }
 
             @Override

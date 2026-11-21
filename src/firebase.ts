@@ -347,6 +347,7 @@ export interface OnePlusDeviceSettings {
   alertSliderLinked: boolean;
   liveAlertsEnabled: boolean;
   liveAlertsLeadMinutes: LiveAlertsLeadMinutes;
+  persistentCountdownNotif?: boolean;
   aquaTouchMode: boolean;
   ltpoNight1Hz: boolean;
   pocketProtectionEnabled: boolean;
@@ -356,6 +357,7 @@ export const DEFAULT_DEVICE_SETTINGS: OnePlusDeviceSettings = {
   alertSliderLinked: false,
   liveAlertsEnabled: true,
   liveAlertsLeadMinutes: 10,
+  persistentCountdownNotif: true,
   aquaTouchMode: true,
   ltpoNight1Hz: true,
   pocketProtectionEnabled: true,
@@ -480,7 +482,7 @@ export function sanitizeSyncSignal(raw: unknown): WorkspaceSyncSignal | undefine
     !opId ||
     !clientId ||
     !action ||
-    !['calendar', 'tasks', 'all', 'alarm_dismiss'].includes(scopeRaw)
+    !['calendar', 'tasks', 'all', 'alarm_dismiss', 'alarm_trigger'].includes(scopeRaw)
   ) {
     return undefined;
   }
@@ -500,6 +502,10 @@ export function sanitizePhoneBattery(raw: unknown): PhoneBatteryTelemetry | unde
   const levelPct = clampInt(r.levelPct, 0, 100, 0);
   const charging = Boolean(r.charging);
   const chargeLimitPct = clampInt(r.chargeLimitPct, 60, 100, 90);
+  const rawEta =
+    typeof r.chargeTimeRemainingMin === 'number' && Number.isFinite(r.chargeTimeRemainingMin)
+      ? clampInt(r.chargeTimeRemainingMin, -1, 1440, -1)
+      : undefined;
   const updatedAtMs =
     typeof r.updatedAtMs === 'number' && Number.isFinite(r.updatedAtMs) && r.updatedAtMs >= 0
       ? Math.round(r.updatedAtMs)
@@ -509,6 +515,7 @@ export function sanitizePhoneBattery(raw: unknown): PhoneBatteryTelemetry | unde
     levelPct,
     charging,
     chargeLimitPct,
+    ...(rawEta !== undefined ? { chargeTimeRemainingMin: rawEta } : {}),
     updatedAtMs,
     deviceLabel,
   };
@@ -645,6 +652,10 @@ export function sanitizeDeviceSettings(
         ? raw.liveAlertsEnabled
         : DEFAULT_DEVICE_SETTINGS.liveAlertsEnabled,
     liveAlertsLeadMinutes: lead,
+    persistentCountdownNotif:
+      typeof raw?.persistentCountdownNotif === 'boolean'
+        ? raw.persistentCountdownNotif
+        : DEFAULT_DEVICE_SETTINGS.persistentCountdownNotif ?? true,
     aquaTouchMode:
       typeof raw?.aquaTouchMode === 'boolean'
         ? raw.aquaTouchMode
@@ -817,10 +828,15 @@ export function sanitizeUiPrefs(raw: unknown): UiPrefs | undefined {
     obj.capsuleOrientation === 'vertical' ? 'vertical' : 'horizontal';
   const capsuleSize: UiPrefs['capsuleSize'] =
     obj.capsuleSize === 'sm' || obj.capsuleSize === 'lg' ? obj.capsuleSize : 'md';
+  const rawCloudApiUrl =
+    typeof obj.cloudApiUrl === 'string' ? obj.cloudApiUrl.trim().replace(/\/+$/, '').slice(0, 240) : '';
+  const cloudApiUrl =
+    rawCloudApiUrl && /^https?:\/\//i.test(rawCloudApiUrl) ? rawCloudApiUrl : undefined;
   return {
     selectedLogoId,
     capsuleOrientation,
     capsuleSize,
+    ...(cloudApiUrl ? { cloudApiUrl } : {}),
   };
 }
 

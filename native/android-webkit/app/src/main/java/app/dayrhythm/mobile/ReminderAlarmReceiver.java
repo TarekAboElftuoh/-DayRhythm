@@ -36,6 +36,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
     private static final String PREFS_ALARMS = "dayrhythm_exact_alarms_prefs";
     private static final String KEY_SCHEDULED_IDS = "scheduled_request_codes";
+    private static final String KEY_ACTIVE_NOTIF_IDS = "active_notif_ids";
     private static final String KEY_PENDING_ACTIONS = "pending_quick_actions_json";
 
     @Override
@@ -66,6 +67,11 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     doseTime != null ? doseTime : "",
                     snoozeAtMs
             );
+            // Also notify live WebView so PC stops ringing immediately when snoozed from phone!
+            enqueuePendingQuickAction(context, "snooze_dismiss", alarmId, medId, doseTime);
+            Intent notifyIntent = new Intent(ACTION_PENDING_QUEUE_UPDATED);
+            notifyIntent.setPackage(context.getPackageName());
+            context.sendBroadcast(notifyIntent);
             return;
         }
 
@@ -117,7 +123,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         long nowMs = System.currentTimeMillis();
         try {
             JSONArray arr = new JSONArray(jsonArrayStr);
-            int maxItems = Math.min(arr.length(), 48);
+            int maxItems = Math.min(arr.length(), 60);
             for (int i = 0; i < maxItems; i++) {
                 JSONObject item = arr.optJSONObject(i);
                 if (item == null) continue;
@@ -218,7 +224,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     "منبهات إيقاع اليوم الدقيقة",
                     NotificationManager.IMPORTANCE_HIGH
             );
-            ch.setDescription("تنبيهات الصلاة وشرب الماء والعلاجات بدقة حتى مع قفل الشاشة");
+            ch.setDescription("تنبيهات الصلاة وشرب الماء والعلاجات والمهام بدقة حتى مع قفل الشاشة");
             ch.enableVibration(true);
             nm.createNotificationChannel(ch);
         }
@@ -232,7 +238,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        // Quick Action 1: Done (Water / Medication)
+        // Quick Action 1: Done (Water / Medication / Task / Calendar)
         Intent doneIntent = new Intent(context, ReminderAlarmReceiver.class);
         doneIntent.setAction(ACTION_MARK_DONE);
         doneIntent.putExtra(EXTRA_NOTIF_ID, notifId);
@@ -268,7 +274,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 ? "✓ شربت الآن"
                 : "medication".equals(kind)
                     ? "✓ أخذت الجرعة"
-                    : "✓ تم التنفيذ";
+                    : "✓ تم / إغلاق";
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.mipmap.ic_launcher)
@@ -283,8 +289,39 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
         try {
             nm.notify(notifId, builder.build());
+            trackActiveNotifId(context, notifId);
         } catch (SecurityException ignored) {
         }
+    }
+
+    private static void trackActiveNotifId(Context context, int notifId) {
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
+            String csv = prefs.getString(KEY_ACTIVE_NOTIF_IDS, "");
+            String token = String.valueOf(notifId);
+            if (csv == null || csv.isEmpty()) {
+                prefs.edit().putString(KEY_ACTIVE_NOTIF_IDS, token).apply();
+            } else if (!("," + csv + ",").contains("," + token + ",")) {
+                prefs.edit().putString(KEY_ACTIVE_NOTIF_IDS, csv + "," + token).apply();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void cancelAllActiveAlarms(Context context) {
+        if (context == null) return;
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
+        String csv = prefs.getString(KEY_ACTIVE_NOTIF_IDS, "");
+        if (nm != null && csv != null && !csv.isEmpty()) {
+            for (String token : csv.split(",")) {
+                try {
+                    nm.cancel(Integer.parseInt(token.trim()));
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        prefs.edit().putString(KEY_ACTIVE_NOTIF_IDS, "").apply();
     }
 
     private static void cancelNotification(Context context, int notifId) {

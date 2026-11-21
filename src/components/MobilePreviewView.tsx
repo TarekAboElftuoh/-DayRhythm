@@ -1,33 +1,32 @@
 import React, { useState } from 'react';
 import {
   BatteryCharging,
-  Droplets,
-  Plane,
-  Zap,
-  Timer,
-  Moon,
-  ShieldCheck,
-  Vibrate,
-  CheckCircle2,
-  Sparkles,
-  Sliders,
-  ShieldAlert,
-  Cloud,
+  MapPin,
   BellRing,
+  CheckCircle2,
+  Cloud,
+  SlidersHorizontal,
+  ChevronDown,
+  ChevronUp,
+  Volume2,
+  Vibrate,
+  ShieldCheck,
+  RefreshCw,
 } from 'lucide-react';
 import {
   AppLanguage,
   BatteryGuardState,
+  GeoLocation,
   HydrationDayLog,
+  PhoneBatteryTelemetry,
   PrayerTimeItem,
   QuietModeType,
   ScheduleBlock,
   TravelState,
 } from '../types/dayrhythm';
 import { LiveAlertsLeadMinutes, OnePlusDeviceSettings } from '../firebase';
-import { formatMinutes12h, formatNow12hInTimeZone } from '../engines/prayerEngine';
 import { QUIET_MODE_LABELS } from '../engines/i18n';
-import { HAPTIC_WAVEFORMS, triggerHapticWaveform } from '../engines/hapticsEngine';
+import { HAPTIC_WAVEFORMS, HapticWaveformKind, triggerHapticWaveform } from '../engines/hapticsEngine';
 
 interface MobilePreviewViewProps {
   language: AppLanguage;
@@ -59,32 +58,24 @@ interface MobilePreviewViewProps {
   onUpdateDeviceSettings: (patch: Partial<OnePlusDeviceSettings>) => void;
   firestoreSynced: boolean;
   activeTimeZone?: string;
+  activeLocation?: GeoLocation;
+  onRefreshGps?: () => void;
+  gpsSyncing?: boolean;
+  phoneBattery?: PhoneBatteryTelemetry | null;
+  upcomingPreview?: { emoji: string; title: string; countdownText: string } | null;
 }
+
+const LEAD_MINUTE_OPTIONS: LiveAlertsLeadMinutes[] = [5, 10, 15];
 
 const PERMISSION_STEPS = [
   { id: 'alarm', labelAr: 'منبهات دقيقة لا تتأخر في وضع السكون' },
-  { id: 'fullscreen', labelAr: 'الظهور فوق شاشة القفل لنداء الفجر' },
-  { id: 'battery', labelAr: 'استثناء التطبيق من إغلاق البطارية في الخلفية' },
-  { id: 'autolaunch', labelAr: 'إعادة جدولة المنبهات تلقائياً بعد إعادة التشغيل' },
+  { id: 'battery', labelAr: 'استثناء التطبيق من تحسين البطارية في الخلفية' },
+  { id: 'notif', labelAr: 'السماح بإشعارات Live Alerts وشريط الحالة' },
 ];
 
-const LEAD_MINUTE_OPTIONS: LiveAlertsLeadMinutes[] = [5, 10, 15, 20, 30];
-
 export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
-  language,
-  prayers,
-  blocks,
-  hydrationToday,
-  onLogWaterCup,
   quietMode,
-  quietRemainingSec,
-  onCycleQuietMode,
   onSetQuietMode,
-  travelState,
-  onOpenTravel,
-  onOpenCatchUp,
-  onOpenPomodoro,
-  liveCountdownSec,
   batteryGuard,
   onToggleBypassCharging,
   alarmRinging,
@@ -92,619 +83,390 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
   deviceSettings,
   onUpdateDeviceSettings,
   firestoreSynced,
-  activeTimeZone = 'Africa/Cairo',
+  activeLocation,
+  onRefreshGps,
+  gpsSyncing = false,
+  phoneBattery,
+  upcomingPreview,
 }) => {
-  const [showNightWakeScreen, setShowNightWakeScreen] = useState(false);
-  const [liveAlertMode, setLiveAlertMode] = useState<'alarm' | 'hydration' | 'charge'>('alarm');
-  const [previewPocketShield, setPreviewPocketShield] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [lastHapticNote, setLastHapticNote] = useState<string>('');
-  const [permState, setPermState] = useState<Record<string, boolean>>({
-    alarm: true,
-    fullscreen: true,
-    battery: true,
-    autolaunch: true,
-  });
 
-  const nextBlock = blocks.find((b) => !b.completed && !b.deleted) ?? blocks[0];
-  const fajrPrayer = prayers.find((p) => p.id === 'fajr');
-  const isMutedState = quietMode !== 'normal';
-
-  const pocketShieldVisible = deviceSettings.pocketProtectionEnabled && previewPocketShield;
-
-  const handleHapticTest = (kind: keyof typeof HAPTIC_WAVEFORMS) => {
-    triggerHapticWaveform(kind);
-    const wf = HAPTIC_WAVEFORMS[kind];
-    setLastHapticNote(language === 'ar' ? wf.labelAr : wf.labelEn);
-  };
+  const persistentEnabled = deviceSettings.persistentCountdownNotif ?? true;
+  const batteryEtaMin = phoneBattery?.chargeTimeRemainingMin;
+  const batteryEtaText =
+    phoneBattery?.charging && typeof batteryEtaMin === 'number' && batteryEtaMin > 0
+      ? `متبقي ~${batteryEtaMin} د`
+      : phoneBattery?.charging
+        ? 'قيد الشحن الآن'
+        : 'غير موصول بالشاحن';
 
   return (
-    <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-4 sm:py-6">
-      <div className="mb-5 pb-4 border-b border-white/10 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-base sm:text-lg font-bold text-white">إعدادات الهاتف</h1>
-          {firestoreSynced && (
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-[#4ADE80]">
-              <Cloud className="w-3.5 h-3.5" />
-              <span>متزامن لحظياً</span>
-            </span>
-          )}
+    <div className="mx-auto max-w-[920px] px-4 sm:px-6 py-5 sm:py-6 space-y-5">
+      {/* Clean Header */}
+      <header className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/[0.08]">
+        <div>
+          <h1 className="text-lg font-bold text-white">إعدادات الهاتف (OnePlus 12R)</h1>
+          <p className="text-xs text-zinc-400 mt-1">
+            التحكم في Dynamic Island، الإشعار الثابت بالعدّاد، ومزامنة GPS والبطارية مع الكمبيوتر
+          </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setPreviewPocketShield(false);
-            setShowNightWakeScreen((v) => !v);
-          }}
-          className={`min-h-[38px] px-3.5 py-2 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer ${
-            showNightWakeScreen
-              ? 'border-[#7FFFD4] bg-[#7FFFD4] text-black font-bold'
-              : 'border-white/15 bg-white/[0.04] text-zinc-200 hover:border-white/30'
-          }`}
-        >
-          <Moon className="w-3.5 h-3.5" />
-          <span>معاينة شاشة الفجر الليلية</span>
-        </button>
-      </div>
+        <div className="flex items-center gap-2 text-xs text-zinc-400">
+          <Cloud className={`w-4 h-4 ${firestoreSynced ? 'text-[#7FFFD4]' : 'text-zinc-500'}`} />
+          <span>{firestoreSynced ? 'متزامن لحظياً مع الكمبيوتر' : 'وضع محلي'}</span>
+        </div>
+      </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 items-start">
-        {/* Left: Clean OnePlus 12R Live Preview Frame */}
-        <div className="lg:col-span-5 flex flex-col items-center w-full">
-          <div className="w-full max-w-[380px] rounded-[34px] sm:rounded-[38px] border-2 border-zinc-700/80 bg-black px-3.5 sm:px-4 pb-4 pt-3 shadow-2xl relative overflow-hidden">
-            <div className="flex items-center justify-center mb-2">
-              <span className="w-12 h-1 rounded-full bg-zinc-800" />
-            </div>
-
-            {pocketShieldVisible ? (
-              <div className="min-h-[580px] bg-[#000000] flex flex-col justify-between py-10 px-5 text-center">
-                <div className="text-[11px] text-zinc-600">حماية الجيب</div>
-                <div className="space-y-4">
-                  <div className="mx-auto w-14 h-14 rounded-2xl border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 flex items-center justify-center">
-                    <ShieldAlert className="w-7 h-7 text-[#7FFFD4]" />
-                  </div>
-                  <div className="text-lg font-bold text-white">حماية الجيب نشطة</div>
-                  <p className="text-xs text-zinc-400 leading-relaxed">
-                    تم قفل اللمس العرضي وتأجيل التنبيهات البصرية أثناء وجود الهاتف في الجيب، مع استمرار الأذان والاهتزاز.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setPreviewPocketShield(false)}
-                  className="w-full min-h-[50px] rounded-2xl border border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold text-xs cursor-pointer hover:bg-[#7FFFD4]/25"
-                >
-                  إغلاق المعاينة
-                </button>
-              </div>
-            ) : showNightWakeScreen ? (
-              <div className="min-h-[580px] bg-[#000000] flex flex-col justify-between py-8 px-4 text-center">
-                <div className="text-[11px] text-zinc-600 font-mono-tabular">
-                  {deviceSettings.ltpoNight1Hz ? '1Hz' : '120Hz'} · #000000
-                </div>
-                <div className="space-y-4">
-                  <div className="text-6xl">🕌 🌌</div>
-                  <div className="text-xl font-bold text-[#7FFFD4]/85">
-                    أذان -3 د · الفجر
-                  </div>
-                  <div className="font-mono-tabular text-4xl font-bold text-white/80">
-                    {fajrPrayer ? formatMinutes12h(fajrPrayer.alarmMinutes, language) : '04:49 ص'}
-                  </div>
-                </div>
-                <div className="space-y-2.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowNightWakeScreen(false);
-                      onDismissTwoWay();
-                    }}
-                    className={`w-full ${
-                      deviceSettings.aquaTouchMode ? 'min-h-[56px]' : 'min-h-[44px]'
-                    } rounded-2xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold text-sm cursor-pointer`}
-                  >
-                    إيقاف المنبه
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowNightWakeScreen(false)}
-                    className="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 cursor-pointer"
-                  >
-                    إغلاق المعاينة
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                {/* OxygenOS 16 Live Alerts Capsule */}
-                <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/10">
-                  <span className="font-mono-tabular text-[11px] text-zinc-400">
-                    {formatNow12hInTimeZone(activeTimeZone, language)}
-                  </span>
-
-                  {deviceSettings.liveAlertsEnabled ? (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setLiveAlertMode((m) =>
-                          m === 'alarm' ? 'hydration' : m === 'hydration' ? 'charge' : 'alarm'
-                        )
-                      }
-                      className="flex items-center gap-1.5 rounded-full bg-zinc-900 border border-[#7FFFD4]/45 px-3 py-1 cursor-pointer hover:border-[#7FFFD4]"
-                    >
-                      <span className="w-2.5 h-2.5 rounded-full bg-black border border-zinc-700 shrink-0" />
-                      {liveAlertMode === 'alarm' ? (
-                        <>
-                          <span className="text-xs">{nextBlock?.emojiPair.split(' ')[0] ?? '🕌'}</span>
-                          <span className="font-mono-tabular text-[11px] font-bold text-[#7FFFD4]">
-                            قبل {deviceSettings.liveAlertsLeadMinutes}د · 00:{String(liveCountdownSec).padStart(2, '0')}
-                          </span>
-                        </>
-                      ) : liveAlertMode === 'hydration' ? (
-                        <span className="font-mono-tabular text-[11px] font-bold text-[#7FFFD4]">
-                          💧 {hydrationToday.cupsLogged}/{hydrationToday.targetCups}
-                        </span>
-                      ) : (
-                        <span className="font-mono-tabular text-[11px] font-bold text-[#4ADE80]">
-                          ⚡ {batteryGuard.levelPct}%
-                        </span>
-                      )}
-                    </button>
-                  ) : (
-                    <span className="w-2.5 h-2.5 rounded-full bg-zinc-900 border border-zinc-700" />
-                  )}
-
-                  <div className="flex items-center gap-1 font-mono-tabular text-[11px] text-zinc-300">
-                    <BatteryCharging
-                      className={`w-3.5 h-3.5 ${
-                        batteryGuard.bypassChargingLimitPct
-                          ? 'text-sky-400'
-                          : batteryGuard.levelPct >= 90
-                            ? 'text-[#4ADE80]'
-                            : batteryGuard.levelPct <= 25
-                              ? 'text-rose-400'
-                              : 'text-zinc-300'
-                      }`}
-                    />
-                    <span>{batteryGuard.levelPct}%</span>
-                  </div>
-                </div>
-
-                {/* Quick Settings Tiles */}
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onLogWaterCup();
-                      handleHapticTest('water_cup');
-                    }}
-                    className={`${
-                      deviceSettings.aquaTouchMode ? 'min-h-[82px]' : 'min-h-[70px]'
-                    } rounded-2xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/12 px-3 py-2.5 text-right hover:bg-[#7FFFD4]/20 cursor-pointer transition-colors`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-base">💧</span>
-                      <span className="font-mono-tabular text-[10px] text-[#7FFFD4]">
-                        {hydrationToday.cupsLogged}/{hydrationToday.targetCups}
-                      </span>
-                    </div>
-                    <div className="text-[11px] font-bold text-white mt-1">كوب ماء</div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={onCycleQuietMode}
-                    className={`${
-                      deviceSettings.aquaTouchMode ? 'min-h-[82px]' : 'min-h-[70px]'
-                    } rounded-2xl border px-3 py-2.5 text-right cursor-pointer transition-colors ${
-                      isMutedState
-                        ? 'border-amber-400/50 bg-amber-400/12'
-                        : 'border-white/15 bg-zinc-900'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-base">{isMutedState ? '🔇' : '🔊'}</span>
-                      {quietRemainingSec > 0 && (
-                        <span className="font-mono-tabular text-[10px] text-amber-300">
-                          {Math.ceil(quietRemainingSec / 60)}د
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[11px] font-bold text-white mt-1 truncate">
-                      {QUIET_MODE_LABELS[quietMode][language]}
-                    </div>
-                  </button>
-                </div>
-
-                {alarmRinging && (
-                  <button
-                    type="button"
-                    onClick={onDismissTwoWay}
-                    className="mt-2.5 w-full py-2.5 px-3 rounded-xl bg-rose-500 text-white text-xs font-bold cursor-pointer hover:bg-rose-600"
-                  >
-                    🔕 إيقاف الرنين على الهاتف والكمبيوتر
-                  </button>
-                )}
-
-                {/* Upcoming Events Feed */}
-                <div className="mt-3 space-y-2 max-h-[210px] overflow-y-auto pr-1">
-                  {blocks
-                    .filter((b) => !b.deleted)
-                    .slice(0, 4)
-                    .map((b) => (
-                      <div
-                        key={b.id}
-                        className="flex items-center justify-between rounded-2xl border border-white/10 bg-[#0A0D12] px-3.5 py-2.5"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span className="text-lg shrink-0">{b.emojiPair}</span>
-                          <div className="min-w-0">
-                            {(() => {
-                              const raw = b.categoryAr.trim();
-                              const ep = b.emojiPair.trim();
-                              const rem = raw.startsWith(ep) ? raw.slice(ep.length).trim() : raw;
-                              return rem ? (
-                                <div className="text-xs font-semibold text-white truncate">{rem}</div>
-                              ) : null;
-                            })()}
-                            <div className="font-mono-tabular text-[10px] text-zinc-500">
-                              {formatMinutes12h(b.startMin, language)}
-                            </div>
-                          </div>
-                        </div>
-                        <span className="font-mono-tabular text-[11px] text-zinc-400 shrink-0">
-                          {b.durationMin}د
-                        </span>
-                      </div>
-                    ))}
-                </div>
-
-                {/* Thumb Zone */}
-                <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onLogWaterCup();
-                      handleHapticTest('water_cup');
-                    }}
-                    className={`w-full ${
-                      deviceSettings.aquaTouchMode ? 'min-h-[54px]' : 'min-h-[44px]'
-                    } rounded-2xl bg-[#7FFFD4] text-black font-bold text-xs flex items-center justify-center gap-2 active:scale-[0.98] cursor-pointer transition-all`}
-                  >
-                    <Droplets className="w-4 h-4" />
-                    <span>+1 كوب ماء · {hydrationToday.cupsLogged}/{hydrationToday.targetCups}</span>
-                  </button>
-
-                  <div className="grid grid-cols-3 gap-2">
-                    <button
-                      type="button"
-                      onClick={onOpenCatchUp}
-                      className={`${
-                        deviceSettings.aquaTouchMode ? 'min-h-[52px]' : 'min-h-[44px]'
-                      } rounded-2xl border border-white/15 bg-zinc-900 text-white text-xs font-medium flex flex-col items-center justify-center gap-0.5 cursor-pointer hover:border-[#7FFFD4]/50`}
-                    >
-                      <Zap className="w-4 h-4 text-[#7FFFD4]" />
-                      <span>تدارك</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={onOpenTravel}
-                      className={`${
-                        deviceSettings.aquaTouchMode ? 'min-h-[52px]' : 'min-h-[44px]'
-                      } rounded-2xl border text-xs font-medium flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
-                        travelState.active
-                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                          : 'border-white/15 bg-zinc-900 text-white hover:border-[#7FFFD4]/50'
-                      }`}
-                    >
-                      <Plane className="w-4 h-4 text-[#7FFFD4]" />
-                      <span>سفر</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={onOpenPomodoro}
-                      className={`${
-                        deviceSettings.aquaTouchMode ? 'min-h-[52px]' : 'min-h-[44px]'
-                      } rounded-2xl border border-white/15 bg-zinc-900 text-white text-xs font-medium flex flex-col items-center justify-center gap-0.5 cursor-pointer hover:border-[#7FFFD4]/50`}
-                    >
-                      <Timer className="w-4 h-4 text-[#7FFFD4]" />
-                      <span>بومودورو</span>
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
+      {/* Active Ringing Banner (Two-Way Dismiss) */}
+      {alarmRinging && (
+        <div className="rounded-2xl border border-[#4ADE80]/40 bg-[#4ADE80]/10 p-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 text-sm font-bold text-[#4ADE80]">
+            <BellRing className="w-4 h-4" />
+            <span>يوجد تنبيه نشط الآن</span>
           </div>
+          <button
+            type="button"
+            onClick={onDismissTwoWay}
+            className="min-h-[44px] px-4 rounded-xl bg-[#4ADE80] text-black text-xs font-bold hover:bg-emerald-300 transition-colors flex items-center gap-1.5 cursor-pointer"
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            <span>إيقاف التنبيه على الهاتف والكمبيوتر معاً</span>
+          </button>
+        </div>
+      )}
+
+      {/* Primary Section 1: OnePlus 12R Dynamic Island (Live Alerts) + Persistent Countdown Notification */}
+      <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="text-sm font-bold text-white">
+              كبسولة Dynamic Island (Live Alerts)
+            </h2>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              تظهر تلقائياً في أعلى شاشة OnePlus 12R قبل موعد المهمة أو التنبيه القادم مع الإيموجي وعدّاد الثواني (ولا تظهر أي كبسولة مكررة داخل التطبيق).
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateDeviceSettings({ liveAlertsEnabled: !deviceSettings.liveAlertsEnabled })
+            }
+            className={`min-h-[40px] px-4 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+              deviceSettings.liveAlertsEnabled
+                ? 'bg-[#7FFFD4] text-black'
+                : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+            }`}
+          >
+            {deviceSettings.liveAlertsEnabled ? 'مفعّلة' : 'متوقفة'}
+          </button>
         </div>
 
-        {/* Right: Clean, Practical Controls Only (Zero Bloat) */}
-        <div className="lg:col-span-7 space-y-4 text-xs">
-          {/* 1. Live Alerts (Lead Time Only — yields silently to ANY active app at OS level) */}
-          <div className="rounded-2xl border border-white/15 bg-[#090C10] p-5 space-y-3.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 font-bold text-white">
-                <BellRing className="w-4 h-4 text-[#7FFFD4]" />
-                <span>كبسولة Live Alerts</span>
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  onUpdateDeviceSettings({ liveAlertsEnabled: !deviceSettings.liveAlertsEnabled })
-                }
-                className={`px-3 py-1 rounded-lg border text-[11px] font-bold cursor-pointer ${
-                  deviceSettings.liveAlertsEnabled
-                    ? 'border-[#4ADE80]/50 bg-[#4ADE80]/15 text-[#4ADE80]'
-                    : 'border-white/15 text-zinc-400'
-                }`}
-              >
-                {deviceSettings.liveAlertsEnabled ? 'مفعّلة' : 'متوقفة'}
-              </button>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <span className="text-zinc-400">الظهور قبل الموعد بـ:</span>
-              <div className="grid grid-cols-5 gap-1.5 w-full sm:w-auto">
+        {deviceSettings.liveAlertsEnabled && (
+          <div className="space-y-3 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-zinc-300">تبدأ بالظهور قبل الموعد بـ</span>
+              <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-black/60 border border-white/[0.08]">
                 {LEAD_MINUTE_OPTIONS.map((mins) => (
                   <button
                     key={mins}
                     type="button"
-                    disabled={!deviceSettings.liveAlertsEnabled}
                     onClick={() => onUpdateDeviceSettings({ liveAlertsLeadMinutes: mins })}
-                    className={`px-3 py-1.5 rounded-lg border font-mono-tabular text-[11px] font-bold cursor-pointer disabled:opacity-40 ${
+                    className={`min-h-[36px] px-3.5 rounded-lg text-xs font-bold font-digits transition-colors cursor-pointer ${
                       deviceSettings.liveAlertsLeadMinutes === mins
-                        ? 'border-[#7FFFD4] bg-[#7FFFD4] text-black'
-                        : 'border-white/10 text-zinc-300 hover:border-white/25'
+                        ? 'bg-[#7FFFD4] text-black'
+                        : 'text-zinc-400 hover:text-white'
                     }`}
                   >
-                    {mins}د
+                    {mins} دقائق
                   </button>
                 ))}
               </div>
             </div>
-          </div>
 
-          {/* 2. Aqua Touch + LTPO4 1Hz AND Pocket Protection */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="rounded-2xl border border-white/15 bg-[#090C10] p-5 space-y-3">
-              <div className="flex items-center gap-2 font-bold text-white">
-                <Sparkles className="w-4 h-4 text-[#7FFFD4]" />
-                <span>الشاشة واللمس (Aqua Touch · LTPO4)</span>
-              </div>
-
-              <div className="space-y-2">
-                <div className="rounded-xl border border-white/10 bg-black/50 p-3 flex items-center justify-between gap-2">
-                  <div>
-                    <div className="font-semibold text-white">وضع الوضوء Aqua Touch</div>
-                    <div className="text-[10px] text-zinc-400 mt-0.5">
-                      تكبير أزرار الماء والأذان لأيدٍ مبللة
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onUpdateDeviceSettings({ aquaTouchMode: !deviceSettings.aquaTouchMode })
-                    }
-                    className={`px-2.5 py-1 rounded-lg border text-[10px] font-bold cursor-pointer shrink-0 ${
-                      deviceSettings.aquaTouchMode
-                        ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                        : 'border-white/10 text-zinc-400'
-                    }`}
-                  >
-                    {deviceSettings.aquaTouchMode ? 'مفعّل' : 'قياسي'}
-                  </button>
-                </div>
-
-                <div className="rounded-xl border border-white/10 bg-black/50 p-3 flex items-center justify-between gap-2">
-                  <div>
-                    <div className="font-semibold text-white">شاشة الفجر LTPO4 1Hz</div>
-                    <div className="text-[10px] text-zinc-400 mt-0.5">
-                      خلفية سوداء #000000 على تردد 1Hz
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onUpdateDeviceSettings({ ltpoNight1Hz: !deviceSettings.ltpoNight1Hz })
-                    }
-                    className={`px-2.5 py-1 rounded-lg border text-[10px] font-bold cursor-pointer shrink-0 ${
-                      deviceSettings.ltpoNight1Hz
-                        ? 'border-[#4ADE80]/50 bg-[#4ADE80]/15 text-[#4ADE80]'
-                        : 'border-white/10 text-zinc-400'
-                    }`}
-                  >
-                    {deviceSettings.ltpoNight1Hz ? '1Hz' : '120Hz'}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-white/15 bg-[#090C10] p-5 space-y-3 flex flex-col justify-between">
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-white flex items-center gap-1.5">
-                    <ShieldAlert className="w-4 h-4 text-[#7FFFD4]" />
-                    <span>حماية الجيب</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = !deviceSettings.pocketProtectionEnabled;
-                      onUpdateDeviceSettings({ pocketProtectionEnabled: next });
-                      if (!next) setPreviewPocketShield(false);
-                    }}
-                    className={`px-2.5 py-1 rounded-lg border text-[10px] font-bold cursor-pointer ${
-                      deviceSettings.pocketProtectionEnabled
-                        ? 'border-[#4ADE80]/50 bg-[#4ADE80]/15 text-[#4ADE80]'
-                        : 'border-white/10 text-zinc-400'
-                    }`}
-                  >
-                    {deviceSettings.pocketProtectionEnabled ? 'مفعّلة' : 'متوقفة'}
-                  </button>
-                </div>
-
-                <p className="text-[11px] text-zinc-400 leading-relaxed">
-                  يمنع اللمس العرضي ويؤجل التنبيهات البصرية داخل الجيب مع استمرار الأذان والاهتزاز.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                disabled={!deviceSettings.pocketProtectionEnabled}
-                onClick={() => {
-                  setShowNightWakeScreen(false);
-                  setPreviewPocketShield((v) => !v);
-                }}
-                className={`w-full py-2 rounded-xl border text-[11px] font-semibold cursor-pointer disabled:opacity-40 ${
-                  pocketShieldVisible
-                    ? 'border-[#7FFFD4] bg-[#7FFFD4] text-black font-bold'
-                    : 'border-white/15 bg-black/50 text-zinc-200 hover:border-[#7FFFD4]/40'
-                }`}
-              >
-                {pocketShieldVisible ? 'إغلاق معاينة الجيب' : 'معاينة شاشة حماية الجيب'}
-              </button>
+            {/* Minimal, factual preview of the exact Dynamic Island chip format */}
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-black/50 px-3.5 py-2.5">
+              <span className="text-xs text-zinc-400">شكل الكبسولة في شريط الحالة</span>
+              <span className="inline-flex items-center gap-2 rounded-full border border-[#7FFFD4]/35 bg-black px-3 py-1 text-xs font-bold font-digits text-[#7FFFD4]">
+                <span>{upcomingPreview?.emoji || '💧'}</span>
+                <span dir="ltr">
+                  {upcomingPreview?.countdownText ||
+                    `${String(deviceSettings.liveAlertsLeadMinutes).padStart(2, '0')}:00`}
+                </span>
+              </span>
             </div>
           </div>
+        )}
 
-          {/* 3. Bypass Charging + Optional Side Alert Slider */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="rounded-2xl border border-white/15 bg-[#090C10] p-4 space-y-2.5">
-              <div className="font-bold text-white flex items-center gap-2">
-                <BatteryCharging className="w-4 h-4 text-sky-400" />
-                <span>الشحن التجاوزي (Bypass Charging)</span>
+        {/* Persistent Ongoing Countdown Notification Toggle */}
+        <div className="pt-4 border-t border-white/[0.08] flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-bold text-white">
+              إشعار ثابت بعدّاد تنازلي في الإشعارات
+            </h3>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              يبقي المهمة أو الحدث القادم (من التقويم أو المهام أو الماء أو العلاج) ظاهراً دائماً في ستارة الإشعارات بعدّاد تنازلي مباشر صامت.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateDeviceSettings({ persistentCountdownNotif: !persistentEnabled })
+            }
+            className={`min-h-[40px] px-4 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+              persistentEnabled
+                ? 'bg-[#7FFFD4] text-black'
+                : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+            }`}
+          >
+            {persistentEnabled ? 'مفعّل' : 'متوقف'}
+          </button>
+        </div>
+      </section>
+
+      {/* Primary Section 2: Unified GPS & Battery Sync with PC */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {/* GPS Authority -> PC */}
+        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+          <div className="space-y-1">
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-[#7FFFD4]" />
+              <span>توحيد GPS مع الكمبيوتر</span>
+            </h2>
+            <p className="text-xs text-zinc-400">
+              هاتفك هو مصدر الموقع الرئيسي — يتم تحديث موقع الكمبيوتر ومواقيت الصلاة والطقس منه تلقائياً
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-white/[0.06] bg-black/45 px-3.5 py-3 space-y-1">
+            <div className="text-sm font-bold text-white">
+              {activeLocation?.nameAr || 'جاري تحديد الموقع...'}
+            </div>
+            {activeLocation && (
+              <div className="font-digits text-[11px] text-zinc-400">
+                {activeLocation.lat.toFixed(4)}, {activeLocation.lng.toFixed(4)} ·{' '}
+                {activeLocation.timeZone || 'Africa/Cairo'}
               </div>
-              <p className="text-[11px] text-zinc-400">
-                يمنع إنذار الـ 90% المتكرر عند تثبيت الشحن أثناء العمل أو اللعب.
+            )}
+          </div>
+
+          {onRefreshGps && (
+            <button
+              type="button"
+              onClick={onRefreshGps}
+              disabled={gpsSyncing}
+              className="w-full min-h-[44px] rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/12 px-4 py-2 text-xs font-bold text-[#7FFFD4] hover:bg-[#7FFFD4]/20 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${gpsSyncing ? 'animate-spin' : ''}`} />
+              <span>
+                {gpsSyncing ? 'جاري قراءة GPS...' : 'تحديث موقع GPS الآن ومزامنته للكمبيوتر'}
+              </span>
+            </button>
+          )}
+        </section>
+
+        {/* Battery & Smart Charge Limit -> PC */}
+        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+          <div className="flex items-start justify-between gap-2">
+            <div className="space-y-1">
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <BatteryCharging className="w-4 h-4 text-amber-300" />
+                <span>البطارية والشحن الذكي</span>
+              </h2>
+              <p className="text-xs text-zinc-400">
+                تصل النسبة ووقت الشحن المتبقي لبرنامج الكمبيوتر لحظياً
               </p>
-              <div className="grid grid-cols-3 gap-1.5 pt-1">
-                {([null, 80, 90] as const).map((lim) => (
-                  <button
-                    key={String(lim)}
-                    type="button"
-                    onClick={() => onToggleBypassCharging(lim)}
-                    className={`py-1.5 rounded-lg text-[11px] cursor-pointer border ${
-                      batteryGuard.bypassChargingLimitPct === lim
-                        ? 'border-sky-400 bg-sky-400/20 text-white font-bold'
-                        : 'border-white/10 text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    {lim === null ? 'عادي' : `تثبيت ${lim}%`}
-                  </button>
-                ))}
-              </div>
             </div>
-
-            <div className="rounded-2xl border border-white/10 bg-[#090C10] p-4 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-zinc-400" />
-                  <span className="font-bold text-white">Alert Slider (اختياري)</span>
+            {phoneBattery && (
+              <div className="text-left">
+                <div className="font-digits text-xl font-extrabold text-white">
+                  {phoneBattery.levelPct}%
                 </div>
+                <div className="text-[11px] text-zinc-400">{batteryEtaText}</div>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="text-xs text-zinc-400">حد الشحن المفضل (تنبيه تلقائي على الكمبيوتر)</div>
+            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/50 border border-white/[0.07]">
+              {(
+                [
+                  { val: null, label: 'عادي' },
+                  { val: 80 as const, label: '80%' },
+                  { val: 90 as const, label: '90%' },
+                ] as const
+              ).map((opt) => (
                 <button
+                  key={String(opt.val)}
                   type="button"
-                  onClick={() =>
-                    onUpdateDeviceSettings({
-                      alertSliderLinked: !deviceSettings.alertSliderLinked,
-                    })
-                  }
-                  className={`px-2.5 py-1 rounded-lg border text-[10px] font-bold cursor-pointer ${
-                    deviceSettings.alertSliderLinked
-                      ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                      : 'border-white/15 bg-black/50 text-zinc-400'
+                  onClick={() => onToggleBypassCharging(opt.val)}
+                  className={`min-h-[38px] rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                    batteryGuard.bypassChargingLimitPct === opt.val
+                      ? 'bg-[#7FFFD4] text-black'
+                      : 'text-zinc-300 hover:bg-white/[0.05]'
                   }`}
                 >
-                  {deviceSettings.alertSliderLinked ? 'مربوط' : 'مستقل'}
+                  {opt.label}
                 </button>
-              </div>
-
-              {deviceSettings.alertSliderLinked ? (
-                <div className="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-black border border-white/10">
-                  {(
-                    [
-                      { label: 'صامت', mode: 'silent_all', mins: 30 },
-                      { label: 'اهتزاز', mode: 'vibrate_only', mins: 30 },
-                      { label: 'رنين', mode: 'normal', mins: 0 },
-                    ] as const
-                  ).map((pos) => {
-                    const isSelected =
-                      pos.mode === quietMode ||
-                      (pos.mode === 'vibrate_only' && quietMode === 'mute_audio');
-                    return (
-                      <button
-                        key={pos.mode}
-                        type="button"
-                        onClick={() => onSetQuietMode(pos.mode, pos.mins)}
-                        className={`py-1.5 rounded-md text-[10px] font-medium cursor-pointer ${
-                          isSelected
-                            ? 'bg-[#7FFFD4] text-black font-bold'
-                            : 'text-zinc-400 hover:text-white'
-                        }`}
-                      >
-                        {pos.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="text-[11px] text-zinc-500 leading-relaxed">
-                  يعمل المفتاح بحريته المستقلة ولا يغيّر أوضاع الهدوء داخل التطبيق إلا عند التفعيل.
-                </p>
-              )}
+              ))}
             </div>
           </div>
-
-          {/* 4. X-Axis Haptics + Background Permissions */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="rounded-2xl border border-white/15 bg-[#090C10] p-4 space-y-2.5">
-              <div className="flex items-center gap-2 font-bold text-white">
-                <Vibrate className="w-4 h-4 text-[#7FFFD4]" />
-                <span>أنماط الاهتزاز X-Axis</span>
-              </div>
-              <div className="space-y-1.5">
-                {(['wake_fajr', 'pomodoro', 'water_cup'] as const).map((kind) => (
-                  <button
-                    key={kind}
-                    type="button"
-                    onClick={() => handleHapticTest(kind)}
-                    className="w-full rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-right text-[11px] text-zinc-200 hover:border-[#7FFFD4]/50 flex items-center justify-between cursor-pointer"
-                  >
-                    <span>{HAPTIC_WAVEFORMS[kind].labelAr}</span>
-                    <span className="text-[10px] text-[#7FFFD4]">تجربة</span>
-                  </button>
-                ))}
-              </div>
-              {lastHapticNote && (
-                <div className="text-[10px] text-[#4ADE80]">✓ {lastHapticNote}</div>
-              )}
-            </div>
-
-            <div className="rounded-2xl border border-white/15 bg-[#090C10] p-4 space-y-2.5">
-              <div className="flex items-center gap-2 font-bold text-white">
-                <ShieldCheck className="w-4 h-4 text-[#4ADE80]" />
-                <span>صلاحيات العمل في الخلفية</span>
-              </div>
-              <div className="space-y-1.5">
-                {PERMISSION_STEPS.map((step) => {
-                  const ok = permState[step.id];
-                  return (
-                    <button
-                      key={step.id}
-                      type="button"
-                      onClick={() =>
-                        setPermState((p) => ({ ...p, [step.id]: !p[step.id] }))
-                      }
-                      className="w-full rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-right text-[11px] flex items-center justify-between gap-2 cursor-pointer"
-                    >
-                      <span className="text-zinc-200">{step.labelAr}</span>
-                      <CheckCircle2
-                        className={`w-4 h-4 shrink-0 ${
-                          ok ? 'text-[#4ADE80]' : 'text-zinc-600'
-                        }`}
-                      />
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
+        </section>
       </div>
+
+      {/* Primary Section 3: Synced Quiet Mode */}
+      <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <Volume2 className="w-4 h-4 text-[#7FFFD4]" />
+            <span>الوضع الهادئ المتزامن (هاتف + كمبيوتر)</span>
+          </h2>
+          <span className="text-xs text-[#7FFFD4] font-semibold">
+            {QUIET_MODE_LABELS[quietMode].ar}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {(['normal', 'mute_audio', 'vibrate_only', 'silent_all'] as QuietModeType[]).map(
+            (mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => onSetQuietMode(mode, mode === 'normal' ? 0 : 60)}
+                className={`min-h-[44px] rounded-xl border px-3 py-2 text-xs font-semibold transition-colors cursor-pointer ${
+                  quietMode === mode
+                    ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                    : 'border-white/[0.08] bg-black/40 text-zinc-300 hover:border-white/20'
+                }`}
+              >
+                {QUIET_MODE_LABELS[mode].ar}
+              </button>
+            )
+          )}
+        </div>
+      </section>
+
+      {/* Secondary / Advanced Hardware Settings (Collapsed by Default!) */}
+      <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen((v) => !v)}
+          className="w-full min-h-[52px] px-5 py-3.5 flex items-center justify-between gap-3 text-right hover:bg-white/[0.02] transition-colors cursor-pointer"
+        >
+          <span className="flex items-center gap-2 text-xs font-bold text-zinc-200">
+            <SlidersHorizontal className="w-4 h-4 text-zinc-400" />
+            <span>إعدادات متقدمة للنظام والأذونات (OnePlus 12R)</span>
+          </span>
+          {advancedOpen ? (
+            <ChevronUp className="w-4 h-4 text-zinc-400" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-zinc-400" />
+          )}
+        </button>
+
+        {advancedOpen && (
+          <div className="px-5 pb-5 pt-2 border-t border-white/[0.08] space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {(
+                [
+                  {
+                    key: 'alertSliderLinked' as const,
+                    title: 'ربط مفتاح Alert Slider',
+                    desc: 'مزامنة وضع الصامت مع الكمبيوتر عند تحريك الزر الجانبي',
+                  },
+                  {
+                    key: 'aquaTouchMode' as const,
+                    title: 'وضع اللمس المبلل (Aqua Touch)',
+                    desc: 'تكبير أزرار التأكيد عند الوضوء أو المطر',
+                  },
+                  {
+                    key: 'ltpoNight1Hz' as const,
+                    title: 'توفير الطاقة الليلي (1Hz)',
+                    desc: 'تعتيم تلقائي للشاشة ليلاً لحفظ البطارية',
+                  },
+                  {
+                    key: 'pocketProtectionEnabled' as const,
+                    title: 'حماية الجيب',
+                    desc: 'منع الإغلاق العرضي للمنبه داخل الجيب',
+                  },
+                ] as const
+              ).map((item) => {
+                const enabled = Boolean(deviceSettings[item.key]);
+                return (
+                  <div
+                    key={item.key}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-black/40 p-3.5"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs font-semibold text-white">{item.title}</div>
+                      <div className="text-[11px] text-zinc-500 mt-0.5">{item.desc}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onUpdateDeviceSettings({ [item.key]: !enabled })}
+                      className={`min-h-[34px] px-3 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                        enabled
+                          ? 'bg-[#7FFFD4] text-black'
+                          : 'bg-white/[0.06] text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      {enabled ? 'مفعّل' : 'متوقف'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Haptics test */}
+            <div className="space-y-2 pt-2 border-t border-white/[0.06]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+                  <Vibrate className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                  <span>اختبار اهتزاز الهاتف</span>
+                </span>
+                {lastHapticNote && (
+                  <span className="text-[11px] text-[#7FFFD4]">{lastHapticNote}</span>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {(Object.entries(HAPTIC_WAVEFORMS) as Array<[HapticWaveformKind, (typeof HAPTIC_WAVEFORMS)[HapticWaveformKind]]>).map(
+                  ([kind, wf]) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      onClick={() => {
+                        const supported = triggerHapticWaveform(kind);
+                        setLastHapticNote(
+                          supported ? `تم تشغيل: ${wf.labelAr}` : 'الاهتزاز غير مدعوم في المتصفح الحالي'
+                        );
+                      }}
+                      className="min-h-[36px] px-3 rounded-lg border border-white/[0.08] bg-black/40 text-xs text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-white cursor-pointer"
+                    >
+                      {wf.labelAr}
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+
+            {/* Background Permissions Checklist */}
+            <div className="space-y-2 pt-2 border-t border-white/[0.06]">
+              <div className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                <span>أذونات العمل في الخلفية الموصى بها</span>
+              </div>
+              <ul className="space-y-1.5">
+                {PERMISSION_STEPS.map((p) => (
+                  <li key={p.id} className="text-xs text-zinc-400 flex items-center gap-2">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-[#4ADE80] shrink-0" />
+                    <span>{p.labelAr}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 };

@@ -1185,6 +1185,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <Smartphone className="w-3.5 h-3.5 shrink-0" />
                   )}
                   <span>{phoneBattery.levelPct}%</span>
+                  {phoneBattery.charging &&
+                    typeof phoneBattery.chargeTimeRemainingMin === 'number' &&
+                    phoneBattery.chargeTimeRemainingMin > 0 && (
+                      <span className="text-[11px] text-zinc-400">
+                        ·{' '}
+                        {phoneBattery.chargeTimeRemainingMin >= 60
+                          ? `${Math.floor(phoneBattery.chargeTimeRemainingMin / 60)}س ${phoneBattery.chargeTimeRemainingMin % 60}د`
+                          : `${phoneBattery.chargeTimeRemainingMin}د`}
+                      </span>
+                    )}
                 </button>
               </>
             )}
@@ -1292,6 +1302,61 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
         </div>
       </header>
+
+      {/* Live Phone Charging Status Strip (Visible on Desktop whenever OnePlus/Android phone is plugged in) */}
+      {calendarConnected && phoneBattery?.charging && (
+        <div className="hidden md:flex items-center justify-between gap-4 rounded-xl border border-[#7FFFD4]/25 bg-[#0A0F16]/90 px-4 py-2.5 text-xs">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#7FFFD4]/30 bg-[#7FFFD4]/10 text-[#7FFFD4] shrink-0">
+              <BatteryCharging className="w-4 h-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold text-zinc-100">
+                  {phoneBattery.deviceLabel || 'الهاتف'} على الشاحن
+                </span>
+                <span className="font-mono-tabular font-bold text-[#7FFFD4]">
+                  {phoneBattery.levelPct}%
+                </span>
+                {typeof phoneBattery.chargeTimeRemainingMin === 'number' &&
+                  phoneBattery.chargeTimeRemainingMin > 0 && (
+                    <span className="font-mono-tabular text-zinc-300">
+                      · متبقي{' '}
+                      {phoneBattery.chargeTimeRemainingMin >= 60
+                        ? `~${Math.floor(phoneBattery.chargeTimeRemainingMin / 60)} س ${phoneBattery.chargeTimeRemainingMin % 60} د`
+                        : `~${phoneBattery.chargeTimeRemainingMin} دقيقة`}
+                    </span>
+                  )}
+                {phoneBattery.levelPct >= phoneBattery.chargeLimitPct && (
+                  <span className="text-[#4ADE80] font-semibold">
+                    · وصل حد الشحن ({phoneBattery.chargeLimitPct}%) ✓
+                  </span>
+                )}
+              </div>
+              <div className="mt-1.5 h-1.5 w-48 max-w-full rounded-full bg-white/[0.08] overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    phoneBattery.levelPct >= phoneBattery.chargeLimitPct
+                      ? 'bg-[#4ADE80]'
+                      : 'bg-[#7FFFD4]'
+                  }`}
+                  style={{ width: `${Math.min(100, Math.max(0, phoneBattery.levelPct))}%` }}
+                />
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0 text-[11px] text-zinc-400">
+            <span className="font-mono-tabular">الحد: {phoneChargeLimitPct}%</span>
+            <button
+              type="button"
+              onClick={onOpenLifeProfile}
+              className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-zinc-200 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] cursor-pointer transition-colors"
+            >
+              تعديل الحد
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 2. PRIORITY ACTIONAL ALERTS ONLY (Rendered strictly when an urgent action or undo exists) */}
       {activeAudioAlert && (

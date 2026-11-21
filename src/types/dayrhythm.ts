@@ -12,6 +12,7 @@ export interface UiPrefs {
   selectedLogoId: string;
   capsuleOrientation: CapsuleOrientation;
   capsuleSize: CapsuleSize;
+  cloudApiUrl?: string;
 }
 
 export type AppLanguage = 'ar' | 'en';
@@ -286,7 +287,7 @@ export interface DeletedWorkspaceSnapshot {
 export interface WorkspaceSyncSignal {
   opId: string;
   clientId: string;
-  scope: 'calendar' | 'tasks' | 'all' | 'alarm_dismiss';
+  scope: 'calendar' | 'tasks' | 'all' | 'alarm_dismiss' | 'alarm_trigger';
   action: string;
   timestampMs: number;
 }
@@ -566,6 +567,7 @@ export interface PhoneBatteryTelemetry {
   levelPct: number; // 0..100
   charging: boolean;
   chargeLimitPct: number; // 60..100 (default 90)
+  chargeTimeRemainingMin?: number; // -1 = unknown, 0..1440 = minutes remaining to full/limit
   updatedAtMs: number;
   deviceLabel: string;
 }

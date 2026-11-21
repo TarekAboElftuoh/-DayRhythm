@@ -126,6 +126,11 @@ namespace DayRhythm
             ContextMenuStrip menu = new ContextMenuStrip
             {
                 RightToLeft = RightToLeft.Yes,
+                Renderer = new DayRhythmMenuRenderer(),
+                BackColor = Color.FromArgb(11, 14, 20),
+                ForeColor = Color.FromArgb(228, 228, 231),
+                Font = new Font("Segoe UI", 9.2f, FontStyle.Regular, GraphicsUnit.Point),
+                Padding = new Padding(2, 4, 2, 4),
             };
 
             ToolStripMenuItem titleItem = new ToolStripMenuItem($"إيقاع اليوم | DayRhythm (v{AppConfig.GetVersionString()})")

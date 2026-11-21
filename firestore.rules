@@ -98,6 +98,7 @@ service cloud.firestore {
           'alertSliderLinked',
           'liveAlertsEnabled',
           'liveAlertsLeadMinutes',
+          'persistentCountdownNotif',
           'aquaTouchMode',
           'ltpoNight1Hz',
           'pocketProtectionEnabled'
@@ -106,6 +107,7 @@ service cloud.firestore {
         && cfg.liveAlertsEnabled is bool
         && cfg.liveAlertsLeadMinutes is int
         && cfg.liveAlertsLeadMinutes in [5, 10, 15, 20, 30]
+        && (!('persistentCountdownNotif' in cfg) || cfg.persistentCountdownNotif is bool)
         && cfg.aquaTouchMode is bool
         && cfg.ltpoNight1Hz is bool
         && cfg.pocketProtectionEnabled is bool;
@@ -153,7 +155,7 @@ service cloud.firestore {
         && s.keys().hasOnly(['opId', 'clientId', 'scope', 'action', 'timestampMs'])
         && s.opId is string && s.opId.size() >= 1 && s.opId.size() <= 64
         && s.clientId is string && s.clientId.size() >= 1 && s.clientId.size() <= 64
-        && s.scope is string && s.scope in ['calendar', 'tasks', 'all', 'alarm_dismiss']
+        && s.scope is string && s.scope in ['calendar', 'tasks', 'all', 'alarm_dismiss', 'alarm_trigger']
         && s.action is string && s.action.size() >= 1 && s.action.size() <= 48
         && s.timestampMs is int && s.timestampMs >= 0;
     }
@@ -161,10 +163,11 @@ service cloud.firestore {
     function isValidPhoneBattery(b) {
       return b is map
         && b.keys().hasAll(['levelPct', 'charging', 'chargeLimitPct', 'updatedAtMs', 'deviceLabel'])
-        && b.keys().hasOnly(['levelPct', 'charging', 'chargeLimitPct', 'updatedAtMs', 'deviceLabel'])
+        && b.keys().hasOnly(['levelPct', 'charging', 'chargeLimitPct', 'chargeTimeRemainingMin', 'updatedAtMs', 'deviceLabel'])
         && b.levelPct is int && b.levelPct >= 0 && b.levelPct <= 100
         && b.charging is bool
         && b.chargeLimitPct is int && b.chargeLimitPct >= 60 && b.chargeLimitPct <= 100
+        && (!('chargeTimeRemainingMin' in b) || (b.chargeTimeRemainingMin is int && b.chargeTimeRemainingMin >= -1 && b.chargeTimeRemainingMin <= 1440))
         && b.updatedAtMs is int && b.updatedAtMs >= 0
         && b.deviceLabel is string && b.deviceLabel.size() >= 1 && b.deviceLabel.size() <= 40;
     }
@@ -271,7 +274,8 @@ service cloud.firestore {
         && u.keys().hasOnly([
           'selectedLogoId',
           'capsuleOrientation',
-          'capsuleSize'
+          'capsuleSize',
+          'cloudApiUrl'
         ])
         && u.selectedLogoId is string
         && u.selectedLogoId.size() >= 1
@@ -279,7 +283,8 @@ service cloud.firestore {
         && u.capsuleOrientation is string
         && u.capsuleOrientation in ['horizontal', 'vertical']
         && u.capsuleSize is string
-        && u.capsuleSize in ['sm', 'md', 'lg'];
+        && u.capsuleSize in ['sm', 'md', 'lg']
+        && (!('cloudApiUrl' in u) || (u.cloudApiUrl is string && u.cloudApiUrl.size() <= 240));
     }
 
     function isValidUserRhythmState(data, userId) {

@@ -127,6 +127,20 @@ export interface GeminiConnectionStatus {
  * and standalone Android APK / Windows EXE (failover to live Cloud Express backend).
  * Never throws `Unexpected token '<', "<!doctype "... is not valid JSON`.
  */
+export function syncSavedCloudApiUrlFromRemote(remoteUrl?: string): void {
+  if (!remoteUrl || typeof window === 'undefined') return;
+  const cleaned = remoteUrl.trim().replace(/\/+$/, '');
+  if (!cleaned || isNonApiShareUrl(cleaned) || !/^https?:\/\//i.test(cleaned)) return;
+  const current = getSavedCloudApiUrl();
+  if (current === cleaned) return;
+  try {
+    localStorage.setItem(CUSTOM_API_URL_KEY, cleaned);
+    lastHealthyApiBase = null;
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export async function apiFetchJson<T = Record<string, unknown>>(
   path: string,
   init?: RequestInit
@@ -170,9 +184,15 @@ export async function apiFetchJson<T = Record<string, unknown>>(
     }
   }
 
+  const isGeminiRoute =
+    normalizedPath.startsWith('/api/gemini') ||
+    normalizedPath.startsWith('/api/chat') ||
+    normalizedPath.startsWith('/api/maps') ||
+    normalizedPath.startsWith('/api/search');
+
   throw new Error(
-    isStandaloneVirtualHost()
-      ? 'شات Gemini في نسخة الكمبيوتر/الموبايل يحتاج رابط خادم منشور عبر «Deploy to Cloud Run» (رابط ينتهي بـ .run.app وليس رابط share.gemini.google) — الصقه بالأسفل مرة واحدة ليشتغل فوراً.'
+    isStandaloneVirtualHost() && isGeminiRoute
+      ? 'لتشغيل شات Gemini في نسخة الكمبيوتر/الموبايل، انسخ رابط النشر العام (.run.app) بعد الضغط على «Deploy to Cloud Run» والصقه هنا مرة واحدة فقط وسيتم مزامنته تلقائياً لكل أجهزتك.'
       : lastErrorMsg || `تعذر الاتصال بالخادم (${lastStatus || 'network'}).`
   );
 }

@@ -65,7 +65,7 @@
         },
         "deviceSettings": {
           "type": "object",
-          "description": "OnePlus 12R & OxygenOS 16 hardware preferences."
+          "description": "OnePlus 12R & OxygenOS 16 hardware preferences including liveAlertsEnabled, liveAlertsLeadMinutes (5|10|15|20|30), and optional persistentCountdownNotif."
         },
         "lifeProfile": {
           "type": "object",
@@ -73,15 +73,15 @@
         },
         "syncSignal": {
           "type": "object",
-          "description": "Optional real-time cross-device workspace sync marker (opId, clientId, scope, action, timestampMs) for sub-second PC <-> Mobile Google Calendar/Tasks reconciliation."
+          "description": "Optional real-time cross-device workspace sync marker (opId, clientId, scope calendar|tasks|all|alarm_dismiss|alarm_trigger, action, timestampMs) for sub-second PC <-> Mobile reconciliation."
         },
         "phoneBattery": {
           "type": "object",
-          "description": "Optional real-time synced mobile battery telemetry (levelPct 0..100, charging bool, chargeLimitPct 60..100, updatedAtMs int, deviceLabel string 1..40) for live desktop charging indicator and charge-limit alert."
+          "description": "Optional real-time synced mobile battery telemetry (levelPct 0..100, charging bool, chargeLimitPct 60..100, optional chargeTimeRemainingMin -1..1440, updatedAtMs int, deviceLabel string 1..40) for live desktop charging indicator, ETA, and charge-limit alert."
         },
         "uiPrefs": {
           "type": "object",
-          "description": "Optional cross-device UI preferences (selectedLogoId string 1..40, capsuleOrientation horizontal|vertical, capsuleSize sm|md|lg)."
+          "description": "Optional cross-device UI preferences (selectedLogoId string 1..40, capsuleOrientation horizontal|vertical, capsuleSize sm|md|lg, optional cloudApiUrl string 0..240)."
         },
         "createdAt": {
           "type": "string",

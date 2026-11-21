@@ -1,17 +1,27 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
-  Monitor,
-  Volume2,
   BellRing,
-  Clock,
   BatteryCharging,
-  Unplug,
-  Power,
-  Lock,
+  Columns2,
+  Rows2,
+  Volume2,
+  VolumeX,
+  PictureInPicture2,
+  MapPin,
+  Cloud,
+  CheckCircle2,
 } from 'lucide-react';
-import { BatteryGuardState, QuietModeType, ScheduleBlock } from '../types/dayrhythm';
-import { formatMinutes12h } from '../engines/prayerEngine';
+import {
+  BatteryGuardState,
+  CapsuleOrientation,
+  CapsuleSize,
+  GeoLocation,
+  PhoneBatteryTelemetry,
+  QuietModeType,
+  ScheduleBlock,
+} from '../types/dayrhythm';
 import { QUIET_MODE_LABELS } from '../engines/i18n';
+import { CapsulePrefs } from './FloatingPiPCapsule';
 
 interface OverlaySimulatorViewProps {
   blocks: ScheduleBlock[];
@@ -22,336 +32,374 @@ interface OverlaySimulatorViewProps {
   alarmRinging: boolean;
   onTriggerRing: () => void;
   onDismissTwoWay: () => void;
-  onSimulateCharge90: () => void;
-  onSimulatePowerDisconnect: () => void;
-  onSimulateWindowsWake: () => string;
+  onSimulateCharge90?: () => void;
+  onSimulatePowerDisconnect?: () => void;
+  onSimulateWindowsWake?: () => string;
+  phoneBattery?: PhoneBatteryTelemetry | null;
+  onChangeChargeLimit?: (limitPct: number) => void;
+  capsulePrefs?: CapsulePrefs;
+  onChangeCapsulePrefs?: (next: CapsulePrefs) => void;
+  activeLocation?: GeoLocation;
+  firestoreSynced?: boolean;
 }
 
-type DisplayMode = 'dual_monitor' | 'single_corner' | 'audio_only';
+function formatEtaAr(etaMin?: number): string {
+  if (typeof etaMin !== 'number' || !Number.isFinite(etaMin) || etaMin < 0) return '';
+  if (etaMin === 0) return 'مكتمل الشحن';
+  if (etaMin >= 60) {
+    const h = Math.floor(etaMin / 60);
+    const m = etaMin % 60;
+    return m > 0 ? `متبقي ~${h} س و ${m} د` : `متبقي ~${h} ساعة`;
+  }
+  return `متبقي ~${etaMin} دقيقة`;
+}
 
 export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
-  blocks,
-  batteryGuard,
   quietMode,
   stealthAudioOnly,
   onToggleStealthAudioOnly,
   alarmRinging,
   onTriggerRing,
   onDismissTwoWay,
-  onSimulateCharge90,
-  onSimulatePowerDisconnect,
-  onSimulateWindowsWake,
+  phoneBattery,
+  onChangeChargeLimit,
+  capsulePrefs = { orientation: 'horizontal', size: 'md' },
+  onChangeCapsulePrefs,
+  activeLocation,
+  firestoreSynced = false,
 }) => {
-  const [displayMode, setDisplayMode] = useState<DisplayMode>('dual_monitor');
-  const [snoozedMsg, setSnoozedMsg] = useState<string>('');
-  const [ipcStatus, setIpcStatus] = useState<string>(
-    'QLocalServer Lock Active (PID Single-Instance)'
+  const webviewBridge =
+    typeof window !== 'undefined'
+      ? (window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } })
+          .chrome?.webview
+      : undefined;
+  const isNativeWindowsExe = Boolean(webviewBridge?.postMessage);
+
+  const batteryFresh = Boolean(
+    phoneBattery && Date.now() - phoneBattery.updatedAtMs < 45 * 60_000
   );
-  const [wakeLog, setWakeLog] = useState<string>('');
+  const batteryEtaLabel =
+    batteryFresh && phoneBattery?.charging
+      ? formatEtaAr(phoneBattery.chargeTimeRemainingMin)
+      : '';
+  const batteryAtLimit = Boolean(
+    batteryFresh &&
+      phoneBattery?.charging &&
+      phoneBattery.levelPct >= phoneBattery.chargeLimitPct
+  );
 
-  const sampleAlarm =
-    blocks.find((b) => b.isAnchor && !b.deleted) ?? blocks[0];
-
-  const effectiveMode: DisplayMode = stealthAudioOnly ? 'audio_only' : displayMode;
-  const pcMutedByQuiet = quietMode === 'vibrate_only' || quietMode === 'silent_all';
+  const updateCapsule = (patch: Partial<CapsulePrefs>) => {
+    onChangeCapsulePrefs?.({
+      orientation: (patch.orientation ?? capsulePrefs.orientation) as CapsuleOrientation,
+      size: (patch.size ?? capsulePrefs.size) as CapsuleSize,
+    });
+  };
 
   return (
-    <div className="mx-auto max-w-[1380px] px-4 sm:px-6 py-6 space-y-6">
-      {/* Header Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-white/10">
+    <div className="mx-auto max-w-[1040px] px-4 sm:px-6 py-6 space-y-6">
+      {/* Clean Header */}
+      <header className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/[0.08]">
         <div>
-          <h1 className="text-lg font-bold text-white">
-            بيئة سطح المكتب المتقدمة ومنبه الشاشة المزدوجة (PySide6)
-          </h1>
-          <p className="text-xs text-zinc-400 mt-0.5">
-            التعافي من السكون (WM_POWERBROADCAST) · قفل النسخة الواحدة (QLocalServer) · وضع الصوت فقط · إيقاف متزامن في الاتجاهين عبر WebSocket
+          <h1 className="text-lg font-bold text-white">إعدادات الكمبيوتر</h1>
+          <p className="text-xs text-zinc-400 mt-1">
+            التحكم المباشر في كبسولة سطح المكتب، بطارية الهاتف، والتزامن اللحظي للتنبيهات
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center p-1 rounded-xl bg-white/[0.04] border border-white/10">
-            {(
-              [
-                { id: 'dual_monitor', label: 'شاشتان (توجيه للثانوية)' },
-                { id: 'single_corner', label: 'شاشة واحدة (بطاقة زاوية)' },
-                { id: 'audio_only', label: 'صوتي فقط' },
-              ] as const
-            ).map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => setDisplayMode(m.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors ${
-                  effectiveMode === m.id
-                    ? 'bg-[#7FFFD4] text-black font-semibold'
-                    : 'text-zinc-400 hover:text-white'
-                }`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-
-          <button
-            type="button"
-            onClick={onToggleStealthAudioOnly}
-            className={`px-3 py-2 rounded-xl border text-xs font-bold cursor-pointer ${
-              stealthAudioOnly
-                ? 'border-sky-400 bg-sky-400/15 text-sky-300'
-                : 'border-white/15 bg-white/[0.03] text-zinc-300'
-            }`}
-          >
-            🔇 وضع الصوت فقط (كتم النوافذ)
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              const msg = onSimulateWindowsWake();
-              setWakeLog(msg);
-            }}
-            className="px-3 py-2 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[#7FFFD4] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-          >
-            <Power className="w-3.5 h-3.5" /> محاكاة Wake من Sleep
-          </button>
-
-          <button
-            type="button"
-            onClick={() =>
-              setIpcStatus(
-                `QLocalServer: تم منع تشغيل نسخة مكررة وتنشيط النافذة الأصلية (${new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', hour12: true })}) ✓`
-              )
-            }
-            className="px-3 py-2 rounded-xl border border-white/15 bg-white/[0.03] text-zinc-200 text-xs font-medium flex items-center gap-1.5 cursor-pointer"
-          >
-            <Lock className="w-3.5 h-3.5 text-[#7FFFD4]" /> اختبار قفل النسخة الواحدة
-          </button>
-
-          <button
-            type="button"
-            onClick={onSimulateCharge90}
-            className="px-3 py-2 rounded-xl border border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-          >
-            <BatteryCharging className="w-3.5 h-3.5" /> شحن 90%
-          </button>
-
-          <button
-            type="button"
-            onClick={onSimulatePowerDisconnect}
-            className="px-3 py-2 rounded-xl border border-amber-400/40 bg-amber-400/10 text-amber-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-          >
-            <Unplug className="w-3.5 h-3.5" /> فصل الشاحن
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setSnoozedMsg('');
-              onTriggerRing();
-            }}
-            className="px-4 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold flex items-center gap-1.5 cursor-pointer hover:bg-[#66eec2]"
-          >
-            <BellRing className="w-3.5 h-3.5" /> إطلاق رنين متزامن
-          </button>
+        <div className="flex items-center gap-2 text-xs text-zinc-400">
+          <Cloud
+            className={`w-4 h-4 ${firestoreSynced ? 'text-[#7FFFD4]' : 'text-zinc-500'}`}
+          />
+          <span>
+            {firestoreSynced
+              ? 'مزامنة سحابية لحظية مع الهاتف (تعمل على أي شبكة)'
+              : 'سجّل الدخول بحساب Google لتفعيل المزامنة اللحظية'}
+          </span>
         </div>
-      </div>
+      </header>
 
-      {/* Windows System Telemetry Strip */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-        <div className="rounded-xl border border-white/10 bg-[#080B10] px-4 py-3 text-zinc-300">
-          <div className="text-[11px] text-zinc-500">حارس النسخة الواحدة (Single-Instance IPC)</div>
-          <div className="font-mono-tabular text-[#7FFFD4] mt-1">{ipcStatus}</div>
-        </div>
-        <div className="rounded-xl border border-white/10 bg-[#080B10] px-4 py-3 text-zinc-300">
-          <div className="text-[11px] text-zinc-500">إشارة نواة ويندوز (WM_POWERBROADCAST)</div>
-          <div className="font-mono-tabular text-[#4ADE80] mt-1">
-            {wakeLog || 'PBT_APMRESUMEAUTOMATIC Listener: Ready'}
-          </div>
-        </div>
-        <div className="rounded-xl border border-white/10 bg-[#080B10] px-4 py-3 text-zinc-300">
-          <div className="text-[11px] text-zinc-500">وضع الهدوء المتزامن للكمبيوتر</div>
-          <div className="font-semibold text-white mt-1">
-            {QUIET_MODE_LABELS[quietMode].ar}
-            {pcMutedByQuiet && ' (الكمبيوتر صامت تماماً)'}
-          </div>
-        </div>
-      </div>
-
-      {/* Monitors Simulation Canvas */}
-      <div
-        className={`grid gap-6 ${
-          effectiveMode === 'dual_monitor' ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'
-        }`}
-      >
-        {/* Primary Monitor */}
-        <div className="rounded-2xl border border-white/15 bg-[#080A0E] p-5 min-h-[340px] relative overflow-hidden flex flex-col justify-between">
-          <div className="flex items-center justify-between text-xs text-zinc-400">
-            <span className="flex items-center gap-2 font-semibold text-zinc-200">
-              <Monitor className="w-4 h-4 text-[#7FFFD4]" />
-              الشاشة الرئيسية (Display 1 · 1920×1080)
-            </span>
-            <span>مساحة العمل النشطة (غير مقاطعة)</span>
-          </div>
-
-          <div className="my-6 rounded-xl border border-white/10 bg-black/60 p-4 text-xs text-zinc-400 space-y-2">
-            <div className="text-zinc-200 font-semibold">حالة حارس الشحن المرتبط عبر LAN :48721</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {/* Card 1: Desktop Capsule Shape & Size */}
+        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+          <div className="flex items-center justify-between gap-2">
             <div>
-              {batteryGuard.pcAlertActive
-                ? '⚡ تنبيه بطارية الهاتف 90% نشط على الشاشة الثانوية — بمجرد فصل الكابل من الهاتف يُكتم الصوت وتُغلق البطاقة في التو واللحظة.'
-                : batteryGuard.autoSilencedByDisconnect
-                  ? '✓ تم استلام ACTION_POWER_DISCONNECTED عبر الشبكة وإلغاء التنبيه وكتم الصوت وإغلاق البطاقة تلقائياً دون لمس الماوس أو لوحة المفاتيح.'
-                  : 'استخدم أزرار المحاكاة بالأعلى لاختبار تنبيه الشحن 90% ثم فصله تلقائياً، أو الإيقاف المتزامن بين الهاتف والكمبيوتر.'}
+              <h2 className="text-sm font-bold text-white">كبسولة سطح المكتب</h2>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                تعرض الإيموجي والعدّاد التنازلي للمهمة والماء بوضوح بدون إزعاج
+              </p>
             </div>
+            {isNativeWindowsExe && (
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    webviewBridge?.postMessage?.(JSON.stringify({ type: 'show-native-capsule' }));
+                  } catch {
+                    // ignore
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+              >
+                <PictureInPicture2 className="w-3.5 h-3.5" />
+                <span>إظهار الآن</span>
+              </button>
+            )}
           </div>
 
-          {effectiveMode === 'single_corner' && alarmRinging && !pcMutedByQuiet && (
-            <div className="self-end w-full max-w-[360px] rounded-2xl border border-[#7FFFD4] bg-black/95 p-4 shadow-2xl animate-alarm-shake">
-              <div className="flex items-center justify-between">
-                <span className="text-2xl">{sampleAlarm?.emojiPair}</span>
-                <span className="font-mono-tabular text-xs font-bold text-[#7FFFD4]">
-                  {sampleAlarm ? formatMinutes12h(sampleAlarm.startMin) : ''}
-                </span>
-              </div>
-              {(() => {
-                if (!sampleAlarm) return null;
-                const raw = sampleAlarm.categoryAr.trim();
-                const ep = sampleAlarm.emojiPair.trim();
-                const rem = raw.startsWith(ep) ? raw.slice(ep.length).trim() : raw;
-                return rem ? <div className="text-sm font-bold text-white mt-2">{rem}</div> : null;
-              })()}
-              <div className="mt-3 flex gap-2">
+          <div className="space-y-3 pt-1">
+            <div className="space-y-1.5">
+              <div className="text-xs text-zinc-400">الاتجاه</div>
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-black/50 border border-white/[0.07]">
                 <button
                   type="button"
-                  onClick={onDismissTwoWay}
-                  className="flex-1 py-2 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold cursor-pointer"
+                  onClick={() => updateCapsule({ orientation: 'horizontal' })}
+                  className={`min-h-[38px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                    capsulePrefs.orientation === 'horizontal'
+                      ? 'bg-[#7FFFD4] text-black'
+                      : 'text-zinc-300 hover:bg-white/[0.05]'
+                  }`}
                 >
-                  إيقاف (يسكت الموبايل أيضاً)
+                  <Columns2 className="w-3.5 h-3.5" />
+                  <span>عرضي (أفقي)</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    onDismissTwoWay();
-                    setSnoozedMsg('تم التأجيل 5 دقائق');
-                  }}
-                  className="px-3 py-2 rounded-lg border border-white/15 text-xs text-zinc-300 cursor-pointer"
+                  onClick={() => updateCapsule({ orientation: 'vertical' })}
+                  className={`min-h-[38px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                    capsulePrefs.orientation === 'vertical'
+                      ? 'bg-[#7FFFD4] text-black'
+                      : 'text-zinc-300 hover:bg-white/[0.05]'
+                  }`}
                 >
-                  غفوة 5د
+                  <Rows2 className="w-3.5 h-3.5" />
+                  <span>طولي (رأسي)</span>
                 </button>
               </div>
             </div>
-          )}
 
-          {effectiveMode === 'audio_only' && (
-            <div className="self-end rounded-xl border border-[#7FFFD4]/40 bg-black px-4 py-2.5 text-xs text-[#7FFFD4] flex items-center gap-2">
-              <Volume2 className="w-4 h-4" />
-              <span>
-                وضع الصوت فقط (Stealth Mode): كتم النوافذ المنبثقة بالكامل لحماية الألعاب/الأفلام مع بقاء النغمات الصوتية فقط
-              </span>
+            <div className="space-y-1.5">
+              <div className="text-xs text-zinc-400">الحجم</div>
+              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/50 border border-white/[0.07]">
+                {(
+                  [
+                    { id: 'sm', label: 'صغير' },
+                    { id: 'md', label: 'متوسط' },
+                    { id: 'lg', label: 'كبير' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => updateCapsule({ size: opt.id })}
+                    className={`min-h-[36px] rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      capsulePrefs.size === opt.id
+                        ? 'bg-[#7FFFD4] text-black'
+                        : 'text-zinc-300 hover:bg-white/[0.05]'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
             </div>
-          )}
-
-          <div className="mt-4 pt-3 border-t border-white/10 flex items-center justify-between text-[11px] text-zinc-400">
-            <span>Windows 11 Taskbar · Always-on-Top PiP Capsule Active</span>
-            <span className="font-mono-tabular">
-              Tray: DayRhythm · WebSocket :48721 · UDP :48722
-            </span>
           </div>
-        </div>
+        </section>
 
-        {/* Secondary Monitor */}
-        {effectiveMode === 'dual_monitor' && (
-          <div className="rounded-2xl border border-white/15 bg-black p-5 min-h-[340px] flex flex-col justify-between gap-4">
-            <div className="flex items-center justify-between text-xs text-zinc-400">
-              <span className="flex items-center gap-2 font-semibold text-zinc-200">
-                <Monitor className="w-4 h-4 text-[#4ADE80]" />
-                الشاشة الثانوية (Display 2 · المستهدفة للتنبيه)
-              </span>
-              <span className="font-mono-tabular">
-                True Two-Way WebSocket Dismiss
-              </span>
+        {/* Card 2: Live Phone Battery & Charging ETA */}
+        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <BatteryCharging
+                  className={`w-4 h-4 ${
+                    batteryAtLimit
+                      ? 'text-[#4ADE80]'
+                      : batteryFresh && phoneBattery?.charging
+                        ? 'text-amber-300'
+                        : 'text-zinc-400'
+                  }`}
+                />
+                <span>بطارية الهاتف المباشرة</span>
+              </h2>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                {phoneBattery?.deviceLabel
+                  ? `متصل مع ${phoneBattery.deviceLabel}`
+                  : 'تظهر النسبة ووقت الشحن المتبقي تلقائياً عند توصيل الهاتف بالشاحن'}
+              </p>
             </div>
-
-            {batteryGuard.pcAlertActive && (
-              <div className="rounded-2xl border-2 border-[#4ADE80] bg-[#07120B] p-4 flex items-center justify-between gap-3 animate-alarm-pulse">
-                <div className="flex items-center gap-3">
-                  <BatteryCharging className="w-7 h-7 text-[#4ADE80]" />
-                  <div>
-                    <div className="text-sm font-bold text-white">
-                      ⚡ بطارية الهاتف وصلت إلى {batteryGuard.levelPct}%
-                    </div>
-                    <div className="text-xs text-[#4ADE80]">
-                      افصل كابل الشاحن من الهاتف الآن — سيتم كتم التنبيه وإغلاق هذه البطاقة تلقائياً
-                    </div>
-                  </div>
+            {batteryFresh && phoneBattery && (
+              <div className="text-left">
+                <div
+                  className={`font-digits text-2xl font-extrabold leading-none ${
+                    batteryAtLimit
+                      ? 'text-[#4ADE80]'
+                      : phoneBattery.charging
+                        ? 'text-amber-300'
+                        : 'text-white'
+                  }`}
+                >
+                  {phoneBattery.levelPct}%
                 </div>
-                <button
-                  type="button"
-                  onClick={onSimulatePowerDisconnect}
-                  className="px-3 py-2 rounded-xl bg-[#4ADE80] text-black text-xs font-bold cursor-pointer shrink-0"
-                >
-                  محاكاة فصل الكابل
-                </button>
+                <div className="text-[11px] text-zinc-400 mt-1">
+                  {phoneBattery.charging
+                    ? batteryEtaLabel || 'قيد الشحن الآن'
+                    : 'غير موصول بالشاحن'}
+                </div>
               </div>
             )}
+          </div>
 
-            {alarmRinging && !pcMutedByQuiet ? (
-              <div className="my-auto mx-auto w-full max-w-md rounded-3xl border-2 border-[#7FFFD4] bg-[#070A0E] p-7 text-center animate-alarm-shake animate-alarm-pulse">
-                <div className="text-5xl mb-3">{sampleAlarm?.emojiPair}</div>
-                {(() => {
-                  if (!sampleAlarm) return null;
-                  const raw = sampleAlarm.categoryAr.trim();
-                  const ep = sampleAlarm.emojiPair.trim();
-                  const rem = raw.startsWith(ep) ? raw.slice(ep.length).trim() : raw;
-                  return rem ? <div className="text-xl font-bold text-white">{rem}</div> : null;
-                })()}
-                <div className="font-mono-tabular text-sm text-[#7FFFD4] mt-1">
-                  {sampleAlarm ? formatMinutes12h(sampleAlarm.startMin) : ''} · -3 د قبل الأذان
-                </div>
-
-                <div className="mt-6 flex gap-3">
-                  <button
-                    type="button"
-                    onClick={onDismissTwoWay}
-                    className="flex-1 py-3 rounded-xl bg-[#7FFFD4] text-black text-sm font-bold hover:bg-[#66eec2] cursor-pointer"
-                  >
-                    إيقاف (يسكت الموبايل فوراً)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onDismissTwoWay();
-                      setSnoozedMsg('تم تأجيل المنبه 5 دقائق وإبلاغ الموبايل عبر LAN');
-                    }}
-                    className="px-4 py-3 rounded-xl border border-white/20 bg-white/5 text-white text-xs font-semibold hover:bg-white/10 flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Clock className="w-4 h-4" /> غفوة 5د
-                  </button>
-                </div>
+          {batteryFresh && phoneBattery ? (
+            <div className="space-y-3">
+              <div className="h-2 rounded-full bg-white/[0.08] overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    batteryAtLimit
+                      ? 'bg-[#4ADE80]'
+                      : phoneBattery.charging
+                        ? 'bg-amber-400'
+                        : 'bg-[#7FFFD4]'
+                  }`}
+                  style={{ width: `${Math.min(100, Math.max(2, phoneBattery.levelPct))}%` }}
+                />
               </div>
-            ) : (
-              <div className="my-auto text-center space-y-2">
-                <div className="text-sm font-semibold text-zinc-300">
-                  {pcMutedByQuiet
-                    ? `الكمبيوتر صامت حالياً (${QUIET_MODE_LABELS[quietMode].ar})`
-                    : snoozedMsg || 'تم إيقاف المنبه بنجاح ومزامنة الإيقاف مع الموبايل عبر WebSocket ✓'}
+
+              {batteryAtLimit && (
+                <div className="rounded-xl border border-[#4ADE80]/30 bg-[#4ADE80]/10 px-3 py-2 text-xs text-[#4ADE80] font-semibold">
+                  وصل الهاتف إلى الحد المحدد ({phoneBattery.chargeLimitPct}%) — يمكنك فصله من الشاحن.
                 </div>
-                {!pcMutedByQuiet && (
-                  <button
-                    type="button"
-                    onClick={onTriggerRing}
-                    className="text-xs text-[#7FFFD4] hover:underline cursor-pointer"
-                  >
-                    إعادة إطلاق رنين متزامن
-                  </button>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-white/[0.06] bg-black/40 px-3.5 py-3 text-xs text-zinc-400 leading-relaxed">
+              افتح التطبيق على هاتفك مرة واحدة بحساب Google نفسه — وستصل نسبة الشحن والوقت المتبقي هنا وفي الكبسولة تلقائياً.
+            </div>
+          )}
+
+          {onChangeChargeLimit && (
+            <div className="space-y-1.5 pt-1 border-t border-white/[0.07]">
+              <div className="text-xs text-zinc-400">تنبيه اكتمال الشحن عند</div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[80, 85, 90, 95].map((pct) => {
+                  const active = (phoneBattery?.chargeLimitPct ?? 90) === pct;
+                  return (
+                    <button
+                      key={pct}
+                      type="button"
+                      onClick={() => onChangeChargeLimit(pct)}
+                      className={`min-h-[34px] rounded-lg font-digits text-xs font-bold transition-colors cursor-pointer ${
+                        active
+                          ? 'bg-[#7FFFD4] text-black'
+                          : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]'
+                      }`}
+                    >
+                      {pct}%
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* Card 3: Alerts & Cross-Device Instant Sync */}
+        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <BellRing className="w-4 h-4 text-[#7FFFD4]" />
+              <span>التنبيهات والإيقاف المتزامن</span>
+            </h2>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              عند إغلاق أو تأجيل أي تنبيه من الكمبيوتر أو الهاتف يتوقف تلقائياً على الجهاز الآخر فوراً (حتى على شبكتين مختلفتين)
+            </p>
+          </div>
+
+          {/* Stealth Audio-Only Mode */}
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-black/40 px-3.5 py-3">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                {stealthAudioOnly ? (
+                  <Volume2 className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                ) : (
+                  <VolumeX className="w-3.5 h-3.5 text-zinc-400" />
                 )}
+                <span>وضع الصوت فقط (بدون نافذة منبثقة)</span>
+              </div>
+              <div className="text-[11px] text-zinc-400 mt-0.5">
+                مفيد أثناء الاجتماعات أو مشاركة الشاشة
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onToggleStealthAudioOnly}
+              className={`min-h-[34px] px-3 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                stealthAudioOnly
+                  ? 'bg-[#7FFFD4] text-black'
+                  : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+              }`}
+            >
+              {stealthAudioOnly ? 'مفعّل' : 'متوقف'}
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 text-xs text-zinc-400 px-1">
+            <span>الوضع الهادئ الحالي</span>
+            <span className="font-semibold text-zinc-200">{QUIET_MODE_LABELS[quietMode].ar}</span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onTriggerRing}
+              className="flex-1 min-h-[40px] rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/12 px-3 py-2 text-xs font-bold text-[#7FFFD4] hover:bg-[#7FFFD4]/20 transition-colors cursor-pointer"
+            >
+              اختبار تنبيه متزامن على الجهازين
+            </button>
+
+            {alarmRinging && (
+              <button
+                type="button"
+                onClick={onDismissTwoWay}
+                className="min-h-[40px] rounded-xl bg-[#4ADE80] text-black px-4 py-2 text-xs font-bold hover:bg-emerald-300 transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>إيقاف على الجهازين</span>
+              </button>
+            )}
+          </div>
+        </section>
+
+        {/* Card 4: Unified Location Synced from Phone GPS */}
+        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-3">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-[#7FFFD4]" />
+              <span>الموقع الموحّد من GPS الهاتف</span>
+            </h2>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              يعتمد الكمبيوتر تلقائياً على موقع هاتفك لحساب مواقيت الصلاة والطقس بدقة بدون الحاجة لـ GPS في الكمبيوتر
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-white/[0.07] bg-black/40 px-4 py-3.5 space-y-1.5">
+            <div className="text-sm font-bold text-white">
+              {activeLocation?.nameAr || 'جاري المزامنة من الهاتف...'}
+            </div>
+            {activeLocation && (
+              <div className="font-digits text-xs text-zinc-400 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <span>
+                  {activeLocation.lat.toFixed(4)}, {activeLocation.lng.toFixed(4)}
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>{activeLocation.timeZone || 'Africa/Cairo'}</span>
               </div>
             )}
-
-            <div className="text-[11px] text-zinc-500 text-center">
-              تجاوز تلقائي لإيقاظ ويندوز عبر WM_POWERBROADCAST / PBT_APMRESUMEAUTOMATIC
-            </div>
           </div>
-        )}
+
+          <p className="text-[11px] text-zinc-500 leading-relaxed">
+            عندما تنتقل لأي مدينة بهاتفك، يتحدّث موقع الكمبيوتر ومواقيت الصلاة والطقس تلقائياً خلال ثوانٍ.
+          </p>
+        </section>
       </div>
     </div>
   );

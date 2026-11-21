@@ -124,6 +124,7 @@ interface GeminiAssistantViewProps {
   }) => void;
   onUpdateMemory: (id: string, patch: { category: MemoryCategory; ruleText: string }) => void;
   onDeleteMemory: (id: string) => void;
+  onSaveCloudApiUrl?: (url: string) => void;
 }
 
 const SUGGESTED_PROMPTS: Record<AssistantMode, string[]> = {
@@ -300,6 +301,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   onAddMemory,
   onUpdateMemory,
   onDeleteMemory,
+  onSaveCloudApiUrl,
 }) => {
   const [mode, setMode] = useState<AssistantMode>('chat');
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('memories');
@@ -2084,6 +2086,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                   return;
                 }
                 setCloudUrlDraft(res.saved);
+                onSaveCloudApiUrl?.(res.saved);
                 void runGeminiProbe(true);
               }}
               className="flex flex-wrap items-center gap-2 pt-2 border-t border-rose-500/20"
