@@ -1,6 +1,7 @@
 package app.dayrhythm.mobile;
 
 import android.app.AlarmManager;
+import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -8,22 +9,34 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.media.AudioAttributes;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+
 import androidx.core.app.NotificationCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Native Android Exact Alarm Receiver for DayRhythm (Prayers, Water Cups, Medications).
- * Fires reliably even when the screen is locked or the app process is killed, and offers
- * interactive notification quick actions: "✓ تم التنفيذ" and "⏰ تأجيل 15 د".
+ * Native Android Exact Alarm Receiver & Loud Audio Engine for DayRhythm (OnePlus 12R OxygenOS):
+ * - Uses AlarmManager.setAlarmClock() so OxygenOS Doze NEVER defers or kills alarms.
+ * - Uses dayrhythm_exact_alarms_v2 channel with explicit USAGE_ALARM sound + vibration + DND bypass.
+ * - Plays loud native Ringtone + Vibrator with brief PARTIAL_WAKE_LOCK even when WebView is suspended.
+ * - Supports configurable Snooze (5/10/15m, default 5) and clean single "تم" action.
  */
 public class ReminderAlarmReceiver extends BroadcastReceiver {
-    public static final String CHANNEL_ID = "dayrhythm_exact_alarms_v1";
+    public static final String CHANNEL_ID = "dayrhythm_exact_alarms_v2";
     public static final String ACTION_FIRE_ALARM = "app.dayrhythm.mobile.ACTION_FIRE_ALARM";
     public static final String ACTION_MARK_DONE = "app.dayrhythm.mobile.ACTION_MARK_DONE";
-    public static final String ACTION_SNOOZE_15 = "app.dayrhythm.mobile.ACTION_SNOOZE_15";
+    public static final String ACTION_SNOOZE = "app.dayrhythm.mobile.ACTION_SNOOZE";
     public static final String ACTION_PENDING_QUEUE_UPDATED = "app.dayrhythm.mobile.ACTION_PENDING_QUEUE_UPDATED";
 
     public static final String EXTRA_ALARM_ID = "alarm_id";
@@ -33,11 +46,132 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     public static final String EXTRA_BODY = "body";
     public static final String EXTRA_MED_ID = "med_id";
     public static final String EXTRA_DOSE_TIME = "dose_time";
+    public static final String EXTRA_SNOOZE_MIN = "snooze_min";
 
     private static final String PREFS_ALARMS = "dayrhythm_exact_alarms_prefs";
     private static final String KEY_SCHEDULED_IDS = "scheduled_request_codes";
     private static final String KEY_ACTIVE_NOTIF_IDS = "active_notif_ids";
     private static final String KEY_PENDING_ACTIONS = "pending_quick_actions_json";
+    private static final long[] VIBRATION_PATTERN = new long[]{0, 420, 220, 420, 220, 520};
+
+    private static final Object AUDIO_LOCK = new Object();
+    private static Ringtone activeRingtone = null;
+    private static final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private static final Runnable autoStopRingtoneRunnable = ReminderAlarmReceiver::stopRinging;
+
+    private static int sanitizeSnoozeMinutes(int raw) {
+        if (raw == 5 || raw == 10 || raw == 15) return raw;
+        return 5;
+    }
+
+    public static void ensureAlarmChannel(Context context) {
+        if (context == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+
+        NotificationChannel existing = nm.getNotificationChannel(CHANNEL_ID);
+        if (existing != null) return;
+
+        Uri alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+        if (alarmUri == null) {
+            alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+        }
+        AudioAttributes attrs = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build();
+
+        NotificationChannel ch = new NotificationChannel(
+                CHANNEL_ID,
+                "منبهات إيقاع اليوم الدقيقة (صوت عالٍ)",
+                NotificationManager.IMPORTANCE_HIGH
+        );
+        ch.setDescription("تنبيهات الصلاة وشرب الماء والعلاجات والمهام بصوت واضح حتى مع قفل الشاشة");
+        ch.enableVibration(true);
+        ch.setVibrationPattern(VIBRATION_PATTERN);
+        ch.setSound(alarmUri, attrs);
+        ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        ch.setBypassDnd(true);
+        nm.createNotificationChannel(ch);
+    }
+
+    public static void playNativeAlarmSound(Context context, boolean continuous) {
+        if (context == null) return;
+        try {
+            stopRinging();
+            Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+            if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+            Ringtone rt = RingtoneManager.getRingtone(context.getApplicationContext(), uri);
+            if (rt != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    rt.setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build());
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    rt.setLooping(continuous);
+                }
+                synchronized (AUDIO_LOCK) {
+                    activeRingtone = rt;
+                }
+                rt.play();
+                mainHandler.removeCallbacks(autoStopRingtoneRunnable);
+                mainHandler.postDelayed(autoStopRingtoneRunnable, continuous ? 45_000L : 8_000L);
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            Vibrator vib = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            if (vib != null && vib.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vib.vibrate(VibrationEffect.createWaveform(VIBRATION_PATTERN, -1));
+                } else {
+                    //noinspection deprecation
+                    vib.vibrate(VIBRATION_PATTERN, -1);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void stopRinging() {
+        mainHandler.removeCallbacks(autoStopRingtoneRunnable);
+        synchronized (AUDIO_LOCK) {
+            if (activeRingtone != null) {
+                try {
+                    if (activeRingtone.isPlaying()) activeRingtone.stop();
+                } catch (Exception ignored) {
+                }
+                activeRingtone = null;
+            }
+        }
+    }
+
+    public static void triggerImmediateNativeAlarm(
+            Context context,
+            String title,
+            String body,
+            String kind,
+            boolean continuous,
+            int snoozeMinutes
+    ) {
+        if (context == null) return;
+        int notifId = 7100 + Math.abs((title != null ? title : "alarm").hashCode() % 1000);
+        playNativeAlarmSound(context, continuous);
+        showInteractiveNotification(
+                context,
+                notifId,
+                "live_" + notifId,
+                kind != null ? kind : "general",
+                title != null ? title : "تنبيه إيقاع اليوم",
+                body != null ? body : "",
+                "",
+                "",
+                sanitizeSnoozeMinutes(snoozeMinutes)
+        );
+    }
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -52,22 +186,24 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         String body = intent.getStringExtra(EXTRA_BODY);
         String medId = intent.getStringExtra(EXTRA_MED_ID);
         String doseTime = intent.getStringExtra(EXTRA_DOSE_TIME);
+        int snoozeMin = sanitizeSnoozeMinutes(intent.getIntExtra(EXTRA_SNOOZE_MIN, 5));
 
-        if (ACTION_SNOOZE_15.equals(action)) {
+        if (ACTION_SNOOZE.equals(action)) {
+            stopRinging();
             cancelNotification(context, notifId);
-            long snoozeAtMs = System.currentTimeMillis() + 15L * 60_000L;
+            long snoozeAtMs = System.currentTimeMillis() + (long) snoozeMin * 60_000L;
             scheduleSingleExactAlarm(
                     context,
                     notifId,
                     alarmId != null ? alarmId : ("snooze_" + notifId),
                     kind != null ? kind : "general",
                     title != null ? title : "تذكير مؤجّل · إيقاع اليوم",
-                    body != null ? body : "مرّت 15 دقيقة — حان وقت التنفيذ",
+                    body != null ? body : ("مرّت " + snoozeMin + " دقائق — حان وقت التنفيذ"),
                     medId != null ? medId : "",
                     doseTime != null ? doseTime : "",
-                    snoozeAtMs
+                    snoozeAtMs,
+                    snoozeMin
             );
-            // Also notify live WebView so PC stops ringing immediately when snoozed from phone!
             enqueuePendingQuickAction(context, "snooze_dismiss", alarmId, medId, doseTime);
             Intent notifyIntent = new Intent(ACTION_PENDING_QUEUE_UPDATED);
             notifyIntent.setPackage(context.getPackageName());
@@ -76,9 +212,9 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
 
         if (ACTION_MARK_DONE.equals(action)) {
+            stopRinging();
             cancelNotification(context, notifId);
             enqueuePendingQuickAction(context, kind, alarmId, medId, doseTime);
-            // Notify live MainActivity if foreground/background WebView is alive
             Intent notifyIntent = new Intent(ACTION_PENDING_QUEUE_UPDATED);
             notifyIntent.setPackage(context.getPackageName());
             context.sendBroadcast(notifyIntent);
@@ -86,7 +222,24 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
 
         if (ACTION_FIRE_ALARM.equals(action)) {
-            showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime);
+            PowerManager.WakeLock wakeLock = null;
+            try {
+                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                if (pm != null) {
+                    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DayRhythm:AlarmWakeLock");
+                    wakeLock.acquire(8_000L);
+                }
+            } catch (Exception ignored) {
+            }
+            try {
+                boolean isContinuous = "prayer".equals(kind) || "medication".equals(kind);
+                playNativeAlarmSound(context, isContinuous);
+                showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
+            } finally {
+                if (wakeLock != null && wakeLock.isHeld()) {
+                    try { wakeLock.release(); } catch (Exception ignored) { }
+                }
+            }
         }
     }
 
@@ -95,7 +248,6 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
 
-        // Cancel previously scheduled alarms first so changes stay clean & duplicate-free
         SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
         String prevCsv = prefs.getString(KEY_SCHEDULED_IDS, "");
         if (prevCsv != null && !prevCsv.isEmpty()) {
@@ -136,6 +288,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 String body = item.optString("body", "");
                 String medId = item.optString("medicationId", "");
                 String doseTime = item.optString("doseTime24", "");
+                int snoozeMin = sanitizeSnoozeMinutes(item.optInt("snoozeMinutes", 5));
                 int reqCode = 5000 + Math.abs(alarmId.hashCode() % 40000);
 
                 scheduleSingleExactAlarm(
@@ -147,7 +300,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                         body,
                         medId,
                         doseTime,
-                        triggerAtMs
+                        triggerAtMs,
+                        snoozeMin
                 );
                 if (newIds.length() > 0) newIds.append(",");
                 newIds.append(reqCode);
@@ -166,7 +320,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             String body,
             String medId,
             String doseTime,
-            long triggerAtMs
+            long triggerAtMs,
+            int snoozeMinutes
     ) {
         AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
@@ -180,6 +335,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         fireIntent.putExtra(EXTRA_BODY, body);
         fireIntent.putExtra(EXTRA_MED_ID, medId);
         fireIntent.putExtra(EXTRA_DOSE_TIME, doseTime);
+        fireIntent.putExtra(EXTRA_SNOOZE_MIN, sanitizeSnoozeMinutes(snoozeMinutes));
 
         PendingIntent pi = PendingIntent.getBroadcast(
                 context,
@@ -188,20 +344,28 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
+        Intent showIntent = new Intent(context, MainActivity.class);
+        showIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent showPi = PendingIntent.getActivity(
+                context,
+                requestCode + 300_000,
+                showIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
         try {
+            // setAlarmClock() bypasses OnePlus OxygenOS Doze & background throttling reliably!
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 if (am.canScheduleExactAlarms()) {
-                    am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
+                    am.setAlarmClock(new AlarmManager.AlarmClockInfo(triggerAtMs, showPi), pi);
                 } else {
                     am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
                 }
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
             } else {
-                am.setExact(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
+                am.setAlarmClock(new AlarmManager.AlarmClockInfo(triggerAtMs, showPi), pi);
             }
         } catch (SecurityException se) {
-            am.set(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
         }
     }
 
@@ -213,21 +377,13 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             String title,
             String body,
             String medId,
-            String doseTime
+            String doseTime,
+            int snoozeMin
     ) {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel ch = new NotificationChannel(
-                    CHANNEL_ID,
-                    "منبهات إيقاع اليوم الدقيقة",
-                    NotificationManager.IMPORTANCE_HIGH
-            );
-            ch.setDescription("تنبيهات الصلاة وشرب الماء والعلاجات والمهام بدقة حتى مع قفل الشاشة");
-            ch.enableVibration(true);
-            nm.createNotificationChannel(ch);
-        }
+        ensureAlarmChannel(context);
 
         Intent openIntent = new Intent(context, MainActivity.class);
         openIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -238,7 +394,6 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        // Quick Action 1: Done (Water / Medication / Task / Calendar)
         Intent doneIntent = new Intent(context, ReminderAlarmReceiver.class);
         doneIntent.setAction(ACTION_MARK_DONE);
         doneIntent.putExtra(EXTRA_NOTIF_ID, notifId);
@@ -253,9 +408,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        // Quick Action 2: Snooze 15m
         Intent snoozeIntent = new Intent(context, ReminderAlarmReceiver.class);
-        snoozeIntent.setAction(ACTION_SNOOZE_15);
+        snoozeIntent.setAction(ACTION_SNOOZE);
         snoozeIntent.putExtra(EXTRA_NOTIF_ID, notifId);
         snoozeIntent.putExtra(EXTRA_ALARM_ID, alarmId);
         snoozeIntent.putExtra(EXTRA_KIND, kind);
@@ -263,6 +417,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         snoozeIntent.putExtra(EXTRA_BODY, body);
         snoozeIntent.putExtra(EXTRA_MED_ID, medId);
         snoozeIntent.putExtra(EXTRA_DOSE_TIME, doseTime);
+        snoozeIntent.putExtra(EXTRA_SNOOZE_MIN, snoozeMin);
         PendingIntent snoozePi = PendingIntent.getBroadcast(
                 context,
                 notifId + 200_000,
@@ -271,21 +426,24 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         );
 
         String doneLabel = "water".equals(kind)
-                ? "✓ شربت الآن"
+                ? "شربت كوب ماء"
                 : "medication".equals(kind)
-                    ? "✓ أخذت الجرعة"
-                    : "✓ تم / إغلاق";
+                    ? "أخذت الجرعة"
+                    : "تم";
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle(title != null && !title.isEmpty() ? title : "تنبيه إيقاع اليوم")
                 .setContentText(body != null && !body.isEmpty() ? body : "حان وقت مهمتك الآن")
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setColor(0xFF7FFFD4)
+                .setVibrate(VIBRATION_PATTERN)
                 .setAutoCancel(true)
                 .setContentIntent(contentPi)
                 .addAction(0, doneLabel, donePi)
-                .addAction(0, "⏰ تأجيل 15 د", snoozePi);
+                .addAction(0, "تأجيل " + snoozeMin + " د", snoozePi);
 
         try {
             nm.notify(notifId, builder.build());
@@ -309,6 +467,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     }
 
     public static void cancelAllActiveAlarms(Context context) {
+        stopRinging();
         if (context == null) return;
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);

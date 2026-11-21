@@ -60,6 +60,7 @@ export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   oneTimeSilenceMinutes: 0,
   oneTimeSilenceDateKey: '',
   lowEnergyDateKey: '',
+  defaultSnoozeMinutes: 5,
   soundRepeats: { ...DEFAULT_SOUND_REPEATS },
   careerTrack: '',
   workEnabled: false,
@@ -67,10 +68,10 @@ export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   workEnd24: '17:00',
   workDays: [0, 1, 2, 3, 4], // Sun-Thu
   autoLocationSync: true,
-  currentCityName: 'القاهرة',
+  currentCityName: 'الضهرية · شربين (الدقهلية)',
   currentTimeZone: 'Africa/Cairo',
-  currentLat: 30.0444,
-  currentLng: 31.2357,
+  currentLat: 31.227,
+  currentLng: 31.6148,
   priorityOrderAr:
     '1. الصلاة ← 2. النوم الليلي ← 3. العمل الثابت ← 4. المهام المرنة والماء والعلاجات',
   personalNotes: '',

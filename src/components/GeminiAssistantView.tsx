@@ -511,6 +511,20 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     }
   }, [isActive, runGeminiProbe]);
 
+  // Auto-reconnect immediately when cloudApiUrl syncs from Firestore to standalone Windows/Android apps
+  useEffect(() => {
+    const onCloudApiUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ url?: string }>).detail;
+      if (detail?.url) {
+        setCloudUrlDraft(detail.url);
+      }
+      reconnectAttemptsRef.current = 0;
+      void runGeminiProbe(true, false);
+    };
+    window.addEventListener('dayrhythm:cloud-api-updated', onCloudApiUpdated);
+    return () => window.removeEventListener('dayrhythm:cloud-api-updated', onCloudApiUpdated);
+  }, [runGeminiProbe]);
+
   useEffect(() => {
     const controllers = abortControllersRef.current;
     return () => {

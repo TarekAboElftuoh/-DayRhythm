@@ -785,6 +785,37 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             </div>
           )}
 
+          {/* Configurable Default Snooze Duration (5 / 10 / 15 min, default 5) */}
+          <div className="space-y-2 pt-2 border-t border-white/10">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <span className="font-semibold text-zinc-200">
+                مدة زر التأجيل للتنبيهات (تعمل أيضاً من شات Gemini)
+              </span>
+              <span className="font-mono-tabular text-[#7FFFD4]">
+                الافتراضي: {draft.defaultSnoozeMinutes ?? 5} د
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {([5, 10, 15] as const).map((mins) => {
+                const active = (draft.defaultSnoozeMinutes ?? 5) === mins;
+                return (
+                  <button
+                    key={mins}
+                    type="button"
+                    onClick={() => setDraft((p) => ({ ...p, defaultSnoozeMinutes: mins }))}
+                    className={`py-2 rounded-xl border font-mono-tabular text-xs font-bold cursor-pointer transition-colors ${
+                      active
+                        ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                        : 'border-white/10 bg-black/40 text-zinc-300 hover:border-white/25 hover:text-white'
+                    }`}
+                  >
+                    {mins} دقائق
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {soundRepeats && onUpdateSoundRepeat && (
             <div className="space-y-2 pt-2 border-t border-white/10">
               <div className="flex items-center justify-between text-[11px]">
@@ -975,25 +1006,6 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 className="px-3.5 py-1.5 rounded-lg border border-white/15 bg-white/[0.04] text-zinc-200 text-xs font-semibold hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] cursor-pointer whitespace-nowrap"
               >
                 تغيير اللوجو
-              </button>
-            </div>
-          )}
-
-          {/* Direct In-App GitHub OTA Updater (Android + Windows + PWA) */}
-          {onCheckAppUpdates && (
-            <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div>
-                <div className="font-semibold text-white">التحديث الفوري المباشر من GitHub (OTA)</div>
-                <p className="text-[11px] text-zinc-400">
-                  يحدّث واجهة التطبيق مباشرة على الموبايل والكمبيوتر بدون إعادة تنزيل APK أو Portable في كل مرة.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={onCheckAppUpdates}
-                className="px-3.5 py-1.5 rounded-lg border border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4] text-xs font-bold hover:bg-[#7FFFD4]/25 cursor-pointer"
-              >
-                فحص التحديثات الآن
               </button>
             </div>
           )}

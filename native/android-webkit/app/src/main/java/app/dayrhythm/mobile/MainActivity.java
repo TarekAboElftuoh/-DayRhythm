@@ -181,11 +181,11 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 1. Official AndroidX WebViewAssetLoader serving APK assets over Firebase-authorized
-        //    https://gen-lang-client-0625331922.web.app/ (zero 404, zero unauthorized-domain!)
+        // 1. Clean stale OTA folders & configure official AndroidX WebViewAssetLoader
+        GitHubUpdater.cleanupOldOtaReleases(this);
         assetLoader = buildSpaAssetLoader();
 
-        // 2. Start 24/7 Foreground Service + schedule hourly WorkManager GitHub update checks
+        // 2. Start 24/7 Special-Use Foreground Service + schedule hourly WorkManager GitHub update checks
         DayRhythmSyncService.startServiceCompat(this);
         UpdateCheckWorker.schedulePeriodicCheck(this);
 
@@ -429,19 +429,62 @@ public class MainActivity extends Activity {
         webView.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void checkForUpdates() {
-                runOnUiThread(() -> Toast.makeText(MainActivity.this, "جاري فحص تحديثات GitHub...", Toast.LENGTH_SHORT).show());
+                dispatchUpdateStatusToWebView("checking", GitHubUpdater.getEffectiveLocalVersion(MainActivity.this), "");
                 executor.execute(() -> {
                     GitHubUpdater.UpdateInfo info = GitHubUpdater.checkLatestRelease(MainActivity.this);
                     if (info != null && info.hasUpdate) {
-                        runOnUiThread(() -> showUpdateBanner(info.latestTag, info.apkDownloadUrl, info.webOtaZipUrl));
+                        if (info.webOtaZipUrl != null && !info.webOtaZipUrl.isEmpty()) {
+                            dispatchUpdateStatusToWebView("downloading", info.latestTag, "");
+                            boolean ok = GitHubUpdater.downloadAndApplyWebOta(
+                                    MainActivity.this,
+                                    info.webOtaZipUrl,
+                                    info.latestTag
+                            );
+                            if (ok) {
+                                dispatchUpdateStatusToWebView("applied", info.latestTag, "");
+                                runOnUiThread(() -> {
+                                    if (updateBar != null) updateBar.setVisibility(View.GONE);
+                                    if (webView != null) {
+                                        webView.clearCache(true);
+                                        webView.loadUrl(APP_ORIGIN + "?ota=" + System.currentTimeMillis());
+                                    }
+                                });
+                                return;
+                            }
+                        }
+                        if (info.apkDownloadUrl != null && !info.apkDownloadUrl.isEmpty()) {
+                            dispatchUpdateStatusToWebView("downloading", info.latestTag, "");
+                            runOnUiThread(() -> {
+                                pendingUpdateTag = info.latestTag;
+                                pendingUpdateUrl = info.apkDownloadUrl;
+                                pendingOtaZipUrl = "";
+                                startApkFallbackDownload();
+                            });
+                        } else {
+                            dispatchUpdateStatusToWebView("error", "", "تعذر تنزيل التحديث حالياً.");
+                        }
                     } else {
-                        runOnUiThread(() -> Toast.makeText(
-                                MainActivity.this,
-                                "التطبيق محدّث بالفعل (v" + GitHubUpdater.getEffectiveLocalVersion(MainActivity.this) + ") ✓",
-                                Toast.LENGTH_SHORT
-                        ).show());
+                        String curVer = GitHubUpdater.getEffectiveLocalVersion(MainActivity.this);
+                        dispatchUpdateStatusToWebView("up_to_date", curVer, "");
                     }
                 });
+            }
+
+            @JavascriptInterface
+            public void triggerNativeAlarm(String title, String body, String kind, boolean continuous, int snoozeMinutes) {
+                executor.execute(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                        MainActivity.this,
+                        title,
+                        body,
+                        kind,
+                        continuous,
+                        snoozeMinutes
+                ));
+            }
+
+            @JavascriptInterface
+            public void stopNativeAlarmSound() {
+                ReminderAlarmReceiver.stopRinging();
             }
 
             @JavascriptInterface
@@ -838,6 +881,23 @@ public class MainActivity extends Activity {
             return;
         }
         startApkFallbackDownload();
+    }
+
+    private void dispatchUpdateStatusToWebView(String status, String version, String message) {
+        runOnUiThread(() -> {
+            if (webView == null) return;
+            try {
+                org.json.JSONObject obj = new org.json.JSONObject();
+                obj.put("status", status != null ? status : "");
+                obj.put("version", version != null ? version : "");
+                obj.put("message", message != null ? message : "");
+                webView.evaluateJavascript(
+                        "window.dispatchEvent(new CustomEvent('dayrhythm:update-status',{detail:" + obj.toString() + "}));",
+                        null
+                );
+            } catch (Exception ignored) {
+            }
+        });
     }
 
     private void startApkFallbackDownload() {

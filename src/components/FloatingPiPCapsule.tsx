@@ -596,27 +596,28 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
   if (isNativeWindowsExe) {
     return (
       <div className="hidden md:block fixed bottom-4 left-4 z-40">
-        {menuOpen && (
-          <div className="mb-2 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 backdrop-blur-xl p-3 text-xs shadow-2xl space-y-2.5">
-            {renderShapeControls()}
-            <button
-              type="button"
-              onClick={() => {
-                try {
-                  webviewBridge?.postMessage?.(JSON.stringify({ type: 'show-native-capsule' }));
-                } catch {
-                  // ignore
-                }
-                setMenuOpen(false);
-              }}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-[#7FFFD4] text-black py-2 text-xs font-bold hover:bg-[#66eec2] transition-colors cursor-pointer"
-            >
-              <PictureInPicture2 className="w-3.5 h-3.5" />
-              <span>إظهار الكبسولة على سطح المكتب</span>
-            </button>
-          </div>
-        )}
-        <div className="flex items-center gap-1 rounded-full border border-white/[0.12] bg-gradient-to-b from-[#10151E] to-[#07080B] p-1 shadow-[0_8px_30px_rgba(0,0,0,0.65)]">
+        <div className="relative inline-block">
+          {menuOpen && (
+            <div className="absolute bottom-[calc(100%+8px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 backdrop-blur-xl p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">
+              {renderShapeControls()}
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    webviewBridge?.postMessage?.(JSON.stringify({ type: 'show-native-capsule' }));
+                  } catch {
+                    // ignore
+                  }
+                  setMenuOpen(false);
+                }}
+                className="w-full flex items-center justify-center gap-2 rounded-lg bg-[#7FFFD4] text-black py-2 text-xs font-bold hover:bg-[#66eec2] transition-colors cursor-pointer"
+              >
+                <PictureInPicture2 className="w-3.5 h-3.5" />
+                <span>إظهار الكبسولة على سطح المكتب</span>
+              </button>
+            </div>
+          )}
+          <div className="flex items-center gap-1 rounded-full border border-white/[0.12] bg-gradient-to-b from-[#10151E] to-[#07080B] p-1 shadow-[0_8px_30px_rgba(0,0,0,0.65)]">
           <button
             type="button"
             onClick={() => {
@@ -641,6 +642,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
           >
             <SlidersHorizontal className="w-3.5 h-3.5" />
           </button>
+        </div>
         </div>
       </div>
     );
@@ -813,9 +815,9 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
         </button>
       </div>
 
-      {/* Sleek Obsidian Popover Menu matching App UI */}
+      {/* Sleek Obsidian Popover Menu anchored cleanly ABOVE the capsule so the pill NEVER shifts horizontally */}
       {menuOpen && (
-        <div className="mt-2 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 backdrop-blur-xl p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.8)] space-y-2.5">
+        <div className="absolute bottom-[calc(100%+10px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 backdrop-blur-xl p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">
           {renderQuickCheckIn()}
           {renderShapeControls()}
 

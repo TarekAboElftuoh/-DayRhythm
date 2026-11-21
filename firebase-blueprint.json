@@ -69,7 +69,7 @@
         },
         "lifeProfile": {
           "type": "object",
-          "description": "Persistent user constitution with fully flexible Gemini-editable constants: weightKg (30-250), heightCm (100-240), cupSizeMl (50-2000), fastingDays, suhoorLeadMinutes (10-180), sleepTargetMinutes (180-720), sleepStrategy (night_only_strict default), sleepDebtMinutes (0-480), sleepDebtLogDateKey, adhanLeadMinutes (0-30), prayerSilenceMinutes (5-90), fajrSilenceMinutes (5-90), oneTimeSilenceMinutes (0-120), oneTimeSilenceDateKey, lowEnergyDateKey, soundRepeats (per-category 1..4 or continuous), careerTrack, workEnabled/workStart24/workEnd24/workDays, autoLocationSync & timezone/coords, priorityOrderAr, and personalNotes."
+          "description": "Persistent user constitution with fully flexible Gemini-editable constants: weightKg (30-250), heightCm (100-240), cupSizeMl (50-2000), fastingDays, suhoorLeadMinutes (10-180), sleepTargetMinutes (180-720), sleepStrategy (night_only_strict default), sleepDebtMinutes (0-480), sleepDebtLogDateKey, adhanLeadMinutes (0-30), prayerSilenceMinutes (5-90), fajrSilenceMinutes (5-90), oneTimeSilenceMinutes (0-120), oneTimeSilenceDateKey, lowEnergyDateKey, defaultSnoozeMinutes (5|10|15), soundRepeats (per-category 1..4 or continuous), careerTrack, workEnabled/workStart24/workEnd24/workDays, autoLocationSync & timezone/coords, priorityOrderAr, and personalNotes."
         },
         "syncSignal": {
           "type": "object",

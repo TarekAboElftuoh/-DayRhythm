@@ -604,6 +604,10 @@ export function sanitizeLifeProfile(
     oneTimeSilenceMinutes: clampInt(raw?.oneTimeSilenceMinutes, 0, 120, 0),
     oneTimeSilenceDateKey,
     lowEnergyDateKey,
+    defaultSnoozeMinutes:
+      raw?.defaultSnoozeMinutes === 10 || raw?.defaultSnoozeMinutes === 15
+        ? raw.defaultSnoozeMinutes
+        : 5,
     soundRepeats: sanitizeSoundRepeats(raw?.soundRepeats),
     careerTrack: String(raw?.careerTrack ?? DEFAULT_LIFE_PROFILE.careerTrack)
       .trim()
@@ -741,7 +745,13 @@ export function sanitizeMedicationItem(raw: Partial<MedicationItem>): Medication
   if (takenDateKey) {
     takenDatesSet.add(takenDateKey);
   }
-  const takenDates = Array.from(takenDatesSet).sort().slice(-31);
+  // Rolling 7-day window: keep only dates within the last 7 days so day 8 drops automatically
+  const cutoffDate = new Date(Date.now() - 6 * 86_400_000);
+  const cutoffIso = cutoffDate.toISOString().slice(0, 10);
+  const takenDates = Array.from(takenDatesSet)
+    .filter((d) => d >= cutoffIso)
+    .sort()
+    .slice(-7);
   return {
     id,
     name,

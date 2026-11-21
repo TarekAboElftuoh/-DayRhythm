@@ -1,5 +1,6 @@
 package app.dayrhythm.mobile;
 
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -16,6 +17,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
@@ -31,11 +33,11 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
 /**
- * 24/7 Foreground Service for OnePlus 12R:
- * 1. Persistent Ongoing Countdown Notification (shows next Calendar/Task/Water/Prayer/Medication with live native countdown).
- * 2. Native OnePlus 12R Dynamic Island / OxygenOS Live Alerts capsule that automatically activates
- *    at T-5m or T-10m (configurable) displaying Emoji + Live MM:SS seconds countdown!
- * 3. Resilient background WebSocket + network recovery relay.
+ * 24/7 Special-Use Foreground Service for OnePlus 12R (immune to Android 14/15 6-hour dataSync timeout):
+ * 1. Persistent Ongoing Countdown Notification showing next Calendar/Task/Water/Prayer/Medication.
+ * 2. Native OnePlus 12R Dynamic Island / OxygenOS Live Alerts capsule activating at T-5m or T-10m
+ *    with Emoji + live MM:SS seconds countdown.
+ * 3. Automatic self-revival onTaskRemoved + resilient background WebSocket & network recovery relay.
  */
 public class DayRhythmSyncService extends Service {
     public static final String CHANNEL_KEEPALIVE = "dayrhythm_keepalive_v2";
@@ -56,6 +58,7 @@ public class DayRhythmSyncService extends Service {
     public static final String EXTRA_LIVE_LEAD_MINUTES = "live_lead_minutes";
     public static final String EXTRA_PERSISTENT_NOTIF_ENABLED = "persistent_notif_enabled";
 
+    private static final String PREFS_LIVE = "dayrhythm_live_state_prefs";
     private static final int NOTIF_KEEPALIVE_ID = 1001;
     private static final int NOTIF_LIVE_ALERT_ID = 1002;
     private static final long BASE_BACKOFF_MS = 1500L;
@@ -74,7 +77,6 @@ public class DayRhythmSyncService extends Service {
     private boolean hadNetworkLoss = false;
     private volatile boolean isDestroyed = false;
 
-    // Live upcoming task/event state for Persistent Countdown + Dynamic Island Live Alert
     private String liveEmoji = "📅";
     private String liveTitle = "";
     private String liveStatusLabel = "المهمة القادمة";
@@ -96,10 +98,8 @@ public class DayRhythmSyncService extends Service {
                 long remainingMs = liveTargetEpochMs - System.currentTimeMillis();
                 long leadMs = Math.max(1, liveAlertsLeadMinutes) * 60_000L;
                 if (remainingMs > 0 && remainingMs <= leadMs && liveAlertsEnabled) {
-                    // Tick every 1 second while Dynamic Island capsule is actively counting down seconds
                     handler.postDelayed(this, 1000L);
                 } else if (remainingMs > leadMs && liveAlertsEnabled) {
-                    // Sleep precisely until T - leadMinutes (with 15s max check granularity)
                     long waitMs = Math.min(remainingMs - leadMs + 100L, 15_000L);
                     handler.postDelayed(this, Math.max(1000L, waitMs));
                 }
@@ -179,9 +179,47 @@ public class DayRhythmSyncService extends Service {
         }
     }
 
+    private void startForegroundCompat(Notification notif) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIF_KEEPALIVE_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } else {
+            startForeground(NOTIF_KEEPALIVE_ID, notif);
+        }
+    }
+
+    private void restorePersistedLiveState() {
+        try {
+            SharedPreferences sp = getSharedPreferences(PREFS_LIVE, MODE_PRIVATE);
+            liveEmoji = sp.getString(EXTRA_LIVE_EMOJI, "📅");
+            liveTitle = sp.getString(EXTRA_LIVE_TITLE, "");
+            liveStatusLabel = sp.getString(EXTRA_LIVE_STATUS_LABEL, "المهمة القادمة");
+            liveTargetEpochMs = sp.getLong(EXTRA_LIVE_TARGET_MS, 0L);
+            liveAlertsEnabled = sp.getBoolean(EXTRA_LIVE_ALERTS_ENABLED, true);
+            liveAlertsLeadMinutes = sp.getInt(EXTRA_LIVE_LEAD_MINUTES, 10);
+            persistentCountdownEnabled = sp.getBoolean(EXTRA_PERSISTENT_NOTIF_ENABLED, true);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void persistLiveState() {
+        try {
+            getSharedPreferences(PREFS_LIVE, MODE_PRIVATE).edit()
+                    .putString(EXTRA_LIVE_EMOJI, liveEmoji)
+                    .putString(EXTRA_LIVE_TITLE, liveTitle)
+                    .putString(EXTRA_LIVE_STATUS_LABEL, liveStatusLabel)
+                    .putLong(EXTRA_LIVE_TARGET_MS, liveTargetEpochMs)
+                    .putBoolean(EXTRA_LIVE_ALERTS_ENABLED, liveAlertsEnabled)
+                    .putInt(EXTRA_LIVE_LEAD_MINUTES, liveAlertsLeadMinutes)
+                    .putBoolean(EXTRA_PERSISTENT_NOTIF_ENABLED, persistentCountdownEnabled)
+                    .apply();
+        } catch (Exception ignored) {
+        }
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
+        restorePersistedLiveState();
         createNotificationChannels();
         UpdateCheckWorker.schedulePeriodicCheck(this);
 
@@ -208,33 +246,39 @@ public class DayRhythmSyncService extends Service {
             liveAlertsEnabled = intent.getBooleanExtra(EXTRA_LIVE_ALERTS_ENABLED, true);
             liveAlertsLeadMinutes = Math.max(1, Math.min(30, intent.getIntExtra(EXTRA_LIVE_LEAD_MINUTES, 10)));
             persistentCountdownEnabled = intent.getBooleanExtra(EXTRA_PERSISTENT_NOTIF_ENABLED, true);
+            persistLiveState();
 
-            Notification notif = buildPersistentNotification();
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIF_KEEPALIVE_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-            } else {
-                startForeground(NOTIF_KEEPALIVE_ID, notif);
-            }
-
+            startForegroundCompat(buildPersistentNotification());
             handler.removeCallbacks(liveCountdownTickRunnable);
             handler.post(liveCountdownTickRunnable);
             return START_STICKY;
         }
 
-        Notification notification = buildPersistentNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIF_KEEPALIVE_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-        } else {
-            startForeground(NOTIF_KEEPALIVE_ID, notification);
-        }
-
+        startForegroundCompat(buildPersistentNotification());
+        handler.removeCallbacks(liveCountdownTickRunnable);
+        handler.post(liveCountdownTickRunnable);
         connectBackgroundWebSocket();
         return START_STICKY;
     }
 
     @Override
-    public void onTimeout(int startId) {
-        stopSelf(startId);
+    public void onTaskRemoved(Intent rootIntent) {
+        // Keep background countdown & alarms alive even if the user swipes the app away from recents
+        try {
+            Intent restart = new Intent(getApplicationContext(), DayRhythmSyncService.class);
+            PendingIntent pi = PendingIntent.getService(
+                    getApplicationContext(),
+                    9901,
+                    restart,
+                    PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE
+            );
+            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+            if (am != null) {
+                am.set(AlarmManager.ELAPSED_REALTIME, SystemClock.elapsedRealtime() + 2000L, pi);
+            }
+        } catch (Exception ignored) {
+        }
+        super.onTaskRemoved(rootIntent);
     }
 
     @Override
@@ -323,14 +367,8 @@ public class DayRhythmSyncService extends Service {
         WebSocket ws = activeWebSocket;
         activeWebSocket = null;
         if (ws != null) {
-            try {
-                ws.close(4000, reason);
-            } catch (Exception ignored) {
-            }
-            try {
-                ws.cancel();
-            } catch (Exception ignored) {
-            }
+            try { ws.close(4000, reason); } catch (Exception ignored) { }
+            try { ws.cancel(); } catch (Exception ignored) { }
         }
     }
 
@@ -353,7 +391,7 @@ public class DayRhythmSyncService extends Service {
         if (isDestroyed || wsClient == null) return;
         String wsUrl = resolveSyncWsUrl();
         if (wsUrl.isEmpty() || (!wsUrl.startsWith("ws://") && !wsUrl.startsWith("wss://"))) {
-            syncSubtitle = "مزامنة Firestore لحظية نشطة";
+            syncSubtitle = "مزامنة لحظية نشطة 24/7";
             refreshPersistentNotification();
             return;
         }
@@ -373,9 +411,7 @@ public class DayRhythmSyncService extends Service {
                     refreshPersistentNotification();
                     handler.removeCallbacks(heartbeatPingRunnable);
                     handler.postDelayed(heartbeatPingRunnable, PING_INTERVAL_MS);
-                    if (recoveredFromDrop) {
-                        broadcastNetworkRecovered();
-                    }
+                    if (recoveredFromDrop) broadcastNetworkRecovered();
                 });
             }
 
@@ -449,6 +485,9 @@ public class DayRhythmSyncService extends Service {
             liveAlerts.setSound(null, null);
             liveAlerts.enableVibration(false);
             nm.createNotificationChannel(liveAlerts);
+
+            // Ensure high-priority audio alarm channel is initialized up-front
+            ReminderAlarmReceiver.ensureAlarmChannel(this);
         }
     }
 
@@ -503,10 +542,6 @@ public class DayRhythmSyncService extends Service {
         return builder.build();
     }
 
-    /**
-     * Native OnePlus 12R Dynamic Island / Live Alerts capsule:
-     * Activates ONLY inside the last N minutes (5 or 10 min) with Emoji + live MM:SS seconds countdown!
-     */
     private void refreshLiveAlertCapsule() {
         long nowMs = System.currentTimeMillis();
         long remainingMs = liveTargetEpochMs - nowMs;

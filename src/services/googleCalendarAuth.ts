@@ -126,7 +126,7 @@ function readStoredOAuthRecord(expectedUid?: string | null): StoredOAuthToken | 
 
 function readStoredAccessToken(expectedUid?: string | null): string | null {
   const rec = readStoredOAuthRecord(expectedUid);
-  if (!rec || rec.expiresAtMs <= Date.now() + 30_000) {
+  if (!rec || rec.expiresAtMs <= Date.now() + 10_000) {
     return null;
   }
   return rec.token;
@@ -137,8 +137,8 @@ let cachedExpiresAtMs: number = readStoredOAuthRecord()?.expiresAtMs ?? 0;
 
 function persistAccessToken(uid: string, token: string): void {
   if (typeof window === 'undefined' || !token) return;
-  // Google OAuth access tokens typically live 60 minutes; track safe 55-minute lifetime
-  const expiresAtMs = Date.now() + 55 * 60_000;
+  // Google OAuth access tokens live 60 minutes; track 59-minute lifetime and only expire on real 401
+  const expiresAtMs = Date.now() + 59 * 60_000;
   cachedExpiresAtMs = expiresAtMs;
   try {
     const payload: StoredOAuthToken = {
@@ -323,7 +323,7 @@ export async function refreshGoogleCalendarToken(): Promise<{
 }
 
 export function getCalendarAccessToken(): string | null {
-  if (cachedAccessToken && cachedExpiresAtMs > Date.now() + 30_000) {
+  if (cachedAccessToken && cachedExpiresAtMs > Date.now() + 10_000) {
     return cachedAccessToken;
   }
   const restored = readStoredAccessToken(auth.currentUser?.uid);

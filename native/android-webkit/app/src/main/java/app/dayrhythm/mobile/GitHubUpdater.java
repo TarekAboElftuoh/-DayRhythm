@@ -26,7 +26,9 @@ import java.util.zip.ZipInputStream;
 
 public class GitHubUpdater {
     public static final String KEY_OTA_VERSION = "ota_web_version";
-    public static final String OTA_WWW_DIR = "ota_www";
+    public static final String KEY_OTA_ACTIVE_DIR = "ota_active_release_dir";
+    public static final String OTA_RELEASES_ROOT = "ota_releases";
+    public static final String LEGACY_OTA_WWW_DIR = "ota_www";
 
     public static class UpdateInfo {
         public final boolean hasUpdate;
@@ -43,7 +45,37 @@ public class GitHubUpdater {
     }
 
     public static File getOtaWwwDir(Context context) {
-        return new File(context.getFilesDir(), OTA_WWW_DIR);
+        if (context != null) {
+            try {
+                SharedPreferences prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+                String folderName = prefs.getString(KEY_OTA_ACTIVE_DIR, "");
+                if (folderName != null && !folderName.trim().isEmpty()) {
+                    File candidate = new File(new File(context.getFilesDir(), OTA_RELEASES_ROOT), folderName.trim());
+                    if (new File(candidate, "index.html").exists()) {
+                        return candidate;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return new File(context.getFilesDir(), LEGACY_OTA_WWW_DIR);
+    }
+
+    public static void cleanupOldOtaReleases(Context context) {
+        if (context == null) return;
+        try {
+            File root = new File(context.getFilesDir(), OTA_RELEASES_ROOT);
+            if (!root.exists() || !root.isDirectory()) return;
+            String activePath = getOtaWwwDir(context).getCanonicalPath();
+            File[] children = root.listFiles();
+            if (children == null) return;
+            for (File child : children) {
+                if (!child.getCanonicalPath().equals(activePath)) {
+                    deleteRecursively(child);
+                }
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     public static String getEffectiveLocalVersion(Context context) {
@@ -77,8 +109,8 @@ public class GitHubUpdater {
         try {
             URL url = new URL("https://api.github.com/repos/" + repo.trim() + "/releases/latest");
             conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(8000);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
             conn.setRequestMethod("GET");
             conn.setRequestProperty("Accept", "application/vnd.github+json");
             conn.setRequestProperty("User-Agent", "DayRhythm-Android/" + getEffectiveLocalVersion(context));
@@ -130,33 +162,37 @@ public class GitHubUpdater {
     }
 
     /**
-     * Downloads lightweight dayrhythm-web-ota.zip (~1.5 MB) and extracts atomically into filesDir/ota_www
-     * so Android updates instantly in ~2 seconds with ZERO APK download or reinstall prompt!
+     * Lock-free atomic Web OTA update: extracts dayrhythm-web-ota.zip into a fresh versioned folder
+     * under filesDir/ota_releases/<tag>_<ts>/ and flips SharedPreferences pointer cleanly.
      */
     public static boolean downloadAndApplyWebOta(Context context, String zipUrl, String tagName) {
         if (context == null || zipUrl == null || zipUrl.trim().isEmpty()) return false;
 
-        File stagingDir = new File(context.getFilesDir(), "ota_www_staging");
-        File liveDir = getOtaWwwDir(context);
-        File backupDir = new File(context.getFilesDir(), "ota_www_prev");
-        deleteRecursively(stagingDir);
+        String safeTag = (tagName == null ? "rel" : tagName).replaceAll("[^a-zA-Z0-9._-]", "");
+        if (safeTag.isEmpty()) safeTag = "rel";
+        String folderName = safeTag + "_" + (System.currentTimeMillis() / 1000L);
+
+        File releasesRoot = new File(context.getFilesDir(), OTA_RELEASES_ROOT);
+        File targetDir = new File(releasesRoot, folderName);
+        deleteRecursively(targetDir);
         //noinspection ResultOfMethodCallIgnored
-        stagingDir.mkdirs();
+        targetDir.mkdirs();
 
         HttpURLConnection conn = null;
         try {
             URL url = new URL(zipUrl);
             conn = (HttpURLConnection) url.openConnection();
             conn.setInstanceFollowRedirects(true);
-            conn.setConnectTimeout(12000);
-            conn.setReadTimeout(30000);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(45000);
             conn.setRequestProperty("User-Agent", "DayRhythm-Android/" + getEffectiveLocalVersion(context));
 
             if (conn.getResponseCode() != 200) {
+                deleteRecursively(targetDir);
                 return false;
             }
 
-            String canonicalStaging = stagingDir.getCanonicalPath() + File.separator;
+            String canonicalTarget = targetDir.getCanonicalPath() + File.separator;
             try (InputStream rawIn = new BufferedInputStream(conn.getInputStream());
                  ZipInputStream zis = new ZipInputStream(rawIn)) {
                 byte[] buffer = new byte[8192];
@@ -164,10 +200,9 @@ public class GitHubUpdater {
                 while ((entry = zis.getNextEntry()) != null) {
                     String name = entry.getName();
                     if (name == null || name.isEmpty()) continue;
-                    File outFile = new File(stagingDir, name);
+                    File outFile = new File(targetDir, name);
                     String canonicalOut = outFile.getCanonicalPath();
-                    // ZipSlip protection
-                    if (!canonicalOut.startsWith(canonicalStaging)) {
+                    if (!canonicalOut.startsWith(canonicalTarget)) {
                         continue;
                     }
                     if (entry.isDirectory()) {
@@ -190,33 +225,21 @@ public class GitHubUpdater {
                 }
             }
 
-            File indexCheck = new File(stagingDir, "index.html");
+            File indexCheck = new File(targetDir, "index.html");
             if (!indexCheck.exists() || indexCheck.length() < 64) {
-                deleteRecursively(stagingDir);
+                deleteRecursively(targetDir);
                 return false;
             }
-
-            deleteRecursively(backupDir);
-            if (liveDir.exists()) {
-                //noinspection ResultOfMethodCallIgnored
-                liveDir.renameTo(backupDir);
-            }
-            boolean swapped = stagingDir.renameTo(liveDir);
-            if (!swapped) {
-                if (backupDir.exists()) {
-                    //noinspection ResultOfMethodCallIgnored
-                    backupDir.renameTo(liveDir);
-                }
-                return false;
-            }
-            deleteRecursively(backupDir);
 
             String cleanVer = tagName == null ? "" : tagName.replaceFirst("^[vV]", "").trim();
             SharedPreferences prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
-            prefs.edit().putString(KEY_OTA_VERSION, cleanVer).apply();
+            prefs.edit()
+                    .putString(KEY_OTA_ACTIVE_DIR, folderName)
+                    .putString(KEY_OTA_VERSION, cleanVer)
+                    .apply();
             return true;
         } catch (Exception ignored) {
-            deleteRecursively(stagingDir);
+            deleteRecursively(targetDir);
             return false;
         } finally {
             if (conn != null) conn.disconnect();

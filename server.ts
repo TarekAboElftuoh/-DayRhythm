@@ -226,9 +226,10 @@ const DAYRHYTHM_SYSTEM_INSTRUCTION = `
    - عدّل أي ثابت بلا قيود عبر propose_profile_updates، واحفظ أي قاعدة أو مبدأ دائم عبر propose_memory_actions.
 6. الأنشطة الإبداعية والهوايات والمشاريع:
    - استخدم propose_creative_actions لإضافة أو تعديل أو حذف أو تسجيل جلسة نشاط إبداعي، وعند جدولته في Google Calendar ضعه دائماً في الأوقات الفارغة الفعلية.
-7. وضع اليوم الهادئ / الطاقة المنخفضة، وتعديل مدة الصمت لمرة واحدة، وتكرار الرنين:
+7. وضع اليوم الهادئ / الطاقة المنخفضة، وتعديل مدة الصمت لمرة واحدة، وتكرار الرنين، ومدة التأجيل (Snooze):
    - إذا قال المستخدم «النهارده تعبان / مرهق / طاقتي قليلة»: فعّل له وضع اليوم الهادئ بتعيين lowEnergyDateKey لتاريخ اليوم (YYYY-MM-DD) عبر propose_profile_updates، واقترح ترحيل المهام غير العاجلة بهدوء.
    - إذا طلب تعديل مدة كتم الصوت للصلاة لمرة واحدة استخدم oneTimeSilenceMinutes + oneTimeSilenceDateKey، ولعدد الرنات استخدم soundRepeats.
+   - إذا طلب المستخدم تغيير مدة زر التأجيل (Snooze) للتنبيهات (مثل «خلي التأجيل 10 دقائق» أو «رجع التأجيل 5 دقائق» أو «خليه 15 دقيقة»): عدّل defaultSnoozeMinutes إلى 5 أو 10 أو 15 عبر propose_profile_updates (الافتراضي 5 دقائق).
 8. الذاكرة السحابية طويلة المدى كمرجع دائم لكل مستخدم:
    - هذا التطبيق عام لكل مستخدم ويرتبط ببياناته السحابية الخاصة بحساب Google فقط؛ لا تفترض أي معلومات شخصية أو أدوية أو مدن غير موجودة فعلياً في «الدستور الشخصي» أو «الذاكرة الدائمة» أو «قائمة العلاجات» المرفقة أدناه.
    - كلما ذكر المستخدم معلومة دائمة عن حياته (مكمل جديد، هدف طويل المدى، مجال عمله، قاعدة يومية، خطة مشروع أو قرار مهم قد يرجع له مستقبلاً)، اقترح تلقائياً حفظها في الذاكرة الدائمة عبر propose_memory_actions (أو الأداة المناسبة) حتى تصبح مرجعاً سحابياً دائماً له في كل المحادثات القادمة.
@@ -555,6 +556,10 @@ const proposeProfileUpdatesDeclaration: FunctionDeclaration = {
         type: Type.STRING,
         description: 'تاريخ اليوم (YYYY-MM-DD) لتفعيل وضع اليوم الهادئ / الطاقة المنخفضة، أو سلسلة فارغة "" لإلغائه.',
       },
+      defaultSnoozeMinutes: {
+        type: Type.NUMBER,
+        description: 'مدة التأجيل الافتراضية لزر تأجيل التنبيهات بالدقائق: 5 أو 10 أو 15 فقط (الافتراضي 5).',
+      },
       soundRepeats: {
         type: Type.OBJECT,
         description: 'تخصيص عدد رنات التنبيه لكل تصنيف (1 أو 2 أو 3 أو 4 أو "continuous" للرنين المستمر حتى الإيقاف).',
@@ -709,17 +714,19 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
   app.use((req, res, next) => {
-    // Allow standalone Windows EXE & Android APK (served on Firebase-authorized virtual host) to call /api/*
+    // Allow standalone Windows EXE & Android APK (served on Firebase-authorized virtual host or local WebView) to call /api/*
     const origin = req.headers.origin;
     if (
       typeof origin === 'string' &&
       (origin === 'https://gen-lang-client-0625331922.web.app' ||
         origin === 'https://gen-lang-client-0625331922.firebaseapp.com' ||
-        origin.startsWith('http://localhost:') ||
-        origin.startsWith('http://127.0.0.1:') ||
-        origin.startsWith('https://localhost:'))
+        origin.endsWith('.run.app') ||
+        origin.startsWith('http://localhost') ||
+        origin.startsWith('http://127.0.0.1') ||
+        origin.startsWith('https://localhost') ||
+        origin === 'null')
     ) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Origin', origin === 'null' ? '*' : origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       res.setHeader(

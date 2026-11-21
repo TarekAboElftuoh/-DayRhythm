@@ -377,6 +377,7 @@ export interface LifeProfile {
   oneTimeSilenceMinutes?: number; // 0 = inactive, 5..120 = one-time silence override via chat
   oneTimeSilenceDateKey?: string; // YYYY-MM-DD when one-time override applies
   lowEnergyDateKey?: string; // YYYY-MM-DD when soft/low-energy day mode is active
+  defaultSnoozeMinutes?: number; // 5 | 10 | 15 minutes for alert snooze button (default 5)
   soundRepeats?: SoundRepeatMap; // Ring repeats per category (1..4 or 'continuous')
   careerTrack: string;
   workEnabled: boolean;

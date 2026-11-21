@@ -31,9 +31,11 @@ android {
 
     signingConfigs {
         release {
-            def ksPath = System.getenv('ANDROID_KEYSTORE_PATH') ?: project.findProperty('KEYSTORE_PATH')
-            if (ksPath) {
-                storeFile file(ksPath)
+            def ksPath = System.getenv('ANDROID_KEYSTORE_PATH') ?: project.findProperty('KEYSTORE_PATH') ?: 'dayrhythm-release.p12'
+            def ksFile = file(ksPath)
+            if (ksFile.exists()) {
+                storeFile ksFile
+                storeType ksPath.toString().endsWith('.p12') ? 'PKCS12' : 'JKS'
                 storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD') ?: (project.findProperty('KEYSTORE_PASSWORD') ?: 'dayrhythm2026')
                 keyAlias System.getenv('ANDROID_KEY_ALIAS') ?: (project.findProperty('KEY_ALIAS') ?: 'dayrhythm')
                 keyPassword System.getenv('ANDROID_KEY_PASSWORD') ?: (project.findProperty('KEY_PASSWORD') ?: 'dayrhythm2026')
@@ -45,9 +47,7 @@ android {
         release {
             minifyEnabled false
             shrinkResources false
-            if (System.getenv('ANDROID_KEYSTORE_PATH') || project.findProperty('KEYSTORE_PATH')) {
-                signingConfig signingConfigs.release
-            }
+            signingConfig signingConfigs.release
         }
     }
 

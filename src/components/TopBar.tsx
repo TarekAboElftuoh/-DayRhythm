@@ -5,6 +5,7 @@ import {
   Smartphone,
   Monitor,
   MessageSquare,
+  RefreshCw,
 } from 'lucide-react';
 import { ActiveTab, AppLanguage } from '../types/dayrhythm';
 import { t } from '../engines/i18n';
@@ -17,6 +18,8 @@ interface TopBarProps {
   language: AppLanguage;
   onToggleLanguage: () => void;
   brandLogoSrc?: string | null;
+  onCheckAppUpdates?: () => void;
+  isCheckingUpdates?: boolean;
 }
 
 function detectIsMobileEnvironment(): boolean {
@@ -33,6 +36,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   language,
   onToggleLanguage,
   brandLogoSrc,
+  onCheckAppUpdates,
+  isCheckingUpdates = false,
 }) => {
   const [isMobileEnv, setIsMobileEnv] = useState<boolean>(detectIsMobileEnvironment);
 
@@ -92,7 +97,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-black/85 backdrop-blur-xl pt-[env(safe-area-inset-top)]">
+      <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-[#070A0F]/92 backdrop-blur-xl pt-[env(safe-area-inset-top)]">
         <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3.5 sm:px-6 h-14">
           {/* Zone 1: Brand Lockup */}
           <button
@@ -138,6 +143,21 @@ export const TopBar: React.FC<TopBarProps> = ({
           {/* Zone 3: Primary Action & Compact Utilities */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <PWAInstallButton language={language} />
+
+            {onCheckAppUpdates && (
+              <button
+                type="button"
+                onClick={onCheckAppUpdates}
+                disabled={isCheckingUpdates}
+                className="w-9 h-9 rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-colors cursor-pointer shrink-0 disabled:opacity-60"
+                title={language === 'ar' ? 'فحص التحديثات الآن' : 'Check for updates'}
+                aria-label={language === 'ar' ? 'فحص التحديثات' : 'Check for updates'}
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 ${isCheckingUpdates ? 'animate-spin text-[#7FFFD4]' : ''}`}
+                />
+              </button>
+            )}
 
             <button
               type="button"

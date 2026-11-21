@@ -654,6 +654,7 @@ export default function App() {
   const [meetingModeActive, setMeetingModeActive] = useState(false);
   const [workspaceTokenExpired, setWorkspaceTokenExpired] = useState(false);
   const [isRefreshingWorkspaceToken, setIsRefreshingWorkspaceToken] = useState(false);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [nowTickMin, setNowTickMin] = useState<number>(() =>
     getNowMinutesInTimeZone(lifeProfile.currentTimeZone || 'Africa/Cairo')
   );
@@ -1241,8 +1242,14 @@ export default function App() {
     }
     try {
       const androidBridge = (
-        window as Window & { DayRhythmNative?: { dismissActiveAlerts?: () => void } }
+        window as Window & {
+          DayRhythmNative?: {
+            dismissActiveAlerts?: () => void;
+            stopNativeAlarmSound?: () => void;
+          };
+        }
       ).DayRhythmNative;
+      androidBridge?.stopNativeAlarmSound?.();
       androidBridge?.dismissActiveAlerts?.();
     } catch {
       // ignore Android bridge errors
@@ -1350,34 +1357,70 @@ export default function App() {
       });
       const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
       const alertId = `alert_${Date.now().toString(36)}`;
+      const defaultSnooze =
+        lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15
+          ? lifeProfile.defaultSnoozeMinutes
+          : 5;
+      const wv = (
+        window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
+      ).chrome?.webview;
+      const isNativeWin = Boolean(wv?.postMessage);
+      const androidNative = (
+        window as Window & {
+          DayRhythmNative?: {
+            triggerNativeAlarm?: (
+              title: string,
+              body: string,
+              kind: string,
+              continuous: boolean,
+              snoozeMinutes: number
+            ) => void;
+          };
+        }
+      ).DayRhythmNative;
+
       setActiveAudioAlert({
         id: alertId,
         title: privacyBadge,
         category,
         isContinuous: playRes.isContinuous,
       });
-      setPersistentAlert({
-        id: alertId,
-        emoji: privacyBadge,
-        title: visibleTitle,
-        sourceLabel: visibleSource,
-        time12h: nowTime12,
-        category,
-        createdAtMs: Date.now(),
-        durationMs,
-        isContinuous: playRes.isContinuous,
-        isHydration: category === 'water',
-        medicationId: options?.medicationId,
-        medicationDoseTime24: options?.medicationDoseTime24,
-        taskId: options?.taskId,
-        taskListId: options?.taskListId,
-      });
+
+      // Avoid showing TWO duplicate alerts on Windows EXE (native SecondaryMonitorToastForm handles PC alert cleanly!)
+      if (!isNativeWin) {
+        setPersistentAlert({
+          id: alertId,
+          emoji: privacyBadge,
+          title: visibleTitle,
+          sourceLabel: visibleSource,
+          time12h: nowTime12,
+          category,
+          createdAtMs: Date.now(),
+          durationMs,
+          isContinuous: playRes.isContinuous,
+          isHydration: category === 'water',
+          medicationId: options?.medicationId,
+          medicationDoseTime24: options?.medicationDoseTime24,
+          taskId: options?.taskId,
+          taskListId: options?.taskListId,
+        });
+      }
+
+      // On Android APK: also fire native OS alarm sound + vibration + heads-up notification so OnePlus 12R rings loudly even if WebView audio is suspended
+      try {
+        androidNative?.triggerNativeAlarm?.(
+          `${privacyBadge} ${visibleTitle}`,
+          `${visibleSource} · ${nowTime12}`,
+          category,
+          Boolean(playRes.isContinuous),
+          defaultSnooze
+        );
+      } catch {
+        // ignore Android bridge errors
+      }
 
       // Route alerts to Windows Secondary Monitor (2 screens) or sleek side-edge dock (1 screen) — zero focus-steal!
       try {
-        const wv = (
-          window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
-        ).chrome?.webview;
         if (wv?.postMessage) {
           wv.postMessage(
             JSON.stringify({
@@ -1395,6 +1438,7 @@ export default function App() {
               isContinuous: playRes.isContinuous,
               cupSizeMl: lifeProfile.cupSizeMl,
               durationSeconds: Math.round(durationMs / 1000),
+              snoozeMinutes: defaultSnooze,
             })
           );
         }
@@ -1402,15 +1446,28 @@ export default function App() {
         // ignore WebView2 postMessage errors
       }
 
-      showToast(`${privacyBadge} · ${visibleTitle} · ${nowTime12}`);
+      if (!isNativeWin) {
+        showToast(`${privacyBadge} · ${visibleTitle} · ${nowTime12}`);
+      }
     },
-    [activeSanctuary, activeTimeZone, lifeProfile.cupSizeMl, lifeProfile.soundRepeats, showToast]
+    [
+      activeSanctuary,
+      activeTimeZone,
+      lifeProfile.cupSizeMl,
+      lifeProfile.defaultSnoozeMinutes,
+      lifeProfile.soundRepeats,
+      showToast,
+    ]
   );
 
-  // Interactive Notification Quick Action: Snooze any alert for N minutes (default 15m)
+  // Interactive Notification Quick Action: Snooze any alert for N minutes (default from LifeProfile: 5/10/15m)
   const handleSnoozeAlert = useCallback(
-    (alertItem: PersistentAlertItem, minutes = 15) => {
-      const safeMin = Math.max(1, Math.min(60, Math.round(minutes)));
+    (alertItem: PersistentAlertItem, minutes?: number) => {
+      const configuredDefault =
+        lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15
+          ? lifeProfile.defaultSnoozeMinutes
+          : 5;
+      const safeMin = Math.max(1, Math.min(60, Math.round(minutes ?? configuredDefault)));
       stopContinuousAlert();
       stopNativeAlerts();
       setActiveAudioAlert(null);
@@ -1433,7 +1490,7 @@ export default function App() {
       triggerHapticWaveform('water_cup');
       showToast(`⏰ تم تأجيل «${alertItem.title}» لمدة ${safeMin} دقيقة وإيقافه على أجهزتك`);
     },
-    [emitCrossDeviceSync, showToast, stopNativeAlerts, triggerTaskAlert]
+    [emitCrossDeviceSync, lifeProfile.defaultSnoozeMinutes, showToast, stopNativeAlerts, triggerTaskAlert]
   );
 
   useEffect(() => {
@@ -2067,25 +2124,19 @@ export default function App() {
     }
   }, [refreshWorkspace, showToast]);
 
-  // Automatic Background Poller for Gmail Digest (pauses cleanly when Workspace OAuth token expires — zero 401 spam)
+  // Automatic Background Poller for Gmail Digest (silently skips when OAuth token is absent — zero annoying hourly banners!)
   useEffect(() => {
-    if (!authUser || needsAuth || gmailNeedsReauth || workspaceTokenExpired) return;
+    if (!authUser || needsAuth || gmailNeedsReauth) return;
 
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === 'visible' && navigator.onLine !== false) {
-        if (!getCalendarAccessToken()) {
-          setWorkspaceTokenExpired(true);
-          return;
-        }
+        if (!getCalendarAccessToken()) return;
         void fetchGmailDigest(undefined, { silent: true });
       }
     }, 10 * 60_000);
 
     const handleOnlineReconnect = () => {
-      if (!getCalendarAccessToken()) {
-        setWorkspaceTokenExpired(true);
-        return;
-      }
+      if (!getCalendarAccessToken()) return;
       gmailRetryAttemptRef.current = 0;
       clearGmailRetryTimers();
       void refreshWorkspace(undefined, { forceGmail: false });
@@ -2097,10 +2148,7 @@ export default function App() {
         navigator.onLine !== false &&
         Date.now() - lastGmailAutoScanMsRef.current >= 10 * 60_000
       ) {
-        if (!getCalendarAccessToken()) {
-          setWorkspaceTokenExpired(true);
-          return;
-        }
+        if (!getCalendarAccessToken()) return;
         void fetchGmailDigest(undefined, { silent: true });
       }
     };
@@ -2625,6 +2673,13 @@ export default function App() {
             });
             if (cleanUi.cloudApiUrl) {
               syncSavedCloudApiUrlFromRemote(cleanUi.cloudApiUrl);
+              try {
+                window.dispatchEvent(
+                  new CustomEvent('dayrhythm:cloud-api-updated', { detail: { url: cleanUi.cloudApiUrl } })
+                );
+              } catch {
+                // ignore event errors
+              }
             }
             try {
               window.localStorage.setItem(SELECTED_LOGO_STORAGE_KEY, cleanUi.selectedLogoId);
@@ -3036,6 +3091,73 @@ export default function App() {
     },
     [capsulePrefs, selectedLogoId, showToast, syncUiPrefsCloud]
   );
+
+  // Auto-discover & sync public Cloud Run URL when opened in a deployed web instance (so standalone EXE/APK connect automatically)
+  useEffect(() => {
+    if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreSynced) return;
+    if (typeof window === 'undefined' || isStandaloneVirtualHost()) return;
+    const host = window.location.hostname.toLowerCase();
+    if (
+      !host ||
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host.startsWith('ais-dev-') ||
+      host.startsWith('ais-pre-')
+    ) {
+      return;
+    }
+    const origin = window.location.origin.replace(/\/+$/, '');
+    if (getSavedCloudApiUrl() === origin) return;
+    let cancelled = false;
+    void fetch(`${origin}/api/health`, { method: 'GET', cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { ok?: boolean } | null) => {
+        if (cancelled || !data?.ok) return;
+        syncSavedCloudApiUrlFromRemote(origin);
+        syncUiPrefsCloud(selectedLogoId, capsulePrefs, origin);
+      })
+      .catch(() => {
+        // ignore probe failure
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    firebaseUser?.uid,
+    firebaseUser?.emailVerified,
+    firestoreSynced,
+    selectedLogoId,
+    capsulePrefs,
+    syncUiPrefsCloud,
+  ]);
+
+  // One-time migration from legacy Cairo default (30.0444, 31.2357) to user's home (الضهرية · شربين · الدقهلية)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const migrationKey = 'dayrhythm_home_dahriya_migrated_v1';
+    try {
+      if (window.localStorage.getItem(migrationKey) === '1') return;
+    } catch {
+      return;
+    }
+    const isLegacyCairoDefault =
+      Math.abs((lifeProfile.currentLat ?? 0) - 30.0444) < 0.005 &&
+      Math.abs((lifeProfile.currentLng ?? 0) - 31.2357) < 0.005;
+    if (isLegacyCairoDefault) {
+      setLifeProfile((prev) => ({
+        ...prev,
+        currentCityName: HOME_LOCATION.nameAr,
+        currentLat: HOME_LOCATION.lat,
+        currentLng: HOME_LOCATION.lng,
+        currentTimeZone: HOME_LOCATION.timeZone || 'Africa/Cairo',
+      }));
+    }
+    try {
+      window.localStorage.setItem(migrationKey, '1');
+    } catch {
+      // ignore storage errors
+    }
+  }, [lifeProfile.currentLat, lifeProfile.currentLng]);
 
   const handleUpdateCapsulePrefs = useCallback(
     (next: CapsulePrefs) => {
@@ -3653,7 +3775,29 @@ export default function App() {
     !needsAuth &&
     (locationResolutionState === 'gps_locked' || locationResolutionState === 'timezone_fallback');
 
+  // Receive real-time update status callbacks from native Windows EXE & Android APK shells
+  useEffect(() => {
+    const onUpdateStatus = (evt: Event) => {
+      const detail = (evt as CustomEvent<{ state?: string; message?: string }>).detail;
+      if (!detail) return;
+      if (detail.state === 'checking' || detail.state === 'downloading') {
+        setIsCheckingUpdates(true);
+      } else {
+        setIsCheckingUpdates(false);
+      }
+      if (detail.message) {
+        showToast(detail.message);
+      }
+    };
+    window.addEventListener('dayrhythm:update-status', onUpdateStatus);
+    return () => window.removeEventListener('dayrhythm:update-status', onUpdateStatus);
+  }, [showToast]);
+
   const handleCheckAppUpdates = useCallback(() => {
+    setIsCheckingUpdates(true);
+    const stopSpinnerLater = () => {
+      window.setTimeout(() => setIsCheckingUpdates(false), 8000);
+    };
     const androidBridge = (
       window as Window & {
         DayRhythmNative?: { checkForUpdates?: () => void };
@@ -3661,7 +3805,8 @@ export default function App() {
     ).DayRhythmNative;
     if (androidBridge?.checkForUpdates) {
       androidBridge.checkForUpdates();
-      showToast('🔄 جاري فحص التحديثات الفورية (OTA) من GitHub على الموبايل...');
+      showToast('جاري فحص التحديثات من GitHub...');
+      stopSpinnerLater();
       return;
     }
     const wv = (
@@ -3671,7 +3816,8 @@ export default function App() {
     ).chrome?.webview;
     if (wv?.postMessage) {
       wv.postMessage('check-updates');
-      showToast('🔄 جاري فحص التحديثات الفورية (OTA) من GitHub على الكمبيوتر...');
+      showToast('جاري فحص التحديثات من GitHub...');
+      stopSpinnerLater();
       return;
     }
     if ('serviceWorker' in navigator) {
@@ -3680,17 +3826,19 @@ export default function App() {
         .then((reg) => {
           if (reg) {
             return reg.update().then(() => {
-              showToast('✓ تم فحص تحديثات الويب (PWA) — أنت على أحدث إصدار متاح');
+              showToast('تم فحص التحديثات — أنت على أحدث إصدار متاح');
             });
           }
-          showToast('✓ أنت تستخدم أحدث نسخة ويب حالياً');
+          showToast('أنت تستخدم أحدث إصدار حالياً');
         })
         .catch(() => {
-          showToast('✓ أنت تستخدم أحدث نسخة حالياً');
-        });
+          showToast('أنت تستخدم أحدث إصدار حالياً');
+        })
+        .finally(() => setIsCheckingUpdates(false));
       return;
     }
-    showToast('✓ أنت تستخدم أحدث إصدار حالياً');
+    setIsCheckingUpdates(false);
+    showToast('أنت تستخدم أحدث إصدار حالياً');
   }, [showToast]);
 
   const handleGoogleSignIn = useCallback(async () => {
@@ -5534,17 +5682,23 @@ export default function App() {
         updated.takenDateKey === todayIso &&
         (allTimes.length <= 1 ||
           allTimes.every((t) => (updated.takenDosesToday ?? []).includes(t)));
+      const cutoff7Iso = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
       const existingDates = Array.isArray(target.takenDates) ? target.takenDates : [];
-      const nextTakenDates = isFullyTakenAfter
-        ? Array.from(new Set([...existingDates, todayIso])).sort().slice(-31)
-        : existingDates.filter((d) => d !== todayIso);
+      const nextTakenDates = (
+        isFullyTakenAfter
+          ? Array.from(new Set([...existingDates, todayIso]))
+          : existingDates.filter((d) => d !== todayIso)
+      )
+        .filter((d) => d >= cutoff7Iso)
+        .sort()
+        .slice(-7);
       updated = { ...updated, takenDates: nextTakenDates };
 
       let lowStockMsg = '';
       if (typeof target.remainingDoses === 'number' && target.remainingDoses >= 0) {
         const maxCap =
           typeof target.totalDoses === 'number' && target.totalDoses > 0
-            ? target.totalDoses
+            ? Math.max(target.totalDoses, target.remainingDoses)
             : 500;
         const nextRem = Math.max(0, Math.min(maxCap, target.remainingDoses + deltaDoses));
         updated = { ...updated, remainingDoses: nextRem };
@@ -5569,7 +5723,11 @@ export default function App() {
       if (lowStockMsg) {
         showToast(lowStockMsg);
       } else if (!doseTime24 && isFullyTakenAfter) {
-        showToast(`✅ تم تسجيل جرعات «${target.name}» كاملة لليوم`);
+        const remSuffix =
+          typeof updated.remainingDoses === 'number' && updated.remainingDoses >= 0
+            ? ` (متبقٍ ${updated.remainingDoses})`
+            : '';
+        showToast(`تم تسجيل «${target.name}» لليوم${remSuffix}`);
       }
       triggerHapticWaveform('water_cup');
     },
@@ -5579,6 +5737,7 @@ export default function App() {
   const handleToggleMedicationDate = useCallback(
     (id: string, dateIso: string) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
+      const cutoff7Iso = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
       setMedications((prev) =>
         prev.map((m) => {
           if (m.id !== id) return m;
@@ -5586,12 +5745,31 @@ export default function App() {
             m.times24 && m.times24.length > 0 ? m.times24 : m.time24 ? [m.time24] : [];
           const existingDates = Array.isArray(m.takenDates) ? m.takenDates : [];
           const hasDate = existingDates.includes(dateIso) || (dateIso === todayIso && m.takenDateKey === todayIso);
-          const nextDates = hasDate
-            ? existingDates.filter((d) => d !== dateIso)
-            : Array.from(new Set([...existingDates, dateIso])).sort().slice(-31);
+          const nextDates = (
+            hasDate
+              ? existingDates.filter((d) => d !== dateIso)
+              : Array.from(new Set([...existingDates, dateIso]))
+          )
+            .filter((d) => d >= cutoff7Iso)
+            .sort()
+            .slice(-7);
+
+          // Properly decrement/increment remainingDoses when toggling any day in the 7-day strip!
+          const dosesPerDay = Math.max(1, allTimes.length);
+          let nextRemaining = m.remainingDoses;
+          if (typeof m.remainingDoses === 'number' && m.remainingDoses >= 0) {
+            const maxCap =
+              typeof m.totalDoses === 'number' && m.totalDoses > 0
+                ? Math.max(m.totalDoses, m.remainingDoses)
+                : 500;
+            const delta = hasDate ? dosesPerDay : -dosesPerDay;
+            nextRemaining = Math.max(0, Math.min(maxCap, m.remainingDoses + delta));
+          }
+
           const updated: MedicationItem = {
             ...m,
             takenDates: nextDates,
+            remainingDoses: nextRemaining,
             ...(dateIso === todayIso
               ? {
                   takenDateKey: hasDate ? '' : todayIso,
@@ -6995,12 +7173,18 @@ export default function App() {
     const msForMinuteToday = (targetMin: number) => nowMs + (targetMin - nowMinInTz) * 60_000;
     const todayW = getWeekdayInTimeZone(activeTimeZone);
 
+    const snoozeMinutes =
+      lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15
+        ? lifeProfile.defaultSnoozeMinutes
+        : 5;
+
     const alarms: Array<{
       id: string;
       kind: 'prayer' | 'water' | 'medication' | 'event' | 'task';
       title: string;
       body: string;
       triggerAtMs: number;
+      snoozeMinutes: number;
       medicationId?: string;
       doseTime24?: string;
     }> = [];
@@ -7017,6 +7201,7 @@ export default function App() {
             title: `${p.emojiPair} ${p.nameAr}`,
             body: `متبقي ${lifeProfile.adhanLeadMinutes} د على أذان ${p.nameAr} (${formatMinutes12h(p.adhanMinutes, 'ar')})`,
             triggerAtMs,
+            snoozeMinutes,
           });
         }
       }
@@ -7034,6 +7219,7 @@ export default function App() {
             title: `💧 كوب ماء #${slot.cupIndex}`,
             body: `موعد شرب ${dailyRhythmPlan.cupSizeMl} مل (${formatMinutes12h(slot.timeMinutes, 'ar')})`,
             triggerAtMs,
+            snoozeMinutes,
           });
         }
       });
@@ -7062,6 +7248,7 @@ export default function App() {
             title: `💊 موعد الجرعة: ${med.name}`,
             body: `${med.doseNote ? `${med.doseNote} · ` : ''}${formatMinutes12h(medMin, 'ar')}`,
             triggerAtMs,
+            snoozeMinutes,
             medicationId: med.id,
             doseTime24: times.length > 1 ? t24 : '',
           });
@@ -7082,6 +7269,7 @@ export default function App() {
           title: `${emoji} ${titleText}`,
           body: `تقويم Google · ${formatMinutes12h(block.startMin, 'ar')}`,
           triggerAtMs,
+          snoozeMinutes,
         });
       }
     }
@@ -7100,6 +7288,7 @@ export default function App() {
           title: `☑️ ${titleText}`,
           body: `مهام Google · ${formatMinutes12h(info.startMin, 'ar')}`,
           triggerAtMs,
+          snoozeMinutes,
         });
       }
     }
@@ -7119,6 +7308,7 @@ export default function App() {
     hydrationToday,
     includePrayerAnchors,
     lifeProfile.adhanLeadMinutes,
+    lifeProfile.defaultSnoozeMinutes,
     liveBlocks,
     medications,
     needsAuth,
@@ -7182,31 +7372,9 @@ ${lifeConstitution}
         language={language}
         onToggleLanguage={() => setLanguage((l) => (l === 'ar' ? 'en' : 'ar'))}
         brandLogoSrc={activeBrandLogo?.src ?? null}
+        onCheckAppUpdates={handleCheckAppUpdates}
+        isCheckingUpdates={isCheckingUpdates}
       />
-
-      {!needsAuth && workspaceTokenExpired && (
-        <div
-          dir="rtl"
-          className="mx-auto max-w-6xl px-3 sm:px-5 pt-2.5"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-500/35 bg-amber-950/35 px-3.5 py-2.5 text-xs text-amber-100 shadow-lg">
-            <div className="flex items-center gap-2">
-              <span className="text-base leading-none">🔄</span>
-              <span>
-                انتهت جلسة مزامنة تقويم ومهام Google (كل 60 دقيقة) — بياناتك المحلية و Firestore تعمل بشكل طبيعي.
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => void handleRefreshWorkspaceToken()}
-              disabled={isRefreshingWorkspaceToken}
-              className="rounded-xl bg-amber-400 hover:bg-amber-300 disabled:opacity-60 text-zinc-950 font-bold px-3.5 py-1.5 text-xs transition cursor-pointer shrink-0"
-            >
-              {isRefreshingWorkspaceToken ? 'جاري التجديد...' : 'تجديد ربط Google الآن'}
-            </button>
-          </div>
-        </div>
-      )}
 
       {toastMessage && (
         <div className="fixed top-[calc(env(safe-area-inset-top)+4rem)] inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 sm:max-w-lg z-50 rounded-xl border border-[#7FFFD4]/50 bg-black/95 px-4 py-2.5 text-xs font-semibold text-[#7FFFD4] text-center shadow-2xl break-words">
@@ -7491,7 +7659,16 @@ ${lifeConstitution}
       />
 
       <PersistentAlertOverlay
-        alert={persistentAlert}
+        alert={
+          typeof window !== 'undefined' &&
+          Boolean(
+            (window as Window & { chrome?: { webview?: { postMessage?: unknown } } }).chrome
+              ?.webview?.postMessage
+          )
+            ? null
+            : persistentAlert
+        }
+        defaultSnoozeMinutes={lifeProfile.defaultSnoozeMinutes ?? 5}
         onDismiss={() => {
           if (persistentAlert?.id.startsWith('charge_')) {
             handleStopSmartChargeAlert();

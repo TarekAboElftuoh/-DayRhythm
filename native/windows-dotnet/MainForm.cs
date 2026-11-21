@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -13,10 +14,18 @@ namespace DayRhythm
     internal sealed class MainForm : Form
     {
         // Permanent Firebase-authorized domain for gen-lang-client-0625331922
-        // Mapped locally via Edge WebView2 SetVirtualHostNameToFolderMapping (zero 404, zero unauthorized-domain, 100% HTTPS!)
         private const string VirtualAppHost = "gen-lang-client-0625331922.web.app";
         private const string VirtualAppOrigin = "https://gen-lang-client-0625331922.web.app";
         private const string VirtualAppUrl = "https://gen-lang-client-0625331922.web.app/index.html";
+
+        // Win32 DWM attributes to unify the Windows title bar color (#070A0F) with the app header
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        private const int DWMWA_BORDER_COLOR = 34;
+        private const int DWMWA_CAPTION_COLOR = 35;
+        private const int DWMWA_TEXT_COLOR = 36;
+
+        [DllImport("dwmapi.dll", PreserveSig = true)]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
         private readonly bool _startHidden;
         private readonly UserSettings _settings;
@@ -45,7 +54,7 @@ namespace DayRhythm
             AppConfig.ApplyAutoLaunch(_settings.AutoLaunch);
 
             Text = "إيقاع اليوم | DayRhythm";
-            BackColor = Color.Black;
+            BackColor = Color.FromArgb(7, 10, 15);
             ForeColor = Color.White;
             Width = 1280;
             Height = 860;
@@ -69,8 +78,35 @@ namespace DayRhythm
             InitializeDesktopCapsule();
             InitializeWebViewControl();
 
+            HandleCreated += (_, __) => ApplyDarkObsidianTitleBar(Handle);
             Load += async (_, __) => await OnFormLoadedAsync();
             FormClosing += OnMainFormClosing;
+        }
+
+        internal static void ApplyDarkObsidianTitleBar(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            try
+            {
+                int darkMode = 1;
+                DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref darkMode, sizeof(int));
+
+                // COLORREF format is 0x00BBGGRR -> #070A0F => R=0x07, G=0x0A, B=0x0F => 0x000F0A07
+                int captionColor = 0x000F0A07;
+                DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, ref captionColor, sizeof(int));
+
+                // Subtle title text #F4F4F5 => 0x00F5F4F4
+                int textColor = 0x00F5F4F4;
+                DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, ref textColor, sizeof(int));
+
+                // Subtle obsidian border #141B24 => 0x00241B14
+                int borderColor = 0x00241B14;
+                DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, ref borderColor, sizeof(int));
+            }
+            catch
+            {
+                // Safe no-op on older Windows versions
+            }
         }
 
         private static Icon LoadAppIcon()
@@ -83,16 +119,13 @@ namespace DayRhythm
                     return new Icon(icoPath);
                 }
             }
-            catch
-            {
-                // Fallback to default icon
-            }
+            catch { }
             return SystemIcons.Application;
         }
 
         private static string ResolveWwwDirectory()
         {
-            // Prefer live OTA updated web bundle if present and newer/equal to bundled build
+            BackgroundServices.CleanupOldOtaReleases();
             string otaWww = BackgroundServices.GetOtaWwwDir();
             if (File.Exists(Path.Combine(otaWww, "index.html")))
             {
@@ -116,7 +149,7 @@ namespace DayRhythm
             _webView = new WebView2
             {
                 Dock = DockStyle.Fill,
-                DefaultBackgroundColor = Color.Black,
+                DefaultBackgroundColor = Color.FromArgb(7, 10, 15),
             };
             Controls.Add(_webView);
         }
@@ -133,7 +166,7 @@ namespace DayRhythm
                 Padding = new Padding(2, 4, 2, 4),
             };
 
-            ToolStripMenuItem titleItem = new ToolStripMenuItem($"إيقاع اليوم | DayRhythm (v{AppConfig.GetVersionString()})")
+            ToolStripMenuItem titleItem = new ToolStripMenuItem($"إيقاع اليوم | DayRhythm (v{BackgroundServices.GetEffectiveLocalVersion()})")
             {
                 Enabled = false,
             };
@@ -145,7 +178,7 @@ namespace DayRhythm
             ToolStripMenuItem openItem = new ToolStripMenuItem("فتح النافذة", null, (_, __) => ShowAndFocusWindow());
             ToolStripMenuItem reloadItem = new ToolStripMenuItem("تحديث الواجهة", null, (_, __) => _webView?.Reload());
 
-            _capsuleMenuItem = new ToolStripMenuItem("كبسولة سطح المكتب العائمة (تايمر حر)")
+            _capsuleMenuItem = new ToolStripMenuItem("كبسولة سطح المكتب العائمة")
             {
                 CheckOnClick = true,
                 Checked = _settings.ShowDesktopCapsule,
@@ -155,33 +188,16 @@ namespace DayRhythm
                 bool show = _capsuleMenuItem.Checked;
                 _settings.ShowDesktopCapsule = show;
                 AppConfig.SaveSettings(_settings);
-                if (show)
-                {
-                    _capsuleForm?.ShowFloating();
-                }
-                else
-                {
-                    _capsuleForm?.Hide();
-                }
+                if (show) _capsuleForm?.ShowFloating();
+                else _capsuleForm?.Hide();
             };
 
-            _updateMenuItem = new ToolStripMenuItem("فحص التحديثات من GitHub الآن", null, async (_, __) =>
+            _updateMenuItem = new ToolStripMenuItem("فحص التحديثات الآن", null, async (_, __) =>
             {
-                if (_pendingUpdate != null)
-                {
-                    await InstallPendingUpdateAsync();
-                }
-                else
-                {
-                    ReleaseUpdateInfo found = await _bgServices.CheckForUpdateAsync();
-                    if (found == null)
-                    {
-                        ShowTrayBalloon("إيقاع اليوم محدّث ✓", $"أنت تستخدم أحدث إصدار (v{AppConfig.GetVersionString()}).");
-                    }
-                }
+                await RunInteractiveUpdateCheckAsync();
             });
 
-            _autoLaunchMenuItem = new ToolStripMenuItem("التشغيل تلقائياً مع ويندوز (24/7 في الخلفية)")
+            _autoLaunchMenuItem = new ToolStripMenuItem("التشغيل تلقائياً مع ويندوز")
             {
                 CheckOnClick = true,
                 Checked = _settings.AutoLaunch,
@@ -241,19 +257,56 @@ namespace DayRhythm
             };
             _trayIcon.BalloonTipClicked += async (_, __) =>
             {
+                if (_pendingUpdate != null) await InstallPendingUpdateAsync();
+                else ShowAndFocusWindow();
+            };
+        }
+
+        private void DispatchUpdateStatusToWebView(string status, string version = "", string message = "")
+        {
+            if (_webView?.CoreWebView2 == null) return;
+            string detailJson = JsonSerializer.Serialize(new { status, version, message });
+            _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                $"window.dispatchEvent(new CustomEvent('dayrhythm:update-status', {{ detail: {detailJson} }}));"
+            );
+        }
+
+        private async Task RunInteractiveUpdateCheckAsync()
+        {
+            if (_isDownloadingUpdate) return;
+            DispatchUpdateStatusToWebView("checking", BackgroundServices.GetEffectiveLocalVersion());
+
+            try
+            {
                 if (_pendingUpdate != null)
                 {
                     await InstallPendingUpdateAsync();
+                    return;
+                }
+
+                ReleaseUpdateInfo found = await _bgServices.CheckForUpdateAsync(notifyCallback: false);
+                if (found == null)
+                {
+                    string curVer = BackgroundServices.GetEffectiveLocalVersion();
+                    DispatchUpdateStatusToWebView("up_to_date", curVer);
+                    ShowTrayBalloon("إيقاع اليوم محدّث ✓", $"أنت تستخدم أحدث إصدار (v{curVer}).");
                 }
                 else
                 {
-                    ShowAndFocusWindow();
+                    _pendingUpdate = found;
+                    await InstallPendingUpdateAsync();
                 }
-            };
+            }
+            catch
+            {
+                DispatchUpdateStatusToWebView("error", "", "تعذر فحص التحديثات — تحقق من اتصال الإنترنت.");
+            }
         }
 
         private async Task OnFormLoadedAsync()
         {
+            ApplyDarkObsidianTitleBar(Handle);
+
             if (_startHidden)
             {
                 WindowState = FormWindowState.Minimized;
@@ -263,7 +316,6 @@ namespace DayRhythm
 
             try
             {
-                // Persistent WebView2 profile: keeps Google & Firebase Auth logged in permanently!
                 string userDataDir = Path.Combine(AppConfig.GetDataDir(), "WebView2Data");
                 _webViewEnv = await CoreWebView2Environment.CreateAsync(null, userDataDir);
                 await _webView.EnsureCoreWebView2Async(_webViewEnv);
@@ -271,7 +323,6 @@ namespace DayRhythm
                 _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
                 _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
 
-                // Map local www/ directly to Firebase-authorized HTTPS host (zero 404, zero unauthorized-domain!)
                 string wwwDir = ResolveWwwDirectory();
                 _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     VirtualAppHost,
@@ -292,14 +343,7 @@ namespace DayRhythm
                         }
                         if (string.Equals(msg, "check-updates", StringComparison.OrdinalIgnoreCase))
                         {
-                            RunOnUi(async () =>
-                            {
-                                ReleaseUpdateInfo found = await _bgServices.CheckForUpdateAsync();
-                                if (found == null)
-                                {
-                                    ShowTrayBalloon("إيقاع اليوم محدّث ✓", $"أنت تستخدم أحدث إصدار (v{BackgroundServices.GetEffectiveLocalVersion()}).");
-                                }
-                            });
+                            RunOnUi(() => _ = RunInteractiveUpdateCheckAsync());
                             return;
                         }
                         if (msg.StartsWith("{", StringComparison.Ordinal))
@@ -351,10 +395,7 @@ namespace DayRhythm
                             }
                         }
                     }
-                    catch
-                    {
-                        // ignore non-string or malformed messages
-                    }
+                    catch { }
                 };
 
                 _webView.CoreWebView2.PermissionRequested += (_, args) =>
@@ -366,14 +407,6 @@ namespace DayRhythm
                 };
 
                 _webView.CoreWebView2.NewWindowRequested += OnNewWindowRequested;
-                _webView.CoreWebView2.NavigationCompleted += (_, __) =>
-                {
-                    if (_pendingUpdate != null)
-                    {
-                        InjectUpdateBanner(_pendingUpdate.Tag);
-                    }
-                };
-
                 _webView.CoreWebView2.Navigate(VirtualAppUrl);
                 _bgServices.Start(_settings.RemoteWsUrl);
             }
@@ -394,14 +427,7 @@ namespace DayRhythm
             if (!IsAuthOrAppUrl(uri))
             {
                 e.Handled = true;
-                try
-                {
-                    Process.Start(new ProcessStartInfo { FileName = uri, UseShellExecute = true });
-                }
-                catch
-                {
-                    // ignore
-                }
+                try { Process.Start(new ProcessStartInfo { FileName = uri, UseShellExecute = true }); } catch { }
                 return;
             }
 
@@ -413,14 +439,16 @@ namespace DayRhythm
                     Text = "تسجيل الدخول — إيقاع اليوم",
                     Width = 520,
                     Height = 680,
-                    BackColor = Color.FromArgb(9, 9, 11),
+                    BackColor = Color.FromArgb(7, 10, 15),
                     StartPosition = FormStartPosition.CenterParent,
                     Icon = Icon,
                 };
+                popupForm.HandleCreated += (_, __) => ApplyDarkObsidianTitleBar(popupForm.Handle);
+
                 WebView2 popupWeb = new WebView2
                 {
                     Dock = DockStyle.Fill,
-                    DefaultBackgroundColor = Color.FromArgb(9, 9, 11),
+                    DefaultBackgroundColor = Color.FromArgb(7, 10, 15),
                 };
                 popupForm.Controls.Add(popupWeb);
                 popupForm.Show(this);
@@ -447,9 +475,7 @@ namespace DayRhythm
         private static bool IsAuthOrAppUrl(string rawUrl)
         {
             if (string.IsNullOrWhiteSpace(rawUrl) || string.Equals(rawUrl, "about:blank", StringComparison.OrdinalIgnoreCase))
-            {
                 return true;
-            }
             if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out Uri uri)) return false;
             string host = uri.Host.ToLowerInvariant();
             return host == VirtualAppHost
@@ -507,48 +533,16 @@ namespace DayRhythm
         private void HandleUpdateAvailable(ReleaseUpdateInfo info)
         {
             _pendingUpdate = info;
-
-            // Automatic Silent Hot Update on launch when lightweight Web OTA zip is available (no EXE reinstall!)
             if (info != null && !string.IsNullOrWhiteSpace(info.WebOtaZipUrl) && !_isDownloadingUpdate)
             {
                 _ = InstallPendingUpdateAsync();
                 return;
             }
 
-            if (_updateMenuItem != null)
+            if (_updateMenuItem != null && info != null)
             {
-                _updateMenuItem.Text = $"🚀 تثبيت التحديث الجديد ({info.Tag})";
+                _updateMenuItem.Text = $"تثبيت التحديث الجديد ({info.Tag})";
             }
-            InjectUpdateBanner(info.Tag);
-            ShowTrayBalloon(
-                $"يتوفر إصدار جديد من إيقاع اليوم ({info.Tag})",
-                "اضغط هنا لتنزيل وتثبيت التحديث مباشرة من GitHub Releases."
-            );
-        }
-
-        private void InjectUpdateBanner(string tag)
-        {
-            if (_webView?.CoreWebView2 == null) return;
-            string safeTag = (tag ?? "").Replace("'", "").Replace("\"", "").Replace("<", "").Replace(">", "");
-            string js = $@"
-                (() => {{
-                    const prev = document.getElementById('dayrhythm-native-update-bar');
-                    if (prev) prev.remove();
-                    const bar = document.createElement('div');
-                    bar.id = 'dayrhythm-native-update-bar';
-                    bar.dir = 'rtl';
-                    bar.style.cssText = 'position:fixed;bottom:18px;left:18px;z-index:2147483647;background:#06281e;color:#ecfdf5;border:1px solid #10b981;border-radius:16px;padding:12px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 16px 40px rgba(0,0,0,0.65);font-family:Segoe UI,system-ui,sans-serif;font-size:13px;';
-                    bar.innerHTML = '<span>🚀 يتوفر تحديث جديد لإيقاع اليوم (<b>{safeTag}</b>)</span>'
-                        + '<button id=""dr-upd-install"" style=""background:#10b981;color:#022c22;border:none;border-radius:10px;padding:7px 14px;font-weight:700;cursor:pointer;"">تثبيت الآن</button>'
-                        + '<button id=""dr-upd-dismiss"" style=""background:transparent;color:#a7f3d0;border:none;cursor:pointer;font-size:16px;padding:0 4px;"">×</button>';
-                    document.body.appendChild(bar);
-                    document.getElementById('dr-upd-install')?.addEventListener('click', () => {{
-                        window.chrome?.webview?.postMessage('install-update');
-                    }});
-                    document.getElementById('dr-upd-dismiss')?.addEventListener('click', () => bar.remove());
-                }})();
-            ";
-            _ = _webView.CoreWebView2.ExecuteScriptAsync(js);
         }
 
         private async Task InstallPendingUpdateAsync()
@@ -556,45 +550,54 @@ namespace DayRhythm
             if (_isDownloadingUpdate || _pendingUpdate == null) return;
             _isDownloadingUpdate = true;
 
-            // Fast Path: Instant Web OTA hot-swap (~1.5 MB zip) — works identically on Portable ZIP & Setup EXE with zero reinstall!
-            if (!string.IsNullOrWhiteSpace(_pendingUpdate.WebOtaZipUrl))
+            try
             {
-                ShowTrayBalloon("جاري التحديث الفوري (OTA)...", $"جاري تحديث إيقاع اليوم إلى {_pendingUpdate.Tag} مباشرة...");
-                bool otaOk = await _bgServices.ApplyWebOtaUpdateAsync(_pendingUpdate);
-                if (otaOk)
+                if (!string.IsNullOrWhiteSpace(_pendingUpdate.WebOtaZipUrl))
                 {
-                    string tagDone = _pendingUpdate.Tag;
-                    _pendingUpdate = null;
-                    _isDownloadingUpdate = false;
-                    RunOnUi(() =>
+                    DispatchUpdateStatusToWebView("downloading", _pendingUpdate.Tag);
+                    string newWwwDir = await _bgServices.ApplyWebOtaUpdateAsync(_pendingUpdate);
+                    if (!string.IsNullOrWhiteSpace(newWwwDir))
                     {
-                        if (_updateMenuItem != null)
+                        string tagDone = _pendingUpdate.Tag;
+                        _pendingUpdate = null;
+                        RunOnUi(() =>
                         {
-                            _updateMenuItem.Text = "فحص التحديثات من GitHub الآن";
-                        }
-                        if (_webView?.CoreWebView2 != null)
-                        {
-                            _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
-                                VirtualAppHost,
-                                BackgroundServices.GetOtaWwwDir(),
-                                CoreWebView2HostResourceAccessKind.Allow
-                            );
-                            _webView.CoreWebView2.Navigate(VirtualAppUrl + "?v=" + Uri.EscapeDataString(tagDone));
-                        }
-                        ShowTrayBalloon("تم التحديث بنجاح ✓", $"تم تحديث إيقاع اليوم فوراً إلى {tagDone} بدون إعادة تثبيت!");
-                    });
-                    return;
+                            if (_updateMenuItem != null)
+                            {
+                                _updateMenuItem.Text = "فحص التحديثات الآن";
+                            }
+                            DispatchUpdateStatusToWebView("applied", tagDone);
+                            if (_webView?.CoreWebView2 != null)
+                            {
+                                _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                                    VirtualAppHost,
+                                    newWwwDir,
+                                    CoreWebView2HostResourceAccessKind.Allow
+                                );
+                                _webView.CoreWebView2.Navigate(VirtualAppUrl + "?v=" + Uri.EscapeDataString(tagDone));
+                            }
+                            ShowTrayBalloon("تم التحديث بنجاح ✓", $"تم تحديث إيقاع اليوم فوراً إلى {tagDone}.");
+                        });
+                        return;
+                    }
+                }
+
+                DispatchUpdateStatusToWebView("downloading", _pendingUpdate.Tag);
+                ShowTrayBalloon("جاري تنزيل التحديث...", $"جاري تحميل الإصدار {_pendingUpdate.Tag}.");
+                bool started = await _bgServices.DownloadAndLaunchUpdateAsync(_pendingUpdate);
+                if (started)
+                {
+                    _isQuitting = true;
+                    Close();
+                }
+                else
+                {
+                    DispatchUpdateStatusToWebView("error", "", "تعذر تحميل التحديث حالياً.");
                 }
             }
-
-            // Fallback: Full Setup EXE installer download
-            ShowTrayBalloon("جاري تنزيل التحديث...", $"جاري تحميل الإصدار {_pendingUpdate.Tag} من GitHub Releases.");
-            bool started = await _bgServices.DownloadAndLaunchUpdateAsync(_pendingUpdate);
-            _isDownloadingUpdate = false;
-            if (started)
+            finally
             {
-                _isQuitting = true;
-                Close();
+                _isDownloadingUpdate = false;
             }
         }
 
@@ -655,6 +658,8 @@ namespace DayRhythm
                     _activeToastForm = null;
                 }
 
+                int fallbackSnooze = payload != null && payload.snoozeMinutes > 0 ? payload.snoozeMinutes : 5;
+
                 _activeToastForm = new SecondaryMonitorToastForm(
                     payload,
                     preferSecondaryScreen: _settings.AlertsOnSecondaryScreen,
@@ -691,7 +696,7 @@ namespace DayRhythm
                                 isHydration = alertPayload?.isHydration ?? false,
                                 medicationId = alertPayload?.medicationId ?? "",
                                 medicationDoseTime24 = alertPayload?.medicationDoseTime24 ?? "",
-                                minutes = minutes > 0 ? minutes : 15,
+                                minutes = minutes > 0 ? minutes : fallbackSnooze,
                             });
                             _ = _webView.CoreWebView2.ExecuteScriptAsync(
                                 $"window.dispatchEvent(new CustomEvent('dayrhythm:alert-snoozed', {{ detail: {detailJson} }}));"
@@ -710,10 +715,7 @@ namespace DayRhythm
                 );
                 _activeToastForm.Show();
             }
-            catch
-            {
-                // ignore toast display errors
-            }
+            catch { }
         }
 
         private void OnMainFormClosing(object sender, FormClosingEventArgs e)
@@ -754,14 +756,7 @@ namespace DayRhythm
             if (IsDisposed) return;
             if (InvokeRequired)
             {
-                try
-                {
-                    BeginInvoke(action);
-                }
-                catch
-                {
-                    // ignore on shutdown
-                }
+                try { BeginInvoke(action); } catch { }
             }
             else
             {

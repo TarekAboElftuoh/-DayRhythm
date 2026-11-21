@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Net.WebSockets;
@@ -8,7 +9,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using System.IO.Compression;
 using Microsoft.Win32;
 
 namespace DayRhythm
@@ -75,7 +75,7 @@ namespace DayRhythm
             }
             else
             {
-                _onWsStatusChanged?.Invoke("متصل 24/7 (Firestore استعادة تلقائية)");
+                _onWsStatusChanged?.Invoke("متصل 24/7 (Firestore لحظي)");
             }
         }
 
@@ -100,7 +100,7 @@ namespace DayRhythm
             if (!e.IsAvailable)
             {
                 AbortActiveWebSocket();
-                _onWsStatusChanged?.Invoke("بانتظار عودة الإنترنت (استعادة تلقائية)...");
+                _onWsStatusChanged?.Invoke("بانتظار عودة الإنترنت...");
                 return;
             }
             TriggerImmediateAutoRecovery();
@@ -133,14 +133,7 @@ namespace DayRhythm
             {
                 if (_activeWs != null)
                 {
-                    try
-                    {
-                        _activeWs.Abort();
-                    }
-                    catch
-                    {
-                        // ignore
-                    }
+                    try { _activeWs.Abort(); } catch { }
                 }
             }
         }
@@ -154,10 +147,7 @@ namespace DayRhythm
                     _wsWakeupCts.Cancel();
                     _wsWakeupCts.Dispose();
                 }
-                catch
-                {
-                    // ignore
-                }
+                catch { }
                 _wsWakeupCts = new CancellationTokenSource();
             }
         }
@@ -203,7 +193,7 @@ namespace DayRhythm
                 {
                     _onWsStatusChanged?.Invoke(attempt == 0
                         ? "جاري الاتصال بـ WebSocket..."
-                        : $"استعادة WebSocket تلقائياً (محاولة #{attempt + 1})...");
+                        : $"استعادة الاتصال (#{attempt + 1})...");
 
                     using (CancellationTokenSource connectCts = CancellationTokenSource.CreateLinkedTokenSource(token, GetCurrentWakeupToken()))
                     {
@@ -213,7 +203,7 @@ namespace DayRhythm
 
                     bool recoveredFromDrop = attempt > 0;
                     attempt = 0;
-                    _onWsStatusChanged?.Invoke("متصل بـ WebSocket 24/7 ✓");
+                    _onWsStatusChanged?.Invoke("متصل 24/7 ✓");
                     if (recoveredFromDrop)
                     {
                         _onNetworkRecovered?.Invoke();
@@ -235,10 +225,7 @@ namespace DayRhythm
                                         recvTimeoutCts.Token
                                     ).ConfigureAwait(false);
 
-                                    if (result.MessageType == WebSocketMessageType.Close)
-                                    {
-                                        break;
-                                    }
+                                    if (result.MessageType == WebSocketMessageType.Close) break;
 
                                     if (result.MessageType == WebSocketMessageType.Text && result.Count > 0)
                                     {
@@ -254,20 +241,13 @@ namespace DayRhythm
                         finally
                         {
                             sessionCts.Cancel();
-                            try
-                            {
-                                await pingLoop.ConfigureAwait(false);
-                            }
-                            catch
-                            {
-                                // ignore ping loop cancellation
-                            }
+                            try { await pingLoop.ConfigureAwait(false); } catch { }
                         }
                     }
                 }
                 catch
                 {
-                    _onWsStatusChanged?.Invoke("جاري استعادة WebSocket في الخلفية...");
+                    _onWsStatusChanged?.Invoke("جاري استعادة الاتصال...");
                 }
                 finally
                 {
@@ -284,7 +264,7 @@ namespace DayRhythm
                         {
                             using (CancellationTokenSource closeCts = new CancellationTokenSource(1500))
                             {
-                                await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "auto_recovery_reset", closeCts.Token).ConfigureAwait(false);
+                                await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "reset", closeCts.Token).ConfigureAwait(false);
                             }
                         }
                         else
@@ -294,14 +274,7 @@ namespace DayRhythm
                     }
                     catch
                     {
-                        try
-                        {
-                            ws.Abort();
-                        }
-                        catch
-                        {
-                            // ignore
-                        }
+                        try { ws.Abort(); } catch { }
                     }
                     ws.Dispose();
                 }
@@ -321,7 +294,6 @@ namespace DayRhythm
                 catch
                 {
                     if (token.IsCancellationRequested) break;
-                    // Wakeup signal received (network restored / PC resumed): retry immediately with reset backoff
                     attempt = 0;
                 }
             }
@@ -344,14 +316,7 @@ namespace DayRhythm
                 }
                 catch
                 {
-                    try
-                    {
-                        ws.Abort();
-                    }
-                    catch
-                    {
-                        // ignore
-                    }
+                    try { ws.Abort(); } catch { }
                     break;
                 }
             }
@@ -359,7 +324,7 @@ namespace DayRhythm
 
         private async Task RunPeriodicUpdateLoopAsync(CancellationToken token)
         {
-            await CheckForUpdateAsync(token).ConfigureAwait(false);
+            await CheckForUpdateAsync(notifyCallback: true, token: token).ConfigureAwait(false);
             while (!token.IsCancellationRequested)
             {
                 try
@@ -370,11 +335,11 @@ namespace DayRhythm
                 {
                     break;
                 }
-                await CheckForUpdateAsync(token).ConfigureAwait(false);
+                await CheckForUpdateAsync(notifyCallback: true, token: token).ConfigureAwait(false);
             }
         }
 
-        public async Task<ReleaseUpdateInfo> CheckForUpdateAsync(CancellationToken token = default)
+        public async Task<ReleaseUpdateInfo> CheckForUpdateAsync(bool notifyCallback = true, CancellationToken token = default)
         {
             string repo = AppConfig.GetGithubRepo();
             if (string.IsNullOrEmpty(repo) || !repo.Contains('/')) return null;
@@ -434,7 +399,10 @@ namespace DayRhythm
                             HtmlUrl = htmlUrl,
                         };
                         LatestUpdate = info;
-                        _onUpdateAvailable?.Invoke(info);
+                        if (notifyCallback)
+                        {
+                            _onUpdateAvailable?.Invoke(info);
+                        }
                         return info;
                     }
                 }
@@ -445,14 +413,72 @@ namespace DayRhythm
             }
         }
 
-        public static string GetOtaWwwDir()
+        public static string GetOtaReleasesRoot()
         {
-            return Path.Combine(AppConfig.GetDataDir(), "ota_www");
+            return Path.Combine(AppConfig.GetDataDir(), "ota_releases");
+        }
+
+        public static string GetActiveReleasePointerFile()
+        {
+            return Path.Combine(AppConfig.GetDataDir(), "ota_active_release.txt");
         }
 
         public static string GetOtaVersionFile()
         {
             return Path.Combine(AppConfig.GetDataDir(), "ota_version.txt");
+        }
+
+        /// <summary>
+        /// Resolves the currently active versioned OTA folder (never locked during updates!).
+        /// Falls back to legacy ota_www if present.
+        /// </summary>
+        public static string GetOtaWwwDir()
+        {
+            try
+            {
+                string ptrFile = GetActiveReleasePointerFile();
+                if (File.Exists(ptrFile))
+                {
+                    string folderName = File.ReadAllText(ptrFile).Trim();
+                    if (!string.IsNullOrEmpty(folderName))
+                    {
+                        string candidate = Path.Combine(GetOtaReleasesRoot(), folderName);
+                        if (File.Exists(Path.Combine(candidate, "index.html")))
+                        {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // fallback below
+            }
+            return Path.Combine(AppConfig.GetDataDir(), "ota_www");
+        }
+
+        /// <summary>
+        /// Cleans stale versioned OTA folders safely on startup before WebView2 opens any handles.
+        /// </summary>
+        public static void CleanupOldOtaReleases()
+        {
+            try
+            {
+                string root = GetOtaReleasesRoot();
+                if (!Directory.Exists(root)) return;
+                string activeDir = Path.GetFullPath(GetOtaWwwDir());
+                foreach (string sub in Directory.GetDirectories(root))
+                {
+                    if (!string.Equals(Path.GetFullPath(sub), activeDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { Directory.Delete(sub, true); } catch { }
+                    }
+                }
+            }
+            catch
+            {
+                // non-fatal cleanup
+            }
         }
 
         public static string GetEffectiveLocalVersion()
@@ -478,20 +504,27 @@ namespace DayRhythm
             return baseVer;
         }
 
-        public async Task<bool> ApplyWebOtaUpdateAsync(ReleaseUpdateInfo info)
+        /// <summary>
+        /// Lock-free atomic Web OTA update: extracts to a brand-new versioned folder under ota_releases/
+        /// so WebView2 file locks NEVER cause update failure! Returns the new active www directory path.
+        /// </summary>
+        public async Task<string> ApplyWebOtaUpdateAsync(ReleaseUpdateInfo info)
         {
-            if (info == null || string.IsNullOrWhiteSpace(info.WebOtaZipUrl)) return false;
+            if (info == null || string.IsNullOrWhiteSpace(info.WebOtaZipUrl)) return null;
 
             string dataDir = AppConfig.GetDataDir();
-            string tmpZip = Path.Combine(dataDir, "ota_bundle.zip");
-            string stagingDir = Path.Combine(dataDir, "ota_www_staging");
-            string liveDir = GetOtaWwwDir();
+            string releasesRoot = GetOtaReleasesRoot();
+            string safeTag = SanitizePathSegment(string.IsNullOrWhiteSpace(info.Tag) ? info.Version : info.Tag);
+            string releaseFolderName = $"{safeTag}_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
+            string targetDir = Path.Combine(releasesRoot, releaseFolderName);
+            string tmpZip = Path.Combine(dataDir, $"ota_{releaseFolderName}.zip");
 
             try
             {
                 Directory.CreateDirectory(dataDir);
+                Directory.CreateDirectory(releasesRoot);
                 if (File.Exists(tmpZip)) File.Delete(tmpZip);
-                if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, true);
+                if (Directory.Exists(targetDir)) Directory.Delete(targetDir, true);
 
                 using (HttpClient dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(2) })
                 {
@@ -507,29 +540,35 @@ namespace DayRhythm
                     }
                 }
 
-                ZipFile.ExtractToDirectory(tmpZip, stagingDir, true);
-                if (!File.Exists(Path.Combine(stagingDir, "index.html")))
+                ZipFile.ExtractToDirectory(tmpZip, targetDir, true);
+                if (!File.Exists(Path.Combine(targetDir, "index.html")))
                 {
-                    return false;
+                    try { Directory.Delete(targetDir, true); } catch { }
+                    return null;
                 }
 
-                string backupDir = Path.Combine(dataDir, "ota_www_prev");
-                if (Directory.Exists(backupDir)) Directory.Delete(backupDir, true);
-                if (Directory.Exists(liveDir)) Directory.Move(liveDir, backupDir);
-                Directory.Move(stagingDir, liveDir);
-                if (Directory.Exists(backupDir))
-                {
-                    try { Directory.Delete(backupDir, true); } catch { }
-                }
-
-                File.WriteAllText(GetOtaVersionFile(), info.Version ?? info.Tag.TrimStart('v', 'V'));
+                // Atomically switch pointer to the new versioned folder (zero Directory.Move conflicts!)
+                File.WriteAllText(GetActiveReleasePointerFile(), releaseFolderName, Encoding.UTF8);
+                File.WriteAllText(GetOtaVersionFile(), info.Version ?? info.Tag.TrimStart('v', 'V'), Encoding.UTF8);
                 try { File.Delete(tmpZip); } catch { }
-                return true;
+                return targetDir;
             }
             catch
             {
-                return false;
+                try { if (File.Exists(tmpZip)) File.Delete(tmpZip); } catch { }
+                try { if (Directory.Exists(targetDir)) Directory.Delete(targetDir, true); } catch { }
+                return null;
             }
+        }
+
+        private static string SanitizePathSegment(string raw)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (char c in raw ?? "rel")
+            {
+                if (char.IsLetterOrDigit(c) || c == '.' || c == '-' || c == '_') sb.Append(c);
+            }
+            return sb.Length > 0 ? sb.ToString() : "rel";
         }
 
         public async Task<bool> DownloadAndLaunchUpdateAsync(ReleaseUpdateInfo info)
@@ -544,7 +583,7 @@ namespace DayRhythm
 
             try
             {
-                string safeTag = info.Tag.Replace("/", "_").Replace("\\", "_");
+                string safeTag = SanitizePathSegment(info.Tag);
                 string targetFile = Path.Combine(Path.GetTempPath(), $"DayRhythm-Setup-{safeTag}.exe");
                 using (HttpClient dlClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) })
                 {
@@ -618,10 +657,7 @@ namespace DayRhythm
                     NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
                     SystemEvents.PowerModeChanged -= OnPowerModeChanged;
                 }
-                catch
-                {
-                    // ignore
-                }
+                catch { }
                 _eventsHooked = false;
             }
 
@@ -638,10 +674,7 @@ namespace DayRhythm
                 _http.Dispose();
                 _cts.Dispose();
             }
-            catch
-            {
-                // ignore
-            }
+            catch { }
         }
     }
 }

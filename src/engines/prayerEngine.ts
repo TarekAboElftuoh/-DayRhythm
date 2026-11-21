@@ -1,17 +1,26 @@
 import { GeoLocation, PrayerTimeItem } from '../types/dayrhythm';
 
 export const HOME_LOCATION: GeoLocation = {
-  id: 'cairo',
-  nameAr: 'القاهرة',
-  nameEn: 'Cairo, Egypt',
-  lat: 30.0444,
-  lng: 31.2357,
+  id: 'aldahriya_sherbin',
+  nameAr: 'الضهرية · شربين (الدقهلية)',
+  nameEn: 'Al-Dahriya, Sherbin, Dakahlia',
+  lat: 31.227,
+  lng: 31.6148,
   tzOffsetHours: 2,
   timeZone: 'Africa/Cairo',
 };
 
 export const PRESET_LOCATIONS: GeoLocation[] = [
   HOME_LOCATION,
+  {
+    id: 'cairo',
+    nameAr: 'القاهرة · مصر',
+    nameEn: 'Cairo, Egypt',
+    lat: 30.0444,
+    lng: 31.2357,
+    tzOffsetHours: 2,
+    timeZone: 'Africa/Cairo',
+  },
   {
     id: 'alexandria',
     nameAr: 'الإسكندرية · مصر',
@@ -100,6 +109,9 @@ interface OfflineCityEntry {
 }
 
 const OFFLINE_CITY_CATALOG: OfflineCityEntry[] = [
+  // User's home & Dakahlia local precision first
+  { nameAr: 'الضهرية · شربين (الدقهلية)', lat: 31.227, lng: 31.6148 },
+  { nameAr: 'شربين · الدقهلية', lat: 31.1965, lng: 31.5245 },
   // All 27 Egyptian Governorates & major cities (100% offline matching)
   { nameAr: 'القاهرة · مصر', lat: 30.0444, lng: 31.2357 },
   { nameAr: 'الجيزة · مصر', lat: 30.0131, lng: 31.2089 },

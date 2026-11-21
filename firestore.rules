@@ -216,6 +216,7 @@ service cloud.firestore {
           'oneTimeSilenceMinutes',
           'oneTimeSilenceDateKey',
           'lowEnergyDateKey',
+          'defaultSnoozeMinutes',
           'soundRepeats',
           'careerTrack',
           'workEnabled',
@@ -247,6 +248,7 @@ service cloud.firestore {
         && (!('oneTimeSilenceMinutes' in p) || (p.oneTimeSilenceMinutes is int && p.oneTimeSilenceMinutes >= 0 && p.oneTimeSilenceMinutes <= 120))
         && (!('oneTimeSilenceDateKey' in p) || (p.oneTimeSilenceDateKey is string && p.oneTimeSilenceDateKey.size() <= 20 && (p.oneTimeSilenceDateKey == '' || p.oneTimeSilenceDateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'))))
         && (!('lowEnergyDateKey' in p) || (p.lowEnergyDateKey is string && p.lowEnergyDateKey.size() <= 20 && (p.lowEnergyDateKey == '' || p.lowEnergyDateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'))))
+        && (!('defaultSnoozeMinutes' in p) || (p.defaultSnoozeMinutes is int && p.defaultSnoozeMinutes in [5, 10, 15]))
         && (!('soundRepeats' in p) || isValidSoundRepeats(p.soundRepeats))
         && p.careerTrack is string && p.careerTrack.size() <= 160
         && p.workEnabled is bool

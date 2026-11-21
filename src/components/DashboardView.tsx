@@ -16,7 +16,9 @@ import {
   ExternalLink,
   Plus,
   X,
-  CalendarClock,
+  Clock,
+  Sunrise,
+  Sunset,
   CheckSquare,
   MessageSquare,
   SlidersHorizontal,
@@ -302,8 +304,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onRefillMedication,
   onAddMedication,
   onDeleteMedication,
-  streaks,
-  onToggleDailyCommitmentStreak,
   pomodoro,
   onOpenPomodoro,
   travelState,
@@ -338,8 +338,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   syncTier,
   onChangeSyncTier,
   onImportIcsBlocks,
-  periodicRituals,
-  onCompletePeriodicRitual,
   batteryGuard,
   phoneBattery,
   phoneChargeLimitPct,
@@ -377,7 +375,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   gmailLastSyncedIso,
   gmailNextRetryInSec = 0,
   onFetchGmailDigest,
-  hasDailyWirdHabit = false,
   activeTimeZone = 'Africa/Cairo',
   onLogSleepQuality,
   onOpenAssistantWithPrompt,
@@ -406,7 +403,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [showTrash, setShowTrash] = useState(false);
   const [showSilentInbox, setShowSilentInbox] = useState(false);
   const [showGmailDrawer, setShowGmailDrawer] = useState(false);
-  const [showPeriodicRituals, setShowPeriodicRituals] = useState(false);
+  const [showTaskScheduleRow, setShowTaskScheduleRow] = useState(false);
+  const [creatingTaskNow, setCreatingTaskNow] = useState(false);
   const [showAllCreative, setShowAllCreative] = useState(false);
   const [showHydrationSchedule, setShowHydrationSchedule] = useState(false);
   const [showWaterChart, setShowWaterChart] = useState(false);
@@ -2546,57 +2544,203 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             ) : (
               <>
-                <form
-                  onSubmit={(e) => {
+                {(() => {
+                  const getDateOffsetIso = (daysAhead: number): string => {
+                    const d = new Date(Date.now() + daysAhead * 86_400_000);
+                    return getDateIsoInTimeZone(activeTimeZone, d);
+                  };
+                  const formatMinTo24 = (totalMin: number): string => {
+                    const wrapped = ((Math.round(totalMin) % 1440) + 1440) % 1440;
+                    const hh = Math.floor(wrapped / 60);
+                    const mm = wrapped % 60;
+                    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+                  };
+                  const upcomingPrayer = prayers.find(
+                    (p) => p.id !== 'sunrise' && p.adhanMinutes > nowMinutes + 5
+                  );
+                  const afterNextPrayerTime24 = upcomingPrayer
+                    ? formatMinTo24(upcomingPrayer.adhanMinutes + 25)
+                    : '20:00';
+                  const afterNextPrayerLabel = upcomingPrayer
+                    ? `بعد ${upcomingPrayer.nameAr}`
+                    : '8 م';
+
+                  const submitQuickTask = async (e: React.FormEvent) => {
                     e.preventDefault();
-                    if (!newTaskTitle.trim()) return;
+                    const cleanTitle = newTaskTitle.trim();
+                    if (!cleanTitle || creatingTaskNow) return;
                     const resolvedDueIso = newTaskDueIso || (newTaskTime24 ? todayCairoIso : '');
                     const timeNote = newTaskTime24 ? `⏰ ${newTaskTime24}` : undefined;
-                    setPendingTaskConfirmation({
-                      operation: 'create',
-                      taskListId:
-                        selectedTaskListId !== 'all'
-                          ? selectedTaskListId
-                          : googleTaskLists[0]?.id ?? '@default',
-                      title: newTaskTitle.trim(),
-                      notes: timeNote,
-                      dueDateIso: resolvedDueIso || undefined,
-                    });
-                  }}
-                  className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2"
-                >
-                  <input
-                    type="text"
-                    value={newTaskTitle}
-                    onChange={(e) => setNewTaskTitle(e.target.value)}
-                    placeholder="أضف مهمة جديدة..."
-                    className="w-full sm:w-auto sm:flex-1 min-w-0 rounded-xl border border-white/[0.09] bg-black/50 px-3.5 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
-                  />
-                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-                    <input
-                      type="date"
-                      value={newTaskDueIso}
-                      onChange={(e) => setNewTaskDueIso(e.target.value)}
-                      className="flex-1 sm:flex-none min-w-0 rounded-xl border border-white/[0.09] bg-black/50 px-2.5 py-2 text-xs text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
-                      title="التاريخ"
-                    />
-                    <input
-                      type="time"
-                      value={newTaskTime24}
-                      onChange={(e) => setNewTaskTime24(e.target.value)}
-                      className="w-28 rounded-xl border border-white/[0.09] bg-black/50 px-2.5 py-2 text-xs font-mono-tabular text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
-                      title="الوقت للعد التنازلي"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!newTaskTitle.trim()}
-                      className="min-h-[38px] px-3.5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap transition-colors"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>إضافة</span>
-                    </button>
-                  </div>
-                </form>
+                    setCreatingTaskNow(true);
+                    try {
+                      await onExecuteTaskActions([
+                        {
+                          operation: 'create',
+                          taskListId:
+                            selectedTaskListId !== 'all'
+                              ? selectedTaskListId
+                              : googleTaskLists[0]?.id ?? '@default',
+                          title: cleanTitle,
+                          notes: timeNote,
+                          dueDateIso: resolvedDueIso || undefined,
+                        },
+                      ]);
+                      setNewTaskTitle('');
+                      setNewTaskDueIso('');
+                      setNewTaskTime24('');
+                      setShowTaskScheduleRow(false);
+                    } finally {
+                      setCreatingTaskNow(false);
+                    }
+                  };
+
+                  return (
+                    <form onSubmit={(e) => void submitQuickTask(e)} className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={newTaskTitle}
+                          onChange={(e) => setNewTaskTitle(e.target.value)}
+                          placeholder="أضف مهمة جديدة... (اضغط Enter فوراً)"
+                          className="flex-1 min-w-0 min-h-[42px] rounded-xl border border-white/[0.1] bg-black/55 px-3.5 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowTaskScheduleRow((v) => !v)}
+                          className={`min-h-[42px] px-2.5 rounded-xl border text-xs flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors ${
+                            showTaskScheduleRow || newTaskDueIso || newTaskTime24
+                              ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/12 text-[#7FFFD4]'
+                              : 'border-white/[0.09] bg-black/40 text-zinc-400 hover:text-white'
+                          }`}
+                          title="تحديد موعد سريع (اختياري)"
+                        >
+                          <Clock className="w-3.5 h-3.5" />
+                          <span className="font-mono-tabular text-[11px] hidden sm:inline">
+                            {newTaskTime24
+                              ? formatTime24To12h(newTaskTime24, language)
+                              : newTaskDueIso
+                                ? newTaskDueIso === todayCairoIso
+                                  ? 'اليوم'
+                                  : newTaskDueIso === getDateOffsetIso(1)
+                                    ? 'غداً'
+                                    : newTaskDueIso.slice(5)
+                                : 'موعد'}
+                          </span>
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={!newTaskTitle.trim() || creatingTaskNow}
+                          className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>{creatingTaskNow ? '...' : 'إضافة'}</span>
+                        </button>
+                      </div>
+
+                      {(showTaskScheduleRow || newTaskDueIso || newTaskTime24) && (
+                        <div className="rounded-xl border border-white/[0.08] bg-black/35 p-2.5 space-y-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {[
+                              {
+                                label: 'اليوم',
+                                active: newTaskDueIso === todayCairoIso && !newTaskTime24,
+                                onClick: () => {
+                                  setNewTaskDueIso(todayCairoIso);
+                                },
+                              },
+                              {
+                                label: 'غداً',
+                                active: newTaskDueIso === getDateOffsetIso(1),
+                                onClick: () => {
+                                  setNewTaskDueIso(getDateOffsetIso(1));
+                                },
+                              },
+                              {
+                                label: '+30 د',
+                                active: false,
+                                onClick: () => {
+                                  setNewTaskDueIso(todayCairoIso);
+                                  setNewTaskTime24(formatMinTo24(nowMinutes + 30));
+                                },
+                              },
+                              {
+                                label: '+1 س',
+                                active: false,
+                                onClick: () => {
+                                  setNewTaskDueIso(todayCairoIso);
+                                  setNewTaskTime24(formatMinTo24(nowMinutes + 60));
+                                },
+                              },
+                              {
+                                label: afterNextPrayerLabel,
+                                active: newTaskTime24 === afterNextPrayerTime24,
+                                onClick: () => {
+                                  setNewTaskDueIso(todayCairoIso);
+                                  setNewTaskTime24(afterNextPrayerTime24);
+                                },
+                              },
+                              {
+                                label: '8 م',
+                                active: newTaskTime24 === '20:00',
+                                onClick: () => {
+                                  setNewTaskDueIso(todayCairoIso);
+                                  setNewTaskTime24('20:00');
+                                },
+                              },
+                            ].map((chip) => (
+                              <button
+                                key={chip.label}
+                                type="button"
+                                onClick={chip.onClick}
+                                className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium cursor-pointer transition-colors ${
+                                  chip.active
+                                    ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                                    : 'border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-white'
+                                }`}
+                              >
+                                {chip.label}
+                              </button>
+                            ))}
+                            {(newTaskDueIso || newTaskTime24) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewTaskDueIso('');
+                                  setNewTaskTime24('');
+                                }}
+                                className="px-2 py-1 rounded-lg text-[11px] text-zinc-500 hover:text-rose-300 cursor-pointer"
+                              >
+                                مسح
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="date"
+                              value={newTaskDueIso}
+                              onChange={(e) => setNewTaskDueIso(e.target.value)}
+                              className="flex-1 min-w-0 rounded-lg border border-white/[0.09] bg-black/55 px-2.5 py-1.5 text-[11px] font-mono-tabular text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
+                              title="التاريخ"
+                            />
+                            <input
+                              type="time"
+                              value={newTaskTime24}
+                              onChange={(e) => {
+                                setNewTaskTime24(e.target.value);
+                                if (e.target.value && !newTaskDueIso) {
+                                  setNewTaskDueIso(todayCairoIso);
+                                }
+                              }}
+                              className="w-28 rounded-lg border border-white/[0.09] bg-black/55 px-2.5 py-1.5 text-[11px] font-mono-tabular text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
+                              title="الوقت"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </form>
+                  );
+                })()}
 
                 {visibleTasks.length === 0 ? (
                   <div className="py-5 text-center text-xs text-zinc-500">
@@ -3035,7 +3179,67 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* On-Demand Expanders: Cup Schedule & 7-Day Analytics */}
+            {/* Rolling 7-Day Water Log (always visible, auto-drops day 8) */}
+            {hydrationHistory.length > 0 && (
+              <div className="pt-2.5 border-t border-white/[0.06] space-y-1.5">
+                <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                  <span>سجل آخر 7 أيام</span>
+                  <span className="font-mono-tabular text-[#7FFFD4]">
+                    {hydrationHistory.reduce((acc, d) => acc + d.cupsLogged, 0)} كوب ·{' '}
+                    {hydrationHistory.filter((d) => d.cupsLogged >= Math.max(1, d.targetCups)).length}/7 هدف
+                  </span>
+                </div>
+                <div className="grid grid-cols-7 gap-1">
+                  {hydrationHistory.slice(-7).map((day, idx, arr) => {
+                    const isTodayCell = idx === arr.length - 1;
+                    const ratio = Math.min(1, day.cupsLogged / Math.max(1, day.targetCups));
+                    const hitGoal = day.cupsLogged >= Math.max(1, day.targetCups);
+                    return (
+                      <div
+                        key={day.dateKey || `${day.labelAr}-${idx}`}
+                        title={`${day.labelAr}: ${day.cupsLogged} من ${day.targetCups} كوب`}
+                        className={`rounded-lg border px-1 py-1.5 text-center transition-colors ${
+                          hitGoal
+                            ? 'border-[#4ADE80]/35 bg-[#4ADE80]/10'
+                            : isTodayCell
+                              ? 'border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.07]'
+                              : 'border-white/[0.06] bg-white/[0.02]'
+                        }`}
+                      >
+                        <div
+                          className={`text-[9px] truncate ${
+                            isTodayCell ? 'text-[#7FFFD4] font-bold' : 'text-zinc-500'
+                          }`}
+                        >
+                          {isTodayCell ? 'اليوم' : day.labelAr}
+                        </div>
+                        <div className="h-1.5 w-full rounded-full bg-white/[0.08] overflow-hidden my-1">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              hitGoal ? 'bg-[#4ADE80]' : 'bg-[#7FFFD4]'
+                            }`}
+                            style={{ width: `${Math.round(ratio * 100)}%` }}
+                          />
+                        </div>
+                        <div
+                          className={`font-mono-tabular text-[10px] font-bold ${
+                            hitGoal
+                              ? 'text-[#4ADE80]'
+                              : day.cupsLogged > 0
+                                ? 'text-zinc-200'
+                                : 'text-zinc-600'
+                          }`}
+                        >
+                          {day.cupsLogged}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* On-Demand Expanders: Cup Schedule & 7-Day Detailed Chart */}
             <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/[0.06] text-[11px]">
               <button
                 type="button"
@@ -3056,7 +3260,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 className="text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
               >
                 <BarChart3 className="w-3.5 h-3.5" />
-                <span>الإحصائيات الأسبوعية</span>
+                <span>تفاصيل 7 أيام</span>
                 {showWaterChart ? (
                   <ChevronUp className="w-3.5 h-3.5" />
                 ) : (
@@ -3889,15 +4093,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </div>
                   </>
                 ) : (
-                  <>
-                    <div className="text-[10px] text-zinc-400">الشروق · الغروب</div>
-                    <div className="font-mono-tabular text-[11px] font-bold text-[#4ADE80] mt-0.5">
-                      {formatMinutes12h(dailyRhythmPlan.sunriseMin, language)}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                      <span className="inline-flex items-center gap-1 text-[#FBBF24]">
+                        <Sunrise className="w-3 h-3 shrink-0" />
+                        <span>الشروق</span>
+                      </span>
+                      <span className="font-mono-tabular font-bold text-[#FDE68A]">
+                        {formatMinutes12h(dailyRhythmPlan.sunriseMin, language)}
+                      </span>
                     </div>
-                    <div className="font-mono-tabular text-[10px] text-zinc-500 mt-0.5">
-                      {formatMinutes12h(dailyRhythmPlan.maghribMin, language)}
+                    <div className="h-px bg-white/[0.06]" />
+                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                      <span className="inline-flex items-center gap-1 text-[#FB7185]">
+                        <Sunset className="w-3 h-3 shrink-0" />
+                        <span>الغروب</span>
+                      </span>
+                      <span className="font-mono-tabular font-bold text-[#FDA4AF]">
+                        {formatMinutes12h(dailyRhythmPlan.maghribMin, language)}
+                      </span>
                     </div>
-                  </>
+                  </div>
                 )}
               </div>
             </div>
@@ -4007,355 +4223,341 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             )}
           </section>
-
-          {/* 4. Compact Streaks & Periodic Maintenance (Quiet Footer Card) */}
-          <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                <CalendarClock className="w-4 h-4 text-[#7FFFD4]" />
-                <span>
-                  {calendarConnected && hasDailyWirdHabit
-                    ? t(language, 'dualStreaksTitle')
-                    : language === 'ar'
-                      ? 'سلسلة الالتزام'
-                      : 'Streaks'}
-                </span>
-              </h2>
-              {calendarConnected && periodicRituals.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowPeriodicRituals((v) => !v)}
-                  className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
-                >
-                  <span>الدورية ({periodicRituals.length})</span>
-                  {showPeriodicRituals ? (
-                    <ChevronUp className="w-3.5 h-3.5" />
-                  ) : (
-                    <ChevronDown className="w-3.5 h-3.5" />
-                  )}
-                </button>
-              )}
-            </div>
-
-            <div className={`grid gap-2.5 ${calendarConnected && hasDailyWirdHabit ? 'grid-cols-2' : 'grid-cols-1'}`}>
-              {calendarConnected && hasDailyWirdHabit && (
-                <button
-                  type="button"
-                  onClick={onToggleDailyCommitmentStreak}
-                  className={`rounded-xl border p-3 text-right transition-colors cursor-pointer ${
-                    streaks.dailyCommitmentDoneToday
-                      ? 'border-[#7FFFD4]/40 bg-[#7FFFD4]/[0.07]'
-                      : 'border-white/[0.07] bg-white/[0.02] hover:border-white/20'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm">📖</span>
-                    <span className="font-mono-tabular text-base font-bold text-[#7FFFD4]">
-                      {streaks.dailyCommitmentDays}
-                    </span>
-                  </div>
-                  <div className="text-xs font-semibold text-white mt-1">الورد اليومي</div>
-                  <div className="text-[10px] text-zinc-400 mt-0.5">
-                    {streaks.dailyCommitmentDoneToday ? 'مكتمل ✓' : 'تأكيد'}
-                  </div>
-                </button>
-              )}
-
-              <div
-                className={`rounded-xl border p-3 text-right ${
-                  streaks.waterTargetDoneToday
-                    ? 'border-[#4ADE80]/35 bg-[#4ADE80]/[0.07]'
-                    : 'border-white/[0.07] bg-white/[0.02]'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm">💧</span>
-                  <span className="font-mono-tabular text-base font-bold text-[#4ADE80]">
-                    {calendarConnected ? streaks.waterTargetDays : 0}
-                  </span>
-                </div>
-                <div className="text-xs font-semibold text-white mt-1">سلسلة الماء</div>
-                <div className="font-mono-tabular text-[10px] text-zinc-400 mt-0.5">
-                  {calendarConnected
-                    ? `${hydrationToday.cupsLogged}/${hydrationToday.targetCups} · ${waterPct}%`
-                    : '0/0'}
-                </div>
-              </div>
-            </div>
-
-            {(showPeriodicRituals ||
-              periodicRituals.some((r) => r.daysSinceLast >= r.intervalDays)) && (
-              <div className="divide-y divide-white/[0.06] pt-1 border-t border-white/[0.07]">
-                {periodicRituals.map((rit) => {
-                  const dueSoon = rit.daysSinceLast >= rit.intervalDays;
-                  return (
-                    <div
-                      key={rit.id}
-                      className="py-2.5 flex items-center justify-between gap-2 text-xs"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="text-base">{rit.emojiPair}</span>
-                        <div className="min-w-0">
-                          <div className="font-semibold text-white truncate">
-                            {language === 'ar' ? rit.titleAr : rit.titleEn}
-                          </div>
-                          <div className="text-[11px] text-zinc-500 font-mono-tabular">
-                            منذ {rit.daysSinceLast} / {rit.intervalDays} يوم
-                          </div>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onCompletePeriodicRitual(rit.id)}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer shrink-0 ${
-                          dueSoon
-                            ? 'bg-[#7FFFD4] text-black'
-                            : 'border border-white/10 text-zinc-300 hover:border-[#4ADE80]/45'
-                        }`}
-                      >
-                        تم ✓
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
         </div>
       </div>
 
-      {/* Quick Create Google Calendar Event Modal (Strict 12-hour input + Explicit Confirmation) */}
+      {/* Quick Create Google Calendar Event Modal (Streamlined 1-Tap Presets + Smart Conflict Check) */}
       {newEventModalOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
           <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-[#7FFFD4]" />
-                <span>إضافة حدث إلى Google Calendar (نظام 12 ساعة)</span>
+                <span>إضافة موعد سريع</span>
               </h3>
               <button
                 type="button"
-                onClick={() => setNewEventModalOpen(false)}
+                onClick={() => {
+                  setNewEventModalOpen(false);
+                  setNewEvConfirmStep(false);
+                }}
                 className="text-zinc-400 hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {!newEvConfirmStep ? (
-              <div className="space-y-3 text-xs">
-                <div>
-                  <label className="block text-zinc-400 mb-1">عنوان الحدث (يفضل زوج إيموجي)</label>
-                  <input
-                    type="text"
-                    value={newEvTitle}
-                    onChange={(e) => setNewEvTitle(e.target.value)}
-                    placeholder="مثال: 💼 🔥 جلسة عمل أو 🩺 💊 موعد دكتور"
-                    className="w-full rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-zinc-400 mb-1">التاريخ</label>
-                    <input
-                      type="date"
-                      value={newEvDate}
-                      onChange={(e) => setNewEvDate(e.target.value)}
-                      className="w-full rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white font-mono-tabular"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-zinc-400 mb-1">المدة (أي عدد دقائق)</label>
-                    <input
-                      type="number"
-                      min={5}
-                      max={480}
-                      value={newEvDuration}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        setNewEvDuration(Number.isFinite(v) ? Math.max(5, Math.min(480, v)) : 30);
-                      }}
-                      className="w-full rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
-                    />
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {[15, 30, 45, 60, 90].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() => setNewEvDuration(preset)}
-                          className={`px-2 py-0.5 rounded-md border text-[10px] font-mono-tabular cursor-pointer ${
-                            newEvDuration === preset
-                              ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
-                              : 'border-white/10 text-zinc-400 hover:text-white'
-                          }`}
-                        >
-                          {preset}د
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-zinc-400 mb-1">وقت البداية (نظام 12 ساعة — أي دقيقة 0–59)</label>
-                  <div className="grid grid-cols-3 gap-2">
-                    <select
-                      value={newEvHour12}
-                      onChange={(e) => setNewEvHour12(Number(e.target.value))}
-                      className="rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-white font-mono-tabular"
-                      aria-label="الساعة"
-                    >
-                      {[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => (
-                        <option key={h} value={h}>
-                          {String(h).padStart(2, '0')}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      type="number"
-                      min={0}
-                      max={59}
-                      value={newEvMinute}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        setNewEvMinute(Number.isFinite(v) ? Math.max(0, Math.min(59, v)) : 0);
-                      }}
-                      className="rounded-xl border border-white/15 bg-black/70 px-3 py-2 text-center text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
-                      aria-label="الدقائق"
-                      placeholder="00"
-                    />
-                    <div className="grid grid-cols-2 gap-1 p-1 rounded-xl border border-white/15 bg-black/70">
-                      <button
-                        type="button"
-                        onClick={() => setNewEvPeriod('AM')}
-                        className={`rounded-lg text-xs font-bold cursor-pointer ${
-                          newEvPeriod === 'AM' ? 'bg-[#7FFFD4] text-black' : 'text-zinc-400'
-                        }`}
-                      >
-                        ص
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setNewEvPeriod('PM')}
-                        className={`rounded-lg text-xs font-bold cursor-pointer ${
-                          newEvPeriod === 'PM' ? 'bg-[#7FFFD4] text-black' : 'text-zinc-400'
-                        }`}
-                      >
-                        م
-                      </button>
-                    </div>
-                  </div>
-                </div>
+            {(() => {
+              const getOffsetDate = (daysAhead: number) =>
+                getDateIsoInTimeZone(activeTimeZone, new Date(Date.now() + daysAhead * 86_400_000));
+              const shiftEvMinutes = (deltaMin: number) => {
+                let h24 = newEvHour12 % 12;
+                if (newEvPeriod === 'PM') h24 += 12;
+                const total = (((h24 * 60 + newEvMinute + deltaMin) % 1440) + 1440) % 1440;
+                const nh = Math.floor(total / 60);
+                const nm = total % 60;
+                applyTime24To12hPicker(
+                  `${String(nh).padStart(2, '0')}:${String(nm).padStart(2, '0')}`,
+                  setNewEvHour12,
+                  setNewEvMinute,
+                  setNewEvPeriod
+                );
+              };
+              const setEvMinutesOfDay = (totalMin: number) => {
+                const wrapped = ((Math.round(totalMin) % 1440) + 1440) % 1440;
+                applyTime24To12hPicker(
+                  `${String(Math.floor(wrapped / 60)).padStart(2, '0')}:${String(wrapped % 60).padStart(2, '0')}`,
+                  setNewEvHour12,
+                  setNewEvMinute,
+                  setNewEvPeriod
+                );
+              };
+              const upcomingPrayer = prayers.find(
+                (p) => p.id !== 'sunrise' && p.adhanMinutes > nowMinutes + 5
+              );
 
-                {/* Live Smart Conflict Detection + Gemini Negotiation */}
-                {newEventConflict.hasConflict && (
-                  <div className="rounded-xl border border-amber-400/45 bg-amber-400/10 p-3 space-y-2 text-[11px] text-amber-100">
-                    <div className="flex items-start gap-1.5 font-semibold text-amber-200">
-                      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
-                      <span>تحذير ذكي — هذا التوقيت يتعارض مع ثوابتك أو جدولك:</span>
+              if (!newEvConfirmStep) {
+                return (
+                  <div className="space-y-3.5 text-xs">
+                    <div>
+                      <input
+                        type="text"
+                        value={newEvTitle}
+                        onChange={(e) => setNewEvTitle(e.target.value)}
+                        placeholder="عنوان الموعد (مثال: 🩺 دكتور أو 💼 اجتماع)"
+                        autoFocus
+                        className="w-full min-h-[44px] rounded-xl border border-white/15 bg-black/70 px-3.5 py-2.5 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+                      />
                     </div>
-                    <ul className="space-y-0.5 pr-4 list-disc text-[10px] text-amber-100/90">
-                      {newEventConflict.warnings.map((w, idx) => (
-                        <li key={idx}>{w}</li>
-                      ))}
-                    </ul>
-                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                      {newEventConflict.suggestedTime24 && newEventConflict.suggestedTime12Ar && (
+
+                    {/* 1-Tap Date Presets + Optional Date Picker */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5">
+                          {[
+                            { label: 'اليوم', iso: todayCairoIso },
+                            { label: 'غداً', iso: getOffsetDate(1) },
+                            { label: 'بعد غد', iso: getOffsetDate(2) },
+                          ].map((dPreset) => (
+                            <button
+                              key={dPreset.label}
+                              type="button"
+                              onClick={() => setNewEvDate(dPreset.iso)}
+                              className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors ${
+                                newEvDate === dPreset.iso
+                                  ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                                  : 'border-white/10 bg-white/[0.02] text-zinc-400 hover:text-white'
+                              }`}
+                            >
+                              {dPreset.label}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="date"
+                          value={newEvDate}
+                          onChange={(e) => setNewEvDate(e.target.value)}
+                          className="w-32 rounded-lg border border-white/12 bg-black/65 px-2 py-1.5 text-[11px] text-zinc-200 font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Quick Time Presets + Stepper + Compact 12h Picker */}
+                    <div className="space-y-2 rounded-xl border border-white/[0.08] bg-black/40 p-3">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() =>
-                            applyTime24To12hPicker(
-                              newEventConflict.suggestedTime24!,
-                              setNewEvHour12,
-                              setNewEvMinute,
-                              setNewEvPeriod
-                            )
-                          }
-                          className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[10px] font-bold hover:bg-[#66eec2] cursor-pointer"
+                          onClick={() => {
+                            setNewEvDate(todayCairoIso);
+                            setEvMinutesOfDay(nowMinutes + 30);
+                          }}
+                          className="px-2.5 py-1 rounded-lg border border-white/10 text-[11px] text-zinc-300 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] cursor-pointer"
                         >
-                          ✓ تطبيق {newEventConflict.suggestedTime12Ar}
+                          +30 د
                         </button>
-                      )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewEvDate(todayCairoIso);
+                            setEvMinutesOfDay(nowMinutes + 60);
+                          }}
+                          className="px-2.5 py-1 rounded-lg border border-white/10 text-[11px] text-zinc-300 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] cursor-pointer"
+                        >
+                          +1 س
+                        </button>
+                        {upcomingPrayer && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewEvDate(todayCairoIso);
+                              setEvMinutesOfDay(upcomingPrayer.adhanMinutes + 25);
+                            }}
+                            className="px-2.5 py-1 rounded-lg border border-[#7FFFD4]/30 bg-[#7FFFD4]/[0.08] text-[11px] text-[#7FFFD4] hover:bg-[#7FFFD4]/15 cursor-pointer"
+                          >
+                            بعد {upcomingPrayer.nameAr}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setEvMinutesOfDay(20 * 60)}
+                          className="px-2.5 py-1 rounded-lg border border-white/10 text-[11px] text-zinc-300 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] cursor-pointer"
+                        >
+                          8 م
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => shiftEvMinutes(-15)}
+                          className="px-2.5 py-2 rounded-lg border border-white/12 bg-white/[0.03] text-zinc-200 hover:border-[#7FFFD4]/45 font-mono-tabular text-xs font-bold cursor-pointer"
+                        >
+                          -15د
+                        </button>
+                        <div className="flex-1 grid grid-cols-3 gap-1.5">
+                          <select
+                            value={newEvHour12}
+                            onChange={(e) => setNewEvHour12(Number(e.target.value))}
+                            className="rounded-lg border border-white/15 bg-black/75 px-2 py-2 text-center text-white font-mono-tabular text-sm font-bold"
+                            aria-label="الساعة"
+                          >
+                            {[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => (
+                              <option key={h} value={h}>
+                                {String(h).padStart(2, '0')}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="number"
+                            min={0}
+                            max={59}
+                            value={newEvMinute}
+                            onChange={(e) => {
+                              const v = Number(e.target.value);
+                              setNewEvMinute(Number.isFinite(v) ? Math.max(0, Math.min(59, v)) : 0);
+                            }}
+                            className="rounded-lg border border-white/15 bg-black/75 px-2 py-2 text-center text-white font-mono-tabular text-sm font-bold focus:outline-none focus:border-[#7FFFD4]"
+                            aria-label="الدقائق"
+                          />
+                          <div className="grid grid-cols-2 gap-0.5 p-0.5 rounded-lg border border-white/15 bg-black/75">
+                            <button
+                              type="button"
+                              onClick={() => setNewEvPeriod('AM')}
+                              className={`rounded-md text-xs font-bold cursor-pointer ${
+                                newEvPeriod === 'AM' ? 'bg-[#7FFFD4] text-black' : 'text-zinc-400'
+                              }`}
+                            >
+                              ص
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setNewEvPeriod('PM')}
+                              className={`rounded-md text-xs font-bold cursor-pointer ${
+                                newEvPeriod === 'PM' ? 'bg-[#7FFFD4] text-black' : 'text-zinc-400'
+                              }`}
+                            >
+                              م
+                            </button>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => shiftEvMinutes(15)}
+                          className="px-2.5 py-2 rounded-lg border border-white/12 bg-white/[0.03] text-zinc-200 hover:border-[#7FFFD4]/45 font-mono-tabular text-xs font-bold cursor-pointer"
+                        >
+                          +15د
+                        </button>
+                      </div>
+
+                      {/* Clean Duration Pills */}
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <span className="text-[11px] text-zinc-400">المدة</span>
+                        <div className="flex items-center gap-1">
+                          {[15, 30, 45, 60, 90].map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => setNewEvDuration(preset)}
+                              className={`px-2 py-1 rounded-lg border text-[11px] font-mono-tabular cursor-pointer ${
+                                newEvDuration === preset
+                                  ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                  : 'border-white/10 text-zinc-400 hover:text-white'
+                              }`}
+                            >
+                              {preset}د
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Live Smart Conflict Detection */}
+                    {newEventConflict.hasConflict && (
+                      <div className="rounded-xl border border-amber-400/45 bg-amber-400/10 p-3 space-y-2 text-[11px] text-amber-100">
+                        <div className="flex items-start gap-1.5 font-semibold text-amber-200">
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
+                          <span>تعارض مع جدولك:</span>
+                        </div>
+                        <ul className="space-y-0.5 pr-4 list-disc text-[10px] text-amber-100/90">
+                          {newEventConflict.warnings.map((w, idx) => (
+                            <li key={idx}>{w}</li>
+                          ))}
+                        </ul>
+                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                          {newEventConflict.suggestedTime24 && newEventConflict.suggestedTime12Ar && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                applyTime24To12hPicker(
+                                  newEventConflict.suggestedTime24!,
+                                  setNewEvHour12,
+                                  setNewEvMinute,
+                                  setNewEvPeriod
+                                )
+                              }
+                              className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[10px] font-bold hover:bg-[#66eec2] cursor-pointer"
+                            >
+                              تطبيق {newEventConflict.suggestedTime12Ar}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const titleLabel = newEvTitle.trim() || 'حدث جديد';
+                              const pickedLabel = formatTime24To12h(newEventTime24, 'ar');
+                              const conflictList = newEventConflict.warnings.join('، ');
+                              setNewEventModalOpen(false);
+                              onOpenAssistantWithPrompt(
+                                `عاوز أضيف حدث «${titleLabel}» يوم ${newEvDate} الساعة ${pickedLabel} لمدة ${newEvDuration} دقيقة، بس النظام نبّهني إن فيه تعارض: ${conflictList}. اقترح عليّ أنسب وقت فاضي بدون تضارب مع الصلاة والنوم وأحداثي.`
+                              );
+                            }}
+                            className="px-2.5 py-1 rounded-lg border border-white/15 bg-black/50 text-zinc-200 hover:text-white text-[10px] font-semibold cursor-pointer"
+                          >
+                            💬 رتّبه بـ Gemini
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 pt-1">
                       <button
                         type="button"
+                        disabled={!newEvTitle.trim() || syncLoading}
                         onClick={() => {
-                          const titleLabel = newEvTitle.trim() || 'حدث جديد';
-                          const pickedLabel = formatTime24To12h(newEventTime24, 'ar');
-                          const conflictList = newEventConflict.warnings.join('، ');
-                          setNewEventModalOpen(false);
-                          onOpenAssistantWithPrompt(
-                            `عاوز أضيف حدث «${titleLabel}» يوم ${newEvDate} الساعة ${pickedLabel} لمدة ${newEvDuration} دقيقة، بس النظام نبّهني إن فيه تعارض: ${conflictList}. اقترح عليّ أنسب وقت فاضي بدون تضارب مع الصلاة والنوم وأحداثي.`
-                          );
+                          if (newEventConflict.hasConflict) {
+                            setNewEvConfirmStep(true);
+                          } else {
+                            void handleConfirmCreateGoogleEvent();
+                          }
                         }}
-                        className="px-2.5 py-1 rounded-lg border border-amber-300/50 bg-black/50 text-amber-200 hover:text-white text-[10px] font-semibold cursor-pointer"
+                        className="flex-1 min-h-[44px] py-2.5 rounded-xl bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] disabled:opacity-40 cursor-pointer"
                       >
-                        💬 ناقش أنسب وقت مع Gemini
+                        {syncLoading
+                          ? 'جارٍ الإضافة...'
+                          : newEventConflict.hasConflict
+                            ? 'تجاوز التعارض ومراجعة'
+                            : `إضافة (${formatTime24To12h(newEventTime24, language)})`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNewEventModalOpen(false)}
+                        className="min-h-[44px] py-2.5 px-4 rounded-xl border border-white/15 text-zinc-300 cursor-pointer"
+                      >
+                        إلغاء
                       </button>
                     </div>
                   </div>
-                )}
+                );
+              }
 
-                <div className="flex items-center justify-between pt-0.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const titleLabel = newEvTitle.trim() || 'حدث جديد';
-                      const pickedLabel = formatTime24To12h(newEventTime24, 'ar');
-                      setNewEventModalOpen(false);
-                      onOpenAssistantWithPrompt(
-                        `عاوز أضيف حدث «${titleLabel}» يوم ${newEvDate} لمدة ${newEvDuration} دقيقة (أفكر في الساعة ${pickedLabel}) — شوف تقويمي وتوافقه مع الصلاة والنوم واقترح أنسب ميعاد قبل الإضافة.`
-                      );
-                    }}
-                    className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
-                  >
-                    💬 أو رتّبه مباشرة عبر شات Gemini
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    disabled={!newEvTitle.trim()}
-                    onClick={() => setNewEvConfirmStep(true)}
-                    className="flex-1 py-2.5 rounded-xl bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] disabled:opacity-40 cursor-pointer"
-                  >
-                    مراجعة وتأكيد الإضافة
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewEventModalOpen(false)}
-                    className="py-2.5 px-4 rounded-xl border border-white/15 text-zinc-300 cursor-pointer"
-                  >
-                    إلغاء
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4 text-xs">
-                <div className="rounded-xl border border-white/10 bg-black/60 p-3.5 space-y-1.5">
-                  <div className="font-bold text-white">{newEvTitle}</div>
-                  <div className="font-mono-tabular text-[#7FFFD4]">
-                    {newEvDate} · {formatTime24To12h(newEventTime24, language)} ({newEvDuration} دقيقة)
+              return (
+                <div className="space-y-4 text-xs">
+                  <div className="rounded-xl border border-white/10 bg-black/60 p-3.5 space-y-1.5">
+                    <div className="font-bold text-white">{newEvTitle}</div>
+                    <div className="font-mono-tabular text-[#7FFFD4]">
+                      {newEvDate} · {formatTime24To12h(newEventTime24, language)} ({newEvDuration} دقيقة)
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={syncLoading}
+                      onClick={handleConfirmCreateGoogleEvent}
+                      className="flex-1 min-h-[44px] py-2.5 rounded-xl bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] disabled:opacity-50 cursor-pointer"
+                    >
+                      {syncLoading ? 'جارٍ الإضافة...' : 'تأكيد الإضافة'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewEvConfirmStep(false)}
+                      className="min-h-[44px] py-2.5 px-4 rounded-xl border border-white/15 text-zinc-300 cursor-pointer"
+                    >
+                      تعديل
+                    </button>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={syncLoading}
-                    onClick={handleConfirmCreateGoogleEvent}
-                    className="flex-1 py-2.5 rounded-xl bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] disabled:opacity-50 cursor-pointer"
-                  >
-                    {syncLoading ? 'جارٍ الإضافة...' : 'تأكيد الإنشاء في Google Calendar'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewEvConfirmStep(false)}
-                    className="py-2.5 px-4 rounded-xl border border-white/15 text-zinc-300 cursor-pointer"
-                  >
-                    تعديل
-                  </button>
-                </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       )}

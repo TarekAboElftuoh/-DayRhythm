@@ -28,6 +28,8 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies cleanly and build standalone web bundle
+        env:
+          VITE_CLOUD_API_URL: ${{ vars.CLOUD_API_URL || secrets.CLOUD_API_URL || '' }}
         run: |
           rm -f bun.lock package-lock.json
           npm install --no-package-lock --legacy-peer-deps --no-audit --no-fund
@@ -94,43 +96,38 @@ jobs:
           cp public/pwa-192x192.png native/android-webkit/app/src/main/res/mipmap-xhdpi/ic_launcher.png
           cp public/pwa-192x192.png native/android-webkit/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
 
-      - name: Prepare Android release signing keystore
+      - name: Prepare permanent Android release signing keystore (enables in-place APK upgrades forever)
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS_SECRET: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          KS_FILE="$RUNNER_TEMP/dayrhythm-release.jks"
+          KS_FILE="$RUNNER_TEMP/dayrhythm-release.p12"
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 --decode > "$KS_FILE"
             echo "ANDROID_KEYSTORE_PASSWORD=${KEYSTORE_PASS:-dayrhythm2026}" >> "$GITHUB_ENV"
             echo "ANDROID_KEY_ALIAS=${KEY_ALIAS_SECRET:-dayrhythm}" >> "$GITHUB_ENV"
             echo "ANDROID_KEY_PASSWORD=${KEY_PASS:-dayrhythm2026}" >> "$GITHUB_ENV"
-          else
-            keytool -genkeypair -v \
-              -keystore "$KS_FILE" \
-              -storetype PKCS12 \
-              -alias dayrhythm \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass dayrhythm2026 \
-              -keypass dayrhythm2026 \
-              -dname "CN=DayRhythm, OU=Mobile, O=DayRhythm, L=Cairo, ST=Dakahlia, C=EG"
+          elif [ -f "native/android-webkit/app/dayrhythm-release.p12" ]; then
+            cp "native/android-webkit/app/dayrhythm-release.p12" "$KS_FILE"
             echo "ANDROID_KEYSTORE_PASSWORD=dayrhythm2026" >> "$GITHUB_ENV"
             echo "ANDROID_KEY_ALIAS=dayrhythm" >> "$GITHUB_ENV"
             echo "ANDROID_KEY_PASSWORD=dayrhythm2026" >> "$GITHUB_ENV"
+          else
+            echo "ERROR: Permanent keystore native/android-webkit/app/dayrhythm-release.p12 missing!"
+            exit 1
           fi
           echo "ANDROID_KEYSTORE_PATH=$KS_FILE" >> "$GITHUB_ENV"
 
       - name: Build signed standalone release APK
         working-directory: native/android-webkit
         run: |
+          NEXT_VC=$(( ${{ github.run_number }} + 100 ))
           gradle assembleRelease \
             -PGITHUB_REPO="${{ github.repository }}" \
             -PREMOTE_WS_URL="${{ inputs.remote_ws_url || '' }}" \
-            -PVERSION_CODE="${{ github.run_number }}" \
+            -PVERSION_CODE="$NEXT_VC" \
             -PVERSION_NAME="2.0.${{ github.run_number }}"
 
       - name: Stage APK artifact
