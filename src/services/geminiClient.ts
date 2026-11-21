@@ -1,0 +1,1161 @@
+import {
+  CalendarActionProposal,
+  CreativeActivityActionProposal,
+  GroundingPlace,
+  MedicationActionProposal,
+  MemoryActionProposal,
+  PersistedChatMessage,
+  TaskActionProposal,
+} from '../types/dayrhythm';
+
+export const DEFAULT_GEMINI_API_KEY = 'AQ.Ab8RN6KYU8hmrsLsq5-BkhWfEqE7ZGbFf2L-Ey77b5a6LgK9Mw';
+export const GEMINI_API_KEY_STORAGE_KEY = 'dayrhythm_gemini_api_key_v1';
+
+export function getGeminiApiKey(): string {
+  if (typeof window === 'undefined') return DEFAULT_GEMINI_API_KEY;
+  try {
+    const saved = (localStorage.getItem(GEMINI_API_KEY_STORAGE_KEY) || '').trim();
+    if (saved) return saved;
+  } catch {
+    // ignore storage access errors
+  }
+  const envKey = (import.meta.env?.VITE_GEMINI_API_KEY as string | undefined)?.trim();
+  if (envKey) return envKey;
+  return DEFAULT_GEMINI_API_KEY;
+}
+
+export function setGeminiApiKey(rawKey: string): { saved: string; error?: string } {
+  const cleaned = rawKey.trim();
+  if (typeof window !== 'undefined') {
+    try {
+      if (cleaned) {
+        localStorage.setItem(GEMINI_API_KEY_STORAGE_KEY, cleaned);
+      } else {
+        localStorage.removeItem(GEMINI_API_KEY_STORAGE_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return { saved: cleaned || DEFAULT_GEMINI_API_KEY };
+}
+
+export function resetGeminiApiKey(): string {
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.removeItem(GEMINI_API_KEY_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+  return DEFAULT_GEMINI_API_KEY;
+}
+
+export function isCustomGeminiApiKeySet(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const saved = (localStorage.getItem(GEMINI_API_KEY_STORAGE_KEY) || '').trim();
+    return Boolean(saved && saved !== DEFAULT_GEMINI_API_KEY);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Model chain: starts with the user-specified gemini-2.5-flash as default,
+ * and seamlessly falls back to active fast models if Google reports 404/deprecated or 503.
+ */
+export const GEMINI_MODEL_CHAIN = [
+  'gemini-2.5-flash',
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-flash-latest',
+  'gemini-3.8-flash',
+] as const;
+
+export interface GeminiConnectionStatus {
+  ok: boolean;
+  connected: boolean;
+  status: 'checking' | 'online' | 'degraded' | 'offline';
+  model: string;
+  latencyMs: number;
+  checkedAtIso?: string;
+  error?: string;
+}
+
+export interface GeminiStreamDonePayload {
+  text: string;
+  places?: GroundingPlace[];
+  sources?: Array<{ title: string; uri: string }>;
+  pendingProposal?: PersistedChatMessage['pendingProposal'];
+  latencyMs?: number;
+  memoriesAppliedCount?: number;
+  model?: string;
+  cached?: boolean;
+}
+
+export interface ChatStreamHandlers {
+  signal?: AbortSignal;
+  onStatus?: (statusText: string) => void;
+  onDelta: (deltaText: string) => void;
+  onDone: (payload: GeminiStreamDonePayload) => void;
+}
+
+export interface ChatRequestPayload {
+  message: string;
+  bypassCache?: boolean;
+  history?: Array<{ role: 'user' | 'model'; text: string }>;
+  contextSummary?: string;
+  longTermChatContext?: string;
+  memories?: Array<{
+    id: string;
+    category: string;
+    ruleText: string;
+    source?: string;
+  }>;
+  calendarEvents?: Array<{
+    id: string;
+    calendarId?: string;
+    calendarTitle?: string;
+    summary: string;
+    description?: string;
+    location?: string;
+    start: string;
+    end?: string;
+  }>;
+  tasks?: Array<{
+    id: string;
+    taskListId: string;
+    taskListTitle?: string;
+    title: string;
+    status: string;
+    due?: string;
+  }>;
+  medications?: Array<{
+    id: string;
+    name: string;
+    time24?: string;
+    times24?: string[];
+    daysOfWeek?: number[];
+    doseNote?: string;
+    takenToday?: boolean;
+    takenDosesToday?: string[];
+    courseEndDate?: string;
+    remainingDoses?: number;
+    totalDoses?: number;
+    refillAlertDays?: number;
+    takenDates?: string[];
+  }>;
+  creativeActivities?: Array<{
+    id: string;
+    name: string;
+    emoji?: string;
+    cadence?: string;
+    goalCount?: number;
+    sessionsInPeriod?: number;
+    weeklyGoalSessions: number;
+    sessionsThisWeek: number;
+    sessionMinutes: number;
+    completedToday?: boolean;
+    scheduledTime24?: string;
+    expiresOnDate?: string;
+  }>;
+}
+
+// Bounded in-memory response cache
+interface CacheEntry<T> {
+  value: T;
+  expiresAtMs: number;
+}
+const localGeminiCache = new Map<string, CacheEntry<unknown>>();
+
+function getFromCache<T>(key: string): T | null {
+  const entry = localGeminiCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAtMs) {
+    localGeminiCache.delete(key);
+    return null;
+  }
+  return entry.value as T;
+}
+
+function setToCache<T>(key: string, value: T, ttlMs = 10 * 60_000): void {
+  if (localGeminiCache.size > 150) {
+    const oldest = localGeminiCache.keys().next().value;
+    if (oldest !== undefined) localGeminiCache.delete(oldest);
+  }
+  localGeminiCache.set(key, { value, expiresAtMs: Date.now() + ttlMs });
+}
+
+// Time Helpers
+export function getCairoTodayIso(): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const y = parts.find((p) => p.type === 'year')?.value ?? '2026';
+    const m = parts.find((p) => p.type === 'month')?.value ?? '01';
+    const d = parts.find((p) => p.type === 'day')?.value ?? '01';
+    return `${y}-${m}-${d}`;
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+export function getCairoNowTime12(): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Cairo',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date());
+    const hhRaw = Number(parts.find((p) => p.type === 'hour')?.value ?? '9');
+    const hh = hhRaw === 24 ? 0 : hhRaw;
+    const mm = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+    const period = hh >= 12 ? 'م' : 'ص';
+    const h12 = hh % 12 === 0 ? 12 : hh % 12;
+    return `${String(h12).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${period}`;
+  } catch {
+    return '12:00 م';
+  }
+}
+
+export function formatServerIsoTo12h(isoStr?: string): string {
+  if (!isoStr) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(isoStr)) {
+    return `${isoStr} (طوال اليوم)`;
+  }
+  const d = new Date(isoStr);
+  if (Number.isNaN(d.getTime())) return isoStr;
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(d);
+    const hhRaw = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
+    const hh = hhRaw === 24 ? 0 : hhRaw;
+    const mm = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+    const period = hh >= 12 ? 'م' : 'ص';
+    const h12 = hh % 12 === 0 ? 12 : hh % 12;
+    return `${String(h12).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${period}`;
+  } catch {
+    return isoStr;
+  }
+}
+
+export const DAYRHYTHM_SYSTEM_INSTRUCTION = `
+أنت المساعد الشخصي الذكي والمستشار العلمي الأمين لمنظومة «إيقاع اليوم | DayRhythm» المربوط مباشرة بـ Google Calendar API و Google Tasks API والدستور الشخصي وذاكرة Gemini الدائمة في Firebase Firestore.
+التزم تماماً بهذه القواعد:
+1. قاعدة التوقيت الإلزامية (نظام 12 ساعة فقط): عند ذكر أي وقت في ردودك للمستخدم، استخدم نظام الـ 12 ساعة فقط مع (ص) أو (م) — مثال: 04:30 ص أو 03:15 م أو 09:15 م. يُمنع منعاً باتاً كتابة أوقات بنظام 24 ساعة مثل 13:15 أو 19:45 داخل الردود النصية.
+2. الهرم الصارم للأولويات وحل التضارب الذكي:
+   - الأولوية #1 (مقدّسة): الصلوات الخمس حسب الموقع الجغرافي والمنطقة الزمنية والفصل الحالي (تنبيه قبل الأذان + صمت تلقائي أثناء الصلاة 20 د للصلوات و30 د للفجر و50 د للجمعة).
+   - الأولوية #2 (النوم أولوية عليا): الأصل هو النوم الليلي فقط بدون نوم نهاري مع حضور الشروق والغروب يومياً.
+   - استثناءات النوم المرنة عبر الشات:
+     * لو أخبرك المستخدم «معرفتش أنام كويس / عندي أرق وعاوز أريّح»: لأن النوم أولوية، فرّغ له مكاناً فورياً في Google Calendar (بتقليص/إزاحة المذاكرة المرنة) وأضف له قيلولة تعويضية (20–30 د أو دورة 90 د حسب إرهاقه) دون المساس بالصلاة.
+     * لو أخبرك المستخدم أنه نام ناقص مثلاً «نمت أقل بساعة / سهرت نص ساعة زيادة» أو «عوّضت نومي / صفّر رصيد النوم»: عدّل sleepDebtMinutes عبر propose_profile_updates.
+     * لو أخبرك «نمت على نفسي وصحيت دلوقتي — اليوم هيمشي إزاي؟»: اقرأ الوقت الحالي وأحداث التقويم المتبقية، وأعد ترتيب باقي اليوم بذكاء مع حماية الصلوات المتبقية ونوم الليلة.
+   - الأولوية #3 (الالتزامات الثابتة عند تفعيلها): مواعيد الشغل الرسمي بمجرد أن يبلغك بها المستخدم.
+   - الأولوية #4 (المرونة الذكية): المذاكرة/العمل، المشي، الأنشطة الإبداعية والهوايات، العلاجات، والمهام الأخرى.
+3. الفحص الاستباقي للتعارض والمناقشة الذكية قبل الحجز في Google Calendar:
+   - قبل اقتراح حجز أي حدث جديد أو ميعاد علاج/مكمل، افحص تلقائياً: (أ) أوقات الصلوات الخمس + فترة الصمت، (ب) نافذة النوم الليلي، (ج) ساعات الصيام (الفجر–المغرب في أيام الصيام)، (د) أحداث Google Calendar المسجلة فعلياً.
+   - إذا وجدت أي تعارض مع النوم أو الصلاة أو الصيام أو حدث آخر، حذّر المستخدم بلطف ووضوح واشرح سبب التعارض واقترح عليه أنسب وقت فاضي متوافق مع شروطه للنقاش قبل التنفيذ.
+   - بمجرد أن يتفق معك المستخدم على ميعاد مناسب، اقترح العملية فوراً عبر الأدوات (propose_calendar_actions وغيرها) ليضغط «تأكيد التنفيذ» فيُحجز الموعد مباشرة في Google Calendar.
+4. مستشار علمي عام وذكي لكل العلاجات والمكملات مع الحجز التلقائي في التقويم:
+   - ينطبق هذا الأسلوب على أي دواء أو فيتامين أو مكمل يذكره المستخدم (مثل فيتامين د، ماغنيسيوم، أوميجا 3، زنك، حديد، كرياتين، أو أي علاج شخصي يضيفه في حسابه).
+   - إذا ذكر المستخدم مكملًا أو علاجاً أو سألك عن توافق ميعاده: قيّم التوقيت علمياً (الامتصاص مع وجبة دهنية/ماء، المنبهات قبل النوم، التعارض مع القهوة/الكالسيوم/الصيام) وجدولياً (بعيداً عن الصلاة والنوم والأحداث المزدحمة). لو فيه تعارض لا تثبّت أعمى بل ناقشه واقترح البديل الأصح أولاً.
+   - عند اقتراح إضافة علاج أو مكمل جديد بمواعيد محددة عبر propose_medication_actions، اقترح معه تلقائياً في نفس الرد حدثاً مرتبطاً في Google Calendar عبر propose_calendar_actions (بعنوان يبدأ بـ 💊 ⏰ ومدة 15 دقيقة وتكرار DAILY أو WEEKLY حسب أيام العلاج) حتى يُحجز له مكانه تلقائياً في التقويم.
+   - لديك صلاحية كاملة لحذف أي علاج أو مكمل عند طلب المستخدم صراحةً: استخدم propose_medication_actions بعملية remove مع تمرير medicationId أو اسم العلاج الدقيق من قائمته الحالية، واقترح معه حذف الحدث المرتبط به في Google Calendar إن وُجد عبر propose_calendar_actions.
+   - ادعم الجرعات المتعددة (times24)، الأيام المحددة (daysOfWeek)، مدة الكورس (courseEndDate)، وعدد الجرعات المتبقية (remainingDoses / totalDoses).
+5. تحديث الوزن والماء والثوابت بمرونة كاملة:
+   - الوزن متغيّر دائماً: لو أبلغك المستخدم بتغيّر وزنه، اقترح فوراً تحديث weightKg عبر propose_profile_updates فيُعاد حساب هدف الماء العلمي وتوزيع الأكواب تلقائياً.
+   - عدّل أي ثابت بلا قيود عبر propose_profile_updates، واحفظ أي قاعدة أو مبدأ دائم عبر propose_memory_actions.
+6. الأنشطة الإبداعية والهوايات والمشاريع:
+   - استخدم propose_creative_actions لإضافة أو تعديل أو حذف أو تسجيل جلسة نشاط إبداعي، وعند جدولته في Google Calendar ضعه دائماً في الأوقات الفارغة الفعلية.
+7. وضع اليوم الهادئ / الطاقة المنخفضة، وتعديل مدة الصمت لمرة واحدة، وتكرار الرنين، ومدة التأجيل (Snooze):
+   - إذا قال المستخدم «النهارده تعبان / مرهق / طاقتي قليلة»: فعّل له وضع اليوم الهادئ بتعيين lowEnergyDateKey لتاريخ اليوم (YYYY-MM-DD) عبر propose_profile_updates.
+   - إذا طلب المستخدم تغيير مدة زر التأجيل (Snooze) للتنبيهات (5 أو 10 أو 15 دقيقة): عدّل defaultSnoozeMinutes عبر propose_profile_updates (الافتراضي 5 دقائق).
+8. الذاكرة السحابية طويلة المدى كمرجع دائم لكل مستخدم:
+   - هذا التطبيق عام لكل مستخدم ويرتبط ببياناته الخاصة؛ كلما ذكر المستخدم معلومة دائمة عن حياته، اقترح تلقائياً حفظها في الذاكرة الدائمة عبر propose_memory_actions.
+   - إذا أشار المستخدم لموضوع تحدث عنه سابقاً، استعن بـ «ذاكرة المستخدم الدائمة» و«مقتطفات المحادثات السابقة» للإجابة بدقة واستمرارية.
+9. قواعد الخصوصية: استخدم 🦷 أو 🪥 فقط للعناية الشخصية، واستخدم 🌱 فقط للالتزام اليومي دون وصف نصي صريح. وعناوين أحداث التقويم يفضل أن تبدأ بزوج إيموجي مميز.
+أجب بلغة عربية واضحة، عملية، ودودة، ومختصرة.
+`.trim();
+
+export const GEMINI_CHAT_TOOLS = [
+  {
+    functionDeclarations: [
+      {
+        name: 'propose_calendar_actions',
+        description: 'اقتراح إنشاء أو تعديل أو حذف أو ترحيل أحداث في Google Calendar API بناءً على أوامر المستخدم في شات Gemini.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            summaryAr: {
+              type: 'STRING',
+              description: 'ملخص عربي مختصر (بنظام 12 ساعة ص/م) للتغييرات المقترحة على Google Calendar.',
+            },
+            actions: {
+              type: 'ARRAY',
+              description: 'قائمة العمليات المقترحة للتنفيذ عبر Google Calendar API.',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  operation: { type: 'STRING', description: 'نوع العملية: create أو update أو delete أو shift' },
+                  eventId: { type: 'STRING', description: 'معرف الحدث الفعلي في Google Calendar عند التعديل أو الحذف.' },
+                  calendarId: { type: 'STRING', description: 'معرف التقويم المستهدف (افتراضياً primary).' },
+                  title: { type: 'STRING', description: 'عنوان الحدث (يفضل أن يبدأ بزوج إيموجي مثل 💼 🔥 أو 🩺 💊).' },
+                  dateIso: { type: 'STRING', description: 'تاريخ الحدث بصيغة YYYY-MM-DD.' },
+                  startTime24: { type: 'STRING', description: 'وقت البدء بصيغة HH:MM.' },
+                  durationMinutes: { type: 'NUMBER', description: 'المدة بالدقائق (مثال: 30 أو 60).' },
+                  description: { type: 'STRING', description: 'وصف مختصر للحدث في Google Calendar.' },
+                  recurrenceRule: { type: 'STRING', description: 'قاعدة التكرار الاختيارية: DAILY أو WEEKLY.' },
+                  byDays: {
+                    type: 'ARRAY',
+                    items: { type: 'STRING' },
+                    description: 'أيام التكرار الأسبوعي عند WEEKLY: SU, MO, TU, WE, TH, FR, SA.',
+                  },
+                },
+                required: ['operation', 'title'],
+              },
+            },
+          },
+          required: ['summaryAr', 'actions'],
+        },
+      },
+      {
+        name: 'propose_task_actions',
+        description: 'اقتراح إنشاء أو تعديل أو إتمام أو إعادة فتح أو حذف مهام في Google Tasks API.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            summaryAr: { type: 'STRING', description: 'ملخص عربي مختصر للتغييرات المقترحة على مهام Google Tasks.' },
+            taskActions: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  operation: { type: 'STRING', description: 'create أو update أو complete أو reopen أو delete' },
+                  taskId: { type: 'STRING', description: 'معرف المهمة الفعلي في Google Tasks.' },
+                  taskListId: { type: 'STRING', description: 'معرف قائمة المهام (افتراضياً @default).' },
+                  title: { type: 'STRING', description: 'عنوان المهمة.' },
+                  notes: { type: 'STRING', description: 'ملاحظات إضافية للمهمة.' },
+                  dueDateIso: { type: 'STRING', description: 'تاريخ الاستحقاق بصيغة YYYY-MM-DD.' },
+                },
+                required: ['operation', 'title'],
+              },
+            },
+          },
+          required: ['summaryAr', 'taskActions'],
+        },
+      },
+      {
+        name: 'propose_medication_actions',
+        description: 'اقتراح إضافة أو تعديل أو حذف أو تسجيل تناول أي علاج أو فيتامين أو مكمل غذائي.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            summaryAr: { type: 'STRING', description: 'ملخص عربي مختصر لتعديل قائمة العلاجات والمكملات.' },
+            medicationActions: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  operation: { type: 'STRING', description: 'add أو update أو remove أو mark_taken' },
+                  medicationId: { type: 'STRING', description: 'معرف العلاج الحالي عند التعديل أو الحذف.' },
+                  name: { type: 'STRING', description: 'اسم العلاج أو المكمل.' },
+                  time24: { type: 'STRING', description: 'ميعاد الجرعة الرئيسية بصيغة HH:MM.' },
+                  times24: { type: 'ARRAY', items: { type: 'STRING' }, description: 'قائمة مواعيد الجرعات باليوم بصيغة HH:MM.' },
+                  daysOfWeek: { type: 'ARRAY', items: { type: 'NUMBER' }, description: 'أيام الأسبوع المحددة (0=الأحد .. 6=السبت).' },
+                  doseNote: { type: 'STRING', description: 'ملاحظة قصيرة للجرعة.' },
+                  courseEndDate: { type: 'STRING', description: 'تاريخ انتهاء الكورس بصيغة YYYY-MM-DD.' },
+                  remainingDoses: { type: 'NUMBER', description: 'عدد الجرعات المتبقية في العبوة.' },
+                  totalDoses: { type: 'NUMBER', description: 'إجمالي الجرعات الأصلية في العبوة.' },
+                  refillAlertDays: { type: 'NUMBER', description: 'أيام التنبيه قبل النفاد (الافتراضي 3).' },
+                },
+                required: ['operation', 'name'],
+              },
+            },
+          },
+          required: ['summaryAr', 'medicationActions'],
+        },
+      },
+      {
+        name: 'propose_creative_actions',
+        description: 'اقتراح إضافة أو تعديل أو حذف أو تسجيل جلسة نشاط إبداعي أو هواية أو مشروع شخصي.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            summaryAr: { type: 'STRING', description: 'ملخص عربي مختصر للتعديل المقترح على الأنشطة الإبداعية.' },
+            creativeActions: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  operation: { type: 'STRING', description: 'add أو update أو remove أو log_session' },
+                  activityId: { type: 'STRING', description: 'معرف النشاط.' },
+                  name: { type: 'STRING', description: 'اسم الهواية أو المشروع.' },
+                  emoji: { type: 'STRING', description: 'إيموجي مميز للنشاط.' },
+                  cadence: { type: 'STRING', description: 'daily أو weekly أو monthly.' },
+                  goalCount: { type: 'NUMBER', description: 'عدد الجلسات المستهدف.' },
+                  weeklyGoalSessions: { type: 'NUMBER', description: 'الهدف الأسبوعي.' },
+                  sessionMinutes: { type: 'NUMBER', description: 'مدة الجلسة بالدقائق.' },
+                  scheduledTime24: { type: 'STRING', description: 'وقت اختياري مقترح بصيغة HH:MM.' },
+                  expiresOnDate: { type: 'STRING', description: 'تاريخ انتهاء تلقائي بصيغة YYYY-MM-DD.' },
+                },
+                required: ['operation', 'name'],
+              },
+            },
+          },
+          required: ['summaryAr', 'creativeActions'],
+        },
+      },
+      {
+        name: 'propose_profile_updates',
+        description: 'تحديث الدستور الشخصي للمستخدم (الوزن، الطول، حجم الكوب، الصيام، السحور، النوم، العمل، وضع اليوم الهادئ، Snooze).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            summaryAr: { type: 'STRING', description: 'ملخص عربي مختصر للتحديث المقترح على الدستور الشخصي.' },
+            weightKg: { type: 'NUMBER', description: 'الوزن بالكيلوجرام (30 إلى 250).' },
+            heightCm: { type: 'NUMBER', description: 'الطول بالسنتيمتر (100 إلى 240).' },
+            cupSizeMl: { type: 'NUMBER', description: 'حجم الكوب بالملليلتر (50 إلى 2000).' },
+            fastingDays: { type: 'ARRAY', items: { type: 'NUMBER' }, description: 'أيام الصيام الأسبوعية (0=الأحد .. 6=السبت).' },
+            suhoorLeadMinutes: { type: 'NUMBER', description: 'دقائق قبل الفجر للسحور.' },
+            sleepTargetMinutes: { type: 'NUMBER', description: 'هدف النوم بالدقائق (مثال: 450 = 7.5 ساعات).' },
+            sleepStrategy: { type: 'STRING', description: 'night_only_strict أو anchor_early_bed أو biphasic_qailulah.' },
+            sleepDebtMinutes: { type: 'NUMBER', description: 'رصيد النوم الناقص بالدقائق (0 إلى 480).' },
+            adhanLeadMinutes: { type: 'NUMBER', description: 'دقائق التنبيه قبل الأذان (الافتراضي 3).' },
+            prayerSilenceMinutes: { type: 'NUMBER', description: 'مدة كتم الصلاة الدائمة (الافتراضي 20).' },
+            fajrSilenceMinutes: { type: 'NUMBER', description: 'مدة كتم الفجر الدائمة (الافتراضي 30).' },
+            oneTimeSilenceMinutes: { type: 'NUMBER', description: 'تعديل مؤقت لصمت الصلاة لمرة واحدة.' },
+            oneTimeSilenceDateKey: { type: 'STRING', description: 'تاريخ اليوم (YYYY-MM-DD) للصمت المؤقت.' },
+            lowEnergyDateKey: { type: 'STRING', description: 'تاريخ اليوم (YYYY-MM-DD) لوضع الطاقة المنخفضة.' },
+            defaultSnoozeMinutes: { type: 'NUMBER', description: 'مدة التأجيل: 5 أو 10 أو 15 دقيقة.' },
+            careerTrack: { type: 'STRING', description: 'المجال المهني أو الدراسي.' },
+            workEnabled: { type: 'BOOLEAN', description: 'true إذا كانت هناك وظيفة ثابتة.' },
+            workStart24: { type: 'STRING', description: 'بداية العمل بصيغة HH:MM.' },
+            workEnd24: { type: 'STRING', description: 'نهاية العمل بصيغة HH:MM.' },
+            workDays: { type: 'ARRAY', items: { type: 'NUMBER' }, description: 'أيام العمل.' },
+            currentCityName: { type: 'STRING', description: 'اسم المدينة الحالية.' },
+            currentTimeZone: { type: 'STRING', description: 'المنطقة الزمنية IANA.' },
+            currentLat: { type: 'NUMBER', description: 'خط العرض.' },
+            currentLng: { type: 'NUMBER', description: 'خط الطول.' },
+            personalNotes: { type: 'STRING', description: 'ملاحظات أو قواعد حياتية دائمة.' },
+          },
+          required: ['summaryAr'],
+        },
+      },
+      {
+        name: 'propose_memory_actions',
+        description: 'حفظ أو تحديث أو حذف قاعدة أو مبدأ شخصي دائم في ذاكرة Gemini الدائمة.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            summaryAr: { type: 'STRING', description: 'ملخص عربي مختصر لما سيُحفظ في الذاكرة الدائمة.' },
+            memoryActions: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  operation: { type: 'STRING', description: 'add أو update أو remove' },
+                  memoryId: { type: 'STRING', description: 'معرف القاعدة عند الحذف أو التعديل.' },
+                  category: { type: 'STRING', description: 'priority أو sleep أو fasting أو hydration أو work_devops أو travel أو general.' },
+                  ruleText: { type: 'STRING', description: 'نص القاعدة أو التفضيل الشخصي.' },
+                },
+                required: ['operation', 'category', 'ruleText'],
+              },
+            },
+          },
+          required: ['summaryAr', 'memoryActions'],
+        },
+      },
+    ],
+  },
+];
+
+export function shouldAttachChatTools(message: string): boolean {
+  const text = (message || '').trim();
+  if (!text) return false;
+  return /(أضف|اضف|أضيف|اضيف|ضف|ضيف|احجز|حجز|حط|سجّل|سجل|عدّل|عدل|تعديل|غيّر|غير|تغيير|احذف|حذف|شيل|امسح|الغ|ألغ|رحّل|رحل|انقل|أجّل|اجل|رتّب|رتب|احفظ|حفظ|تذكر|افتكر|تثبيت|ثبّت|جدول|ميعاد|موعد|مهمة|مهام|تاسك|دواء|علاج|فيتامين|مكمل|جرعة|وزن|طول|كوب|صيام|صايم|سحور|نمت|نوم|أرق|ارق|قيلولة|تعبان|مرهق|سفر|مسافر|مدينة|هواية|نشاط|مشروع|صمت|رنين|رنة|add|create|book|schedule|update|edit|delete|remove|move|shift|save|remember|task|event|med|supplement|sleep|weight|fast|travel|done|complete)/i.test(
+    text
+  );
+}
+
+export function buildChatSystemInstruction(payload: ChatRequestPayload): {
+  systemInstruction: string;
+  memoriesAppliedCount: number;
+} {
+  const todayCairo = getCairoTodayIso();
+  const nowCairo12 = getCairoNowTime12();
+  const dayNamesAr = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+
+  const memoriesArr = Array.isArray(payload.memories)
+    ? payload.memories.filter((m) => m && typeof m.ruleText === 'string' && m.ruleText.trim().length > 0)
+    : [];
+
+  const memoriesBlock =
+    memoriesArr.length > 0
+      ? `\n\n=== ذاكرة المستخدم الدائمة ===\n${memoriesArr
+          .slice(0, 20)
+          .map((m, idx) => `${idx + 1}. [id=${m.id}|${m.category}] ${m.ruleText.trim().slice(0, 180)}`)
+          .join('\n')}`
+      : '';
+
+  const eventsListText =
+    Array.isArray(payload.calendarEvents) && payload.calendarEvents.length > 0
+      ? `\n\nأحداث Google Calendar:\n${payload.calendarEvents
+          .slice(0, 18)
+          .map(
+            (e) =>
+              `- [id=${e.id}${e.calendarId ? `|cal=${e.calendarId}` : ''}] ${e.summary} | ${formatServerIsoTo12h(e.start)}${e.end ? `–${formatServerIsoTo12h(e.end)}` : ''}`
+          )
+          .join('\n')}`
+      : '';
+
+  const tasksListText =
+    Array.isArray(payload.tasks) && payload.tasks.length > 0
+      ? `\n\nمهام Google Tasks:\n${payload.tasks
+          .slice(0, 15)
+          .map(
+            (t) =>
+              `- [taskId=${t.id}|list=${t.taskListId}] ${t.title} | ${t.status === 'completed' ? 'مكتملة' : 'قيد التنفيذ'}${t.due ? ` | ${t.due.slice(0, 10)}` : ''}`
+          )
+          .join('\n')}`
+      : '';
+
+  const medsListText =
+    Array.isArray(payload.medications) && payload.medications.length > 0
+      ? `\n\nقائمة العلاجات والمكملات الحالية:\n${payload.medications
+          .map((m) => {
+            const doses =
+              Array.isArray(m.times24) && m.times24.length > 0
+                ? m.times24.join(', ')
+                : m.time24 || 'بدون ميعاد محدد بعد';
+            const daysStr =
+              Array.isArray(m.daysOfWeek) && m.daysOfWeek.length > 0
+                ? `أيام: ${m.daysOfWeek.map((d) => dayNamesAr[d] ?? d).join('، ')}`
+                : 'يومياً';
+            const courseStr = m.courseEndDate ? ` | ينتهي الكورس: ${m.courseEndDate}` : '';
+            const refillStr =
+              typeof m.remainingDoses === 'number' && m.remainingDoses >= 0
+                ? ` | المتبقي: ${m.remainingDoses}${typeof m.totalDoses === 'number' && m.totalDoses > 0 ? `/${m.totalDoses}` : ''} جرعة (تنبيه قبل ${m.refillAlertDays ?? 3} أيام)`
+                : '';
+            return `- [medicationId=${m.id}] ${m.name} | المواعيد: ${doses} | التكرار: ${daysStr}${courseStr}${refillStr}${m.doseNote ? ` | ${m.doseNote}` : ''} | حالة اليوم: ${m.takenToday ? 'تم التناول ✓' : m.takenDosesToday && m.takenDosesToday.length > 0 ? `أُخذ (${m.takenDosesToday.join(', ')})` : 'لم يُؤخذ بعد'}`;
+          })
+          .join('\n')}`
+      : '';
+
+  const creativeListText =
+    Array.isArray(payload.creativeActivities) && payload.creativeActivities.length > 0
+      ? `\n\nالأنشطة الإبداعية والهوايات المسجلة:\n${payload.creativeActivities
+          .map((a) => {
+            const cadAr = a.cadence === 'daily' ? 'يومي' : a.cadence === 'monthly' ? 'شهري' : 'أسبوعي';
+            return `- [activityId=${a.id}] ${a.emoji ?? '🎨'} ${a.name} | (${cadAr}: ${a.sessionsInPeriod ?? a.sessionsThisWeek}/${a.goalCount ?? a.weeklyGoalSessions}) | المدة: ${a.sessionMinutes} د${a.expiresOnDate ? ` | حتى ${a.expiresOnDate}` : ''}${a.scheduledTime24 ? ` | موعد مجدول: ${a.scheduledTime24}` : ''} | اليوم: ${a.completedToday ? 'أُنجز ✓' : 'لم يُنجز بعد'}`;
+          })
+          .join('\n')}`
+      : '';
+
+  const longTermArchiveBlock =
+    typeof payload.longTermChatContext === 'string' && payload.longTermChatContext.trim().length > 0
+      ? `\n\n=== مقتطفات مرجعية سابقة ===\n${payload.longTermChatContext.trim().slice(0, 1400)}`
+      : '';
+
+  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${(payload.contextSummary ?? '').slice(0, 1800)}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+
+  return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
+}
+
+export function normalizeGeminiHistory(
+  rawHistory?: Array<{ role: 'user' | 'model'; text: string }>
+): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  if (!Array.isArray(rawHistory) || rawHistory.length === 0) return [];
+  const merged: Array<{ role: 'user' | 'model'; text: string }> = [];
+  for (const item of rawHistory) {
+    if (!item || (item.role !== 'user' && item.role !== 'model')) continue;
+    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    if (!text) continue;
+    if (merged.length === 0 && item.role !== 'user') {
+      continue;
+    }
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === item.role) {
+      prev.text = `${prev.text}\n\n${text}`.slice(0, 1200);
+    } else {
+      merged.push({ role: item.role, text: text.slice(0, 1200) });
+    }
+  }
+  const recent = merged.slice(-10);
+  while (recent.length > 0 && recent[0].role !== 'user') {
+    recent.shift();
+  }
+  while (recent.length > 0 && recent[recent.length - 1].role === 'user') {
+    recent.pop();
+  }
+  return recent.map((h) => ({
+    role: h.role,
+    parts: [{ text: h.text }],
+  }));
+}
+
+interface GeminiFunctionCall {
+  name: string;
+  args?: Record<string, unknown>;
+}
+
+export function extractPendingProposalFromFunctionCalls(fnCalls?: GeminiFunctionCall[]): PersistedChatMessage['pendingProposal'] {
+  if (!fnCalls || fnCalls.length === 0) return undefined;
+  const calCall = fnCalls.find((f) => f.name === 'propose_calendar_actions');
+  const taskCall = fnCalls.find((f) => f.name === 'propose_task_actions');
+  const medCall = fnCalls.find((f) => f.name === 'propose_medication_actions');
+  const creativeCall = fnCalls.find((f) => f.name === 'propose_creative_actions');
+  const profileCall = fnCalls.find((f) => f.name === 'propose_profile_updates');
+  const memoryCall = fnCalls.find((f) => f.name === 'propose_memory_actions');
+
+  if (!calCall && !taskCall && !medCall && !creativeCall && !profileCall && !memoryCall) {
+    return undefined;
+  }
+
+  const calArgs = (calCall?.args ?? {}) as { summaryAr?: string; actions?: CalendarActionProposal[] };
+  const taskArgs = (taskCall?.args ?? {}) as { summaryAr?: string; taskActions?: TaskActionProposal[] };
+  const medArgs = (medCall?.args ?? {}) as { summaryAr?: string; medicationActions?: MedicationActionProposal[] };
+  const creativeArgs = (creativeCall?.args ?? {}) as { summaryAr?: string; creativeActions?: CreativeActivityActionProposal[] };
+  const profileArgs = (profileCall?.args ?? {}) as Record<string, unknown>;
+  const { summaryAr: profileSummaryAr, ...rawProfilePatch } = profileArgs;
+  const profileUpdates = profileCall && Object.keys(rawProfilePatch).length > 0 ? rawProfilePatch : undefined;
+  const memoryArgs = (memoryCall?.args ?? {}) as { summaryAr?: string; memoryActions?: MemoryActionProposal[] };
+
+  const actions = Array.isArray(calArgs.actions) ? calArgs.actions : [];
+  const taskActions = Array.isArray(taskArgs.taskActions) ? taskArgs.taskActions : [];
+  const medicationActions = Array.isArray(medArgs.medicationActions) ? medArgs.medicationActions : [];
+  const creativeActions = Array.isArray(creativeArgs.creativeActions) ? creativeArgs.creativeActions : [];
+  const memoryActions = Array.isArray(memoryArgs.memoryActions) ? memoryArgs.memoryActions : [];
+
+  const summaryAr =
+    [
+      calArgs.summaryAr,
+      taskArgs.summaryAr,
+      medArgs.summaryAr,
+      creativeArgs.summaryAr,
+      typeof profileSummaryAr === 'string' ? profileSummaryAr : undefined,
+      memoryArgs.summaryAr,
+    ]
+      .filter(Boolean)
+      .join(' · ') || 'تعديل التقويم والدستور والذاكرة الدائمة';
+
+  return {
+    summaryAr,
+    actions,
+    taskActions,
+    medicationActions,
+    creativeActions,
+    profileUpdates,
+    memoryActions,
+    status: 'pending',
+  };
+}
+
+export function formatFriendlyGeminiErrorAr(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+  if (raw.includes('GEMINI_API_KEY') || raw.includes('API_KEY_INVALID') || raw.includes('API key not valid')) {
+    return 'مفتاح Gemini API غير صالح أو منتهي الصلاحية — يمكنك تغييره بضغطة واحدة من إعدادات التطبيق.';
+  }
+  if (raw.includes('429') || raw.includes('RESOURCE_EXHAUSTED') || raw.includes('quota')) {
+    return 'تم الوصول للحد المؤقت لطلبات Gemini المجانية — انتظر بضع ثوانٍ وجرّب مرة أخرى أو حدّث مفتاحك في الإعدادات.';
+  }
+  if (raw.includes('403') || raw.includes('PERMISSION_DENIED')) {
+    return 'تم رفض الإذن بمفتاح Gemini الحالي — تأكد من تفعيل Gemini API في حسابك بـ Google AI Studio.';
+  }
+  if (raw.includes('503') || raw.includes('UNAVAILABLE') || raw.includes('high demand')) {
+    return 'خوادم Google تشهد ضغطاً مؤقتاً الآن — جرت المحاولة مع نماذج بديلة، انتظر لحظات وحاول مرة أخرى.';
+  }
+  if (raw.includes('AbortError')) {
+    return 'تم إلغاء الطلب.';
+  }
+  return raw.length > 260 ? 'حدث خطأ مؤقت أثناء الاتصال بـ Google Gemini API — يرجى إعادة المحاولة.' : raw || 'تعذر الاتصال بخدمة Gemini.';
+}
+
+/**
+ * Checks connectivity to Google Gemini API directly from the client.
+ * Calls generativelanguage.googleapis.com with the configured API key.
+ */
+export async function checkGeminiStatus(forceProbe = false): Promise<GeminiConnectionStatus> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return {
+      ok: false,
+      connected: false,
+      status: 'offline',
+      model: GEMINI_MODEL_CHAIN[0],
+      latencyMs: 1,
+      checkedAtIso: new Date().toISOString(),
+      error: 'مفتاح Gemini API غير مهيأ — يرجى إضافة المفتاح في الإعدادات.',
+    };
+  }
+
+  const cacheKey = `gemini_probe_${apiKey.slice(-8)}`;
+  if (!forceProbe) {
+    const cached = getFromCache<GeminiConnectionStatus>(cacheKey);
+    if (cached) return cached;
+  }
+
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6_000);
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {
+      method: 'GET',
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+
+    clearTimeout(timeoutId);
+    const roundTrip = Math.max(1, Date.now() - startedAt);
+
+    if (res.ok) {
+      const result: GeminiConnectionStatus = {
+        ok: true,
+        connected: true,
+        status: 'online',
+        model: 'gemini-2.5-flash',
+        latencyMs: roundTrip,
+        checkedAtIso: new Date().toISOString(),
+      };
+      setToCache(cacheKey, result, 3 * 60_000);
+      return result;
+    }
+
+    if (res.status === 429) {
+      return {
+        ok: true,
+        connected: true,
+        status: 'degraded',
+        model: 'gemini-2.5-flash',
+        latencyMs: roundTrip,
+        checkedAtIso: new Date().toISOString(),
+        error: 'ضغط مؤقت على Gemini — المحاولة التلقائية نشطة ويمكنك الإرسال مباشرة.',
+      };
+    }
+
+    const errData = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    return {
+      ok: false,
+      connected: false,
+      status: 'offline',
+      model: 'gemini-2.5-flash',
+      latencyMs: roundTrip,
+      checkedAtIso: new Date().toISOString(),
+      error: errData.error?.message ? formatFriendlyGeminiErrorAr(errData.error.message) : `تعذر التحقق من مفتاح Gemini (${res.status}).`,
+    };
+  } catch (err: unknown) {
+    clearTimeout(timeoutId);
+    const isTimeout = err instanceof DOMException && err.name === 'AbortError';
+    return {
+      ok: false,
+      connected: false,
+      status: 'offline',
+      model: 'gemini-2.5-flash',
+      latencyMs: Math.max(1, Date.now() - startedAt),
+      checkedAtIso: new Date().toISOString(),
+      error: isTimeout ? 'استغرق التحقق وقتاً طويلاً — ستتم إعادة المحاولة تلقائياً.' : formatFriendlyGeminiErrorAr(err),
+    };
+  }
+}
+
+/**
+ * Client-Side Direct Gemini Multi-turn Chat with Live SSE Streaming and Automatic Model Fallback.
+ * Connects directly to generativelanguage.googleapis.com — Zero intermediate backend needed!
+ */
+export async function apiStreamGeminiChatClient(
+  payload: ChatRequestPayload,
+  handlers: ChatStreamHandlers
+): Promise<boolean> {
+  const startedAt = Date.now();
+  const userMessage = typeof payload.message === 'string' ? payload.message.trim() : '';
+  if (!userMessage) {
+    throw new Error('الرسالة مطلوبة.');
+  }
+
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('مفتاح Google Gemini API غير متوفر — تفضل بإضافته في إعدادات التطبيق.');
+  }
+
+  handlers.onStatus?.('جارٍ الرد المباشر من Google Gemini...');
+
+  const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
+  const normalizedHistory = normalizeGeminiHistory(payload.history);
+  const contents = [
+    ...normalizedHistory,
+    {
+      role: 'user',
+      parts: [{ text: userMessage }],
+    },
+  ];
+
+  const needsTools = shouldAttachChatTools(userMessage);
+
+  const requestBody: Record<string, unknown> = {
+    contents,
+    systemInstruction: {
+      parts: [{ text: systemInstruction }],
+    },
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 2048,
+    },
+  };
+
+  if (needsTools) {
+    requestBody.tools = GEMINI_CHAT_TOOLS;
+  }
+
+  let fullText = '';
+  const collectedFnCalls: GeminiFunctionCall[] = [];
+  let succeeded = false;
+  let activeModelUsed: string = GEMINI_MODEL_CHAIN[0];
+  let lastErr: unknown = null;
+
+  for (const modelCandidate of GEMINI_MODEL_CHAIN) {
+    if (handlers.signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: handlers.signal,
+      });
+
+      if (!res.ok) {
+        const errorJson = (await res.json().catch(() => ({}))) as { error?: { message?: string; code?: number } };
+        const errMsg = errorJson?.error?.message || `HTTP ${res.status}`;
+        // If 404 (model deprecated for key, e.g. gemini-2.5-flash) or 503 (high demand), try next candidate
+        if (res.status === 404 || res.status === 503 || res.status === 429) {
+          lastErr = new Error(errMsg);
+          continue;
+        }
+        throw new Error(errMsg);
+      }
+
+      if (!res.body) {
+        throw new Error('Empty response body stream');
+      }
+
+      activeModelUsed = modelCandidate;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      const processLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) return;
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr || jsonStr === '[DONE]') return;
+
+        try {
+          const parsed = JSON.parse(jsonStr) as {
+            candidates?: Array<{
+              content?: {
+                parts?: Array<{
+                  text?: string;
+                  functionCall?: { name: string; args?: Record<string, unknown> };
+                }>;
+              };
+            }>;
+            error?: { message?: string };
+          };
+
+          if (parsed.error?.message) {
+            throw new Error(parsed.error.message);
+          }
+
+          const parts = parsed.candidates?.[0]?.content?.parts ?? [];
+          for (const part of parts) {
+            if (typeof part.text === 'string' && part.text) {
+              fullText += part.text;
+              handlers.onDelta(part.text);
+            }
+            if (part.functionCall && typeof part.functionCall.name === 'string') {
+              collectedFnCalls.push(part.functionCall);
+            }
+          }
+        } catch (e: unknown) {
+          if (e instanceof Error && e.message && !e.message.includes('JSON')) {
+            throw e;
+          }
+        }
+      };
+
+      while (true) {
+        if (handlers.signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          processLine(line);
+        }
+      }
+
+      // Flush remaining
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        const lines = buffer.split('\n');
+        for (const line of lines) {
+          processLine(line);
+        }
+      }
+
+      succeeded = true;
+      break;
+    } catch (modelErr: unknown) {
+      if (modelErr instanceof DOMException && modelErr.name === 'AbortError') {
+        throw modelErr;
+      }
+      lastErr = modelErr;
+      if (fullText) {
+        // We already streamed partial tokens to the user, do not restart
+        break;
+      }
+      // Try next model candidate
+      continue;
+    }
+  }
+
+  if (!succeeded && !fullText) {
+    // Non-streaming fallback attempt if SSE had issues
+    try {
+      const nonStreamFallback = await fetchGeminiChatNonStream(requestBody, apiKey);
+      if (nonStreamFallback) {
+        fullText = nonStreamFallback.text;
+        if (nonStreamFallback.fnCalls) {
+          collectedFnCalls.push(...nonStreamFallback.fnCalls);
+        }
+        handlers.onDelta(fullText);
+        succeeded = true;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!succeeded && !fullText) {
+    throw new Error(formatFriendlyGeminiErrorAr(lastErr));
+  }
+
+  const pendingProposal = extractPendingProposalFromFunctionCalls(collectedFnCalls);
+  const finalText =
+    fullText.trim() ||
+    pendingProposal?.summaryAr ||
+    'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
+
+  handlers.onDone({
+    text: finalText,
+    pendingProposal,
+    latencyMs: Math.max(1, Date.now() - startedAt),
+    memoriesAppliedCount,
+    model: activeModelUsed,
+    cached: false,
+  });
+
+  return true;
+}
+
+async function fetchGeminiChatNonStream(
+  requestBody: Record<string, unknown>,
+  apiKey: string
+): Promise<{ text: string; fnCalls: GeminiFunctionCall[] } | null> {
+  for (const modelCandidate of GEMINI_MODEL_CHAIN) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+      if (!res.ok) continue;
+      const data = (await res.json()) as {
+        candidates?: Array<{
+          content?: {
+            parts?: Array<{
+              text?: string;
+              functionCall?: { name: string; args?: Record<string, unknown> };
+            }>;
+          };
+        }>;
+      };
+      const parts = data.candidates?.[0]?.content?.parts ?? [];
+      let text = '';
+      const fnCalls: GeminiFunctionCall[] = [];
+      for (const p of parts) {
+        if (p.text) text += p.text;
+        if (p.functionCall) fnCalls.push(p.functionCall);
+      }
+      if (text || fnCalls.length > 0) {
+        return { text, fnCalls };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
+ * Client-Side Maps Query: Queries free OSM Photon API directly for nearby geographic places,
+ * then generates a clean Gemini Arabic summary with live Google Maps URLs!
+ */
+export async function apiStreamGeminiMapsClient(
+  payload: {
+    query: string;
+    lat?: number;
+    lng?: number;
+    memories?: Array<{ ruleText: string; category?: string }>;
+    constitutionBrief?: string;
+  },
+  handlers: ChatStreamHandlers
+): Promise<boolean> {
+  const startedAt = Date.now();
+  const apiKey = getGeminiApiKey();
+  const query = (payload.query || '').trim();
+  const lat = typeof payload.lat === 'number' ? payload.lat : 31.1953;
+  const lng = typeof payload.lng === 'number' ? payload.lng : 31.5212;
+
+  handlers.onStatus?.('جارٍ البحث الجغرافي المباشر حول موقعك...');
+
+  let places: GroundingPlace[] = [];
+  try {
+    const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&lat=${lat}&lon=${lng}&limit=6`;
+    const res = await fetch(photonUrl, { signal: handlers.signal });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        features?: Array<{
+          geometry?: { coordinates?: [number, number] };
+          properties?: {
+            name?: string;
+            street?: string;
+            city?: string;
+            state?: string;
+            country?: string;
+            osm_value?: string;
+          };
+        }>;
+      };
+      if (Array.isArray(data.features)) {
+        places = data.features
+          .filter((f) => f.properties?.name)
+          .map((f) => {
+            const p = f.properties!;
+            const coords = f.geometry?.coordinates;
+            const placeLat = coords ? coords[1] : lat;
+            const placeLng = coords ? coords[0] : lng;
+            const address = [p.street, p.city, p.state].filter(Boolean).join('، ');
+            return {
+              title: p.name || query,
+              uri: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${p.name || ''} ${address}`.trim())}&center=${placeLat},${placeLng}`,
+              snippets: [address || 'مكان بالقرب من موقعك الجغرافي'].filter(Boolean),
+            };
+          });
+      }
+    }
+  } catch {
+    // ignore photon failures and let Gemini synthesize
+  }
+
+  handlers.onStatus?.('جارٍ تلخيص الأماكن عبر Gemini...');
+
+  const placesContext =
+    places.length > 0
+      ? places.map((p, i) => `${i + 1}. ${p.title} (${(p.snippets ?? []).join(' - ')}) - رابط خرائط: ${p.uri}`).join('\n')
+      : 'لم تتوفر نتائج تلقائية مباشرة من الخريطة.';
+
+  const prompt = `أنت دليل الأماكن والخرائط في تطبيق «إيقاع اليوم».
+المستخدم يبحث عن: "${query}"
+موقعه الحالي: خط عرض ${lat} وخط طول ${lng}.
+النتائج الجغرافية المكتشفة:
+${placesContext}
+
+أجب باختصار مباشر وودود باللغة العربية، موضحاً أسماء الأماكن المقترحة وأقربها وأفضل نصيحة توقيت لزيارتها.`;
+
+  return apiStreamGeminiChatClient(
+    {
+      message: prompt,
+      contextSummary: payload.constitutionBrief,
+      memories: payload.memories?.map((m, idx) => ({ id: `m-${idx}`, category: m.category || 'general', ruleText: m.ruleText })),
+    },
+    {
+      signal: handlers.signal,
+      onStatus: handlers.onStatus,
+      onDelta: handlers.onDelta,
+      onDone: (donePayload) => {
+        handlers.onDone({
+          ...donePayload,
+          places: places.length > 0 ? places : donePayload.places,
+          latencyMs: Math.max(1, Date.now() - startedAt),
+        });
+      },
+    }
+  );
+}
+
+/**
+ * Client-Side Web Search Query: Synthesizes live search answers via Google Gemini client-side.
+ */
+export async function apiStreamGeminiSearchClient(
+  payload: {
+    query: string;
+    lat?: number;
+    lng?: number;
+    memories?: Array<{ ruleText: string; category?: string }>;
+    constitutionBrief?: string;
+  },
+  handlers: ChatStreamHandlers
+): Promise<boolean> {
+  const startedAt = Date.now();
+  const query = (payload.query || '').trim();
+
+  handlers.onStatus?.('جارٍ البحث والتحليل العلمي الذكي...');
+
+  const prompt = `أنت الباحث العلمي الذكي في تطبيق «إيقاع اليوم | DayRhythm».
+استعلام البحث: "${query}"
+
+أجب باللغة العربية بوضوح ودقة واختصار، مع مراعاة النصائح الصحية والعلمية ونظام التوقيت 12 ساعة (ص/م).`;
+
+  return apiStreamGeminiChatClient(
+    {
+      message: prompt,
+      contextSummary: payload.constitutionBrief,
+      memories: payload.memories?.map((m, idx) => ({ id: `m-${idx}`, category: m.category || 'general', ruleText: m.ruleText })),
+    },
+    {
+      signal: handlers.signal,
+      onStatus: handlers.onStatus,
+      onDelta: handlers.onDelta,
+      onDone: (donePayload) => {
+        handlers.onDone({
+          ...donePayload,
+          latencyMs: Math.max(1, Date.now() - startedAt),
+        });
+      },
+    }
+  );
+}

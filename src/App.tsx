@@ -3085,51 +3085,9 @@ export default function App() {
   const handleSaveCloudApiUrl = useCallback(
     (url: string) => {
       syncUiPrefsCloud(selectedLogoId, capsulePrefs, url);
-      if (url) {
-        showToast('☁️ تم حفظ رابط الخادم ومزامنته تلقائياً بين الكمبيوتر والموبايل ✓');
-      }
     },
-    [capsulePrefs, selectedLogoId, showToast, syncUiPrefsCloud]
+    [capsulePrefs, selectedLogoId, syncUiPrefsCloud]
   );
-
-  // Auto-discover & sync public Cloud Run URL when opened in a deployed web instance (so standalone EXE/APK connect automatically)
-  useEffect(() => {
-    if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreSynced) return;
-    if (typeof window === 'undefined' || isStandaloneVirtualHost()) return;
-    const host = window.location.hostname.toLowerCase();
-    if (
-      !host ||
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host.startsWith('ais-dev-') ||
-      host.startsWith('ais-pre-')
-    ) {
-      return;
-    }
-    const origin = window.location.origin.replace(/\/+$/, '');
-    if (getSavedCloudApiUrl() === origin) return;
-    let cancelled = false;
-    void fetch(`${origin}/api/health`, { method: 'GET', cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { ok?: boolean } | null) => {
-        if (cancelled || !data?.ok) return;
-        syncSavedCloudApiUrlFromRemote(origin);
-        syncUiPrefsCloud(selectedLogoId, capsulePrefs, origin);
-      })
-      .catch(() => {
-        // ignore probe failure
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    firebaseUser?.uid,
-    firebaseUser?.emailVerified,
-    firestoreSynced,
-    selectedLogoId,
-    capsulePrefs,
-    syncUiPrefsCloud,
-  ]);
 
   // One-time migration from legacy Cairo default (30.0444, 31.2357) to user's home (الضهرية · شربين · الدقهلية)
   useEffect(() => {
