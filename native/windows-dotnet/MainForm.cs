@@ -330,6 +330,18 @@ namespace DayRhythm
                                             RunOnUi(() => ShowSecondaryMonitorAlert(alertPayload));
                                         }
                                     }
+                                    else if (string.Equals(msgType, "stop-alert", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        RunOnUi(() =>
+                                        {
+                                            if (_activeToastForm != null && !_activeToastForm.IsDisposed)
+                                            {
+                                                _activeToastForm.Close();
+                                                _activeToastForm.Dispose();
+                                                _activeToastForm = null;
+                                            }
+                                        });
+                                    }
                                 }
                             }
                         }

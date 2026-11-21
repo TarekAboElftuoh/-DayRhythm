@@ -619,7 +619,11 @@ public class MainActivity extends Activity {
     }
 
     private void showUpdateBanner(String tag, String url) {
-        showUpdateBanner(tag, url, "");
+        if (url != null && url.toLowerCase().endsWith(".zip")) {
+            showUpdateBanner(tag, "", url);
+        } else {
+            showUpdateBanner(tag, url, "");
+        }
     }
 
     private void showUpdateBanner(String tag, String apkUrl, String otaZipUrl) {
