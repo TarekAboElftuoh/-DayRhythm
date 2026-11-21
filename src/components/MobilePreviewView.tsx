@@ -25,7 +25,7 @@ import {
   TravelState,
 } from '../types/dayrhythm';
 import { LiveAlertsLeadMinutes, OnePlusDeviceSettings } from '../firebase';
-import { formatCairoNow12h, formatMinutes12h } from '../engines/prayerEngine';
+import { formatMinutes12h, formatNow12hInTimeZone } from '../engines/prayerEngine';
 import { QUIET_MODE_LABELS } from '../engines/i18n';
 import { HAPTIC_WAVEFORMS, triggerHapticWaveform } from '../engines/hapticsEngine';
 
@@ -58,6 +58,7 @@ interface MobilePreviewViewProps {
   deviceSettings: OnePlusDeviceSettings;
   onUpdateDeviceSettings: (patch: Partial<OnePlusDeviceSettings>) => void;
   firestoreSynced: boolean;
+  activeTimeZone?: string;
 }
 
 const PERMISSION_STEPS = [
@@ -91,6 +92,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
   deviceSettings,
   onUpdateDeviceSettings,
   firestoreSynced,
+  activeTimeZone = 'Africa/Cairo',
 }) => {
   const [showNightWakeScreen, setShowNightWakeScreen] = useState(false);
   const [liveAlertMode, setLiveAlertMode] = useState<'alarm' | 'hydration' | 'charge'>('alarm');
@@ -214,7 +216,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                 {/* OxygenOS 16 Live Alerts Capsule */}
                 <div className="flex items-center justify-between gap-2 pb-3 border-b border-white/10">
                   <span className="font-mono-tabular text-[11px] text-zinc-400">
-                    {formatCairoNow12h(language)}
+                    {formatNow12hInTimeZone(activeTimeZone, language)}
                   </span>
 
                   {deviceSettings.liveAlertsEnabled ? (

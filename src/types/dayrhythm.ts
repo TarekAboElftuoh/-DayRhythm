@@ -4,6 +4,16 @@ export type FastingExemption = 'none' | 'travel' | 'health';
 
 export type SurfaceTheme = 'amoled' | 'obsidian';
 
+export type CapsuleOrientation = 'horizontal' | 'vertical';
+
+export type CapsuleSize = 'sm' | 'md' | 'lg';
+
+export interface UiPrefs {
+  selectedLogoId: string;
+  capsuleOrientation: CapsuleOrientation;
+  capsuleSize: CapsuleSize;
+}
+
 export type AppLanguage = 'ar' | 'en';
 
 export type ActiveTab = 'dashboard' | 'mobile' | 'overlay' | 'assistant' | 'blueprint';

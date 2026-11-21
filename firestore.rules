@@ -261,6 +261,27 @@ service cloud.firestore {
         && p.personalNotes is string && p.personalNotes.size() <= 600;
     }
 
+    function isValidUiPrefs(u) {
+      return u is map
+        && u.keys().hasAll([
+          'selectedLogoId',
+          'capsuleOrientation',
+          'capsuleSize'
+        ])
+        && u.keys().hasOnly([
+          'selectedLogoId',
+          'capsuleOrientation',
+          'capsuleSize'
+        ])
+        && u.selectedLogoId is string
+        && u.selectedLogoId.size() >= 1
+        && u.selectedLogoId.size() <= 40
+        && u.capsuleOrientation is string
+        && u.capsuleOrientation in ['horizontal', 'vertical']
+        && u.capsuleSize is string
+        && u.capsuleSize in ['sm', 'md', 'lg'];
+    }
+
     function isValidUserRhythmState(data, userId) {
       return data.keys().hasAll([
           'uid',
@@ -297,6 +318,7 @@ service cloud.firestore {
           'lifeProfile',
           'syncSignal',
           'phoneBattery',
+          'uiPrefs',
           'createdAt',
           'updatedAt'
         ])
@@ -331,6 +353,7 @@ service cloud.firestore {
         && isValidLifeProfile(data.lifeProfile)
         && (!('syncSignal' in data) || isValidSyncSignal(data.syncSignal))
         && (!('phoneBattery' in data) || isValidPhoneBattery(data.phoneBattery))
+        && (!('uiPrefs' in data) || isValidUiPrefs(data.uiPrefs))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -560,7 +583,63 @@ service cloud.firestore {
           ('createdAt' in existing() && existing().createdAt is timestamp && incoming().createdAt == existing().createdAt)
           || ((!('createdAt' in existing()) || !(existing().createdAt is timestamp)) && incoming().createdAt == request.time)
         )
-        && incoming().updatedAt == request.time;
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Cross-device workspace sync signal ping
+          incoming().diff(existing()).affectedKeys().hasOnly(['syncSignal', 'updatedAt'])
+          ||
+          // Action 2: Mobile battery telemetry ping
+          incoming().diff(existing()).affectedKeys().hasOnly(['phoneBattery', 'updatedAt'])
+          ||
+          // Action 2b: Cross-device UI preferences update (logo & capsule orientation/size)
+          incoming().diff(existing()).affectedKeys().hasOnly(['uiPrefs', 'updatedAt'])
+          ||
+          // Action 3: Full user rhythm state & life profile sync (supports legacy field removal via deleteField)
+          (
+            incoming().diff(existing()).addedKeys().hasOnly([
+              'uid',
+              'hydrationDateKey',
+              'cupsLogged',
+              'targetCups',
+              'hydrationWeeklyCounts',
+              'dailyCommitmentDays',
+              'dailyCommitmentDoneToday',
+              'waterTargetDays',
+              'waterTargetDoneToday',
+              'quietMode',
+              'adhanOverrideSilent',
+              'surfaceTheme',
+              'deviceSettings',
+              'lifeProfile',
+              'syncSignal',
+              'phoneBattery',
+              'uiPrefs',
+              'createdAt',
+              'updatedAt'
+            ])
+            && incoming().diff(existing()).changedKeys().hasOnly([
+              'uid',
+              'hydrationDateKey',
+              'cupsLogged',
+              'targetCups',
+              'hydrationWeeklyCounts',
+              'dailyCommitmentDays',
+              'dailyCommitmentDoneToday',
+              'waterTargetDays',
+              'waterTargetDoneToday',
+              'quietMode',
+              'adhanOverrideSilent',
+              'surfaceTheme',
+              'deviceSettings',
+              'lifeProfile',
+              'syncSignal',
+              'phoneBattery',
+              'uiPrefs',
+              'createdAt',
+              'updatedAt'
+            ])
+          )
+        );
 
       allow delete: if false;
 

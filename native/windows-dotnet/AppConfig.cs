@@ -12,6 +12,8 @@ namespace DayRhythm
         public bool ShowDesktopCapsule { get; set; } = true;
         public bool CapsulePrivacyMode { get; set; } = false;
         public bool AlertsOnSecondaryScreen { get; set; } = true;
+        public string CapsuleOrientation { get; set; } = "horizontal";
+        public string CapsuleSize { get; set; } = "md";
         public int? CapsuleX { get; set; }
         public int? CapsuleY { get; set; }
     }

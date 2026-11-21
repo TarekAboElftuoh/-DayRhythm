@@ -293,15 +293,26 @@ public class MainActivity extends Activity {
     }
 
     private void requestEssentialPermissions() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(
-                        this,
-                        new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                        201
-                );
-            }
+        java.util.List<String> needed = new java.util.ArrayList<>();
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        }
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        if (!needed.isEmpty()) {
+            ActivityCompat.requestPermissions(
+                    this,
+                    needed.toArray(new String[0]),
+                    201
+            );
         }
     }
 
@@ -363,7 +374,7 @@ public class MainActivity extends Activity {
         cm.setAcceptCookie(true);
         cm.setAcceptThirdPartyCookies(webView, true);
 
-        // Expose lightweight JS bridge so in-app Settings can trigger instant GitHub OTA checks
+        // Expose lightweight JS bridge for OTA updates, Android Exact Alarms, and Notification Quick Actions
         webView.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void checkForUpdates() {
@@ -381,9 +392,34 @@ public class MainActivity extends Activity {
                     }
                 });
             }
+
+            @JavascriptInterface
+            public void scheduleExactAlarms(String alarmsJson) {
+                executor.execute(() -> ReminderAlarmReceiver.scheduleBatchFromJson(MainActivity.this, alarmsJson));
+            }
+
+            @JavascriptInterface
+            public String consumePendingNativeActions() {
+                return ReminderAlarmReceiver.consumePendingQuickActionsJson(MainActivity.this);
+            }
         }, "DayRhythmNative");
 
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                try {
+                    String pending = ReminderAlarmReceiver.consumePendingQuickActionsJson(MainActivity.this);
+                    if (pending != null && !pending.equals("[]")) {
+                        view.evaluateJavascript(
+                                "window.dispatchEvent(new CustomEvent('dayrhythm:native-quick-actions', { detail: " + pending + " }));",
+                                null
+                        );
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -423,7 +459,18 @@ public class MainActivity extends Activity {
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
-                callback.invoke(origin, true, false);
+                if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.ACCESS_FINE_LOCATION)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(
+                            MainActivity.this,
+                            new String[]{
+                                    Manifest.permission.ACCESS_FINE_LOCATION,
+                                    Manifest.permission.ACCESS_COARSE_LOCATION
+                            },
+                            202
+                    );
+                }
+                callback.invoke(origin, true, true);
             }
 
             @Override
@@ -613,6 +660,30 @@ public class MainActivity extends Activity {
         executor.execute(() -> {
             GitHubUpdater.UpdateInfo info = GitHubUpdater.checkLatestRelease(MainActivity.this);
             if (info != null && info.hasUpdate) {
+                // Automatic Silent Hot Update on launch when lightweight Web OTA zip is available!
+                if (info.webOtaZipUrl != null && !info.webOtaZipUrl.isEmpty()) {
+                    boolean hotOk = GitHubUpdater.downloadAndApplyWebOta(
+                            MainActivity.this,
+                            info.webOtaZipUrl,
+                            info.latestTag
+                    );
+                    if (hotOk) {
+                        final String appliedTag = info.latestTag;
+                        runOnUiThread(() -> {
+                            if (updateBar != null) updateBar.setVisibility(View.GONE);
+                            Toast.makeText(
+                                    MainActivity.this,
+                                    "🚀 تم تطبيق التحديث الفوري تلقائياً (" + appliedTag + ") ✓",
+                                    Toast.LENGTH_LONG
+                            ).show();
+                            if (webView != null) {
+                                webView.clearCache(true);
+                                webView.loadUrl(APP_ORIGIN + "?hot=" + System.currentTimeMillis());
+                            }
+                        });
+                        return;
+                    }
+                }
                 runOnUiThread(() -> showUpdateBanner(info.latestTag, info.apkDownloadUrl, info.webOtaZipUrl));
             }
         });

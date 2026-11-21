@@ -219,6 +219,7 @@ const DAYRHYTHM_SYSTEM_INSTRUCTION = `
    - ينطبق هذا الأسلوب على أي دواء أو فيتامين أو مكمل يذكره المستخدم (مثل فيتامين د، ماغنيسيوم، أوميجا 3، زنك، حديد، كرياتين، أو أي علاج شخصي يضيفه في حسابه).
    - إذا ذكر المستخدم مكملًا أو علاجاً أو سألك عن توافق ميعاده: قيّم التوقيت علمياً (الامتصاص مع وجبة دهنية/ماء، المنبهات قبل النوم، التعارض مع القهوة/الكالسيوم/الصيام) وجدولياً (بعيداً عن الصلاة والنوم والأحداث المزدحمة). لو فيه تعارض لا تثبّت أعمى بل ناقشه واقترح البديل الأصح أولاً.
    - عند اقتراح إضافة علاج أو مكمل جديد بمواعيد محددة عبر propose_medication_actions، اقترح معه تلقائياً في نفس الرد حدثاً مرتبطاً في Google Calendar عبر propose_calendar_actions (بعنوان يبدأ بـ 💊 ⏰ ومدة 15 دقيقة وتكرار DAILY أو WEEKLY حسب أيام العلاج) حتى يُحجز له مكانه تلقائياً في التقويم.
+   - لديك صلاحية كاملة لحذف أي علاج أو مكمل عند طلب المستخدم صراحةً (مثل «امسح / احذف / وقفت علاج ...»): استخدم propose_medication_actions بعملية remove مع تمرير medicationId أو اسم العلاج الدقيق من قائمته الحالية، واقترح معه حذف الحدث المرتبط به في Google Calendar إن وُجد عبر propose_calendar_actions، وسيظهر للمستخدم زر تأكيد نهائي قبل التنفيذ لحمايته من أي حذف خاطئ.
    - ادعم الجرعات المتعددة (times24)، الأيام المحددة (daysOfWeek)، مدة الكورس (courseEndDate)، وعدد الجرعات المتبقية (remainingDoses / totalDoses).
 5. تحديث الوزن والماء والثوابت بمرونة كاملة:
    - الوزن متغيّر دائماً (المرجع الحالي موجود في الدستور أدناه): لو أبلغك المستخدم بتغيّر وزنه، اقترح فوراً تحديث weightKg عبر propose_profile_updates فيُعاد حساب هدف الماء العلمي وتوزيع الأكواب تلقائياً.
@@ -1992,9 +1993,9 @@ async function startServer() {
     model: string;
   }
 
-  const chatResponseCache = new GeminiTtlLruCache<CachedChatValue>(80, 3 * 60_000);
-  const mapsResponseCache = new GeminiTtlLruCache<CachedMapsValue>(60, 10 * 60_000);
-  const searchResponseCache = new GeminiTtlLruCache<CachedSearchValue>(60, 5 * 60_000);
+  const chatResponseCache = new GeminiTtlLruCache<CachedChatValue>(150, 10 * 60_000);
+  const mapsResponseCache = new GeminiTtlLruCache<CachedMapsValue>(80, 15 * 60_000);
+  const searchResponseCache = new GeminiTtlLruCache<CachedSearchValue>(80, 10 * 60_000);
 
   function hashCacheKey(parts: unknown[]): string {
     return crypto
@@ -2008,30 +2009,41 @@ async function startServer() {
     return raw.trim().replace(/\s+/g, ' ').toLowerCase();
   }
 
+  function isContextDependentQuery(raw: string): boolean {
+    const q = normalizeQueryForCache(raw);
+    if (q.length <= 12) return true;
+    return /(^|\s)(ده|دي|دول|كمل|كمّل|أكمل|اكمل|وضح|وضّح|اشرح|لماذا|ليه|غيره|غيّره|عدله|عدّله|احذفه|تمام|نعم|لا|أوك|اوك|ok|yes|no|more|continue|it|that|this|above)(\s|$)/i.test(
+      q
+    );
+  }
+
   function buildChatCacheKey(payload: ChatRequestPayload, formattedHistory: Content[]): string {
-    // 5-minute time bucket so time-relative Q&A refreshes naturally while repeated queries hit cache
-    const timeBucket5m = Math.floor(Date.now() / (5 * 60_000));
+    // 10-minute time bucket so repeated Q&A hits cache rapidly while time-relative answers stay fresh
+    const timeBucket10m = Math.floor(Date.now() / (10 * 60_000));
     const memoriesSig = (payload.memories ?? []).map((m) => `${m.id}:${m.category}:${m.ruleText}`);
     const eventsSig = (payload.calendarEvents ?? [])
-      .slice(0, 36)
+      .slice(0, 28)
       .map((e) => `${e.id}:${e.summary}:${e.start}:${e.end ?? ''}`);
     const tasksSig = (payload.tasks ?? [])
-      .slice(0, 25)
+      .slice(0, 20)
       .map((t) => `${t.id}:${t.title}:${t.status}:${t.due ?? ''}`);
     const medsSig = (payload.medications ?? []).map(
       (m) => `${m.id}:${m.name}:${m.takenToday ? 1 : 0}:${m.remainingDoses ?? -1}`
     );
-    const historySig = formattedHistory.slice(-6).map((h) => ({
-      role: h.role,
-      text: h.parts?.[0]?.text ?? '',
-    }));
+    const includeHistory = isContextDependentQuery(payload.message ?? '');
+    const historySig = includeHistory
+      ? formattedHistory.slice(-4).map((h) => ({
+          role: h.role,
+          text: (h.parts?.[0]?.text ?? '').slice(0, 220),
+        }))
+      : [];
     return hashCacheKey([
-      'chat_v1',
+      'chat_v2',
       getCairoTodayIso(),
-      timeBucket5m,
+      timeBucket10m,
       normalizeQueryForCache(payload.message ?? ''),
       historySig,
-      (payload.contextSummary ?? '').slice(0, 1200),
+      (payload.contextSummary ?? '').slice(0, 900),
       memoriesSig,
       eventsSig,
       tasksSig,
@@ -2074,15 +2086,151 @@ async function startServer() {
     ]);
   }
 
-  // 3A. Fast Streaming Multi-turn Gemini Chat (SSE with TTL/LRU Caching + automatic model failover)
-  app.post('/api/chat/stream', async (req, res) => {
+  // Shared ultra-low-latency streaming core used by BOTH persistent WebSocket (/ws/sync) & HTTP SSE (/api/chat/stream)
+  async function executeGeminiChatStream(
+    payload: ChatRequestPayload,
+    emit: (event: Record<string, unknown>) => void,
+    isAborted: () => boolean
+  ): Promise<void> {
     const startedAt = Date.now();
+    const userMessage = typeof payload.message === 'string' ? payload.message.trim() : '';
+    if (!userMessage) {
+      emit({ type: 'error', error: 'الرسالة مطلوبة.' });
+      return;
+    }
+    const formattedHistory = normalizeGeminiHistory(payload.history);
+    const cacheKey = buildChatCacheKey({ ...payload, message: userMessage }, formattedHistory);
+
+    if (!payload.bypassCache) {
+      const cached = chatResponseCache.get(cacheKey);
+      if (cached) {
+        emit({ type: 'delta', text: cached.text });
+        emit({
+          type: 'done',
+          text: cached.text,
+          latencyMs: Math.max(1, Date.now() - startedAt),
+          memoriesAppliedCount: cached.memoriesAppliedCount,
+          model: cached.model,
+          cached: true,
+        });
+        return;
+      }
+    }
+
+    emit({ type: 'status', text: 'جارٍ الرد السريع وفق ذاكرتك...' });
+
+    const ai = getGeminiClient();
+    const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
+
+    let activeModel: string = GEMINI_CHAT_MODEL_CHAIN[0];
+    let fullText = '';
+    const collectedFnCalls: FunctionCall[] = [];
+    let streamCompleted = false;
+    let lastStreamErr: unknown = null;
+
+    const needsTools = shouldAttachChatTools(userMessage);
+
+    for (const candidateModel of GEMINI_CHAT_MODEL_CHAIN) {
+      if (isAborted()) return;
+      activeModel = candidateModel;
+      let firstChunkTimer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        const chat = ai.chats.create({
+          model: candidateModel,
+          history: formattedHistory,
+          config: {
+            systemInstruction,
+            thinkingConfig: {
+              thinkingLevel:
+                candidateModel === 'gemini-3.1-flash-lite'
+                  ? ThinkingLevel.MINIMAL
+                  : ThinkingLevel.LOW,
+            },
+            ...(needsTools ? { tools: GEMINI_CHAT_TOOLS } : {}),
+          },
+        });
+
+        // Ultra-fast 5s failover if the primary model stalls before producing its first chunk
+        const streamPromise = chat.sendMessageStream({ message: userMessage });
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          firstChunkTimer = setTimeout(
+            () => reject(new Error('503 UNAVAILABLE: stream_connect_timeout')),
+            5_000
+          );
+        });
+        const stream = await Promise.race([streamPromise, timeoutPromise]);
+        if (firstChunkTimer) {
+          clearTimeout(firstChunkTimer);
+          firstChunkTimer = null;
+        }
+
+        for await (const chunk of stream) {
+          if (isAborted()) break;
+          const delta = chunk.text ?? '';
+          if (delta) {
+            fullText += delta;
+            emit({ type: 'delta', text: delta });
+          }
+          if (Array.isArray(chunk.functionCalls) && chunk.functionCalls.length > 0) {
+            collectedFnCalls.push(...chunk.functionCalls);
+          }
+        }
+        streamCompleted = true;
+        break;
+      } catch (modelErr: unknown) {
+        if (firstChunkTimer) clearTimeout(firstChunkTimer);
+        lastStreamErr = modelErr;
+        if (!fullText && isRetryableGeminiError(modelErr)) {
+          continue;
+        }
+        throw modelErr;
+      }
+    }
+
+    if (isAborted()) return;
+
+    if (!streamCompleted) {
+      throw lastStreamErr ?? new Error('تعذر الاتصال بـ Gemini حالياً.');
+    }
+
+    const pendingProposal = extractPendingProposalFromFunctionCalls(collectedFnCalls);
+    const finalText =
+      fullText.trim() ||
+      pendingProposal?.summaryAr ||
+      'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
+
+    // Cache purely informational responses (never cache mutating tool proposals)
+    if (!pendingProposal && finalText.length > 0) {
+      chatResponseCache.set(cacheKey, {
+        text: finalText,
+        memoriesAppliedCount,
+        model: activeModel,
+      });
+    }
+
+    const streamLatencyMs = Math.max(1, Date.now() - startedAt);
+    markGeminiProbeOnline(activeModel, streamLatencyMs);
+
+    emit({
+      type: 'done',
+      text: finalText,
+      pendingProposal,
+      latencyMs: streamLatencyMs,
+      memoriesAppliedCount,
+      model: activeModel,
+      cached: false,
+    });
+  }
+
+  // 3A. Fast Streaming Multi-turn Gemini Chat (SSE with TCP_NODELAY + TTL/LRU Caching + automatic failover)
+  app.post('/api/chat/stream', async (req, res) => {
     const payload = req.body as ChatRequestPayload;
     if (!payload?.message || typeof payload.message !== 'string') {
       res.status(400).json({ error: 'الرسالة مطلوبة.' });
       return;
     }
 
+    req.socket?.setNoDelay?.(true);
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
@@ -2095,126 +2243,7 @@ async function startServer() {
     };
 
     try {
-      const formattedHistory = normalizeGeminiHistory(payload.history);
-      const cacheKey = buildChatCacheKey(payload, formattedHistory);
-
-      if (!payload.bypassCache) {
-        const cached = chatResponseCache.get(cacheKey);
-        if (cached) {
-          writeEvent({ type: 'delta', text: cached.text });
-          writeEvent({
-            type: 'done',
-            text: cached.text,
-            latencyMs: Math.max(1, Date.now() - startedAt),
-            memoriesAppliedCount: cached.memoriesAppliedCount,
-            model: cached.model,
-            cached: true,
-          });
-          res.end();
-          return;
-        }
-      }
-
-      writeEvent({ type: 'status', text: 'جارٍ التفكير وفق دستورك وذاكرتك...' });
-
-      const ai = getGeminiClient();
-      const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
-
-      let activeModel: string = GEMINI_CHAT_MODEL_CHAIN[0];
-      let fullText = '';
-      const collectedFnCalls: FunctionCall[] = [];
-      let streamCompleted = false;
-      let lastStreamErr: unknown = null;
-
-      const needsTools = shouldAttachChatTools(payload.message);
-
-      for (const candidateModel of GEMINI_CHAT_MODEL_CHAIN) {
-        activeModel = candidateModel;
-        let firstChunkTimer: ReturnType<typeof setTimeout> | null = null;
-        try {
-          const chat = ai.chats.create({
-            model: candidateModel,
-            history: formattedHistory,
-            config: {
-              systemInstruction,
-              thinkingConfig: {
-                thinkingLevel:
-                  candidateModel === 'gemini-3.1-flash-lite'
-                    ? ThinkingLevel.MINIMAL
-                    : ThinkingLevel.LOW,
-              },
-              ...(needsTools ? { tools: GEMINI_CHAT_TOOLS } : {}),
-            },
-          });
-
-          // Fail over rapidly (8s) if the primary model stalls before producing its first chunk
-          const streamPromise = chat.sendMessageStream({ message: payload.message });
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            firstChunkTimer = setTimeout(
-              () => reject(new Error('503 UNAVAILABLE: stream_connect_timeout')),
-              8_000
-            );
-          });
-          const stream = await Promise.race([streamPromise, timeoutPromise]);
-          if (firstChunkTimer) {
-            clearTimeout(firstChunkTimer);
-            firstChunkTimer = null;
-          }
-
-          for await (const chunk of stream) {
-            if (res.writableEnded) break;
-            const delta = chunk.text ?? '';
-            if (delta) {
-              fullText += delta;
-              writeEvent({ type: 'delta', text: delta });
-            }
-            if (Array.isArray(chunk.functionCalls) && chunk.functionCalls.length > 0) {
-              collectedFnCalls.push(...chunk.functionCalls);
-            }
-          }
-          streamCompleted = true;
-          break;
-        } catch (modelErr: unknown) {
-          if (firstChunkTimer) clearTimeout(firstChunkTimer);
-          lastStreamErr = modelErr;
-          if (!fullText && isRetryableGeminiError(modelErr)) {
-            continue;
-          }
-          throw modelErr;
-        }
-      }
-
-      if (!streamCompleted) {
-        throw lastStreamErr ?? new Error('تعذر الاتصال بـ Gemini حالياً.');
-      }
-
-      const pendingProposal = extractPendingProposalFromFunctionCalls(collectedFnCalls);
-      const finalText =
-        fullText.trim() ||
-        pendingProposal?.summaryAr ||
-        'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
-
-      // Cache purely informational responses (never cache mutating tool proposals)
-      if (!pendingProposal && finalText.length > 0) {
-        chatResponseCache.set(cacheKey, {
-          text: finalText,
-          memoriesAppliedCount,
-          model: activeModel,
-        });
-      }
-
-      const streamLatencyMs = Math.max(1, Date.now() - startedAt);
-      markGeminiProbeOnline(activeModel, streamLatencyMs);
-
-      writeEvent({
-        type: 'done',
-        text: finalText,
-        pendingProposal,
-        latencyMs: streamLatencyMs,
-        memoriesAppliedCount,
-        model: activeModel,
-        cached: false,
-      });
+      await executeGeminiChatStream(payload, writeEvent, () => res.writableEnded);
       res.end();
     } catch (err: unknown) {
       writeEvent({ type: 'error', error: formatFriendlyGeminiErrorAr(err) });
@@ -3227,11 +3256,15 @@ async function startServer() {
 
   const httpServer = http.createServer(app);
 
-  // Real-Time Cross-Device Sync WebSocket Hub (/ws/sync) on same port 3000
-  const wss = new WebSocketServer({ noServer: true });
+  // Real-Time Cross-Device Sync + Ultra-Low-Latency Gemini Chat WebSocket Hub (/ws/sync) on port 3000
+  // Disable perMessageDeflate + enable TCP_NODELAY so chat token deltas flush immediately with zero buffering delay
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
   httpServer.on('upgrade', (request, socket, head) => {
     const pathname = (request.url ?? '').split('?')[0];
     if (pathname === '/ws/sync') {
+      if ('setNoDelay' in socket && typeof socket.setNoDelay === 'function') {
+        socket.setNoDelay(true);
+      }
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
@@ -3243,6 +3276,7 @@ async function startServer() {
   wss.on('connection', (ws) => {
     let joinedUid = '';
     let entry: SyncClientEntry | null = null;
+    const cancelledChatIds = new Set<string>();
     aliveSockets.set(ws, true);
 
     ws.on('pong', () => {
@@ -3273,6 +3307,8 @@ async function startServer() {
           undoSnapshot?: unknown;
           timestampMs?: number;
           battery?: Partial<ServerBatterySnapshot>;
+          requestId?: string;
+          payload?: ChatRequestPayload;
         };
         if (msg.type === 'join' && typeof msg.uid === 'string' && msg.uid.length > 0 && msg.uid.length <= 128) {
           removeFromRoom();
@@ -3325,6 +3361,33 @@ async function startServer() {
               entry.clientId
             );
           }
+        } else if (msg.type === 'gemini_chat_cancel' && typeof msg.requestId === 'string') {
+          cancelledChatIds.add(msg.requestId);
+        } else if (msg.type === 'gemini_chat' && typeof msg.requestId === 'string' && msg.payload?.message) {
+          const reqId = msg.requestId;
+          cancelledChatIds.delete(reqId);
+          void executeGeminiChatStream(
+            msg.payload,
+            (evt) => {
+              if (ws.readyState !== WebSocket.OPEN || cancelledChatIds.has(reqId)) return;
+              ws.send(JSON.stringify({ ...evt, type: `gemini_chat_${evt.type}`, requestId: reqId }));
+            },
+            () => ws.readyState !== WebSocket.OPEN || cancelledChatIds.has(reqId)
+          )
+            .catch((err: unknown) => {
+              if (ws.readyState === WebSocket.OPEN && !cancelledChatIds.has(reqId)) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'gemini_chat_error',
+                    requestId: reqId,
+                    error: formatFriendlyGeminiErrorAr(err),
+                  })
+                );
+              }
+            })
+            .finally(() => {
+              cancelledChatIds.delete(reqId);
+            });
         } else if (msg.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
         }
@@ -3333,8 +3396,12 @@ async function startServer() {
       }
     });
 
-    ws.on('close', removeFromRoom);
+    ws.on('close', () => {
+      cancelledChatIds.clear();
+      removeFromRoom();
+    });
     ws.on('error', () => {
+      cancelledChatIds.clear();
       removeFromRoom();
       try {
         ws.terminate();

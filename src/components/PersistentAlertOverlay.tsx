@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Bell, BellOff, Check, Droplets, X } from 'lucide-react';
+import { Bell, BellOff, Check, Clock, Droplets, Pill, X } from 'lucide-react';
 import { TaskSoundCategory } from '../types/dayrhythm';
 
 export interface PersistentAlertItem {
@@ -13,6 +13,8 @@ export interface PersistentAlertItem {
   durationMs: number;
   isContinuous?: boolean;
   isHydration?: boolean;
+  medicationId?: string;
+  medicationDoseTime24?: string;
   taskId?: string;
   taskListId?: string;
 }
@@ -21,14 +23,18 @@ interface PersistentAlertOverlayProps {
   alert: PersistentAlertItem | null;
   onDismiss: () => void;
   onConfirmWater?: () => void;
+  onConfirmMedication?: (medicationId: string, doseTime24?: string) => void;
   onCompleteTask?: (taskId: string, taskListId: string) => void;
+  onSnoozeAlert?: (alert: PersistentAlertItem, minutes: number) => void;
 }
 
 export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
   alert,
   onDismiss,
   onConfirmWater,
+  onConfirmMedication,
   onCompleteTask,
+  onSnoozeAlert,
 }) => {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
@@ -72,6 +78,8 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
         ? 'bg-rose-400'
         : 'bg-[#7FFFD4]';
 
+  const canSnooze = Boolean(onSnoozeAlert && !alert.isContinuous);
+
   return (
     <div
       role="alert"
@@ -80,7 +88,7 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
         // Mobile: prominent top banner below status bar; Desktop: non-intrusive side-docked card on right edge
         'fixed z-50 transition-all',
         'top-[calc(0.75rem+env(safe-area-inset-top))] inset-x-3',
-        'md:top-auto md:inset-x-auto md:bottom-5 md:right-5 md:w-[340px]',
+        'md:top-auto md:inset-x-auto md:bottom-5 md:right-5 md:w-[360px]',
         'rounded-2xl border-2 bg-[#070B10]/95 backdrop-blur-xl overflow-hidden',
         accentBorder,
       ].join(' ')}
@@ -148,6 +156,20 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
             </button>
           )}
 
+          {alert.medicationId && onConfirmMedication && (
+            <button
+              type="button"
+              onClick={() => {
+                onConfirmMedication(alert.medicationId!, alert.medicationDoseTime24);
+                onDismiss();
+              }}
+              className="flex-1 sm:flex-none px-3.5 py-1.5 rounded-xl bg-rose-400 text-black text-xs font-bold hover:bg-rose-300 flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Pill className="w-3.5 h-3.5" />
+              <span>أخذت الجرعة ✓</span>
+            </button>
+          )}
+
           {alert.taskId && alert.taskListId && onCompleteTask && (
             <button
               type="button"
@@ -159,6 +181,21 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
             >
               <Check className="w-3.5 h-3.5" />
               <span>أنجزت المهمة ✓</span>
+            </button>
+          )}
+
+          {canSnooze && (
+            <button
+              type="button"
+              onClick={() => {
+                onSnoozeAlert?.(alert, 15);
+                onDismiss();
+              }}
+              className="px-3 py-1.5 rounded-xl border border-amber-400/40 bg-amber-500/12 text-amber-200 hover:bg-amber-500/22 text-xs font-bold flex items-center justify-center gap-1 cursor-pointer"
+              title="تأجيل التنبيه وإعادة التذكير بعد 15 دقيقة"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>تأجيل 15 د</span>
             </button>
           )}
 

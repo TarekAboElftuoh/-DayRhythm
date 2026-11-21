@@ -8,12 +8,16 @@ namespace DayRhythm
 {
     internal sealed class NativeAlertPayload
     {
+        public string id { get; set; } = "";
         public string emoji { get; set; } = "🔔";
         public string title { get; set; } = "";
         public string sourceLabel { get; set; } = "تنبيه إيقاع اليوم";
         public string time12h { get; set; } = "";
         public string category { get; set; } = "general";
         public bool isHydration { get; set; }
+        public bool isMedication { get; set; }
+        public string medicationId { get; set; } = "";
+        public string medicationDoseTime24 { get; set; } = "";
         public bool isContinuous { get; set; }
         public int durationSeconds { get; set; } = 300; // Default 5 minutes!
         public int cupSizeMl { get; set; } = 177;
@@ -23,18 +27,25 @@ namespace DayRhythm
     /// High-visibility, non-focus-stealing 5-minute persistent notification card:
     /// - Dual-Monitor setup: anchors clearly on the Secondary Monitor so Screen 1 stays distraction-free.
     /// - Single-Monitor setup: docks sleekly at the right side-edge without stealing focus or blocking center work.
+    /// - Supports interactive quick actions: Water Confirm, Medication Confirm, and 15-minute Snooze.
     /// </summary>
     internal sealed class SecondaryMonitorToastForm : Form
     {
         private readonly Timer _tickTimer;
         private readonly Action _onWaterConfirmed;
+        private readonly Action<string, string> _onMedicationConfirmed;
+        private readonly Action<NativeAlertPayload, int> _onSnoozed;
         private readonly Action _onDismissed;
 
+        private readonly NativeAlertPayload _payload;
         private readonly string _emoji;
         private readonly string _title;
         private readonly string _sourceLabel;
         private readonly string _time12h;
         private readonly bool _isHydration;
+        private readonly bool _isMedication;
+        private readonly string _medicationId;
+        private readonly string _medicationDoseTime24;
         private readonly bool _isContinuous;
         private readonly int _totalDurationSec;
         private readonly DateTime _startedUtc;
@@ -44,17 +55,25 @@ namespace DayRhythm
             NativeAlertPayload payload,
             bool preferSecondaryScreen,
             Action onWaterConfirmed,
+            Action<string, string> onMedicationConfirmed,
+            Action<NativeAlertPayload, int> onSnoozed,
             Action onDismissed)
         {
-            _emoji = string.IsNullOrWhiteSpace(payload?.emoji) ? "🔔" : payload.emoji.Trim();
-            _title = string.IsNullOrWhiteSpace(payload?.title) ? "" : payload.title.Trim();
-            _sourceLabel = string.IsNullOrWhiteSpace(payload?.sourceLabel) ? "إيقاع اليوم" : payload.sourceLabel.Trim();
-            _time12h = payload?.time12h ?? "";
-            _isHydration = payload?.isHydration ?? false;
-            _isContinuous = payload?.isContinuous ?? false;
-            _totalDurationSec = payload != null && payload.durationSeconds >= 15 ? payload.durationSeconds : 300;
+            _payload = payload ?? new NativeAlertPayload();
+            _emoji = string.IsNullOrWhiteSpace(_payload.emoji) ? "🔔" : _payload.emoji.Trim();
+            _title = string.IsNullOrWhiteSpace(_payload.title) ? "" : _payload.title.Trim();
+            _sourceLabel = string.IsNullOrWhiteSpace(_payload.sourceLabel) ? "إيقاع اليوم" : _payload.sourceLabel.Trim();
+            _time12h = _payload.time12h ?? "";
+            _isHydration = _payload.isHydration;
+            _isMedication = _payload.isMedication || !string.IsNullOrWhiteSpace(_payload.medicationId);
+            _medicationId = _payload.medicationId ?? "";
+            _medicationDoseTime24 = _payload.medicationDoseTime24 ?? "";
+            _isContinuous = _payload.isContinuous;
+            _totalDurationSec = _payload.durationSeconds >= 15 ? _payload.durationSeconds : 300;
             _startedUtc = DateTime.UtcNow;
             _onWaterConfirmed = onWaterConfirmed;
+            _onMedicationConfirmed = onMedicationConfirmed;
+            _onSnoozed = onSnoozed;
             _onDismissed = onDismissed;
 
             bool hasMultipleMonitors = Screen.AllScreens.Length > 1;
@@ -65,9 +84,9 @@ namespace DayRhythm
             TopMost = true;
             ShowInTaskbar = false;
             DoubleBuffered = true;
-            // Slightly more compact when docked on single monitor side-edge; fuller on secondary monitor
-            Width = useSecondary ? 330 : 284;
-            Height = string.IsNullOrWhiteSpace(_title) ? 88 : 108;
+            // Wide enough to cleanly fit Done + Snooze 15m + Dismiss buttons
+            Width = useSecondary ? 360 : 326;
+            Height = string.IsNullOrWhiteSpace(_title) ? 94 : 114;
             BackColor = Color.FromArgb(9, 13, 19);
             Opacity = 0.96;
 
@@ -226,19 +245,21 @@ namespace DayRhythm
             }
 
             int btnY = Height - 42;
+            int cursorX = 14;
+
             if (_isHydration)
             {
                 Button drankBtn = new Button
                 {
                     Text = "شربت فعلاً ✓",
-                    Font = new Font("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point),
+                    Font = new Font("Segoe UI", 8.5f, FontStyle.Bold, GraphicsUnit.Point),
                     BackColor = Color.FromArgb(127, 255, 212),
                     ForeColor = Color.Black,
                     FlatStyle = FlatStyle.Flat,
                     Cursor = Cursors.Hand,
-                    Width = 114,
+                    Width = 104,
                     Height = 30,
-                    Location = new Point(14, btnY),
+                    Location = new Point(cursorX, btnY),
                 };
                 drankBtn.FlatAppearance.BorderSize = 0;
                 drankBtn.Click += (_, __) =>
@@ -247,10 +268,85 @@ namespace DayRhythm
                     Close();
                 };
                 Controls.Add(drankBtn);
+                cursorX += 110;
+            }
+            else if (_isMedication && !string.IsNullOrWhiteSpace(_medicationId))
+            {
+                Button medBtn = new Button
+                {
+                    Text = "أخذت الجرعة ✓",
+                    Font = new Font("Segoe UI", 8.5f, FontStyle.Bold, GraphicsUnit.Point),
+                    BackColor = Color.FromArgb(251, 113, 133),
+                    ForeColor = Color.Black,
+                    FlatStyle = FlatStyle.Flat,
+                    Cursor = Cursors.Hand,
+                    Width = 108,
+                    Height = 30,
+                    Location = new Point(cursorX, btnY),
+                };
+                medBtn.FlatAppearance.BorderSize = 0;
+                medBtn.Click += (_, __) =>
+                {
+                    _onMedicationConfirmed?.Invoke(_medicationId, _medicationDoseTime24);
+                    Close();
+                };
+                Controls.Add(medBtn);
+                cursorX += 114;
+            }
+            else
+            {
+                Button ackBtn = new Button
+                {
+                    Text = _isContinuous ? "إيقاف التنبيه ✓" : "تم العلم ✓",
+                    Font = new Font("Segoe UI", 8.5f, FontStyle.Bold, GraphicsUnit.Point),
+                    BackColor = _isContinuous ? Color.FromArgb(251, 191, 36) : Color.FromArgb(127, 255, 212),
+                    ForeColor = Color.Black,
+                    FlatStyle = FlatStyle.Flat,
+                    Cursor = Cursors.Hand,
+                    Width = 104,
+                    Height = 30,
+                    Location = new Point(cursorX, btnY),
+                };
+                ackBtn.FlatAppearance.BorderSize = 0;
+                ackBtn.Click += (_, __) =>
+                {
+                    _onDismissed?.Invoke();
+                    Close();
+                };
+                Controls.Add(ackBtn);
+                cursorX += 110;
+            }
 
+            if (!_isContinuous)
+            {
+                Button snoozeBtn = new Button
+                {
+                    Text = "⏰ تأجيل 15 د",
+                    Font = new Font("Segoe UI", 8.5f, FontStyle.Bold, GraphicsUnit.Point),
+                    BackColor = Color.FromArgb(46, 36, 14),
+                    ForeColor = Color.FromArgb(252, 211, 77),
+                    FlatStyle = FlatStyle.Flat,
+                    Cursor = Cursors.Hand,
+                    Width = 98,
+                    Height = 30,
+                    Location = new Point(cursorX, btnY),
+                };
+                snoozeBtn.FlatAppearance.BorderSize = 1;
+                snoozeBtn.FlatAppearance.BorderColor = Color.FromArgb(146, 108, 30);
+                snoozeBtn.Click += (_, __) =>
+                {
+                    _onSnoozed?.Invoke(_payload, 15);
+                    Close();
+                };
+                Controls.Add(snoozeBtn);
+                cursorX += 104;
+            }
+
+            if (_isHydration || (_isMedication && !string.IsNullOrWhiteSpace(_medicationId)))
+            {
                 Button dismissBtn = new Button
                 {
-                    Text = "لاحقاً",
+                    Text = "إغلاق",
                     Font = new Font("Segoe UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point),
                     BackColor = Color.FromArgb(24, 28, 36),
                     ForeColor = Color.FromArgb(212, 212, 216),
@@ -258,7 +354,7 @@ namespace DayRhythm
                     Cursor = Cursors.Hand,
                     Width = 64,
                     Height = 30,
-                    Location = new Point(134, btnY),
+                    Location = new Point(cursorX, btnY),
                 };
                 dismissBtn.FlatAppearance.BorderSize = 1;
                 dismissBtn.FlatAppearance.BorderColor = Color.FromArgb(52, 56, 66);
@@ -268,28 +364,6 @@ namespace DayRhythm
                     Close();
                 };
                 Controls.Add(dismissBtn);
-            }
-            else
-            {
-                Button ackBtn = new Button
-                {
-                    Text = _isContinuous ? "إيقاف التنبيه ✓" : "تم العلم ✓",
-                    Font = new Font("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point),
-                    BackColor = _isContinuous ? Color.FromArgb(251, 191, 36) : Color.FromArgb(127, 255, 212),
-                    ForeColor = Color.Black,
-                    FlatStyle = FlatStyle.Flat,
-                    Cursor = Cursors.Hand,
-                    Width = 112,
-                    Height = 30,
-                    Location = new Point(14, btnY),
-                };
-                ackBtn.FlatAppearance.BorderSize = 0;
-                ackBtn.Click += (_, __) =>
-                {
-                    _onDismissed?.Invoke();
-                    Close();
-                };
-                Controls.Add(ackBtn);
             }
         }
 

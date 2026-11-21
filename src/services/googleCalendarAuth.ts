@@ -88,6 +88,7 @@ function formatAuthErrorAr(err: unknown): string {
 
 let isSigningIn = false;
 let redirectChecked = false;
+let inFlightTokenRefresh: Promise<{ user: User; accessToken: string } | null> | null = null;
 
 const OAUTH_TOKEN_STORAGE_KEY = 'dayrhythm_google_oauth_cache_v1';
 
@@ -97,7 +98,7 @@ interface StoredOAuthToken {
   expiresAtMs: number;
 }
 
-function readStoredAccessToken(expectedUid?: string | null): string | null {
+function readStoredOAuthRecord(expectedUid?: string | null): StoredOAuthToken | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(OAUTH_TOKEN_STORAGE_KEY);
@@ -106,28 +107,44 @@ function readStoredAccessToken(expectedUid?: string | null): string | null {
     if (
       typeof parsed.token !== 'string' ||
       !parsed.token ||
-      typeof parsed.expiresAtMs !== 'number' ||
-      parsed.expiresAtMs <= Date.now() + 30_000
+      typeof parsed.expiresAtMs !== 'number'
     ) {
       return null;
     }
     if (expectedUid && parsed.uid && parsed.uid !== expectedUid) {
       return null;
     }
-    return parsed.token;
+    return {
+      uid: typeof parsed.uid === 'string' ? parsed.uid : '',
+      token: parsed.token,
+      expiresAtMs: parsed.expiresAtMs,
+    };
   } catch {
     return null;
   }
 }
 
+function readStoredAccessToken(expectedUid?: string | null): string | null {
+  const rec = readStoredOAuthRecord(expectedUid);
+  if (!rec || rec.expiresAtMs <= Date.now() + 30_000) {
+    return null;
+  }
+  return rec.token;
+}
+
+let cachedAccessToken: string | null = readStoredAccessToken();
+let cachedExpiresAtMs: number = readStoredOAuthRecord()?.expiresAtMs ?? 0;
+
 function persistAccessToken(uid: string, token: string): void {
   if (typeof window === 'undefined' || !token) return;
+  // Google OAuth access tokens typically live 60 minutes; track safe 55-minute lifetime
+  const expiresAtMs = Date.now() + 55 * 60_000;
+  cachedExpiresAtMs = expiresAtMs;
   try {
-    // Google OAuth access tokens typically live 60 minutes; cache for 52 minutes
     const payload: StoredOAuthToken = {
       uid,
       token,
-      expiresAtMs: Date.now() + 52 * 60_000,
+      expiresAtMs,
     };
     window.localStorage.setItem(OAUTH_TOKEN_STORAGE_KEY, JSON.stringify(payload));
   } catch {
@@ -137,6 +154,7 @@ function persistAccessToken(uid: string, token: string): void {
 
 export function clearStoredAccessToken(): void {
   cachedAccessToken = null;
+  cachedExpiresAtMs = 0;
   if (typeof window === 'undefined') return;
   try {
     window.localStorage.removeItem(OAUTH_TOKEN_STORAGE_KEY);
@@ -145,7 +163,35 @@ export function clearStoredAccessToken(): void {
   }
 }
 
-let cachedAccessToken: string | null = readStoredAccessToken();
+/**
+ * Marks the current Google Workspace OAuth access token as expired (e.g. after HTTP 401)
+ * WITHOUT signing the user out of Firebase Auth or wiping offline/Firestore state.
+ */
+export function markCalendarTokenExpired(): void {
+  clearStoredAccessToken();
+}
+
+export function getCalendarTokenExpiresAtMs(): number {
+  if (cachedExpiresAtMs > 0) return cachedExpiresAtMs;
+  const rec = readStoredOAuthRecord(auth.currentUser?.uid);
+  if (rec) {
+    cachedExpiresAtMs = rec.expiresAtMs;
+    return rec.expiresAtMs;
+  }
+  return 0;
+}
+
+export function getCalendarTokenRemainingMs(): number {
+  const exp = getCalendarTokenExpiresAtMs();
+  if (!exp) return 0;
+  return Math.max(0, exp - Date.now());
+}
+
+export function isCalendarTokenExpiringSoon(marginMs = 5 * 60_000): boolean {
+  const token = getCalendarAccessToken();
+  if (!token) return true;
+  return getCalendarTokenRemainingMs() <= marginMs;
+}
 
 export function observeFirebaseUser(
   onUserChange: (user: User | null) => void
@@ -259,10 +305,29 @@ export async function signInWithGoogleCalendar(options?: {
   }
 }
 
+/**
+ * Deduped 1-tap Workspace OAuth token renewal using the active user's email as login_hint
+ * (skips the Google account chooser while preserving the Firebase Auth & Firestore session).
+ */
+export async function refreshGoogleCalendarToken(): Promise<{
+  user: User;
+  accessToken: string;
+} | null> {
+  if (inFlightTokenRefresh) {
+    return inFlightTokenRefresh;
+  }
+  inFlightTokenRefresh = signInWithGoogleCalendar({ forceAccountChooser: false }).finally(() => {
+    inFlightTokenRefresh = null;
+  });
+  return inFlightTokenRefresh;
+}
+
 export function getCalendarAccessToken(): string | null {
-  if (cachedAccessToken) return cachedAccessToken;
+  if (cachedAccessToken && cachedExpiresAtMs > Date.now() + 30_000) {
+    return cachedAccessToken;
+  }
   const restored = readStoredAccessToken(auth.currentUser?.uid);
-  if (restored) cachedAccessToken = restored;
+  cachedAccessToken = restored;
   return cachedAccessToken;
 }
 

@@ -45,6 +45,7 @@ import {
   SoundRepeatSetting,
   SurfaceTheme,
   TaskSoundCategory,
+  UiPrefs,
   WorkspaceSyncSignal,
 } from './types/dayrhythm';
 import { DEFAULT_LIFE_PROFILE, DEFAULT_MEMORIES } from './engines/lifeRhythmEngine';
@@ -380,6 +381,7 @@ export interface SyncedRhythmPayload {
   lifeProfile: LifeProfile;
   syncSignal?: WorkspaceSyncSignal;
   phoneBattery?: PhoneBatteryTelemetry;
+  uiPrefs?: UiPrefs;
 }
 
 const VALID_LEAD_MINUTES: readonly LiveAlertsLeadMinutes[] = [5, 10, 15, 20, 30];
@@ -806,6 +808,22 @@ export function sanitizeCreativeActivityItem(
   };
 }
 
+export function sanitizeUiPrefs(raw: unknown): UiPrefs | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  const selectedLogoId = String(obj.selectedLogoId ?? '').trim().slice(0, 40);
+  if (!selectedLogoId) return undefined;
+  const capsuleOrientation: UiPrefs['capsuleOrientation'] =
+    obj.capsuleOrientation === 'vertical' ? 'vertical' : 'horizontal';
+  const capsuleSize: UiPrefs['capsuleSize'] =
+    obj.capsuleSize === 'sm' || obj.capsuleSize === 'lg' ? obj.capsuleSize : 'md';
+  return {
+    selectedLogoId,
+    capsuleOrientation,
+    capsuleSize,
+  };
+}
+
 function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayload {
   const dateOk = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(payload.hydrationDateKey);
   const safeDateKey = dateOk
@@ -828,6 +846,7 @@ function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayloa
 
   const cleanSignal = sanitizeSyncSignal(payload.syncSignal);
   const cleanBattery = sanitizePhoneBattery(payload.phoneBattery);
+  const cleanUiPrefs = sanitizeUiPrefs(payload.uiPrefs);
 
   return {
     hydrationDateKey: safeDateKey,
@@ -845,6 +864,7 @@ function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayloa
     lifeProfile: sanitizeLifeProfile(payload.lifeProfile),
     ...(cleanSignal ? { syncSignal: cleanSignal } : {}),
     ...(cleanBattery ? { phoneBattery: cleanBattery } : {}),
+    ...(cleanUiPrefs ? { uiPrefs: cleanUiPrefs } : {}),
   };
 }
 
@@ -899,6 +919,7 @@ export function subscribeUserRhythmState(
               ),
               syncSignal: sanitizeSyncSignal(data.syncSignal),
               phoneBattery: sanitizePhoneBattery(data.phoneBattery),
+              uiPrefs: sanitizeUiPrefs(data.uiPrefs),
             })
           );
         },
@@ -946,6 +967,24 @@ export async function publishPhoneBatteryTelemetry(
   }
 }
 
+export async function saveUserUiPrefs(
+  uid: string,
+  uiPrefs: UiPrefs
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+  const clean = sanitizeUiPrefs(uiPrefs);
+  if (!clean) return;
+  try {
+    const docRef = doc(db, 'users', uid);
+    await updateDoc(docRef, {
+      uiPrefs: clean,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-blocking: full state save will also sync uiPrefs
+  }
+}
+
 const ALLOWED_USER_DOC_KEYS = new Set([
   'uid',
   'hydrationDateKey',
@@ -963,17 +1002,35 @@ const ALLOWED_USER_DOC_KEYS = new Set([
   'lifeProfile',
   'syncSignal',
   'phoneBattery',
+  'uiPrefs',
   'createdAt',
   'updatedAt',
 ]);
 
 const pendingUserSaves = new Map<string, Promise<void>>();
 
+function isFirestoreTimestamp(val: unknown): val is Timestamp {
+  return (
+    val instanceof Timestamp ||
+    (typeof val === 'object' &&
+      val !== null &&
+      typeof (val as { toMillis?: unknown }).toMillis === 'function' &&
+      typeof (val as { seconds?: unknown }).seconds === 'number')
+  );
+}
+
 export async function saveUserRhythmState(
   uid: string,
   payload: SyncedRhythmPayload
 ): Promise<void> {
-  if (!auth.currentUser || auth.currentUser.uid !== uid || !auth.currentUser.emailVerified) return;
+  if (
+    !auth.currentUser ||
+    auth.currentUser.uid !== uid ||
+    auth.currentUser.isAnonymous ||
+    !auth.currentUser.emailVerified
+  ) {
+    return;
+  }
   const path = `users/${uid}`;
   const docRef = doc(db, 'users', uid);
   const clean = sanitizeRhythmPayload(payload);
@@ -986,15 +1043,18 @@ export async function saveUserRhythmState(
       existingSnap = await getDoc(docRef);
     }
 
+    const fromCache = existingSnap.metadata.fromCache;
     const exists = existingSnap.exists();
     const existingData = exists ? (existingSnap.data() ?? {}) : null;
 
-    if (existingData?.createdAt instanceof Timestamp) {
+    if (existingData && isFirestoreTimestamp(existingData.createdAt)) {
       knownCreatedAtByUid.set(uid, existingData.createdAt);
     }
 
     const runWrite = async () => {
-      if (exists && existingData) {
+      const treatAsExisting = (exists && existingData !== null) || (fromCache && knownCreatedAtByUid.has(uid));
+
+      if (treatAsExisting) {
         // Use updateDoc on existing documents so Firestore preserves the server's exact immutable createdAt
         // and never races with concurrent phoneBattery / syncSignal writes from another device.
         const updatePatch: Record<string, unknown> = {
@@ -1003,23 +1063,34 @@ export async function saveUserRhythmState(
           updatedAt: serverTimestamp(),
         };
 
-        // Repair missing or non-Timestamp legacy createdAt (matches rules fallback)
-        if (!(existingData.createdAt instanceof Timestamp)) {
+        // Only repair missing/non-Timestamp legacy createdAt when verified directly from server (never from cache where pending serverTimestamp() reads as null)
+        if (
+          !fromCache &&
+          existingData &&
+          !isFirestoreTimestamp(existingData.createdAt) &&
+          !knownCreatedAtByUid.has(uid)
+        ) {
           updatePatch.createdAt = serverTimestamp();
         }
 
         // Clean up any malformed optional maps or legacy unknown keys so hasOnly() always passes
-        if ('syncSignal' in existingData && !('syncSignal' in updatePatch)) {
-          const validSig = sanitizeSyncSignal(existingData.syncSignal);
-          updatePatch.syncSignal = validSig ?? deleteField();
-        }
-        if ('phoneBattery' in existingData && !('phoneBattery' in updatePatch)) {
-          const validBat = sanitizePhoneBattery(existingData.phoneBattery);
-          updatePatch.phoneBattery = validBat ?? deleteField();
-        }
-        for (const key of Object.keys(existingData)) {
-          if (!ALLOWED_USER_DOC_KEYS.has(key)) {
-            updatePatch[key] = deleteField();
+        if (existingData) {
+          if ('syncSignal' in existingData && !('syncSignal' in updatePatch)) {
+            const validSig = sanitizeSyncSignal(existingData.syncSignal);
+            updatePatch.syncSignal = validSig ?? deleteField();
+          }
+          if ('phoneBattery' in existingData && !('phoneBattery' in updatePatch)) {
+            const validBat = sanitizePhoneBattery(existingData.phoneBattery);
+            updatePatch.phoneBattery = validBat ?? deleteField();
+          }
+          if ('uiPrefs' in existingData && !('uiPrefs' in updatePatch)) {
+            const validUi = sanitizeUiPrefs(existingData.uiPrefs);
+            updatePatch.uiPrefs = validUi ?? deleteField();
+          }
+          for (const key of Object.keys(existingData)) {
+            if (!ALLOWED_USER_DOC_KEYS.has(key)) {
+              updatePatch[key] = deleteField();
+            }
           }
         }
 

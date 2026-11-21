@@ -9,7 +9,6 @@ import {
   Zap,
   Moon,
   Sun,
-  Sparkles,
   Volume2,
   VolumeX,
   Calendar,
@@ -34,6 +33,8 @@ import {
   Smartphone,
   ShoppingBag,
   BellOff,
+  BarChart3,
+  Pill,
 } from 'lucide-react';
 import { HydrationWeeklyChart } from './HydrationWeeklyChart';
 import { MedicationConsumptionChart } from './MedicationConsumptionChart';
@@ -83,7 +84,7 @@ import {
   formatIsoTo12h,
   formatMinutes12h,
   formatTime24To12h,
-  getCairoTodayIso,
+  getDateIsoInTimeZone,
   getNowMinutesInTimeZone,
 } from '../engines/prayerEngine';
 import {
@@ -408,6 +409,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [showPeriodicRituals, setShowPeriodicRituals] = useState(false);
   const [showAllCreative, setShowAllCreative] = useState(false);
   const [showHydrationSchedule, setShowHydrationSchedule] = useState(false);
+  const [showWaterChart, setShowWaterChart] = useState(false);
+  const [showMedChart, setShowMedChart] = useState(false);
+  const [pendingDeleteMed, setPendingDeleteMed] = useState<MedicationItem | null>(null);
+  const [deleteMedStep, setDeleteMedStep] = useState<1 | 2>(1);
+  const [deleteMedConfirmed, setDeleteMedConfirmed] = useState(false);
   const [showSleepCheckinEdit, setShowSleepCheckinEdit] = useState(false);
   const [timelineFilter, setTimelineFilter] = useState<'today' | 'tomorrow' | 'special' | 'done'>('today');
   const [selectedTaskListId, setSelectedTaskListId] = useState<string>('all');
@@ -424,7 +430,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Quick Add Google Calendar Event Modal (12h controls -> converts to 24h for API)
   const [newEventModalOpen, setNewEventModalOpen] = useState(false);
   const [newEvTitle, setNewEvTitle] = useState('');
-  const [newEvDate, setNewEvDate] = useState(() => getCairoTodayIso());
+  const [newEvDate, setNewEvDate] = useState(() => getDateIsoInTimeZone(activeTimeZone));
   const [newEvHour12, setNewEvHour12] = useState<number>(4);
   const [newEvMinute, setNewEvMinute] = useState<number>(0);
   const [newEvPeriod, setNewEvPeriod] = useState<'AM' | 'PM'>('PM');
@@ -457,9 +463,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [purchaseMode, setPurchaseMode] = useState<'add' | 'set'>('add');
   const [purchaseAlertDays, setPurchaseAlertDays] = useState<number>(3);
 
-  const todayCairoIso = getCairoTodayIso();
+  const todayCairoIso = getDateIsoInTimeZone(activeTimeZone);
 
-  // Last 7 Cairo dates for Medication Adherence Tracker
+  // Last 7 local dates for Medication Adherence Tracker (follows activeTimeZone)
   const last7CairoDays = useMemo(() => {
     const weekdayShortAr: Record<string, string> = {
       Sun: 'ح',
@@ -483,7 +489,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(now.getTime() - (6 - i) * 86_400_000);
       const parts = new Intl.DateTimeFormat('en-CA', {
-        timeZone: 'Africa/Cairo',
+        timeZone: activeTimeZone,
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
@@ -492,7 +498,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const mo = parts.find((p) => p.type === 'month')?.value ?? '01';
       const day = parts.find((p) => p.type === 'day')?.value ?? '01';
       const wdEn = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Africa/Cairo',
+        timeZone: activeTimeZone,
         weekday: 'short',
       }).format(d);
       return {
@@ -503,7 +509,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [todayCairoIso]);
+  }, [todayCairoIso, activeTimeZone]);
 
   // Low-stock medications requiring proactive alert (default <= 3 days remaining)
   const lowStockMedications = useMemo(() => {
@@ -519,33 +525,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         const alertDays = Math.max(1, Math.min(14, m.refillAlertDays ?? 3));
         const rem = m.remainingDoses ?? 0;
         const daysLeft = rem / dailyRate;
-        return {
-          med: m,
-          remainingDoses: rem,
-          dailyRate,
-          daysLeft,
-          daysLeftRounded: Math.ceil(daysLeft),
-          alertDays,
-          isLow: daysLeft <= alertDays,
-        };
-      })
-      .filter((item) => item.isLow)
-      .sort((a, b) => a.daysLeft - b.daysLeft);
-  }, [medications]);
-
-  // Medications warning panel (< 5 days remaining before stock runs out)
-  const expiringUnder5DaysMedications = useMemo(() => {
-    return medications
-      .filter((m) => typeof m.remainingDoses === 'number' && m.remainingDoses >= 0)
-      .map((m) => {
-        const dosesPerScheduledDay = Math.max(
-          1,
-          m.times24 && m.times24.length > 0 ? m.times24.length : 1
-        );
-        const daysPerWeek = m.daysOfWeek && m.daysOfWeek.length > 0 ? m.daysOfWeek.length : 7;
-        const dailyRate = Math.max(0.14, (dosesPerScheduledDay * daysPerWeek) / 7);
-        const rem = m.remainingDoses ?? 0;
-        const daysLeft = rem / dailyRate;
         const defaultPackSize = m.totalDoses && m.totalDoses > 0 ? m.totalDoses : 30;
         return {
           med: m,
@@ -553,10 +532,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           dailyRate,
           daysLeft,
           daysLeftRounded: Math.ceil(daysLeft),
+          alertDays,
           defaultPackSize,
+          isLow: daysLeft <= alertDays,
         };
       })
-      .filter((item) => item.daysLeft < 5)
+      .filter((item) => item.isLow)
       .sort((a, b) => a.daysLeft - b.daysLeft);
   }, [medications]);
 
@@ -618,8 +599,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const cardSurface =
     surfaceTheme === 'amoled'
-      ? 'bg-[#070708] border-white/10'
-      : 'bg-[#0F141B] border-slate-800';
+      ? 'bg-[#07080A] border-white/[0.08]'
+      : 'bg-[#0E131B] border-white/[0.09] shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]';
 
   const activeBlocks = useMemo(
     () => blocks.filter((b) => !b.deleted),
@@ -698,23 +679,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (/^\d{4}-\d{2}-\d{2}$/.test(isoStr)) return isoStr;
     const d = new Date(isoStr);
     if (Number.isNaN(d.getTime())) return isoStr.slice(0, 10);
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Africa/Cairo',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(d);
-    const y = parts.find((p) => p.type === 'year')?.value ?? '2026';
-    const mo = parts.find((p) => p.type === 'month')?.value ?? '01';
-    const day = parts.find((p) => p.type === 'day')?.value ?? '01';
-    return `${y}-${mo}-${day}`;
+    return getDateIsoInTimeZone(activeTimeZone, d);
   };
 
   const formatCairoDayHeading = (dateIso: string): string => {
     const d = new Date(`${dateIso}T12:00:00Z`);
     if (Number.isNaN(d.getTime())) return dateIso;
     return new Intl.DateTimeFormat(language === 'ar' ? 'ar-EG' : 'en-US', {
-      timeZone: 'Africa/Cairo',
+      timeZone: activeTimeZone,
       weekday: 'long',
       day: 'numeric',
       month: 'short',
@@ -821,6 +793,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const nextAlarmBlock = useMemo(() => {
     return remainingTodayBlocks[0] ?? null;
   }, [remainingTodayBlocks]);
+
+  const nextObligatoryPrayerId = useMemo(() => {
+    const obligatory = prayers.filter((p) => p.isObligatory);
+    const upcoming = obligatory.find((p) => p.adhanMinutes >= nowMinutes);
+    return upcoming?.id ?? obligatory[0]?.id ?? null;
+  }, [prayers, nowMinutes]);
 
   const isNextBlockHappeningNow = Boolean(
     nextAlarmBlock &&
@@ -1120,343 +1098,213 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   return (
-    <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6">
-      {/* DEDICATED TOP ENVIRONMENT CARD: Day + Gregorian + Hijri + Live Weather + Conditional Full Moon (13-15 Hijri ONLY) */}
-      <section className={`rounded-2xl border p-3.5 sm:p-5 ${cardSurface}`}>
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="space-y-1.5 min-w-0">
-            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-              <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">
-                {language === 'ar' ? todayCalendarMeta.weekdayAr : todayCalendarMeta.weekdayEn}
-              </h2>
-              <span className="text-xs sm:text-sm text-zinc-300 font-medium">
-                {language === 'ar' ? todayCalendarMeta.gregorianAr : todayCalendarMeta.gregorianEn}
-              </span>
-              {todayCalendarMeta.hijriFullAr && (
-                <>
-                  <span className="text-zinc-600" aria-hidden="true">·</span>
-                  <span className="text-xs sm:text-sm text-zinc-400">
-                    {todayCalendarMeta.hijriFullAr}
-                  </span>
-                </>
-              )}
-              {todayCalendarMeta.isFullMoonWhiteDay && (
-                <>
-                  <span className="text-zinc-600" aria-hidden="true">·</span>
-                  <span
-                    className="text-xs sm:text-sm font-semibold text-amber-200 inline-flex items-center gap-1"
-                    title="الأيام البيض (13 و14 و15 هجري) — القمر بدر مكتمل"
-                  >
-                    <span className="text-base leading-none">🌕</span>
-                    <span>ليالي البدر ({todayCalendarMeta.hijriDay} {todayCalendarMeta.hijriMonthAr})</span>
-                  </span>
-                </>
-              )}
-            </div>
-
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-zinc-400">
-              <button
-                type="button"
-                onClick={() => void onDetectGpsLocation()}
-                disabled={isDetectingGps}
-                title="الموقع يتحدث تلقائياً بالـ GPS بدون إنترنت — اضغط لإعادة التحقق فوراً"
-                className="text-zinc-200 hover:text-[#7FFFD4] font-medium inline-flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-60"
-              >
-                <MapPin className="w-3.5 h-3.5 text-[#7FFFD4]" />
-                <span>
-                  {isDetectingGps
-                    ? 'جارٍ التحقق...'
-                    : travelState.active
-                      ? language === 'ar'
-                        ? travelState.location.nameAr
-                        : travelState.location.nameEn
-                      : lifeProfile.currentCityName}
+    <div className="mx-auto max-w-[1380px] px-3.5 sm:px-6 py-4 sm:py-6 space-y-5">
+      {/* 1. QUIET UNBOXED CONTEXT BAR — Date · Location · Weather · Inline Battery · Quick Controls */}
+      <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 pb-1">
+        <div className="space-y-1 min-w-0">
+          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+            <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
+              {language === 'ar' ? todayCalendarMeta.weekdayAr : todayCalendarMeta.weekdayEn}
+            </h1>
+            <span className="text-xs sm:text-sm text-zinc-400 font-medium">
+              {language === 'ar' ? todayCalendarMeta.gregorianAr : todayCalendarMeta.gregorianEn}
+            </span>
+            {todayCalendarMeta.hijriFullAr && (
+              <>
+                <span className="text-zinc-700" aria-hidden="true">·</span>
+                <span className="text-xs sm:text-sm text-zinc-500">
+                  {todayCalendarMeta.hijriFullAr}
                 </span>
-              </button>
-
-              {weatherInfo && (
-                <>
-                  <span className="text-zinc-600" aria-hidden="true">·</span>
-                  <span
-                    className="font-mono-tabular text-zinc-200"
-                    title={`العظمى ${weatherInfo.maxTempC}°C · ${weatherInfo.heatNoteAr}`}
-                  >
-                    {weatherInfo.icon} {weatherInfo.currentTempC}°C{' '}
-                    <span className="text-zinc-400 font-sans">({weatherInfo.conditionAr})</span>
-                  </span>
-                </>
-              )}
-
-              {(wsConnected || firestoreSynced) && (
-                <>
-                  <span className="text-zinc-600" aria-hidden="true">·</span>
-                  <span className="text-[#4ADE80]">
-                    {wsConnected ? 'متزامن لحظياً' : 'متزامن سحابياً'}
-                  </span>
-                </>
-              )}
-
-              {silentNotifications.length > 0 && (
-                <>
-                  <span className="text-zinc-600" aria-hidden="true">·</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowSilentInbox((v) => !v)}
-                    className="text-amber-300 hover:underline font-medium cursor-pointer"
-                  >
-                    🔕 {silentNotifications.length} إشعار صامت
-                  </button>
-                </>
-              )}
-            </div>
+              </>
+            )}
+            {todayCalendarMeta.isFullMoonWhiteDay && (
+              <>
+                <span className="text-zinc-700" aria-hidden="true">·</span>
+                <span
+                  className="text-xs font-semibold text-amber-200 inline-flex items-center gap-1"
+                  title="الأيام البيض"
+                >
+                  <span className="leading-none">🌕</span>
+                  <span>{todayCalendarMeta.hijriDay} {todayCalendarMeta.hijriMonthAr}</span>
+                </span>
+              </>
+            )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Subtle, understated Low Energy / Soft Day Toggle */}
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-zinc-400">
             <button
               type="button"
-              onClick={onToggleLowEnergyToday}
-              className={`min-h-[34px] px-2.5 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-                lowEnergyActive
-                  ? 'border-emerald-400/45 bg-emerald-400/12 text-emerald-200'
-                  : 'border-white/10 bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/20'
-              }`}
-              title="تخفيف هادئ لليوم عند انخفاض الطاقة — يحمي الصلاة والنوم ويمكن التنسيق مع Gemini"
+              onClick={() => void onDetectGpsLocation()}
+              disabled={isDetectingGps}
+              title="تحديث الموقع عبر GPS"
+              className="text-zinc-300 hover:text-[#7FFFD4] font-medium inline-flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-60"
             >
-              <Leaf className="w-3.5 h-3.5" />
-              <span>{lowEnergyActive ? 'يوم هادئ نشط' : 'يوم هادئ'}</span>
+              <MapPin className="w-3.5 h-3.5 text-[#7FFFD4]" />
+              <span>
+                {isDetectingGps
+                  ? 'جارٍ التحديد...'
+                  : travelState.active
+                    ? language === 'ar'
+                      ? travelState.location.nameAr
+                      : travelState.location.nameEn
+                    : lifeProfile.currentCityName}
+              </span>
             </button>
 
-            <button
-              type="button"
-              onClick={onToggleMeetingMode}
-              className={`min-h-[34px] px-2.5 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-                meetingModeActive
-                  ? 'border-amber-400/60 bg-amber-400/15 text-amber-200'
-                  : 'border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/20'
-              }`}
-              title="بضغطة واحدة: كتم الصوت مع اهتزاز وحفظ الإشعارات طوال الاجتماع"
-            >
-              <MicOff className="w-3.5 h-3.5" />
-              <span>{meetingModeActive ? 'إنهاء الاجتماع' : 'اجتماع'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onOpenLifeProfile}
-              className="min-h-[34px] px-2.5 py-1.5 rounded-xl border border-white/10 bg-white/[0.02] text-xs font-medium text-zinc-300 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-              title="الإعدادات والثوابت والجدول والأصوات وذاكرة Gemini"
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
-              <span>الإعدادات ({memoryCount})</span>
-            </button>
-
-            {calendarConnected ? (
-              <button
-                type="button"
-                onClick={() => onRefreshWorkspace()}
-                className="min-h-[34px] px-2.5 py-1.5 rounded-xl border border-white/10 bg-white/[0.02] text-xs text-zinc-300 hover:border-[#7FFFD4]/45 flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                title={calendarUserEmail}
-              >
-                <RefreshCw
-                  className={`w-3.5 h-3.5 text-[#4ADE80] ${loadingCalendarEvents || loadingTasks ? 'animate-spin' : ''}`}
-                />
-                <span>تحديث</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  onGoogleSignIn().catch(() => {});
-                }}
-                disabled={isLoggingIn}
-                className="min-h-[34px] flex items-center gap-2 rounded-xl border border-[#747775] bg-white px-3 py-1.5 text-xs font-semibold text-[#1F1F1F] hover:bg-zinc-100 transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap"
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 48 48" aria-hidden="true">
-                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
-                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
-                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
-                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
-                </svg>
-                <span>{isLoggingIn ? 'جارٍ الاتصال...' : 'Sign in with Google'}</span>
-              </button>
+            {weatherInfo && (
+              <>
+                <span className="text-zinc-700" aria-hidden="true">·</span>
+                <span
+                  className="font-mono-tabular text-zinc-300"
+                  title={`العظمى ${weatherInfo.maxTempC}°C`}
+                >
+                  {weatherInfo.icon} {weatherInfo.currentTempC}°C{' '}
+                  <span className="text-zinc-500 font-sans">{weatherInfo.conditionAr}</span>
+                </span>
+              </>
             )}
 
-            <button
-              type="button"
-              onClick={() =>
-                onToggleSurfaceTheme(surfaceTheme === 'amoled' ? 'obsidian' : 'amoled')
-              }
-              className="min-h-[34px] w-[34px] rounded-xl border border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/25 flex items-center justify-center cursor-pointer"
-              title={surfaceTheme === 'amoled' ? 'تبديل إلى Obsidian' : 'تبديل إلى AMOLED'}
-              aria-label="تبديل المظهر"
-            >
-              {surfaceTheme === 'amoled' ? (
-                <Moon className="w-3.5 h-3.5 text-[#7FFFD4]" />
-              ) : (
-                <Sun className="w-3.5 h-3.5 text-[#7FFFD4]" />
-              )}
-            </button>
+            {calendarConnected && phoneBattery && (
+              <>
+                <span className="text-zinc-700" aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  onClick={onOpenLifeProfile}
+                  className={`inline-flex items-center gap-1 font-mono-tabular transition-colors cursor-pointer ${
+                    phoneBattery.charging && phoneBattery.levelPct >= phoneBattery.chargeLimitPct
+                      ? 'text-[#4ADE80] font-semibold'
+                      : phoneBattery.charging
+                        ? 'text-[#7FFFD4]'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                  title={`${phoneBattery.deviceLabel || 'الهاتف'} · حد الشحن ${phoneChargeLimitPct}%`}
+                >
+                  {phoneBattery.charging ? (
+                    <BatteryCharging className="w-3.5 h-3.5 shrink-0" />
+                  ) : (
+                    <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                  )}
+                  <span>{phoneBattery.levelPct}%</span>
+                </button>
+              </>
+            )}
+
+            {silentNotifications.length > 0 && (
+              <>
+                <span className="text-zinc-700" aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  onClick={() => setShowSilentInbox((v) => !v)}
+                  className="text-amber-300 hover:underline font-medium cursor-pointer"
+                >
+                  🔕 {silentNotifications.length} صامت
+                </button>
+              </>
+            )}
           </div>
         </div>
-      </section>
 
-      {/* PROACTIVE TOMORROW ALERT (Only shown automatically when tomorrow is busy or has a special event) */}
-      {tomorrowAlert && (
-        <div className="rounded-2xl border border-cyan-400/25 bg-cyan-400/[0.05] px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-start gap-2.5 min-w-0">
-            <AlertCircle className="w-4 h-4 text-cyan-300 shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <div className="font-semibold text-white">{tomorrowAlert.headlineAr}</div>
-              <div className="text-zinc-400 mt-0.5 leading-relaxed">{tomorrowAlert.detailAr}</div>
-            </div>
-          </div>
+        {/* Compact Utility Controls */}
+        <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
-            onClick={() =>
-              onOpenAssistantWithPrompt(
-                `غداً ${tomorrowAlert.weekdayAr} (${tomorrowAlert.tomorrowIso}) عندي: ${tomorrowAlert.detailAr} — ساعدني أرتّب جدول غداً مسبقاً بدون ما يضغط على الصلاة أو النوم.`
-              )
-            }
-            className="px-3 py-1.5 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[#7FFFD4] font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer shrink-0 whitespace-nowrap"
+            onClick={onToggleLowEnergyToday}
+            className={`min-h-[34px] px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+              lowEnergyActive
+                ? 'border-emerald-400/40 bg-emerald-400/12 text-emerald-200'
+                : 'border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/15'
+            }`}
+            title="تخفيف اليوم عند انخفاض الطاقة"
           >
-            نسّق غداً مع Gemini
+            <Leaf className="w-3.5 h-3.5" />
+            <span>{lowEnergyActive ? 'يوم هادئ' : 'يوم هادئ'}</span>
           </button>
-        </div>
-      )}
 
-      {/* SUBTLE LOW-ENERGY / SOFT DAY NOTICE (Only visible when activated — calm & non-intrusive) */}
-      {lowEnergyActive && (
-        <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.04] px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-100/90">
-          <div className="flex items-center gap-2">
-            <Leaf className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
-            <span>
-              وضع اليوم الهادئ مفعّل — الصلاة والنوم في أمان، وبقية المهام اختيارية اليوم.
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() =>
-                onOpenAssistantWithPrompt(
-                  'أنا في وضع اليوم الهادئ (طاقتي منخفضة النهاردة) — راجع جدولي ومهامي واقترح عليّ إيه يتأجل لبكرة بهدوء مع حماية الصلاة والنوم.'
-                )
-              }
-              className="text-[#7FFFD4] hover:underline font-medium cursor-pointer"
-            >
-              تخفيف الجدول مع Gemini
-            </button>
-            <button
-              type="button"
-              onClick={onToggleLowEnergyToday}
-              className="text-zinc-400 hover:text-white cursor-pointer"
-            >
-              إنهاء
-            </button>
-          </div>
-        </div>
-      )}
+          <button
+            type="button"
+            onClick={onToggleMeetingMode}
+            className={`min-h-[34px] px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+              meetingModeActive
+                ? 'border-amber-400/50 bg-amber-400/15 text-amber-200'
+                : 'border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/15'
+            }`}
+            title="كتم الصوت أثناء الاجتماع"
+          >
+            <MicOff className="w-3.5 h-3.5" />
+            <span>{meetingModeActive ? 'إنهاء الاجتماع' : 'اجتماع'}</span>
+          </button>
 
-      {/* CROSS-DEVICE INSTANT UNDO BAR (Real Google Calendar / Tasks Delete Undo synced across PC <-> Mobile) */}
-      {lastDeletedWorkspaceItem && (
-        <div className="rounded-2xl border border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.07] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2 text-zinc-100 min-w-0">
-            <RotateCcw className="w-3.5 h-3.5 text-[#7FFFD4] shrink-0" />
-            <span className="truncate">
-              تم حذف {lastDeletedWorkspaceItem.kind === 'task' ? 'المهمة' : 'الحدث'} «{lastDeletedWorkspaceItem.title}» ومزامنته على أجهزتك
-            </span>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => void onUndoWorkspaceDelete()}
-              className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] cursor-pointer"
-            >
-              ↩️ تراجع واستعادة
-            </button>
-            <button
-              type="button"
-              onClick={onDismissWorkspaceUndo}
-              className="p-1 text-zinc-400 hover:text-white cursor-pointer"
-              aria-label="إغلاق شريط التراجع"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
+          <button
+            type="button"
+            onClick={onOpenLifeProfile}
+            className="min-h-[34px] px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] text-xs font-medium text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+            title="الإعدادات والثوابت"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-400" />
+            <span>الإعدادات</span>
+          </button>
 
-      {/* Automatic Audio Silence Sanctuary Banner (only visible when Prayer, Sleep, or Meeting silence is active) */}
-      {activeSanctuary.type !== 'none' && (
-        <div className="rounded-2xl border border-amber-400/35 bg-amber-400/[0.08] px-4 py-3 text-xs text-amber-100 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <VolumeX className="w-4 h-4 text-amber-300 shrink-0" />
-            <span>
-              <strong>{activeSanctuary.labelAr}</strong>
-              {activeSanctuary.endsAtMin !== undefined
-                ? ` · حتى ${formatMinutes12h(activeSanctuary.endsAtMin, language)}`
-                : ''}
-            </span>
-          </div>
-          {activeSanctuary.type === 'meeting' && (
+          {calendarConnected ? (
             <button
               type="button"
-              onClick={onToggleMeetingMode}
-              className="px-3 py-1 rounded-lg bg-amber-400 text-black font-bold text-[11px] cursor-pointer"
+              onClick={() => onRefreshWorkspace()}
+              className="min-h-[34px] px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] text-xs text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+              title={calendarUserEmail}
             >
-              إنهاء وضع الاجتماع
+              <RefreshCw
+                className={`w-3.5 h-3.5 text-[#4ADE80] ${loadingCalendarEvents || loadingTasks ? 'animate-spin' : ''}`}
+              />
+              <span className="hidden sm:inline">تحديث</span>
             </button>
-          )}
-        </div>
-      )}
-
-      {/* Preserved Silent Notifications Tray */}
-      {showSilentInbox && silentNotifications.length > 0 && (
-        <div className="rounded-2xl border border-white/15 bg-[#090C11] p-4 space-y-2.5 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="font-bold text-white">
-              🔕 الإشعارات المحفوظة صامتاً ({silentNotifications.length})
-            </span>
+          ) : (
             <button
               type="button"
               onClick={() => {
-                onClearSilentNotifications();
-                setShowSilentInbox(false);
+                onGoogleSignIn().catch(() => {});
               }}
-              className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
+              disabled={isLoggingIn}
+              className="min-h-[34px] flex items-center gap-2 rounded-lg border border-[#747775] bg-white px-3 py-1.5 text-xs font-semibold text-[#1F1F1F] hover:bg-zinc-100 transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap"
             >
-              مسح الكل
+              <svg className="w-3.5 h-3.5" viewBox="0 0 48 48" aria-hidden="true">
+                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+              </svg>
+              <span>{isLoggingIn ? 'جارٍ الاتصال...' : 'Sign in with Google'}</span>
             </button>
-          </div>
-          <div className="divide-y divide-white/10 max-h-44 overflow-y-auto">
-            {silentNotifications.map((sn) => (
-              <div key={sn.id} className="py-2 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span>{TASK_SOUND_META[sn.soundCategory].icon}</span>
-                  <span className="text-zinc-200 truncate">{sn.title}</span>
-                  <span className="text-[10px] text-amber-300/80 shrink-0">· {sn.reasonAr}</span>
-                </div>
-                <span className="font-mono-tabular text-[10px] text-zinc-500 shrink-0">
-                  {sn.time12h}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* Active Privacy Alert Banner (Emoji-Only · Direct "شربت فعلاً ✓" confirmation for water alerts) */}
+          <button
+            type="button"
+            onClick={() =>
+              onToggleSurfaceTheme(surfaceTheme === 'amoled' ? 'obsidian' : 'amoled')
+            }
+            className="min-h-[34px] w-[34px] rounded-lg border border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-[#7FFFD4] hover:border-white/20 flex items-center justify-center cursor-pointer transition-colors"
+            title={surfaceTheme === 'amoled' ? 'تبديل إلى Obsidian' : 'تبديل إلى AMOLED'}
+            aria-label="تبديل المظهر"
+          >
+            {surfaceTheme === 'amoled' ? (
+              <Moon className="w-3.5 h-3.5 text-[#7FFFD4]" />
+            ) : (
+              <Sun className="w-3.5 h-3.5 text-[#7FFFD4]" />
+            )}
+          </button>
+        </div>
+      </header>
+
+      {/* 2. PRIORITY ACTIONAL ALERTS ONLY (Rendered strictly when an urgent action or undo exists) */}
       {activeAudioAlert && (
         <div
-          className={`rounded-2xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
+          className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
             activeAudioAlert.isContinuous
-              ? 'border-amber-400/60 bg-amber-400/15'
-              : 'border-[#7FFFD4]/45 bg-[#7FFFD4]/12'
+              ? 'border-amber-400/50 bg-amber-400/12'
+              : 'border-[#7FFFD4]/40 bg-[#7FFFD4]/10'
           }`}
         >
           <div className="flex items-center gap-2.5 text-sm">
-            <span className="text-2xl">{activeAudioAlert.title || TASK_SOUND_META[activeAudioAlert.category].icon}</span>
-            <span className="font-mono-tabular text-xs text-zinc-300">
+            <span className="text-2xl leading-none">{activeAudioAlert.title || TASK_SOUND_META[activeAudioAlert.category].icon}</span>
+            <span className="text-xs font-medium text-zinc-200">
               {activeAudioAlert.category === 'water'
                 ? 'تأكيد شرب الكوب'
                 : activeAudioAlert.isContinuous
@@ -1473,14 +1321,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     onLogWaterCup();
                     onAcknowledgeAudioAlert();
                   }}
-                  className="px-3.5 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
                 >
                   💧 شربت فعلاً ✓
                 </button>
                 <button
                   type="button"
                   onClick={onAcknowledgeAudioAlert}
-                  className="px-3 py-1.5 rounded-xl border border-white/15 text-zinc-300 text-xs hover:text-white cursor-pointer"
+                  className="px-3 py-1.5 rounded-lg border border-white/15 text-zinc-300 text-xs hover:text-white cursor-pointer"
                 >
                   لاحقاً
                 </button>
@@ -1489,53 +1337,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onAcknowledgeAudioAlert}
-                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer ${
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
                   activeAudioAlert.isContinuous
                     ? 'bg-amber-400 text-black hover:bg-amber-300'
                     : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
                 }`}
               >
-                {activeAudioAlert.isContinuous ? '🔕 إيقاف ✓' : '✓ تم'}
+                {activeAudioAlert.isContinuous ? 'إيقاف ✓' : '✓ تم'}
               </button>
             )}
           </div>
         </div>
       )}
 
-      {/* Smart Charge Complete 90% Alert Banner (Custom audio alert + 1-click stop from PC dashboard) */}
       {(smartChargeAudioActive ||
         (phoneBattery &&
           phoneBattery.charging &&
           phoneBattery.levelPct >= phoneBattery.chargeLimitPct &&
           !phoneChargeAlertDismissed)) && (
-        <div className="rounded-2xl border border-[#4ADE80]/70 bg-[#4ADE80]/15 px-4 py-3 text-xs text-emerald-100 flex flex-wrap items-center justify-between gap-3 shadow-[0_0_24px_rgba(74,222,128,0.16)]">
+        <div className="rounded-xl border border-[#4ADE80]/45 bg-[#4ADE80]/10 px-4 py-2.5 text-xs text-emerald-100 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
-            <BatteryCharging className="w-5 h-5 text-[#4ADE80] shrink-0 animate-pulse" />
-            <div className="min-w-0">
-              <div className="font-bold text-white text-sm flex items-center gap-2 flex-wrap">
-                <span>
-                  🔋 التنبيه الذكي عند اكتمال الشحن ·{' '}
-                  {phoneBattery?.deviceLabel || 'الموبايل'}{' '}
-                  <span className="font-mono-tabular text-[#4ADE80]">
-                    {phoneBattery?.levelPct ?? phoneChargeLimitPct}%
-                  </span>
-                </span>
-                {smartChargeAudioActive && (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#7FFFD4] animate-pulse">
-                    <Volume2 className="w-3.5 h-3.5" />
-                    إشعار صوتي خاص نشط
-                  </span>
-                )}
-              </div>
-              <div className="text-[11px] text-emerald-200/85 mt-0.5">
-                وصل الموبايل إلى الحد المحدد ({phoneBattery?.chargeLimitPct ?? phoneChargeLimitPct}%) — افصل الشاحن أو أوقف التنبيه الصوتي بضغطة واحدة.
-              </div>
-            </div>
+            <BatteryCharging className="w-4 h-4 text-[#4ADE80] shrink-0" />
+            <span className="font-medium text-white">
+              اكتمال الشحن ({phoneBattery?.levelPct ?? phoneChargeLimitPct}%) · افصل الشاحن عن{' '}
+              {phoneBattery?.deviceLabel || 'الهاتف'}
+            </span>
           </div>
           <button
             type="button"
             onClick={onDismissPhoneChargeAlert}
-            className="px-4 py-2 rounded-xl bg-[#4ADE80] text-black font-bold text-xs hover:bg-emerald-300 flex items-center gap-1.5 cursor-pointer shrink-0 shadow-md"
+            className="px-3 py-1.5 rounded-lg bg-[#4ADE80] text-black font-bold text-xs hover:bg-emerald-300 flex items-center gap-1.5 cursor-pointer shrink-0"
           >
             <BellOff className="w-3.5 h-3.5" />
             <span>إيقاف التنبيه</span>
@@ -1543,22 +1374,128 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Proactive 3-Day Medication Low-Stock Alert Banner (Top of Dashboard) */}
-      {lowStockMedications.length > 0 && (
-        <div className="rounded-2xl border border-amber-400/50 bg-amber-400/[0.09] px-4 py-3 text-xs space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-amber-200 font-bold">
-              <AlertCircle className="w-4 h-4 text-amber-300 shrink-0" />
-              <span>
-                تنبيه استباقي لمخزون العلاجات ({lowStockMedications.length} دواء قارب على النفاد خلال 3 أيام)
-              </span>
-            </div>
-            <span className="text-[10px] text-amber-200/75">
-              جهّز الشراء مبكراً وحدّث الرصيد فوراً
+      {batteryGuard.bedtimeGuardTriggered && (
+        <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-2.5 text-xs text-rose-200 flex items-center justify-between gap-3">
+          <span>
+            🔋 بطارية الهاتف عند <strong className="font-mono-tabular">{batteryGuard.levelPct}%</strong> — اشحن الجهاز قبل النوم.
+          </span>
+        </div>
+      )}
+
+      {lastDeletedWorkspaceItem && (
+        <div className="rounded-xl border border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.07] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 text-zinc-100 min-w-0">
+            <RotateCcw className="w-3.5 h-3.5 text-[#7FFFD4] shrink-0" />
+            <span className="truncate">
+              تم حذف «{lastDeletedWorkspaceItem.title}»
             </span>
           </div>
-          <div className="space-y-2">
-            {lowStockMedications.map(({ med, remainingDoses, daysLeftRounded, dailyRate }) => {
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void onUndoWorkspaceDelete()}
+              className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] cursor-pointer"
+            >
+              استعادة
+            </button>
+            <button
+              type="button"
+              onClick={onDismissWorkspaceUndo}
+              className="p-1 text-zinc-400 hover:text-white cursor-pointer"
+              aria-label="إغلاق"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {lastDeletedBlock && shakeUndoSecondsLeft > 0 && (
+        <div className="rounded-xl border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2">
+            <RotateCcw className="w-3.5 h-3.5 text-[#7FFFD4]" />
+            <span className="text-white font-semibold">
+              تم حذف {lastDeletedBlock.emojiPair} ({shakeUndoSecondsLeft} ث)
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onTriggerShakeUndo}
+            className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] cursor-pointer"
+          >
+            تراجع
+          </button>
+        </div>
+      )}
+
+      {activeSanctuary.type !== 'none' && (
+        <div className="rounded-xl border border-amber-400/30 bg-amber-400/[0.06] px-4 py-2.5 text-xs text-amber-100 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <VolumeX className="w-4 h-4 text-amber-300 shrink-0" />
+            <span>
+              <strong>{activeSanctuary.labelAr}</strong>
+              {activeSanctuary.endsAtMin !== undefined
+                ? ` · حتى ${formatMinutes12h(activeSanctuary.endsAtMin, language)}`
+                : ''}
+            </span>
+          </div>
+          {activeSanctuary.type === 'meeting' && (
+            <button
+              type="button"
+              onClick={onToggleMeetingMode}
+              className="px-3 py-1 rounded-lg bg-amber-400 text-black font-bold text-[11px] cursor-pointer"
+            >
+              إنهاء
+            </button>
+          )}
+        </div>
+      )}
+
+      {showSilentInbox && silentNotifications.length > 0 && (
+        <div className="rounded-xl border border-white/10 bg-[#090C11] p-3.5 space-y-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-white">
+              الإشعارات الصامتة ({silentNotifications.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                onClearSilentNotifications();
+                setShowSilentInbox(false);
+              }}
+              className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
+            >
+              مسح الكل
+            </button>
+          </div>
+          <div className="divide-y divide-white/[0.07] max-h-40 overflow-y-auto">
+            {silentNotifications.map((sn) => (
+              <div key={sn.id} className="py-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span>{TASK_SOUND_META[sn.soundCategory].icon}</span>
+                  <span className="text-zinc-200 truncate">{sn.title}</span>
+                  <span className="text-[10px] text-zinc-500 shrink-0">· {sn.reasonAr}</span>
+                </div>
+                <span className="font-mono-tabular text-[10px] text-zinc-500 shrink-0">
+                  {sn.time12h}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Single Authoritative Low-Stock Medications Alert (No duplicate warning inside Meds card) */}
+      {lowStockMedications.length > 0 && (
+        <div className="rounded-xl border border-amber-400/35 bg-amber-400/[0.06] px-4 py-3 text-xs space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-amber-200 font-semibold">
+              <AlertCircle className="w-4 h-4 text-amber-300 shrink-0" />
+              <span>مخزون قارب على النفاد ({lowStockMedications.length})</span>
+            </div>
+          </div>
+          <div className="divide-y divide-amber-400/15">
+            {lowStockMedications.map(({ med, remainingDoses, daysLeftRounded, dailyRate, defaultPackSize }) => {
               const isOpen = purchaseMedId === med.id;
               const enteredQty = Math.max(0, Math.min(500, Math.round(Number(purchaseAddDoses) || 0)));
               const previewTotal =
@@ -1567,38 +1504,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   : enteredQty;
               const previewDays = Math.ceil(previewTotal / Math.max(0.14, dailyRate));
               return (
-                <div
-                  key={`top-low-${med.id}`}
-                  className="rounded-xl border border-amber-400/25 bg-black/55 p-2.5 space-y-2"
-                >
+                <div key={`top-low-${med.id}`} className="py-2 first:pt-0 last:pb-0 space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <span>💊</span>
-                      <span className="font-bold text-white truncate">{med.name}</span>
+                      <span className="font-semibold text-white truncate">{med.name}</span>
                       <span
                         className={`font-mono-tabular text-[11px] shrink-0 ${
-                          remainingDoses === 0 ? 'text-rose-300 font-bold' : 'text-amber-200'
+                          remainingDoses === 0 ? 'text-rose-300 font-bold' : 'text-amber-200/90'
                         }`}
                       >
+                        ·{' '}
                         {remainingDoses === 0
-                          ? 'نفد المخزون (0 جرعة)'
-                          : `متبقٍ ${remainingDoses} جرعة (~${daysLeftRounded} ${daysLeftRounded === 1 ? 'يوم' : 'أيام'})`}
+                          ? 'نفد المخزون'
+                          : `متبقٍ ${remainingDoses} (~${daysLeftRounded} ${daysLeftRounded === 1 ? 'يوم' : 'أيام'})`}
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => openPurchaseRestockForm(med)}
-                      className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black text-[11px] font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer shrink-0"
-                    >
-                      <ShoppingBag className="w-3.5 h-3.5" />
-                      <span>إضافة شراء جديد</span>
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onRefillMedication(med.id, defaultPackSize, med.refillAlertDays ?? 3);
+                          if (purchaseMedId === med.id) setPurchaseMedId(null);
+                        }}
+                        className="px-2.5 py-1 rounded-lg border border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80] text-[11px] font-semibold hover:bg-[#4ADE80]/20 cursor-pointer"
+                        title={`تعبئة عبوة جديدة (${defaultPackSize} جرعة)`}
+                      >
+                        عبوة جديدة ({defaultPackSize})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => openPurchaseRestockForm(med)}
+                        className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[11px] font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer"
+                      >
+                        <ShoppingBag className="w-3 h-3" />
+                        <span>شراء</span>
+                      </button>
+                    </div>
                   </div>
 
                   {isOpen && (
-                    <div className="rounded-lg border border-[#7FFFD4]/35 bg-black/80 p-2.5 space-y-2 text-[11px]">
+                    <div className="rounded-lg border border-[#7FFFD4]/30 bg-black/75 p-2.5 space-y-2 text-[11px]">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-zinc-400">الكمية المشتراة:</span>
+                        <span className="text-zinc-400">الكمية:</span>
                         {[14, 20, 30, 60].map((qty) => (
                           <button
                             key={qty}
@@ -1619,7 +1566,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           max={500}
                           value={purchaseAddDoses}
                           onChange={(e) => setPurchaseAddDoses(e.target.value)}
-                          className="w-20 rounded-lg border border-white/15 bg-black px-2 py-0.5 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                          className="w-18 rounded-lg border border-white/15 bg-black px-2 py-0.5 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
                           aria-label="عدد الجرعات المشتراة"
                         />
                       </div>
@@ -1635,7 +1582,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 : 'border-white/10 text-zinc-400'
                             }`}
                           >
-                            إضافة للمتبقي ({remainingDoses} + {enteredQty})
+                            إضافة ({remainingDoses} + {enteredQty})
                           </button>
                           <button
                             type="button"
@@ -1646,17 +1593,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 : 'border-white/10 text-zinc-400'
                             }`}
                           >
-                            تعيين إجمالي جديد
+                            تعيين إجمالي
                           </button>
                         </div>
                         <span className="font-mono-tabular text-[10px] text-[#4ADE80]">
-                          الرصيد بعد التحديث: {previewTotal} جرعة (~{previewDays} ي)
+                          الرصيد: {previewTotal} (~{previewDays} ي)
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-white/10">
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-white/10">
                         <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
-                          <span>التنبيه القادم قبل:</span>
+                          <span>تنبيه قبل:</span>
                           {[2, 3, 5].map((d) => (
                             <button
                               key={d}
@@ -1689,7 +1636,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             }}
                             className="px-3 py-1 rounded-lg bg-[#4ADE80] text-black font-bold hover:bg-emerald-300 disabled:opacity-40 cursor-pointer"
                           >
-                            تأكيد الشراء ✓
+                            حفظ ✓
                           </button>
                         </div>
                       </div>
@@ -1702,173 +1649,116 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* Compact Live Real Phone Battery Readout (Smart Charge settings live inside Settings modal) */}
-      {calendarConnected && phoneBattery && (
-        <div
-          className={`rounded-2xl border px-3.5 py-2 flex flex-wrap items-center justify-between gap-2.5 text-xs ${
-            phoneBattery.charging
-              ? phoneBattery.levelPct >= phoneBattery.chargeLimitPct
-                ? 'border-[#4ADE80]/40 bg-[#4ADE80]/[0.07]'
-                : 'border-[#7FFFD4]/25 bg-[#7FFFD4]/[0.04]'
-              : 'border-white/10 bg-white/[0.02]'
-          }`}
-        >
-          <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
-            {phoneBattery.charging ? (
-              <BatteryCharging className="w-4 h-4 text-[#7FFFD4] shrink-0" />
-            ) : (
-              <Smartphone className="w-4 h-4 text-zinc-400 shrink-0" />
-            )}
-            <span className="font-semibold text-zinc-200">
-              {phoneBattery.deviceLabel || 'بطارية الهاتف'}
-            </span>
-            <span
-              className={`font-mono-tabular font-bold text-sm ${
-                phoneBattery.levelPct >= phoneBattery.chargeLimitPct && phoneBattery.charging
-                  ? 'text-[#4ADE80]'
-                  : phoneBattery.charging
-                    ? 'text-[#7FFFD4]'
-                    : 'text-white'
-              }`}
-            >
-              {phoneBattery.charging ? '⚡ ' : ''}
-              {phoneBattery.levelPct}%
-            </span>
-            <span className="text-[11px] text-zinc-400 font-mono-tabular">
-              {phoneBattery.levelPct >= 100
-                ? 'ممتلئة بالكامل (100%) ✓'
-                : phoneBattery.charging
-                  ? phoneBattery.levelPct < phoneChargeLimitPct
-                    ? `متبقي ${100 - phoneBattery.levelPct}% للامتلاء (${phoneChargeLimitPct - phoneBattery.levelPct}% للتنبيه عند ${phoneChargeLimitPct}%)`
-                    : `متبقي ${100 - phoneBattery.levelPct}% للامتلاء · تجاوز حد ${phoneChargeLimitPct}% ✓`
-                  : `متبقي ${100 - phoneBattery.levelPct}% للامتلاء`}
-            </span>
+      {lowEnergyActive && (
+        <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.04] px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-100/90">
+          <div className="flex items-center gap-2">
+            <Leaf className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+            <span>وضع اليوم الهادئ مفعّل — الأولوية للصلاة والنوم فقط.</span>
           </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="hidden sm:block relative w-28 h-1.5 rounded-full bg-white/10 overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${
-                  phoneBattery.levelPct >= phoneChargeLimitPct ? 'bg-[#4ADE80]' : 'bg-[#7FFFD4]'
-                }`}
-                style={{ width: `${Math.min(100, Math.max(0, phoneBattery.levelPct))}%` }}
-              />
-            </div>
-            {smartChargeAudioActive && (
-              <button
-                type="button"
-                onClick={onDismissPhoneChargeAlert}
-                className="px-2.5 py-1 rounded-lg bg-rose-500 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-              >
-                <BellOff className="w-3 h-3" />
-                <span>إيقاف التنبيه</span>
-              </button>
-            )}
+          <div className="flex items-center gap-3">
             <button
               type="button"
-              onClick={onOpenLifeProfile}
-              className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer"
-              title="ضبط التنبيه الذكي من الإعدادات"
+              onClick={() =>
+                onOpenAssistantWithPrompt(
+                  'أنا في وضع اليوم الهادئ (طاقتي منخفضة النهاردة) — راجع جدولي ومهامي واقترح عليّ إيه يتأجل لبكرة بهدوء مع حماية الصلاة والنوم.'
+                )
+              }
+              className="text-[#7FFFD4] hover:underline font-medium cursor-pointer"
             >
-              إعدادات الشحن
+              تخفيف مع Gemini
+            </button>
+            <button
+              type="button"
+              onClick={onToggleLowEnergyToday}
+              className="text-zinc-400 hover:text-white cursor-pointer"
+            >
+              إنهاء
             </button>
           </div>
         </div>
       )}
 
-      {/* Bedtime Battery Guard Alert Banner (08:35 PM - 09:10 PM <= 25%) */}
-      {batteryGuard.bedtimeGuardTriggered && (
-        <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs text-rose-200 flex items-center justify-between gap-3">
-          <span>
-            🔋 <strong>تنبيه ما قبل النوم (08:35 م – 09:10 م):</strong> بطارية الهاتف عند{' '}
-            {batteryGuard.levelPct}% — اشحن الجهاز قبل موعد النوم!
-          </span>
-        </div>
-      )}
-
-      {/* 8-Second Quick Undo Banner */}
-      {lastDeletedBlock && shakeUndoSecondsLeft > 0 && (
-        <div className="rounded-2xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-xs">
-            <RotateCcw className="w-4 h-4 text-[#7FFFD4]" />
-            <span className="text-white font-semibold">
-              تم حذف {lastDeletedBlock.emojiPair} ({shakeUndoSecondsLeft} ث)
-            </span>
+      {tomorrowAlert && (
+        <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.04] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <AlertCircle className="w-4 h-4 text-cyan-300 shrink-0" />
+            <div className="min-w-0 truncate">
+              <span className="font-semibold text-white">{tomorrowAlert.headlineAr}</span>
+              <span className="text-zinc-400"> · {tomorrowAlert.detailAr}</span>
+            </div>
           </div>
           <button
             type="button"
-            onClick={onTriggerShakeUndo}
-            className="px-3.5 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
+            onClick={() =>
+              onOpenAssistantWithPrompt(
+                `غداً ${tomorrowAlert.weekdayAr} (${tomorrowAlert.tomorrowIso}) عندي: ${tomorrowAlert.detailAr} — ساعدني أرتّب جدول غداً مسبقاً بدون ما يضغط على الصلاة أو النوم.`
+              )
+            }
+            className="text-[#7FFFD4] font-semibold hover:underline cursor-pointer shrink-0 whitespace-nowrap"
           >
-            ↩️ تراجع واسترجاع
+            رتّب غداً ←
           </button>
         </div>
       )}
 
-      {/* FOCAL HERO COMMAND STRIP: Current / Next Task (Full Calendar Info) + Quick Actions + 5 Prayers */}
-      <section className={`rounded-2xl border p-3.5 sm:p-5 ${cardSurface}`}>
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5 items-center">
-          {/* Next Task + Full Details + Countdown + Quick 1-Tap Actions */}
-          <div className="lg:col-span-6 flex flex-col justify-between gap-3.5 sm:gap-4 min-w-0">
-            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2.5 sm:gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 text-xs text-zinc-400">
-                  <span className={isNextBlockHappeningNow ? 'text-[#4ADE80] font-bold' : 'text-[#7FFFD4] font-semibold'}>
+      {/* 3. FOCAL HERO COMMAND CENTER — Now / Next + Live Countdown + 5 Prayers */}
+      <section className={`rounded-2xl border p-4 sm:p-6 ${cardSurface}`}>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-6 items-center">
+          {/* Primary Focus: Current / Next Event + Dominant Countdown */}
+          <div className="lg:col-span-6 flex flex-col justify-between gap-4 min-w-0">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span
+                    className={
+                      isNextBlockHappeningNow
+                        ? 'text-[#4ADE80] font-bold'
+                        : 'text-[#7FFFD4] font-semibold'
+                    }
+                  >
                     {isNextBlockHappeningNow
-                      ? 'جارٍ الآن'
+                      ? 'الآن'
                       : language === 'ar'
-                        ? 'المهمة الجاية'
+                        ? 'القادم'
                         : 'Up Next'}
                   </span>
-                  <span>·</span>
-                  <span>
-                    {nextAlarmBlock?.isAnchor
-                      ? t(language, 'adhanLeadTag')
-                      : nextAlarmBlock?.source === 'google_calendar'
-                        ? 'Google Calendar'
-                        : t(language, 'rhythmTag')}
-                  </span>
+                  {nextAlarmBlock?.isAnchor && (
+                    <>
+                      <span className="text-zinc-700">·</span>
+                      <span className="text-zinc-400">{t(language, 'adhanLeadTag')}</span>
+                    </>
+                  )}
                 </div>
-                <div className="mt-2 flex items-start gap-2.5 sm:gap-3">
+
+                <div className="flex items-start gap-3">
                   <span className="text-2xl sm:text-3xl shrink-0 leading-none mt-0.5">
                     {nextAlarmBlock?.emojiPair ?? '✅'}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <h1 className="text-base sm:text-lg font-bold text-white leading-snug break-words">
+                    <h2 className="text-base sm:text-xl font-bold text-white leading-snug break-words">
                       {nextAlarmBlock
                         ? nextAlarmDisplay.title
                         : calendarConnected
-                          ? 'أنجزت مهام اليوم المتبقية ✓'
-                          : 'بانتظار ربط حساب Google'}
-                    </h1>
+                          ? 'أنجزت مهام اليوم ✓'
+                          : 'اربط حساب Google للبدء'}
+                    </h2>
                     {nextAlarmBlock && nextAlarmDisplay.detail && (
-                      <p className="text-xs text-zinc-300 mt-0.5 leading-relaxed line-clamp-2">
+                      <p className="text-xs text-zinc-400 mt-0.5 leading-relaxed line-clamp-1">
                         {nextAlarmDisplay.detail}
                       </p>
                     )}
-                    <div className="font-mono-tabular text-xs text-zinc-400 mt-1.5 flex flex-wrap items-center gap-2">
-                      <span>
-                        {nextAlarmBlock
-                          ? nextAlarmBlock.isAllDay
-                            ? 'طوال اليوم'
-                            : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)} (${formatDurationLabel(nextAlarmBlock.durationMin)})`
-                          : 'سجّل الدخول لعرض جدولك الفعلي بنظام 12 ساعة'}
-                      </span>
-                      {nextAlarmBlock && (
-                        <button
-                          type="button"
-                          onClick={() => onToggleComplete(nextAlarmBlock.id)}
-                          className="px-2.5 py-0.5 rounded-lg border border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80] text-[11px] font-semibold hover:bg-[#4ADE80]/20 cursor-pointer"
-                        >
-                          ✓ تم الإنجاز
-                        </button>
-                      )}
+                    <div className="font-mono-tabular text-xs text-zinc-400 mt-1">
+                      {nextAlarmBlock
+                        ? nextAlarmBlock.isAllDay
+                          ? 'طوال اليوم'
+                          : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)} · ${formatDurationLabel(nextAlarmBlock.durationMin)}`
+                        : 'سجّل الدخول لعرض جدولك الفعلي'}
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="text-right sm:text-left shrink-0 flex flex-col items-start sm:items-end justify-center">
+              <div className="text-right sm:text-left shrink-0 flex flex-row sm:flex-col items-baseline sm:items-end justify-between sm:justify-center gap-2 pt-1 sm:pt-0 border-t border-white/[0.06] sm:border-t-0">
                 <div
                   className={`font-digits text-3xl sm:text-4xl font-bold tracking-tight leading-none whitespace-nowrap ${
                     simulateUnder60s
@@ -1880,20 +1770,30 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 >
                   {countdownMeta.clock}
                 </div>
-                <div className="text-[11px] font-medium text-zinc-400 mt-1 whitespace-nowrap">
+                <div className="text-[11px] font-medium text-zinc-400 whitespace-nowrap">
                   {countdownMeta.caption}
                 </div>
               </div>
             </div>
 
-            {/* Instant 1-Tap Actions Bar (Clean: Pomodoro + Gemini Chat · Water logs strictly via alert confirmation) */}
+            {/* Clean Action Row */}
             <div className="flex flex-wrap items-center gap-2">
+              {nextAlarmBlock && (
+                <button
+                  type="button"
+                  onClick={() => onToggleComplete(nextAlarmBlock.id)}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[#4ADE80]/15 border border-[#4ADE80]/35 text-[#4ADE80] text-xs font-bold hover:bg-[#4ADE80]/25 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  ✓ تم الإنجاز
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={onOpenPomodoro}
                 className={`${
-                  aquaTouchMode ? 'min-h-[48px] md:min-h-[40px]' : 'min-h-[40px]'
-                } px-3.5 py-2 rounded-xl border border-white/15 bg-black/50 text-zinc-200 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular`}
+                  aquaTouchMode ? 'min-h-[44px] md:min-h-[38px]' : 'min-h-[38px]'
+                } px-3 py-1.5 rounded-lg border border-white/[0.1] bg-white/[0.02] text-zinc-200 hover:border-white/25 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular transition-colors`}
               >
                 <Timer className="w-3.5 h-3.5 text-[#7FFFD4]" />
                 <span>
@@ -1906,7 +1806,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenAssistant}
-                className="min-h-[40px] px-3.5 py-2 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.08] text-[#7FFFD4] hover:bg-[#7FFFD4]/15 text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               >
                 <MessageSquare className="w-3.5 h-3.5" />
                 <span>شات Gemini</span>
@@ -1914,66 +1814,78 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          {/* 5 Prayers Strip (Zeroed 00:00 until GPS check completes or falls back to timezone) */}
-          <div className="lg:col-span-6 lg:border-r lg:border-white/10 lg:pr-5 min-w-0">
-            <div className="grid grid-cols-5 gap-1 sm:gap-2 text-center">
+          {/* 5 Prayers Strip — Next Prayer Highlighted, Passed Prayers Muted */}
+          <div className="lg:col-span-6 lg:border-r lg:border-white/[0.08] lg:pr-6 min-w-0">
+            <div className="grid grid-cols-5 gap-1.5 sm:gap-2 text-center">
               {prayers
                 .filter((p) => p.isObligatory)
                 .map((p) => {
                   const showLivePrayer = prayersReady ?? calendarConnected;
+                  const isNextPrayer = showLivePrayer && p.id === nextObligatoryPrayerId;
+                  const isPassed = showLivePrayer && p.adhanMinutes < nowMinutes && !isNextPrayer;
                   return (
                     <div
                       key={p.id}
-                      className="rounded-xl border border-white/10 bg-black/45 py-2 px-0.5 sm:px-1.5 min-w-0"
+                      className={`rounded-xl border py-2.5 px-1 sm:px-2 min-w-0 transition-colors ${
+                        isNextPrayer
+                          ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/[0.08]'
+                          : 'border-white/[0.06] bg-white/[0.02]'
+                      } ${isPassed ? 'opacity-45' : ''}`}
                     >
                       <div className="text-xs sm:text-sm leading-none">{p.emojiPair.split(' ')[1]}</div>
-                      <div className="text-[10px] sm:text-[11px] font-medium text-zinc-300 mt-1 truncate">
+                      <div
+                        className={`text-[10px] sm:text-[11px] mt-1.5 truncate ${
+                          isNextPrayer ? 'font-bold text-white' : 'font-medium text-zinc-400'
+                        }`}
+                      >
                         {language === 'ar' ? p.nameAr : p.nameEn}
                       </div>
                       <div
-                        className={`font-mono-tabular text-[10px] sm:text-[11px] font-semibold mt-0.5 whitespace-nowrap ${
-                          showLivePrayer ? 'text-[#7FFFD4]' : 'text-zinc-500'
+                        className={`font-mono-tabular text-[10.5px] sm:text-xs font-bold mt-0.5 whitespace-nowrap ${
+                          showLivePrayer
+                            ? isNextPrayer
+                              ? 'text-[#7FFFD4]'
+                              : 'text-zinc-200'
+                            : 'text-zinc-600'
                         }`}
                       >
                         {showLivePrayer ? formatMinutes12h(p.alarmMinutes, language) : '00:00'}
                       </div>
-                      <div className="font-mono-tabular text-[8.5px] sm:text-[9px] text-zinc-500 mt-0.5 whitespace-nowrap truncate">
-                        <span className="hidden sm:inline">{language === 'ar' ? 'أذان ' : 'Adhan '}</span>
+                      <div className="font-mono-tabular text-[9px] text-zinc-500 mt-0.5 whitespace-nowrap truncate">
                         {showLivePrayer ? formatMinutes12h(p.adhanMinutes, language) : '00:00'}
                       </div>
                     </div>
                   );
                 })}
             </div>
+
             {!(prayersReady ?? calendarConnected) && (
-              <div className="mt-2 text-[10px] text-zinc-500 text-center">
-                {!calendarConnected
-                  ? 'مواقيت الصلاة صفرية حتى تسجيل الدخول وتحديد الموقع عبر الـ GPS أوفلاين (أو المنطقة الزمنية احتياطياً)'
-                  : locationResolutionState === 'resolving_gps'
-                    ? '📡 جاري تحديد موقعك عبر الـ GPS أوفلاين لحساب مواقيت الصلاة بدقة...'
-                    : 'بانتظار تحديد الموقع لحساب مواقيت الصلاة أوفلاين'}
+              <div className="mt-2 text-[11px] text-zinc-500 text-center">
+                {locationResolutionState === 'resolving_gps'
+                  ? 'جارٍ تحديد الموقع لحساب المواقيت...'
+                  : 'بانتظار تحديد الموقع'}
               </div>
             )}
 
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <div className="mt-3 flex items-center justify-between gap-2 text-[11px]">
               <button
                 type="button"
                 onClick={onToggleAdhanOverrideSilent}
-                className={`flex items-center gap-1.5 cursor-pointer ${
-                  adhanOverrideSilent ? 'text-[#4ADE80]' : 'text-zinc-400'
+                className={`flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  adhanOverrideSilent ? 'text-[#4ADE80]' : 'text-zinc-500 hover:text-zinc-300'
                 }`}
               >
                 <Volume2 className="w-3.5 h-3.5" />
                 <span>
-                  نداء الصلوات الخمس ({adhanOverrideSilent ? 'يتجاوز الصامت والاهتزاز ✓' : 'معطّل'})
+                  نداء الأذان · {adhanOverrideSilent ? 'مفعّل' : 'صامت'}
                 </span>
               </button>
               <button
                 type="button"
                 onClick={onTestAdhanChime}
-                className="text-[#7FFFD4] hover:underline cursor-pointer"
+                className="text-zinc-400 hover:text-[#7FFFD4] transition-colors cursor-pointer"
               >
-                اختبار نداء الأذان
+                تجربة الصوت
               </button>
             </div>
           </div>
@@ -1982,28 +1894,51 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Main Split Grid: Primary Calendar + Tasks FIRST in DOM (optimal on OnePlus 12R & Desktop RTL) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Primary Column (7 cols): REAL Google Calendar + REAL Google Tasks + Saved Gemini Chat Activity */}
+        {/* Primary Column (7 cols): Schedule -> Tasks -> Creative -> Gmail */}
         <div className="lg:col-span-7 space-y-5">
-          {/* 1. Real Google Calendar Timeline Card */}
-          <section className={`rounded-2xl border p-5 ${cardSurface}`}>
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/10">
-              <div>
-                <h2 className="text-base font-bold text-white flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-[#7FFFD4]" />
-                  <span>
-                    {calendarConnected
-                      ? 'تقويم Google Calendar الفعلي'
-                      : 'التقويم والجدول الشخصي'}
+          {/* 1. Today's Schedule (Timeline) */}
+          <section className={`rounded-2xl border p-4 sm:p-5 ${cardSurface}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-white/[0.07]">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-[#7FFFD4]" />
+                <span>جدول اليوم</span>
+                {calendarConnected && calendarEvents.length > 0 && (
+                  <span className="font-mono-tabular text-xs font-medium text-zinc-500">
+                    · {calendarEvents.length}
                   </span>
-                </h2>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  {calendarConnected
-                    ? `${calendarEvents.length} حدثاً عبر ${calendarList.length || 1} تقويم · نظام 12 ساعة`
-                    : 'سجّل الدخول بحساب Google لعرض أحداثك ومهامك الحقيقية'}
-                </p>
-              </div>
+                )}
+              </h2>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={onOpenCatchUp}
+                  className="min-h-[34px] px-2.5 py-1 rounded-lg border border-white/[0.09] text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <Zap className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                  <span>زحزحة</span>
+                </button>
+                {hasUndoSnapshot && (
+                  <button
+                    type="button"
+                    onClick={onUndoReflow}
+                    className="min-h-[34px] px-2.5 py-1 rounded-lg border border-amber-400/35 text-amber-300 text-xs font-medium hover:bg-amber-400/10 flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>استعادة</span>
+                  </button>
+                )}
+                {deletedBlocks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTrash((v) => !v)}
+                    className="min-h-[34px] px-2.5 py-1 rounded-lg border border-white/[0.09] text-zinc-400 hover:text-white text-xs flex items-center gap-1 cursor-pointer"
+                    title="المحذوفات"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span className="font-mono-tabular">{deletedBlocks.length}</span>
+                  </button>
+                )}
                 {calendarConnected && (
                   <button
                     type="button"
@@ -2011,142 +1946,95 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       setNewEvConfirmStep(false);
                       setNewEventModalOpen(true);
                     }}
-                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    className="min-h-[34px] px-3 py-1 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer whitespace-nowrap transition-colors"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>حدث جديد</span>
+                    <span>حدث</span>
                   </button>
                 )}
-
               </div>
             </div>
 
-            {/* Single Clean Filter & Quick-Action Toolbar */}
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center p-1 rounded-xl bg-white/[0.04] border border-white/10 overflow-x-auto max-w-full">
-                {(
-                  [
-                    { id: 'today', label: `المتبقي اليوم (${remainingTodayBlocks.length})` },
-                    { id: 'tomorrow', label: `غداً (${tomorrowEvents.length})` },
-                    { id: 'special', label: `غير الروتيني (${nonRoutineUpcomingEvents.length})` },
-                    { id: 'done', label: `المنتهي (${finishedTodayBlocks.length})` },
-                  ] as const
-                ).map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setTimelineFilter(tab.id)}
-                    className={`px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition-colors whitespace-nowrap ${
-                      timelineFilter === tab.id
-                        ? 'bg-white/15 text-white font-semibold'
-                        : 'text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
+            {/* Clean Segmented Filter */}
+            <div className="mt-3 flex items-center p-1 rounded-xl bg-white/[0.03] border border-white/[0.07] overflow-x-auto max-w-full w-fit">
+              {(
+                [
+                  { id: 'today', label: 'اليوم', count: remainingTodayBlocks.length },
+                  { id: 'tomorrow', label: 'غداً', count: tomorrowEvents.length },
+                  { id: 'special', label: 'المميزة', count: nonRoutineUpcomingEvents.length },
+                  { id: 'done', label: 'المنتهي', count: finishedTodayBlocks.length },
+                ] as const
+              ).map((tab) => (
                 <button
+                  key={tab.id}
                   type="button"
-                  onClick={onOpenCatchUp}
-                  className="px-3 py-1.5 rounded-xl border border-[#7FFFD4]/40 text-[#7FFFD4] text-xs font-medium hover:bg-[#7FFFD4]/10 flex items-center gap-1.5 cursor-pointer"
+                  onClick={() => setTimelineFilter(tab.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                    timelineFilter === tab.id
+                      ? 'bg-white/12 text-white font-semibold'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
                 >
-                  <Zap className="w-3.5 h-3.5" /> زحزحة
+                  <span>{tab.label}</span>
+                  <span className="font-mono-tabular text-[11px] opacity-65">{tab.count}</span>
                 </button>
-                {hasUndoSnapshot && (
-                  <button
-                    type="button"
-                    onClick={onUndoReflow}
-                    className="px-3 py-1.5 rounded-xl border border-amber-400/40 text-amber-300 text-xs font-medium hover:bg-amber-400/10 flex items-center gap-1 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" /> استعادة
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setShowTrash((v) => !v)}
-                  className="px-3 py-1.5 rounded-xl border border-white/10 text-zinc-300 text-xs hover:border-white/25 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>المحذوفات ({deletedBlocks.length})</span>
-                </button>
-              </div>
+              ))}
             </div>
 
-            {/* Clean Trash Drawer (Zero developer Tombstone telemetry) */}
-            {showTrash && (
-              <div className="my-4 rounded-xl border border-white/15 bg-black/70 p-4">
+            {/* Clean Trash Drawer */}
+            {showTrash && deletedBlocks.length > 0 && (
+              <div className="mt-3 rounded-xl border border-white/[0.08] bg-black/50 p-3.5">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-zinc-200">
-                    محذوفات اليوم
-                  </span>
-                  {deletedBlocks.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={onRestoreAllDeleted}
-                      className="text-xs text-[#7FFFD4] hover:underline cursor-pointer"
-                    >
-                      استعادة الكل بضغطة واحدة
-                    </button>
-                  )}
+                  <span className="text-xs font-semibold text-zinc-200">محذوفات اليوم</span>
+                  <button
+                    type="button"
+                    onClick={onRestoreAllDeleted}
+                    className="text-xs text-[#7FFFD4] hover:underline cursor-pointer"
+                  >
+                    استعادة الكل
+                  </button>
                 </div>
-                {deletedBlocks.length === 0 ? (
-                  <p className="text-xs text-zinc-500">لا توجد مهام محذوفة اليوم.</p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {deletedBlocks.map((b) => (
-                      <button
-                        key={b.id}
-                        type="button"
-                        onClick={() => onRestoreBlock(b.id)}
-                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 text-xs text-zinc-200 hover:border-[#7FFFD4] cursor-pointer"
-                      >
-                        <span>{b.emojiPair}</span>
-                        <span className="text-zinc-400">{formatMinutes12h(b.startMin, language)}</span>
-                        <RotateCcw className="w-3 h-3 text-[#7FFFD4]" />
-                      </button>
-                    ))}
-                  </div>
-                )}
+                <div className="flex flex-wrap gap-2">
+                  {deletedBlocks.map((b) => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => onRestoreBlock(b.id)}
+                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-xs text-zinc-200 hover:border-[#7FFFD4]/50 cursor-pointer"
+                    >
+                      <span>{b.emojiPair}</span>
+                      <span className="font-mono-tabular text-zinc-400">
+                        {formatMinutes12h(b.startMin, language)}
+                      </span>
+                      <RotateCcw className="w-3 h-3 text-[#7FFFD4]" />
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 
-            {/* Disconnected Empty Prompt when not using Offline Demo */}
+            {/* Disconnected Empty Prompt */}
             {!calendarConnected && !useOfflineDemo && (
-              <div className="mt-4 rounded-xl border border-dashed border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.04] p-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="text-xs text-zinc-300 space-y-1">
-                  <div className="font-bold text-white">
-                    التطبيق يعتمد على تقويمك الحقيقي ومهامك وشات Gemini
-                  </div>
-                  <div className="text-zinc-400">
-                    سجّل الدخول بحساب Google بالأعلى لعرض جدولك الفعلي، وتظهر أدناه مراسي الصلوات الخمس فقط.
-                  </div>
+              <div className="mt-4 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-zinc-300">
+                  سجّل الدخول بحساب Google لعرض جدولك ومهامك الفعلية.
                 </div>
                 <button
                   type="button"
                   onClick={onToggleOfflineDemo}
                   className="px-3 py-1.5 rounded-lg border border-white/15 text-[11px] text-zinc-400 hover:text-white cursor-pointer"
                 >
-                  عرض نموذج أوفلاين مؤقت
+                  عرض نموذج مؤقت
                 </button>
               </div>
             )}
 
-            {/* Tomorrow Prep View (Single Clean Card for Preparing Tomorrow) */}
+            {/* Tomorrow Prep View */}
             {timelineFilter === 'tomorrow' ? (
               <div className="mt-4 space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5">
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold text-white">
-                      تجهيز الغد · {formatCairoDayHeading(tomorrowCairoIso)}
-                    </div>
-                    <div className="text-[11px] text-zinc-400 mt-0.5">
-                      {tomorrowEvents.length > 0
-                        ? `لديك ${tomorrowEvents.length} موعداً مسجلاً للغد — راجعها لتجهّز يومك مسبقاً.`
-                        : 'يوم الغد هادئ ولا توجد مواعيد مسجلة بعد في Google Calendar.'}
-                    </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-white/[0.06]">
+                  <div className="text-xs font-semibold text-zinc-200">
+                    {formatCairoDayHeading(tomorrowCairoIso)}
                   </div>
                   <button
                     type="button"
@@ -2155,37 +2043,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         `راجع مواعيد الغد (${tomorrowCairoIso}) من تقويمي وساعدني في التجهيز المسبق وترتيب الأولويات بهدوء.`
                       )
                     }
-                    className="px-3 py-1.5 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[#7FFFD4] text-xs font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer whitespace-nowrap"
+                    className="text-xs text-[#7FFFD4] font-semibold hover:underline cursor-pointer whitespace-nowrap"
                   >
-                    جهّز الغد مع Gemini
+                    جهّز الغد مع Gemini ←
                   </button>
                 </div>
 
-                {/* Tomorrow Hydration Reminder Plan (Always visible in Tomorrow prep tab) */}
-                <div className="rounded-xl border border-[#7FFFD4]/20 bg-[#7FFFD4]/[0.04] px-3.5 py-2.5 space-y-2">
+                {/* Tomorrow Hydration Schedule Strip */}
+                <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2.5 space-y-2">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2 font-semibold text-[#7FFFD4]">
+                    <div className="flex items-center gap-1.5 font-medium text-[#7FFFD4]">
                       <Droplets className="w-3.5 h-3.5 shrink-0" />
                       <span>
-                        تذكيرات المياه لغداً ({dailyRhythmPlan.hydrationSlots.length} تنبيه ·{' '}
-                        {dailyRhythmPlan.activeTargetMl} مل)
+                        ماء الغد · {dailyRhythmPlan.hydrationSlots.length} كوب ({dailyRhythmPlan.activeTargetMl} مل)
                       </span>
                     </div>
-                    <span className="font-mono-tabular text-[11px] text-zinc-400">
-                      {dailyRhythmPlan.hydrationSlots.length > 0
-                        ? `من ${formatMinutes12h(dailyRhythmPlan.hydrationSlots[0].timeMinutes, language)} إلى ${formatMinutes12h(
-                            dailyRhythmPlan.hydrationSlots[dailyRhythmPlan.hydrationSlots.length - 1].timeMinutes,
-                            language
-                          )}`
-                        : 'مجدول تلقائياً'}
-                    </span>
+                    {dailyRhythmPlan.hydrationSlots.length > 0 && (
+                      <span className="font-mono-tabular text-[11px] text-zinc-500">
+                        {formatMinutes12h(dailyRhythmPlan.hydrationSlots[0].timeMinutes, language)} –{' '}
+                        {formatMinutes12h(
+                          dailyRhythmPlan.hydrationSlots[dailyRhythmPlan.hydrationSlots.length - 1].timeMinutes,
+                          language
+                        )}
+                      </span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {dailyRhythmPlan.hydrationSlots.map((slot) => (
                       <span
                         key={`tmr-water-${slot.cupIndex}`}
-                        className="font-mono-tabular text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-black/45 text-zinc-300"
-                        title={`كوب ${slot.cupIndex} (${dailyRhythmPlan.cupSizeMl} مل) · ${slot.windowAr}`}
+                        className="font-mono-tabular text-[10px] px-2 py-0.5 rounded-md bg-white/[0.04] text-zinc-300"
+                        title={`كوب ${slot.cupIndex}`}
                       >
                         💧 {formatMinutes12h(slot.timeMinutes, language)}
                       </span>
@@ -2194,21 +2082,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
 
                 {!calendarConnected ? (
-                  <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
-                    سجّل الدخول بحساب Google لعرض مواعيد الغد من Google Calendar.
+                  <div className="py-6 text-center text-xs text-zinc-500">
+                    سجّل الدخول بحساب Google لعرض مواعيد الغد.
                   </div>
                 ) : tomorrowEvents.length === 0 ? (
-                  <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
-                    لا توجد أحداث مسجلة لغداً حتى الآن — يمكنك إضافة حدث جديد للغد من الزر بالأعلى.
+                  <div className="py-6 text-center text-xs text-zinc-500">
+                    لا توجد مواعيد مسجلة للغد.
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="divide-y divide-white/[0.06]">
                     {tomorrowEvents.map((ev) => {
                       const { title, detail } = resolveCalendarEventText(ev);
                       return (
                         <div
                           key={`tmr-${ev.calendarId ?? 'primary'}-${ev.id}`}
-                          className="rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 flex items-start justify-between gap-3 text-xs"
+                          className="py-3 flex items-start justify-between gap-3 text-xs"
                         >
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
@@ -2218,22 +2106,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               />
                               <span className="font-semibold text-white break-words">{title}</span>
                               {ev.calendarTitle && ev.calendarTitle !== calendarUserEmail && (
-                                <span className="text-[11px] text-zinc-500">
-                                  · {ev.calendarTitle}
-                                </span>
+                                <span className="text-[11px] text-zinc-500">· {ev.calendarTitle}</span>
                               )}
                             </div>
                             {detail && (
-                              <div className="text-[11px] text-zinc-300 mt-1 leading-relaxed line-clamp-2">
+                              <div className="text-[11px] text-zinc-400 mt-1 leading-relaxed line-clamp-2">
                                 {detail}
                               </div>
                             )}
                             <div className="font-mono-tabular text-[11px] text-[#7FFFD4] mt-1 whitespace-nowrap">
                               {ev.isAllDay
                                 ? 'طوال اليوم'
-                                : `${formatIsoTo12h(ev.start, language, { includeDate: false })}${
+                                : `${formatIsoTo12h(ev.start, language, { includeDate: false, timeZone: activeTimeZone })}${
                                     ev.end
-                                      ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false })}`
+                                      ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false, timeZone: activeTimeZone })}`
                                       : ''
                                   }`}
                             </div>
@@ -2253,8 +2139,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             <button
                               type="button"
                               onClick={() => setConfirmDeleteGoogleEv(ev)}
-                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
-                              title="حذف من Google Calendar"
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                              title="حذف"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -2266,30 +2152,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
             ) : timelineFilter === 'special' ? (
-              /* Non-Routine / Special Upcoming Events (Filters out daily repeating routine items over next 14 days) */
-              <div className="mt-4 space-y-3">
-                <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                      <Sparkles className="w-3.5 h-3.5 text-[#7FFFD4]" />
-                      <span>المواعيد المميزة وغير الروتينية (خلال 14 يوماً)</span>
-                    </div>
-                    <div className="text-[11px] text-zinc-400 mt-0.5">
-                      تظهر هنا فقط المواعيد الاستثنائية وغير المتكررة يومياً حتى لا تنساها وسط الروتين.
-                    </div>
-                  </div>
-                </div>
-
+              /* Non-Routine / Special Upcoming Events (14 days) */
+              <div className="mt-4">
                 {!calendarConnected ? (
-                  <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
-                    سجّل الدخول بحساب Google لعرض المواعيد غير الروتينية القادمة من تقويمك.
+                  <div className="py-6 text-center text-xs text-zinc-500">
+                    سجّل الدخول بحساب Google لعرض المواعيد المميزة.
                   </div>
                 ) : nonRoutineUpcomingEvents.length === 0 ? (
-                  <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
-                    لا توجد مواعيد غير روتينية مسجلة خلال الأسبوعين القادمين — أيامك تسير على إيقاعك المعتاد.
+                  <div className="py-6 text-center text-xs text-zinc-500">
+                    لا توجد مواعيد استثنائية خلال الأسبوعين القادمين.
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="divide-y divide-white/[0.06]">
                     {nonRoutineUpcomingEvents.map((ev) => {
                       const { title, detail } = resolveCalendarEventText(ev);
                       const evDateIso = getEventCairoDateIso(ev.start);
@@ -2302,7 +2176,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       return (
                         <div
                           key={`sp-${ev.calendarId ?? 'primary'}-${ev.id}`}
-                          className="rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 flex items-start justify-between gap-3 text-xs"
+                          className="py-3 flex items-start justify-between gap-3 text-xs"
                         >
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
@@ -2315,22 +2189,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 · {dayLabel}
                               </span>
                               {ev.calendarTitle && ev.calendarTitle !== calendarUserEmail && (
-                                <span className="text-[11px] text-zinc-500">
-                                  · {ev.calendarTitle}
-                                </span>
+                                <span className="text-[11px] text-zinc-500">· {ev.calendarTitle}</span>
                               )}
                             </div>
                             {detail && (
-                              <div className="text-[11px] text-zinc-300 mt-1 leading-relaxed line-clamp-2">
+                              <div className="text-[11px] text-zinc-400 mt-1 leading-relaxed line-clamp-2">
                                 {detail}
                               </div>
                             )}
                             <div className="font-mono-tabular text-[11px] text-[#7FFFD4] mt-1 whitespace-nowrap">
                               {ev.isAllDay
                                 ? `${dayLabel} · طوال اليوم`
-                                : `${formatIsoTo12h(ev.start, language)}${
+                                : `${formatIsoTo12h(ev.start, language, { timeZone: activeTimeZone })}${
                                     ev.end
-                                      ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false })}`
+                                      ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false, timeZone: activeTimeZone })}`
                                       : ''
                                   }`}
                             </div>
@@ -2350,8 +2222,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             <button
                               type="button"
                               onClick={() => setConfirmDeleteGoogleEv(ev)}
-                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
-                              title="حذف من Google Calendar"
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-md text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                              title="حذف"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -2363,15 +2235,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
             ) : (
-              /* Chronological Remaining Today List (Auto-hides passed/completed items + full Calendar details + crisp mobile layout) */
+              /* Chronological Remaining / Done Today List */
               <div className="divide-y divide-white/[0.06] mt-3">
                 {filteredBlocks.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-zinc-400">
+                  <div className="py-8 text-center text-xs text-zinc-500">
                     {timelineFilter === 'today'
-                      ? 'أنجزت كل مهام اليوم المتبقية ✓ — يمكنك مراجعة المنتهي من التبويب بالأعلى.'
-                      : timelineFilter === 'done'
-                        ? 'لا توجد مهام منتهية بعد اليوم.'
-                        : 'لا توجد أحداث في هذا العرض لليوم.'}
+                      ? 'أنجزت مهام اليوم المتبقية ✓'
+                      : 'لا توجد عناصر منتهية بعد.'}
                   </div>
                 ) : (
                   filteredBlocks.map((block) => {
@@ -2390,11 +2260,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     return (
                       <div
                         key={block.id}
-                        className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 py-3 px-2 rounded-xl transition-colors hover:bg-white/[0.02] ${
-                          isHappeningNow ? 'bg-[#7FFFD4]/[0.05] border border-[#7FFFD4]/25 my-1 px-3' : ''
+                        className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3 px-2 rounded-xl transition-colors hover:bg-white/[0.02] ${
+                          isHappeningNow ? 'bg-[#7FFFD4]/[0.05] my-1 px-3 ring-1 ring-[#7FFFD4]/25' : ''
                         } ${
                           block.completed || isSkipped || isPostponed
-                            ? 'opacity-55'
+                            ? 'opacity-50'
                             : lowEnergyActive && !block.isAnchor
                               ? 'opacity-75'
                               : ''
@@ -2404,8 +2274,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <button
                             type="button"
                             onClick={() => onToggleComplete(block.id)}
-                            className="min-h-[36px] min-w-[36px] flex items-center justify-center text-zinc-400 hover:text-[#7FFFD4] cursor-pointer shrink-0 -mt-0.5"
-                            title={block.completed ? 'إعادة الفتح' : 'تحديد كمكتمل'}
+                            className="min-h-[36px] min-w-[36px] flex items-center justify-center text-zinc-500 hover:text-[#7FFFD4] cursor-pointer shrink-0 -mt-0.5"
+                            title={block.completed ? 'إعادة الفتح' : 'إنجاز'}
                           >
                             {block.completed ? (
                               <CheckCircle2 className="w-5 h-5 text-[#4ADE80]" />
@@ -2414,7 +2284,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             )}
                           </button>
 
-                          <span className="text-xl sm:text-2xl shrink-0 leading-none mt-1">
+                          <span className="text-xl shrink-0 leading-none mt-1">
                             {block.emojiPair}
                           </span>
 
@@ -2432,12 +2302,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 {display.title}
                               </span>
                               {isHappeningNow && (
-                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-[#4ADE80]/20 text-[#4ADE80]">
-                                  الآن
+                                <span className="text-[11px] font-bold text-[#4ADE80]">
+                                  · الآن
                                 </span>
                               )}
                               {showSecondaryCalendarLabel && (
-                                <span className="text-[11px] text-zinc-400">
+                                <span className="text-[11px] text-zinc-500">
                                   · {block.calendarTitle}
                                 </span>
                               )}
@@ -2447,35 +2317,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   {block.reflowStatus === 'compressed'
                                     ? 'مضغوط'
                                     : block.reflowStatus === 'shifted_evening'
-                                      ? 'مرحل للمساء 🌙'
+                                      ? 'للمساء'
                                       : block.reflowStatus === 'started_now'
-                                        ? 'يبدأ الآن ⏩'
+                                        ? 'يبدأ الآن'
                                         : block.reflowStatus === 'postponed_travel'
-                                          ? 'مؤجل للسفر 🧳'
-                                          : 'تم تخطيه اليوم'}
+                                          ? 'مؤجل للسفر'
+                                          : 'تم تخطيه'}
                                 </span>
                               )}
                             </div>
 
                             {display.detail && (
-                              <div className="text-xs text-zinc-400 mt-0.5 leading-relaxed line-clamp-2 break-words">
+                              <div className="text-xs text-zinc-400 mt-0.5 leading-relaxed line-clamp-1 break-words">
                                 {display.detail}
                               </div>
                             )}
 
-                            <div className="font-mono-tabular text-xs text-zinc-400 mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                              <span className="whitespace-nowrap text-[#7FFFD4]/90">
+                            <div className="font-mono-tabular text-xs text-zinc-500 mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <span className="whitespace-nowrap text-zinc-300">
                                 {block.isAllDay
                                   ? 'طوال اليوم'
                                   : `${formatMinutes12h(block.startMin, language)} – ${formatMinutes12h(block.startMin + block.durationMin, language)}`}
                               </span>
                               {!block.isAllDay && (
-                                <span className="whitespace-nowrap text-zinc-500">
-                                  ({formatDurationLabel(block.durationMin)})
+                                <span className="whitespace-nowrap">
+                                  · {formatDurationLabel(block.durationMin)}
                                 </span>
-                              )}
-                              {block.isFridayRitual && (
-                                <span className="text-zinc-500">· طقوس الجمعة</span>
                               )}
                               {block.source === 'creative' && (
                                 <span className="text-cyan-300/80">· وقت إبداعي</span>
@@ -2494,10 +2361,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 );
                                 if (placement) setPendingCreativeCalendarConfirm(placement);
                               }}
-                              className="min-h-[34px] px-2.5 py-1 rounded-lg border border-cyan-400/40 bg-cyan-400/10 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-400/20 cursor-pointer whitespace-nowrap"
-                              title="تثبيت هذه الجلسة في وقت فراغك داخل Google Calendar"
+                              className="min-h-[32px] px-2.5 py-1 rounded-lg border border-cyan-400/35 bg-cyan-400/10 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-400/20 cursor-pointer whitespace-nowrap"
                             >
-                              📅 تثبيت
+                              تثبيت
                             </button>
                           )}
                           <button
@@ -2510,8 +2376,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               );
                               onTriggerTaskAlert(block.emojiPair, cat);
                             }}
-                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-[#7FFFD4]/10 cursor-pointer"
-                            title="تجربة تنبيه الخصوصية (إيموجي فقط)"
+                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] cursor-pointer"
+                            title="تجربة التنبيه"
                           >
                             <Volume2 className="w-4 h-4" />
                           </button>
@@ -2520,7 +2386,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               href={block.googleHtmlLink}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-[#4ADE80] hover:bg-[#4ADE80]/10"
+                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-[#4ADE80] hover:bg-white/[0.04]"
                               title="فتح في Google Calendar"
                             >
                               <ExternalLink className="w-4 h-4" />
@@ -2541,7 +2407,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 })
                               }
                               className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
-                              title="حذف الحدث من Google Calendar"
+                              title="حذف"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -2567,19 +2433,194 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             )}
           </section>
 
-          {/* 1b. Creative Activities & Hobbies (HIDDEN when empty — appears automatically once added via Gemini Chat, scales cleanly to daily/weekly/monthly & many items) */}
-          {creativePlacements.length > 0 && (
-            <section className={`rounded-2xl border p-5 space-y-3.5 ${cardSurface}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/10">
-                <div>
-                  <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                    <Palette className="w-4 h-4 text-[#7FFFD4]" />
-                    <span>الأنشطة الإبداعية والهوايات ({creativePlacements.length})</span>
-                  </h2>
-                  <p className="text-[11px] text-zinc-400 mt-0.5">
-                    تندمج في أوقاتك الفاضية ({freeSlotsToday.length} فترات متاحة اليوم) · أضف أو عدّل أي نشاط مؤقت أو دائم عبر شات Gemini
-                  </p>
+          {/* 2. Google Tasks (Promoted directly below Schedule for daily action priority) */}
+          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 text-[#7FFFD4]" />
+                <span>المهام</span>
+                <span className="font-mono-tabular text-xs font-medium text-zinc-500">
+                  · {visibleTasks.length}
+                </span>
+              </h2>
+
+              {calendarConnected && googleTaskLists.length > 1 && (
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTaskListId('all')}
+                    className={`px-2.5 py-1 rounded-lg text-xs cursor-pointer transition-colors ${
+                      selectedTaskListId === 'all'
+                        ? 'bg-white/12 text-white font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    الكل
+                  </button>
+                  {googleTaskLists.map((list) => (
+                    <button
+                      key={list.id}
+                      type="button"
+                      onClick={() => setSelectedTaskListId(list.id)}
+                      className={`px-2.5 py-1 rounded-lg text-xs cursor-pointer transition-colors ${
+                        selectedTaskListId === list.id
+                          ? 'bg-white/12 text-white font-semibold'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      {list.title}
+                    </button>
+                  ))}
                 </div>
+              )}
+            </div>
+
+            {!calendarConnected ? (
+              <div className="py-4 text-center text-xs text-zinc-500">
+                سجّل الدخول بحساب Google لإدارة مهامك.
+              </div>
+            ) : (
+              <>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!newTaskTitle.trim()) return;
+                    const resolvedDueIso = newTaskDueIso || (newTaskTime24 ? todayCairoIso : '');
+                    const timeNote = newTaskTime24 ? `⏰ ${newTaskTime24}` : undefined;
+                    setPendingTaskConfirmation({
+                      operation: 'create',
+                      taskListId:
+                        selectedTaskListId !== 'all'
+                          ? selectedTaskListId
+                          : googleTaskLists[0]?.id ?? '@default',
+                      title: newTaskTitle.trim(),
+                      notes: timeNote,
+                      dueDateIso: resolvedDueIso || undefined,
+                    });
+                  }}
+                  className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2"
+                >
+                  <input
+                    type="text"
+                    value={newTaskTitle}
+                    onChange={(e) => setNewTaskTitle(e.target.value)}
+                    placeholder="أضف مهمة جديدة..."
+                    className="w-full sm:w-auto sm:flex-1 min-w-0 rounded-xl border border-white/[0.09] bg-black/50 px-3.5 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+                  />
+                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                    <input
+                      type="date"
+                      value={newTaskDueIso}
+                      onChange={(e) => setNewTaskDueIso(e.target.value)}
+                      className="flex-1 sm:flex-none min-w-0 rounded-xl border border-white/[0.09] bg-black/50 px-2.5 py-2 text-xs text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
+                      title="التاريخ"
+                    />
+                    <input
+                      type="time"
+                      value={newTaskTime24}
+                      onChange={(e) => setNewTaskTime24(e.target.value)}
+                      className="w-28 rounded-xl border border-white/[0.09] bg-black/50 px-2.5 py-2 text-xs font-mono-tabular text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
+                      title="الوقت للعد التنازلي"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!newTaskTitle.trim()}
+                      className="min-h-[38px] px-3.5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>إضافة</span>
+                    </button>
+                  </div>
+                </form>
+
+                {visibleTasks.length === 0 ? (
+                  <div className="py-5 text-center text-xs text-zinc-500">
+                    لا توجد مهام حالياً.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-white/[0.06] max-h-[300px] overflow-y-auto">
+                    {visibleTasks.map((tk) => {
+                      const done = tk.status === 'completed';
+                      return (
+                        <div
+                          key={`${tk.taskListId}-${tk.id}`}
+                          className={`py-2.5 px-1 flex items-center justify-between gap-3 ${
+                            done ? 'opacity-45' : ''
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPendingTaskConfirmation({
+                                  operation: done ? 'reopen' : 'complete',
+                                  taskId: tk.id,
+                                  taskListId: tk.taskListId,
+                                  title: tk.title,
+                                })
+                              }
+                              className="min-h-[38px] min-w-[38px] flex items-center justify-center text-zinc-500 hover:text-[#4ADE80] cursor-pointer shrink-0"
+                              title={done ? 'إعادة الفتح' : 'إتمام'}
+                            >
+                              {done ? (
+                                <CheckCircle2 className="w-5 h-5 text-[#4ADE80]" />
+                              ) : (
+                                <Circle className="w-5 h-5" />
+                              )}
+                            </button>
+                            <div className="min-w-0">
+                              <div className={`text-sm font-medium truncate ${done ? 'line-through text-zinc-400' : 'text-zinc-100'}`}>
+                                {tk.title}
+                              </div>
+                              {(tk.due || googleTaskLists.length > 1) && (
+                                <div className="text-[11px] text-zinc-500 flex items-center gap-2 mt-0.5">
+                                  {googleTaskLists.length > 1 && <span>{tk.taskListTitle}</span>}
+                                  {tk.due && (
+                                    <span className="font-mono-tabular text-[#7FFFD4]">
+                                      {googleTaskLists.length > 1 ? '· ' : ''}
+                                      {tk.due.slice(0, 10)}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPendingTaskConfirmation({
+                                operation: 'delete',
+                                taskId: tk.id,
+                                taskListId: tk.taskListId,
+                                title: tk.title,
+                              })
+                            }
+                            className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
+                            title="حذف"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+
+          {/* 3. Creative Activities & Hobbies (Shown only when non-empty) */}
+          {creativePlacements.length > 0 && (
+            <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-white/[0.07]">
+                <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Palette className="w-4 h-4 text-[#7FFFD4]" />
+                  <span>الأنشطة والهوايات</span>
+                  <span className="font-mono-tabular text-xs font-medium text-zinc-500">
+                    · {creativePlacements.length}
+                  </span>
+                </h2>
                 <button
                   type="button"
                   onClick={() =>
@@ -2587,9 +2628,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       'عاوز أضيف أو أعدّل نشاط إبداعي / هواية جديدة في أوقاتي الفاضية — حدد معايا التكرار (يومي أو أسبوعي أو شهري) وهل هو مؤقت أم مستمر.'
                     )
                   }
-                  className="text-[11px] text-[#7FFFD4] hover:underline font-medium cursor-pointer"
+                  className="text-xs text-[#7FFFD4] hover:underline font-medium cursor-pointer"
                 >
-                  تنسيق عبر Gemini ←
+                  تعديل بـ Gemini
                 </button>
               </div>
 
@@ -2617,10 +2658,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               <div className="font-semibold text-white truncate">
                                 {activity.name}
                               </div>
-                              <div className="text-[11px] text-zinc-400 font-mono-tabular">
-                                {sessionsInPeriod}/{goalInPeriod} {periodLabelAr} ·{' '}
-                                {activity.sessionMinutes} د
-                                {activity.expiresOnDate ? ` · مؤقت حتى ${activity.expiresOnDate}` : ''}
+                              <div className="text-[11px] text-zinc-500 font-mono-tabular">
+                                {sessionsInPeriod}/{goalInPeriod} {periodLabelAr} · {activity.sessionMinutes} د
+                                {activity.expiresOnDate ? ` · حتى ${activity.expiresOnDate}` : ''}
                               </div>
                             </div>
                           </div>
@@ -2631,19 +2671,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               onClick={() => onToggleCreativeToday(activity.id)}
                               className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer transition-colors ${
                                 doneToday
-                                  ? 'border border-[#4ADE80]/45 bg-[#4ADE80]/12 text-[#4ADE80]'
-                                  : 'border border-white/15 bg-black/50 text-zinc-200 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4]'
+                                  ? 'border border-[#4ADE80]/40 bg-[#4ADE80]/12 text-[#4ADE80]'
+                                  : 'border border-white/10 text-zinc-200 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4]'
                               }`}
                             >
-                              {doneToday ? 'أُنجز اليوم ✓' : '✓ تسجيل'}
+                              {doneToday ? 'تم ✓' : 'تسجيل'}
                             </button>
                             {suggestedSlot && !doneToday && (
                               <button
                                 type="button"
                                 onClick={() => setPendingCreativeCalendarConfirm(placement)}
-                                className="px-2.5 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[#7FFFD4] text-[11px] font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer"
+                                className="px-2.5 py-1 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] text-[11px] font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer"
                               >
-                                📅 تثبيت {formatMinutes12h(suggestedSlot.startMin, language)}
+                                تثبيت {formatMinutes12h(suggestedSlot.startMin, language)}
                               </button>
                             )}
                             <button
@@ -2675,16 +2715,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowAllCreative((v) => !v)}
-                  className="w-full pt-2 border-t border-white/10 text-[11px] text-[#7FFFD4] hover:underline flex items-center justify-center gap-1 cursor-pointer"
+                  className="w-full pt-2 border-t border-white/[0.07] text-xs text-zinc-400 hover:text-[#7FFFD4] flex items-center justify-center gap-1 cursor-pointer"
                 >
                   {showAllCreative ? (
                     <>
-                      <span>عرض عدد أقل</span>
+                      <span>أقل</span>
                       <ChevronUp className="w-3.5 h-3.5" />
                     </>
                   ) : (
                     <>
-                      <span>عرض كل الأنشطة ({creativePlacements.length})</span>
+                      <span>عرض الكل ({creativePlacements.length})</span>
                       <ChevronDown className="w-3.5 h-3.5" />
                     </>
                   )}
@@ -2693,187 +2733,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </section>
           )}
 
-          {/* 2. Real Google Tasks Card */}
-          <section className={`rounded-2xl border p-5 space-y-4 ${cardSurface}`}>
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-white/10">
-              <div>
-                <h2 className="text-base font-bold text-white flex items-center gap-2">
-                  <CheckSquare className="w-4 h-4 text-[#7FFFD4]" />
-                  <span>مهام Google Tasks الفعلية ({visibleTasks.length})</span>
-                </h2>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  متزامنة مباشرة مع Google Tasks — أي إضافة أو إتمام يمر بتأكيد صريح
-                </p>
-              </div>
-
-              {calendarConnected && googleTaskLists.length > 1 && (
-                <div className="flex flex-wrap gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedTaskListId('all')}
-                    className={`px-2.5 py-1 rounded-lg text-xs cursor-pointer ${
-                      selectedTaskListId === 'all'
-                        ? 'bg-[#7FFFD4] text-black font-bold'
-                        : 'border border-white/10 text-zinc-400'
-                    }`}
-                  >
-                    كل القوائم
-                  </button>
-                  {googleTaskLists.map((list) => (
-                    <button
-                      key={list.id}
-                      type="button"
-                      onClick={() => setSelectedTaskListId(list.id)}
-                      className={`px-2.5 py-1 rounded-lg text-xs cursor-pointer ${
-                        selectedTaskListId === list.id
-                          ? 'bg-[#7FFFD4] text-black font-bold'
-                          : 'border border-white/10 text-zinc-400'
-                      }`}
-                    >
-                      {list.title}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {!calendarConnected ? (
-              <div className="rounded-xl border border-white/10 bg-black/50 p-5 text-center space-y-2 text-xs text-zinc-400">
-                <div>سجّل الدخول بحساب Google لعرض مهامك من Google Tasks والتحكم فيها مباشرة.</div>
-              </div>
-            ) : (
-              <>
-                {/* Quick Add Task Bar -> triggers explicit confirmation modal (optional time syncs to Capsule countdown!) */}
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (!newTaskTitle.trim()) return;
-                    const resolvedDueIso = newTaskDueIso || (newTaskTime24 ? todayCairoIso : '');
-                    const timeNote = newTaskTime24 ? `⏰ ${newTaskTime24}` : undefined;
-                    setPendingTaskConfirmation({
-                      operation: 'create',
-                      taskListId:
-                        selectedTaskListId !== 'all'
-                          ? selectedTaskListId
-                          : googleTaskLists[0]?.id ?? '@default',
-                      title: newTaskTitle.trim(),
-                      notes: timeNote,
-                      dueDateIso: resolvedDueIso || undefined,
-                    });
-                  }}
-                  className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2"
-                >
-                  <input
-                    type="text"
-                    value={newTaskTitle}
-                    onChange={(e) => setNewTaskTitle(e.target.value)}
-                    placeholder="اكتب مهمة جديدة لإضافتها إلى Google Tasks..."
-                    className="w-full sm:w-auto sm:flex-1 min-w-0 rounded-xl border border-white/10 bg-black/60 px-3.5 py-2 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
-                  />
-                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-                    <input
-                      type="date"
-                      value={newTaskDueIso}
-                      onChange={(e) => setNewTaskDueIso(e.target.value)}
-                      className="flex-1 sm:flex-none min-w-0 rounded-xl border border-white/10 bg-black/60 px-2.5 py-2 text-xs text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
-                      title="تاريخ المهمة (اختياري)"
-                    />
-                    <input
-                      type="time"
-                      value={newTaskTime24}
-                      onChange={(e) => setNewTaskTime24(e.target.value)}
-                      className="w-28 rounded-xl border border-white/10 bg-black/60 px-2.5 py-2 text-xs font-mono-tabular text-zinc-300 focus:outline-none focus:border-[#7FFFD4]"
-                      title="وقت المهمة للعد التنازلي في الكبسولة (اختياري)"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!newTaskTitle.trim()}
-                      className="min-h-[40px] px-4 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>إضافة مهمة</span>
-                    </button>
-                  </div>
-                </form>
-
-                {visibleTasks.length === 0 ? (
-                  <div className="rounded-xl border border-white/10 bg-black/40 p-5 text-center text-xs text-zinc-500">
-                    لا توجد مهام مسجلة في هذه القائمة حالياً.
-                  </div>
-                ) : (
-                  <div className="divide-y divide-white/[0.06] max-h-[300px] overflow-y-auto pr-1">
-                    {visibleTasks.map((tk) => {
-                      const done = tk.status === 'completed';
-                      return (
-                        <div
-                          key={`${tk.taskListId}-${tk.id}`}
-                          className={`py-2.5 px-2 flex items-center justify-between gap-3 ${
-                            done ? 'opacity-50' : ''
-                          }`}
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setPendingTaskConfirmation({
-                                  operation: done ? 'reopen' : 'complete',
-                                  taskId: tk.id,
-                                  taskListId: tk.taskListId,
-                                  title: tk.title,
-                                })
-                              }
-                              className="min-h-[40px] min-w-[40px] flex items-center justify-center text-zinc-400 hover:text-[#4ADE80] cursor-pointer shrink-0"
-                              title={done ? 'إعادة فتح المهمة' : 'تحديد كمكتملة في Google Tasks'}
-                            >
-                              {done ? (
-                                <CheckCircle2 className="w-5 h-5 text-[#4ADE80]" />
-                              ) : (
-                                <Circle className="w-5 h-5" />
-                              )}
-                            </button>
-                            <div className="min-w-0">
-                              <div className={`text-xs font-semibold truncate ${done ? 'line-through text-zinc-400' : 'text-white'}`}>
-                                {tk.title}
-                              </div>
-                              <div className="text-[11px] text-zinc-500 flex items-center gap-2 mt-0.5">
-                                <span>{tk.taskListTitle}</span>
-                                {tk.due && (
-                                  <span className="font-mono-tabular text-[#7FFFD4]">
-                                    · الاستحقاق: {tk.due.slice(0, 10)}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setPendingTaskConfirmation({
-                                operation: 'delete',
-                                taskId: tk.id,
-                                taskListId: tk.taskListId,
-                                title: tk.title,
-                              })
-                            }
-                            className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
-                            title="حذف المهمة من Google Tasks"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            )}
-          </section>
-
-          {/* Duplicate Gemini chat preview card removed — dedicated Gemini tab + Hero button keep Dashboard crisp */}
-
-          {/* 4. Smart Gmail Digest (Calm Collapsible Strip — expands on click or when appointments are found) */}
-          <section className={`rounded-2xl border p-4 ${cardSurface}`}>
+          {/* 4. Smart Gmail Digest (Quiet 1-Line Collapsible Strip) */}
+          <section className={`rounded-2xl border px-4 py-3.5 ${cardSurface}`}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
@@ -2881,28 +2742,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 className="flex items-center gap-2 text-right cursor-pointer min-w-0"
               >
                 <Mail className="w-4 h-4 text-[#7FFFD4] shrink-0" />
-                <div>
-                  <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                    <span>ملخص Gmail الذكي</span>
-                    {gmailDigest.length > 0 && (
-                      <span className="text-[#7FFFD4] font-mono-tabular">({gmailDigest.length})</span>
-                    )}
-                    {showGmailDrawer || gmailDigest.length > 0 ? (
-                      <ChevronUp className="w-3.5 h-3.5 text-zinc-500" />
-                    ) : (
-                      <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
-                    )}
-                  </div>
-                  <div className="text-[11px] text-zinc-500">
-                    {calendarConnected && !gmailNeedsReauth
-                      ? gmailNextRetryInSec > 0
-                        ? `إعادة الفحص التلقائي خلال ${gmailNextRetryInSec} ث...`
-                        : gmailLastSyncedIso
-                          ? `فحص تلقائي نشط · آخر تحديث ${formatIsoTo12h(gmailLastSyncedIso, language, { includeDate: false })}`
-                          : 'فحص تلقائي في الخلفية · استخراج المواعيد والرحلات بعد تأكيدك'
-                      : 'للقراءة فقط · استخراج المواعيد والرحلات تلقائياً بعد تسجيل الدخول'}
-                  </div>
-                </div>
+                <span className="text-xs font-bold text-white">مواعيد Gmail</span>
+                {gmailDigest.length > 0 && (
+                  <span className="text-xs text-[#7FFFD4] font-mono-tabular font-semibold">
+                    · {gmailDigest.length}
+                  </span>
+                )}
+                {gmailLastSyncedIso && calendarConnected && !gmailNeedsReauth && (
+                  <span className="hidden sm:inline text-[11px] text-zinc-500 font-mono-tabular">
+                    · {formatIsoTo12h(gmailLastSyncedIso, language, { includeDate: false, timeZone: activeTimeZone })}
+                  </span>
+                )}
+                {showGmailDrawer || gmailDigest.length > 0 ? (
+                  <ChevronUp className="w-3.5 h-3.5 text-zinc-500" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
+                )}
               </button>
 
               {calendarConnected && !gmailNeedsReauth ? (
@@ -2913,10 +2768,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     setShowGmailDrawer(true);
                     void onFetchGmailDigest();
                   }}
-                  className="min-h-[32px] px-3 py-1 rounded-xl border border-white/15 bg-white/[0.03] text-xs font-medium text-zinc-200 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  className="min-h-[30px] px-2.5 py-1 rounded-lg border border-white/[0.09] text-xs text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loadingGmail ? 'animate-spin' : ''}`} />
-                  <span>{loadingGmail ? 'جارٍ الفحص التلقائي...' : 'تحديث الآن'}</span>
+                  <RefreshCw className={`w-3 h-3 ${loadingGmail ? 'animate-spin' : ''}`} />
+                  <span>{loadingGmail ? 'جارٍ الفحص...' : 'فحص'}</span>
                 </button>
               ) : (
                 <button
@@ -2925,7 +2780,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   onClick={() => {
                     onGoogleSignIn().catch(() => {});
                   }}
-                  className="min-h-[32px] px-3 py-1 rounded-xl border border-amber-400/40 bg-amber-400/10 text-xs font-medium text-amber-200 hover:bg-amber-400/20 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  className="min-h-[30px] px-2.5 py-1 rounded-lg border border-amber-400/35 bg-amber-400/10 text-xs font-medium text-amber-200 hover:bg-amber-400/20 cursor-pointer disabled:opacity-50 whitespace-nowrap"
                 >
                   {calendarConnected ? 'تفعيل Gmail' : 'تسجيل الدخول'}
                 </button>
@@ -2933,25 +2788,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
 
             {(showGmailDrawer || gmailDigest.length > 0 || Boolean(gmailError)) && (
-              <div className="mt-3 pt-3 border-t border-white/10 space-y-2.5">
+              <div className="mt-3 pt-3 border-t border-white/[0.07] space-y-2.5">
                 {gmailError && (
-                  <div className="rounded-xl border border-amber-400/35 bg-amber-400/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                  <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
                     <span>{gmailError}</span>
                     {gmailNextRetryInSec > 0 && (
                       <span className="font-mono-tabular text-[11px] text-amber-300">
-                        إعادة محاولة تلقائية خلال {gmailNextRetryInSec} ث
+                        {gmailNextRetryInSec} ث
                       </span>
                     )}
                   </div>
                 )}
 
                 {gmailDigest.length === 0 ? (
-                  <div className="text-xs text-zinc-400">
+                  <div className="text-xs text-zinc-500">
                     {gmailScannedCount > 0
-                      ? `تم فحص ${gmailScannedCount} رسالة حديثة تلقائياً — لا توجد مواعيد أو رحلات جديدة.`
-                      : calendarConnected
-                        ? 'الفحص التلقائي في الخلفية مفعّل — ستظهر هنا أي مواعيد أو رحلات فور وصولها.'
-                        : 'سجّل الدخول بحساب Google ليبدأ الفحص التلقائي للمواعيد والرحلات.'}
+                      ? `تم فحص ${gmailScannedCount} رسالة — لا توجد مواعيد جديدة.`
+                      : 'لا توجد مواعيد مستخرجة حالياً.'}
                   </div>
                 ) : (
                   <div className="divide-y divide-white/[0.06]">
@@ -2968,10 +2821,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               {item.summaryAr}
                             </div>
                             <div className="flex flex-wrap items-center gap-2 text-[10px] text-zinc-500 font-mono-tabular">
-                              {item.dateIso && <span>📅 {item.dateIso}</span>}
+                              {item.dateIso && <span>{item.dateIso}</span>}
                               {item.startTime24 && (
                                 <span className="text-[#7FFFD4]">
-                                  ⏰ {formatTime24To12h(item.startTime24, language)}
+                                  · {formatTime24To12h(item.startTime24, language)}
                                 </span>
                               )}
                               {item.sender && <span className="truncate max-w-[200px]">· {item.sender}</span>}
@@ -2983,7 +2836,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             onClick={() => setPendingGmailEventConfirm(item)}
                             className={`px-3 py-1.5 rounded-lg text-[11px] font-bold shrink-0 cursor-pointer transition-colors ${
                               alreadyAdded
-                                ? 'border border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80] cursor-default'
+                                ? 'border border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80] cursor-default'
                                 : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
                             }`}
                           >
@@ -2999,267 +2852,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </section>
         </div>
 
-        {/* Support Column (5 cols): Dynamic Sleep & Suhoor Architecture, Scientific Hydration & Meds, Quiet Modes */}
+        {/* Support Column (5 cols): High-Frequency Daily Care FIRST — Water -> Medications -> Sleep -> Streaks */}
         <div className="lg:col-span-5 space-y-5">
-          {/* Dynamic Sleep & Suhoor Card (Silently auto-adapted to Prayer Times) */}
-          <section className={`rounded-2xl border p-5 space-y-3.5 ${cardSurface}`}>
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Moon className="w-4 h-4 text-[#7FFFD4]" />
-                  <span>النوم والسحور وإيقاع اليوم</span>
-                </h2>
-                <p className="text-[11px] text-zinc-400 mt-0.5">
-                  يتكيّف تلقائياً مع مواقيت الصلاة وفصول السنة بدون تدخل يدوي
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={onOpenLifeProfile}
-                className="px-2.5 py-1.5 rounded-lg border border-white/15 bg-black/50 text-[11px] text-zinc-300 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] cursor-pointer shrink-0"
-              >
-                الثوابت
-              </button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div
-                className={`rounded-xl border p-2.5 ${
-                  dailyRhythmPlan.nightlyRecoveryMin > 0
-                    ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/[0.07]'
-                    : 'border-white/10 bg-black/50'
-                }`}
-              >
-                <div className="text-[10px] text-zinc-400">النوم الليلة</div>
-                <div className="font-mono-tabular text-xs font-bold text-white mt-0.5">
-                  {formatMinutes12h(dailyRhythmPlan.bedtimeMin, language)}
-                </div>
-                <div
-                  className={`text-[10px] mt-0.5 ${
-                    dailyRhythmPlan.nightlyRecoveryMin > 0 ? 'text-[#7FFFD4]' : 'text-zinc-500'
-                  }`}
-                >
-                  {dailyRhythmPlan.nightlyRecoveryMin > 0
-                    ? `مُبكّر ${dailyRhythmPlan.nightlyRecoveryMin} د للتعويض`
-                    : formatDurationAr(dailyRhythmPlan.coreNightSleepMin)}
-                </div>
-              </div>
-              <div
-                className={`rounded-xl border p-2.5 ${
-                  dailyRhythmPlan.suhoorStartMin !== null
-                    ? 'border-amber-400/40 bg-amber-400/[0.08]'
-                    : 'border-white/10 bg-black/50'
-                }`}
-              >
-                <div className="text-[10px] text-zinc-400">
-                  {dailyRhythmPlan.suhoorStartMin !== null ? '🌙 سحور غداً' : 'الاستيقاظ'}
-                </div>
-                <div
-                  className={`font-mono-tabular text-xs font-bold mt-0.5 ${
-                    dailyRhythmPlan.suhoorStartMin !== null ? 'text-amber-300' : 'text-[#7FFFD4]'
-                  }`}
-                >
-                  {formatMinutes12h(dailyRhythmPlan.wakeMin, language)}
-                </div>
-                <div className="text-[10px] text-zinc-500 mt-0.5">
-                  {dailyRhythmPlan.suhoorStartMin !== null
-                    ? `قبل الفجر بـ ${lifeProfile.suhoorLeadMinutes} د`
-                    : 'قبل الفجر بـ 15 د'}
-                </div>
-              </div>
-              <div className="rounded-xl border border-white/10 bg-black/50 p-2.5">
-                {dailyRhythmPlan.qailulahStartMin !== null ? (
-                  <>
-                    <div className="text-[10px] text-zinc-400">القيلولة</div>
-                    <div className="font-mono-tabular text-xs font-bold text-[#4ADE80] mt-0.5">
-                      {formatMinutes12h(dailyRhythmPlan.qailulahStartMin, language)}
-                    </div>
-                    <div className="text-[10px] text-zinc-500 mt-0.5">
-                      {dailyRhythmPlan.qailulahDurationMin} د تعويضية
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="text-[10px] text-zinc-400">الشروق · الغروب</div>
-                    <div className="font-mono-tabular text-[11px] font-bold text-[#4ADE80] mt-0.5">
-                      {formatMinutes12h(dailyRhythmPlan.sunriseMin, language)}
-                    </div>
-                    <div className="font-mono-tabular text-[10px] text-zinc-400 mt-0.5">
-                      {formatMinutes12h(dailyRhythmPlan.maghribMin, language)} · بلا نوم نهاري
-                    </div>
-                  </>
-                )}
+          {/* 1. Hydration Card (Promoted to #1 in Support Column — highest tap frequency) */}
+          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
+            <div className="flex items-baseline justify-between gap-2">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Droplets className="w-4 h-4 text-[#7FFFD4]" />
+                <span>
+                  {dailyRhythmPlan.isFastingToday
+                    ? 'الماء · الصيام'
+                    : t(language, 'hydrationTitle')}
+                </span>
+              </h2>
+              <div className="font-mono-tabular text-xs flex items-center gap-2">
+                <span className="font-bold text-[#7FFFD4]">
+                  {hydrationToday.cupsLogged}/{hydrationToday.targetCups}
+                </span>
+                <span className="text-zinc-600">·</span>
+                <span className="text-zinc-400">
+                  {totalMl} / {targetMl} مل
+                </span>
+                <span className="text-zinc-600">·</span>
+                <span className={waterPct >= 100 ? 'text-[#4ADE80] font-bold' : 'text-zinc-300'}>
+                  {waterPct}%
+                </span>
               </div>
             </div>
 
-            <div className="text-[11px] text-zinc-300 leading-relaxed">
-              {dailyRhythmPlan.sleepAdviceAr}
-            </div>
-
-            {dailyRhythmPlan.conflictWarningAr && (
-              <div className="rounded-xl border border-amber-400/35 bg-amber-400/10 px-3 py-2 text-[11px] text-amber-200">
-                ⚠️ {dailyRhythmPlan.conflictWarningAr}
+            {weatherInfo && weatherInfo.heatBonusMl > 0 && (
+              <div className="text-[11px] font-mono-tabular text-amber-300">
+                {weatherInfo.icon} +{weatherInfo.heatBonusMl} مل إضافية لحرارة اليوم ({weatherInfo.maxTempC}°C)
               </div>
             )}
 
-            {/* Smooth, Zero-Clutter Sleep Debt Check-In & Gradual Recovery */}
-            {dailyRhythmPlan.sleepDebtMinutes > 0 ? (
-              <div className="rounded-xl border border-amber-400/35 bg-amber-400/[0.07] p-3 space-y-2 text-[11px]">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-bold text-amber-200">
-                    😴 رصيد نوم ناقص: {formatDurationAr(dailyRhythmPlan.sleepDebtMinutes)}
-                  </span>
-                  {dailyRhythmPlan.nightlyRecoveryMin > 0 && (
-                    <span className="font-mono-tabular text-[10px] text-[#7FFFD4]">
-                      تبكير الليلة -{dailyRhythmPlan.nightlyRecoveryMin} د تلقائياً
-                    </span>
-                  )}
-                </div>
-                {dailyRhythmPlan.sleepDebtPlanAr && (
-                  <p className="text-zinc-300 leading-relaxed">{dailyRhythmPlan.sleepDebtPlanAr}</p>
-                )}
-                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <button
-                    type="button"
-                    onClick={() => onLogSleepQuality('good')}
-                    className="px-2.5 py-1.5 rounded-lg bg-[#7FFFD4] text-black font-bold text-[10px] hover:bg-[#66eec2] cursor-pointer"
-                  >
-                    نمت كويس (-{Math.max(dailyRhythmPlan.nightlyRecoveryMin, 30)}د)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onLogSleepQuality('reset')}
-                    className="px-2.5 py-1.5 rounded-lg border border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80] font-semibold text-[10px] hover:bg-[#4ADE80]/20 cursor-pointer"
-                  >
-                    عوّضت / تصفير ✓
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onLogSleepQuality('short_30')}
-                    className="px-2.5 py-1.5 rounded-lg border border-white/15 bg-black/50 text-zinc-300 text-[10px] hover:text-white cursor-pointer"
-                  >
-                    +30 د نقص
-                  </button>
-                  {dailyRhythmPlan.sleepDebtMinutes >= 60 && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onOpenAssistantWithPrompt(
-                          `عندي رصيد نوم ناقص ${dailyRhythmPlan.sleepDebtMinutes} دقيقة — فضّي لي مكان لقيلولة تعويضية 30 دقيقة النهاردة في التقويم بدون المساس بالصلاة`
-                        )
-                      }
-                      className="px-2.5 py-1.5 rounded-lg border border-indigo-400/40 bg-indigo-400/12 text-indigo-200 font-semibold text-[10px] hover:bg-indigo-400/20 cursor-pointer"
-                    >
-                      قيلولة 30 د مع Gemini
-                    </button>
-                  )}
-                </div>
-              </div>
-            ) : lifeProfile.sleepDebtLogDateKey === getCairoTodayIso() && !showSleepCheckinEdit ? (
-              <div className="pt-2 border-t border-white/10 flex items-center justify-between gap-2 text-[11px]">
-                <span className="text-[#4ADE80]">✓ نومك متوازن اليوم (صفر عجز)</span>
-                <button
-                  type="button"
-                  onClick={() => setShowSleepCheckinEdit(true)}
-                  className="text-zinc-500 hover:text-zinc-300 text-[10px] cursor-pointer"
-                >
-                  تعديل
-                </button>
-              </div>
-            ) : (
-              <div className="pt-2 border-t border-white/10 space-y-2 text-[11px]">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-zinc-300 font-medium">كيف كان نومك الليلة الماضية؟</span>
-                  <span className="text-[10px] text-zinc-500">يُبكّر نوم الليلة تلقائياً لو سهرت</span>
-                </div>
-                <div className="grid grid-cols-3 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onLogSleepQuality('good');
-                      setShowSleepCheckinEdit(false);
-                    }}
-                    className="py-1.5 px-2 rounded-lg border border-[#4ADE80]/35 bg-[#4ADE80]/[0.08] text-[#4ADE80] font-semibold text-[10px] hover:bg-[#4ADE80]/15 cursor-pointer"
-                  >
-                    ممتاز ✓
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onLogSleepQuality('short_30');
-                      setShowSleepCheckinEdit(false);
-                    }}
-                    className="py-1.5 px-2 rounded-lg border border-white/15 bg-black/50 text-zinc-200 text-[10px] hover:border-amber-400/45 hover:text-amber-200 cursor-pointer"
-                  >
-                    أقل قليلاً (-30د)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onLogSleepQuality('short_60');
-                      setShowSleepCheckinEdit(false);
-                    }}
-                    className="py-1.5 px-2 rounded-lg border border-white/15 bg-black/50 text-zinc-200 text-[10px] hover:border-amber-400/45 hover:text-amber-200 cursor-pointer"
-                  >
-                    سهر / أرق (-60د)
-                  </button>
-                </div>
-              </div>
-            )}
-
-          </section>
-
-          {/* Scientific Hydration Engine (Alert-Confirmed Only · Read-only Weight Reference) */}
-          <section className={`rounded-2xl border p-5 ${cardSurface}`}>
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                  <Droplets className="w-4 h-4 text-[#7FFFD4]" />
-                  <span>
-                    {dailyRhythmPlan.isFastingToday
-                      ? 'الماء · حد الصيام الآمن (الإفطار والسحور)'
-                      : t(language, 'hydrationTitle')}
-                  </span>
-                </h2>
-                <div className="font-mono-tabular text-xs text-zinc-400 mt-0.5">
-                  {totalMl} / {targetMl} ml · {hydrationToday.cupsLogged} / {hydrationToday.targetCups} ({waterPct}%)
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-500 mt-1">
-                  <span>
-                    يُسجَّل الكوب من الإشعار (أو اضغط رقم الكوب يدوياً لو نسيت تأكيده) · كوب {dailyRhythmPlan.cupSizeMl} مل
-                    {dailyRhythmPlan.isFastingToday
-                      ? ' · لا ماء بين الفجر والمغرب'
-                      : ' · يتوقف قبل النوم بـ 75 د'}
-                  </span>
-                  <span
-                    className="text-zinc-500 font-mono-tabular"
-                    title="لتحديث الوزن أخبر شات Gemini مباشرة أو من قائمة الإعدادات"
-                  >
-                    · المرجع {lifeProfile.weightKg} كجم
-                  </span>
-                  {weatherInfo && (
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono-tabular ${
-                        weatherInfo.heatBonusMl > 0
-                          ? 'border-amber-400/40 bg-amber-400/10 text-amber-300'
-                          : 'border-white/10 bg-black/40 text-zinc-400'
-                      }`}
-                      title={weatherInfo.heatNoteAr}
-                    >
-                      <span>
-                        {weatherInfo.icon} العظمى {weatherInfo.maxTempC}°C
-                      </span>
-                      {weatherInfo.heatBonusMl > 0 && (
-                        <span className="font-bold">+{weatherInfo.heatBonusMl} مل</span>
-                      )}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Hybrid Cup Progress Segments (Primary: alert confirmation; Fallback: click cup # to log/unlog manually) */}
-            <div className="mt-4 flex items-center gap-1">
+            {/* Tactile Interactive Cup Progress Strip */}
+            <div className="flex items-center gap-1">
               {hydrationToday.slots.map((filled, idx) => {
                 const slotPlan = dailyRhythmPlan.hydrationSlots[idx];
                 return (
@@ -3269,10 +2897,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     onClick={() => onToggleWaterSlot(idx)}
                     title={
                       slotPlan
-                        ? `كوب ${idx + 1} (${formatMinutes12h(slotPlan.timeMinutes, language)}) — اضغط لتسجيل أو إلغاء الشرب يدوياً`
-                        : `كوب ${idx + 1} — اضغط لتسجيل أو إلغاء الشرب يدوياً`
+                        ? `كوب ${idx + 1} · ${formatMinutes12h(slotPlan.timeMinutes, language)}`
+                        : `كوب ${idx + 1}`
                     }
-                    className={`flex-1 h-7 rounded-md font-mono-tabular text-[10px] font-bold flex items-center justify-center transition-colors cursor-pointer ${
+                    className={`flex-1 h-8 rounded-md font-mono-tabular text-[11px] font-bold flex items-center justify-center transition-colors cursor-pointer ${
                       filled
                         ? 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
                         : 'bg-white/[0.06] text-zinc-400 hover:bg-white/[0.14] hover:text-white'
@@ -3284,28 +2912,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               })}
             </div>
 
-            {/* Active Water Cup Reminder Bar (Fires sound + Secondary-Monitor alert with "شربت فعلاً ✓") */}
-            <div className="mt-3 rounded-xl border border-white/10 bg-black/50 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-              <div className="flex items-center gap-1.5 text-zinc-200 min-w-0">
+            {/* Clean Next-Cup Reminder Line */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-white/[0.07] text-xs">
+              <div className="flex items-center gap-1.5 text-zinc-300 min-w-0">
                 <Bell
                   className={`w-3.5 h-3.5 shrink-0 ${
-                    waterRemindersEnabled ? 'text-[#7FFFD4]' : 'text-zinc-500'
+                    waterRemindersEnabled ? 'text-[#7FFFD4]' : 'text-zinc-600'
                   }`}
                 />
                 {nextWaterSlot ? (
                   <span className="truncate font-mono-tabular">
-                    التنبيه القادم (كوب #{nextWaterSlot.cupIndex}):{' '}
+                    كوب #{nextWaterSlot.cupIndex} ·{' '}
                     <strong className="text-[#7FFFD4]">
                       {formatMinutes12h(nextWaterSlot.timeMinutes, language)}
                     </strong>
-                    {nextWaterSlot.windowAr ? (
-                      <span className="text-zinc-400"> · {nextWaterSlot.windowAr}</span>
-                    ) : null}
                   </span>
                 ) : (
-                  <span className="text-[#4ADE80] font-semibold">
-                    أتممت كل أكواب اليوم ✓
-                  </span>
+                  <span className="text-[#4ADE80] font-semibold">أتممت هدف اليوم ✓</span>
                 )}
               </div>
 
@@ -3313,21 +2936,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="button"
                   onClick={onToggleWaterReminders}
-                  className={`px-2 py-1 rounded-lg border text-[10px] font-semibold cursor-pointer ${
+                  className={`px-2 py-1 rounded-lg border text-[11px] font-medium cursor-pointer transition-colors ${
                     waterRemindersEnabled
-                      ? 'border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80]'
-                      : 'border-white/10 text-zinc-400 hover:text-white'
+                      ? 'border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80]'
+                      : 'border-white/10 text-zinc-500 hover:text-zinc-200'
                   }`}
                 >
-                  {waterRemindersEnabled ? 'تنبيه كل كوب مفعّل' : 'التنبيه متوقف'}
+                  {waterRemindersEnabled ? 'التنبيه مفعّل' : 'متوقف'}
                 </button>
                 {notificationPermission !== 'granted' && notificationPermission !== 'unsupported' && (
                   <button
                     type="button"
                     onClick={() => void onRequestNotificationPermission()}
-                    className="px-2 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[10px] font-semibold text-[#7FFFD4] hover:bg-[#7FFFD4]/20 cursor-pointer"
+                    className="px-2 py-1 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[11px] font-medium text-[#7FFFD4] hover:bg-[#7FFFD4]/20 cursor-pointer"
                   >
-                    تفعيل إشعارات الجهاز
+                    الإشعارات
                   </button>
                 )}
                 <button
@@ -3338,633 +2961,464 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       privacyEmoji: '💧',
                     })
                   }
-                  className="px-2 py-1 rounded-lg border border-white/10 text-[10px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer"
-                  title="تجربة تنبيه كوب الماء والتأكيد منه الآن"
+                  className="p-1.5 rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] cursor-pointer"
+                  title="تجربة تنبيه كوب الماء"
+                  aria-label="تجربة تنبيه كوب الماء"
                 >
-                  تجربة التنبيه 🔊
+                  <Volume2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
 
-            {/* Collapsible Scientific Water Timing Distribution (Clickable manual fallback, zero confusing labels) */}
-            <div className="mt-3">
+            {/* On-Demand Expanders: Cup Schedule & 7-Day Analytics */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/[0.06] text-[11px]">
               <button
                 type="button"
                 onClick={() => setShowHydrationSchedule((v) => !v)}
-                className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
+                className="text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
               >
-                {showHydrationSchedule
-                  ? 'إخفاء مواعيد الأكواب ▲'
-                  : `عرض مواعيد الأكواب اليوم (${dailyRhythmPlan.activeTargetCups} كوب) ▼`}
+                <span>مواعيد الأكواب</span>
+                {showHydrationSchedule ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
               </button>
 
-              {showHydrationSchedule && (
-                <div className="mt-2 grid grid-cols-2 gap-1.5 max-h-44 overflow-y-auto pr-0.5">
-                  {dailyRhythmPlan.hydrationSlots.map((slot, idx) => {
-                    const done = hydrationToday.slots[idx];
-                    return (
-                      <button
-                        key={slot.cupIndex}
-                        type="button"
-                        onClick={() => onToggleWaterSlot(idx)}
-                        className={`rounded-lg border px-2.5 py-2 text-right text-[11px] transition-colors cursor-pointer ${
-                          done
-                            ? 'border-[#4ADE80]/40 bg-[#4ADE80]/10 text-[#4ADE80]'
-                            : 'border-white/10 bg-black/40 text-zinc-300 hover:border-[#7FFFD4]/45'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1 font-mono-tabular">
-                          <span className="font-bold">
-                            {done ? '✓ ' : ''}كوب {slot.cupIndex}
-                          </span>
-                          <span>{formatMinutes12h(slot.timeMinutes, language)}</span>
-                        </div>
-                        {slot.windowAr ? (
-                          <div className="text-[10px] text-zinc-500 truncate mt-0.5">
-                            {slot.windowAr}
-                          </div>
-                        ) : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              <button
+                type="button"
+                onClick={() => setShowWaterChart((v) => !v)}
+                className="text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <BarChart3 className="w-3.5 h-3.5" />
+                <span>الإحصائيات الأسبوعية</span>
+                {showWaterChart ? (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                )}
+              </button>
             </div>
 
-            {/* Universal Flexible Medications & Supplements (Supports Multi-Dose, Specific Weekdays & Scientific Gemini Advice) */}
-            <div className="mt-4 pt-3.5 border-t border-white/10 space-y-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-bold text-white">
-                    💊 العلاجات والمكملات الغذائية
-                  </span>
-                  {medications.length > 0 && (
+            {showHydrationSchedule && (
+              <div className="grid grid-cols-2 gap-1.5 max-h-44 overflow-y-auto pt-1">
+                {dailyRhythmPlan.hydrationSlots.map((slot, idx) => {
+                  const done = hydrationToday.slots[idx];
+                  return (
+                    <button
+                      key={slot.cupIndex}
+                      type="button"
+                      onClick={() => onToggleWaterSlot(idx)}
+                      className={`rounded-lg border px-2.5 py-2 text-right text-[11px] transition-colors cursor-pointer ${
+                        done
+                          ? 'border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80]'
+                          : 'border-white/[0.07] bg-white/[0.02] text-zinc-300 hover:border-[#7FFFD4]/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1 font-mono-tabular">
+                        <span className="font-bold">
+                          {done ? '✓ ' : ''}كوب {slot.cupIndex}
+                        </span>
+                        <span>{formatMinutes12h(slot.timeMinutes, language)}</span>
+                      </div>
+                      {slot.windowAr ? (
+                        <div className="text-[10px] text-zinc-500 truncate mt-0.5">
+                          {slot.windowAr}
+                        </div>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {showWaterChart && (
+              <HydrationWeeklyChart
+                hydrationHistory={hydrationHistory}
+                weatherInfo={weatherInfo}
+                cupSizeMl={lifeProfile.cupSizeMl}
+              />
+            )}
+          </section>
+
+          {/* 2. Medications & Supplements (Clean Dedicated Card right below Water) */}
+          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <Pill className="w-4 h-4 text-[#7FFFD4]" />
+                  <span>العلاجات والمكملات</span>
+                </h2>
+                {medications.length > 0 && (
+                  <span className="font-mono-tabular text-xs text-zinc-400">
                     <span
-                      className={`px-2 py-0.5 rounded-lg border text-[10px] font-mono-tabular font-semibold ${
+                      className={
                         medAdherenceSummary.takenTodayCount >= medAdherenceSummary.dueTodayCount &&
                         medAdherenceSummary.dueTodayCount > 0
-                          ? 'border-[#4ADE80]/40 bg-[#4ADE80]/15 text-[#4ADE80]'
-                          : 'border-amber-400/35 bg-amber-400/10 text-amber-200'
-                      }`}
+                          ? 'text-[#4ADE80] font-bold'
+                          : 'text-amber-300 font-semibold'
+                      }
                     >
-                      اليوم {medAdherenceSummary.takenTodayCount}/{medAdherenceSummary.dueTodayCount}
+                      {medAdherenceSummary.takenTodayCount}/{medAdherenceSummary.dueTodayCount}
                     </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onOpenAssistantWithPrompt(
-                        'عاوز أضيف علاج أو مكمل غذائي جديد — شوف جدولي في التقويم وأيامي وابحث علمياً عن أنسب ميعاد بدون تضارب قبل ما نثبته'
-                      )
-                    }
-                    className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
-                    title="استشر Gemini علمياً قبل تثبيت أي مكمل أو دواء جديد"
-                  >
-                    استشارة علمية بـ Gemini
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowAddMedForm((v) => !v)}
-                    className="px-2 py-1 rounded-lg border border-white/15 bg-black/50 text-[11px] text-zinc-200 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>إضافة</span>
-                  </button>
-                </div>
+                    <span> · التزام {medAdherenceSummary.adherencePct}%</span>
+                  </span>
+                )}
               </div>
 
-              {/* Adherence Overview Bar (Today + 7-day compliance + missed days counter) */}
-              {medications.length > 0 && (
-                <div className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                  <div className="flex items-center gap-2">
-                    <span className="text-zinc-400">مؤشر الالتزام (7 أيام):</span>
-                    <span
-                      className={`font-mono-tabular font-bold ${
-                        medAdherenceSummary.adherencePct >= 80
-                          ? 'text-[#4ADE80]'
-                          : medAdherenceSummary.adherencePct >= 50
-                            ? 'text-amber-300'
-                            : 'text-rose-300'
-                      }`}
-                    >
-                      {medAdherenceSummary.adherencePct}%
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px]">
-                    {medAdherenceSummary.missedPastSlots > 0 ? (
-                      <span className="text-rose-300 font-semibold">
-                        أيام فائتة: {medAdherenceSummary.missedPastSlots}
-                      </span>
-                    ) : (
-                      <span className="text-[#4ADE80] font-semibold">
-                        التزام كامل بدون أيام فائتة ✓
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Medications Stock Warning Panel (< 5 Days Remaining + Fast Stock Reset after New Pack Purchase) */}
-              {expiringUnder5DaysMedications.length > 0 && (
-                <div className="rounded-xl border border-amber-400/50 bg-amber-400/10 p-2.5 space-y-2 text-[11px]">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 font-bold text-amber-200">
-                      <AlertCircle className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-                      <span>لوحة تحذيرية · أدوية ينتهي مخزونها خلال أقل من 5 أيام:</span>
-                    </div>
-                    <span className="font-mono-tabular text-[10px] text-amber-300 font-bold">
-                      {expiringUnder5DaysMedications.length} دواء
-                    </span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {expiringUnder5DaysMedications.map(
-                      ({ med, remainingDoses, daysLeft, daysLeftRounded, dailyRate, defaultPackSize }) => {
-                        const isOpen = purchaseMedId === med.id;
-                        const enteredQty = Math.max(
-                          0,
-                          Math.min(500, Math.round(Number(purchaseAddDoses) || 0))
-                        );
-                        const previewTotal =
-                          purchaseMode === 'add'
-                            ? Math.min(500, remainingDoses + enteredQty)
-                            : enteredQty;
-                        const previewDays = Math.ceil(previewTotal / Math.max(0.14, dailyRate));
-                        const isCritical = remainingDoses === 0 || daysLeft <= 3;
-
-                        return (
-                          <div
-                            key={med.id}
-                            className={`rounded-lg border p-2 space-y-2 ${
-                              remainingDoses === 0
-                                ? 'border-rose-500/45 bg-rose-500/10'
-                                : isCritical
-                                  ? 'border-amber-400/35 bg-black/50'
-                                  : 'border-amber-300/20 bg-black/40'
-                            }`}
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="text-amber-100 min-w-0">
-                                <span className="font-bold">{med.name}</span>
-                                <span
-                                  className={`font-mono-tabular ${
-                                    remainingDoses === 0
-                                      ? 'text-rose-300 font-bold'
-                                      : isCritical
-                                        ? 'text-amber-300'
-                                        : 'text-zinc-300'
-                                  }`}
-                                >
-                                  {' '}
-                                  ·{' '}
-                                  {remainingDoses === 0
-                                    ? 'نفدت العبوة (0 جرعة)'
-                                    : `متبقٍ ${remainingDoses} جرعة (~${daysLeftRounded} ${daysLeftRounded === 1 ? 'يوم' : 'أيام'})`}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onRefillMedication(med.id, defaultPackSize, med.refillAlertDays ?? 3);
-                                    if (purchaseMedId === med.id) setPurchaseMedId(null);
-                                  }}
-                                  className="px-2 py-1 rounded-lg bg-[#4ADE80] text-black text-[10px] font-bold hover:bg-emerald-300 flex items-center gap-1 cursor-pointer"
-                                  title={`إعادة تعيين المخزون فوراً إلى عبوة جديدة كاملة (${defaultPackSize} جرعة)`}
-                                >
-                                  <RotateCcw className="w-3 h-3" />
-                                  <span>إعادة تعيين ({defaultPackSize})</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => openPurchaseRestockForm(med)}
-                                  className="px-2 py-1 rounded-lg border border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4] text-[10px] font-bold hover:bg-[#7FFFD4] hover:text-black flex items-center gap-1 cursor-pointer"
-                                >
-                                  <ShoppingBag className="w-3 h-3" />
-                                  <span>إضافة شراء جديد</span>
-                                </button>
-                              </div>
-                            </div>
-
-                            {isOpen && (
-                              <div className="rounded-lg border border-[#7FFFD4]/35 bg-black/80 p-2 space-y-2 text-[11px]">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  <span className="text-zinc-400 text-[10px]">الكمية الجديدة:</span>
-                                  {[14, 20, 30, 60].map((qty) => (
-                                    <button
-                                      key={qty}
-                                      type="button"
-                                      onClick={() => setPurchaseAddDoses(String(qty))}
-                                      className={`px-1.5 py-0.5 rounded border font-mono-tabular text-[10px] cursor-pointer ${
-                                        purchaseAddDoses === String(qty)
-                                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
-                                          : 'border-white/10 text-zinc-400'
-                                      }`}
-                                    >
-                                      +{qty}
-                                    </button>
-                                  ))}
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={500}
-                                    value={purchaseAddDoses}
-                                    onChange={(e) => setPurchaseAddDoses(e.target.value)}
-                                    className="w-16 rounded border border-white/15 bg-black px-1.5 py-0.5 text-white font-mono-tabular text-[11px] focus:outline-none focus:border-[#7FFFD4]"
-                                  />
-                                </div>
-
-                                <div className="flex flex-wrap items-center justify-between gap-1.5 text-[10px]">
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      type="button"
-                                      onClick={() => setPurchaseMode('add')}
-                                      className={`px-1.5 py-0.5 rounded border cursor-pointer ${
-                                        purchaseMode === 'add'
-                                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
-                                          : 'border-white/10 text-zinc-400'
-                                      }`}
-                                    >
-                                      إضافة للمتبقي ({remainingDoses} + {enteredQty})
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setPurchaseMode('set')}
-                                      className={`px-1.5 py-0.5 rounded border cursor-pointer ${
-                                        purchaseMode === 'set'
-                                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
-                                          : 'border-white/10 text-zinc-400'
-                                      }`}
-                                    >
-                                      تعيين إجمالي
-                                    </button>
-                                  </div>
-                                  <span className="font-mono-tabular text-[#4ADE80]">
-                                    الجديد: {previewTotal} جرعة (~{previewDays} ي)
-                                  </span>
-                                </div>
-
-                                <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-white/10">
-                                  <button
-                                    type="button"
-                                    onClick={() => setPurchaseMedId(null)}
-                                    className="px-2 py-0.5 text-zinc-400 hover:text-white cursor-pointer"
-                                  >
-                                    إلغاء
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={previewTotal <= 0}
-                                    onClick={() => {
-                                      onRefillMedication(med.id, previewTotal, purchaseAlertDays);
-                                      setPurchaseMedId(null);
-                                    }}
-                                    className="px-2.5 py-0.5 rounded-lg bg-[#4ADE80] text-black font-bold hover:bg-emerald-300 disabled:opacity-40 cursor-pointer"
-                                  >
-                                    تأكيد الشراء ✓
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      }
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {showAddMedForm && (
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (!newMedName.trim()) return;
-                    const trimmedName = newMedName.trim();
-                    const trimmedNote = newMedNote.trim();
-                    const finalTimes =
-                      newMedTimes24.length > 0 ? newMedTimes24 : [newMedCurrentTime24];
-                    const parsedRem = newMedRemainingDoses.trim()
-                      ? Math.max(0, Math.min(500, Math.round(Number(newMedRemainingDoses))))
-                      : -1;
-                    onAddMedication({
-                      name: trimmedName,
-                      time24: finalTimes[0],
-                      times24: finalTimes,
-                      daysOfWeek: newMedDaysOfWeek,
-                      doseNote: trimmedNote || '',
-                      courseEndDate: newMedCourseEnd.trim() || '',
-                      remainingDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
-                      totalDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
-                      refillAlertDays: newMedRefillAlertDays,
-                    });
-
-                    if (calendarConnected && newMedSyncCalendar) {
-                      const DAY_CODE_MAP = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
-                      const byDays =
-                        newMedDaysOfWeek.length > 0
-                          ? newMedDaysOfWeek.map((d) => DAY_CODE_MAP[d]).filter(Boolean)
-                          : undefined;
-                      const calendarActions: CalendarActionProposal[] = finalTimes.map((t24) => ({
-                        operation: 'create',
-                        calendarId: 'primary',
-                        title: `💊 ⏰ ${trimmedName}`,
-                        dateIso: todayCairoIso,
-                        startTime24: t24,
-                        durationMinutes: 15,
-                        recurrenceRule: byDays && byDays.length > 0 ? 'WEEKLY' : 'DAILY',
-                        byDays,
-                        description: trimmedNote
-                          ? `موعد علاج/مكمل: ${trimmedName} · ${trimmedNote}`
-                          : `موعد علاج/مكمل مجدول عبر إيقاع اليوم | DayRhythm`,
-                      }));
-                      void onExecuteCalendarActions(calendarActions);
-                    }
-
-                    setNewMedName('');
-                    setNewMedNote('');
-                    setNewMedTimes24([]);
-                    setNewMedDaysOfWeek([]);
-                    setNewMedCourseEnd('');
-                    setNewMedRemainingDoses('');
-                    setNewMedRefillAlertDays(3);
-                    setShowAddMedForm(false);
-                  }}
-                  className="rounded-xl border border-white/15 bg-black/70 p-3 space-y-2.5 text-xs"
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onOpenAssistantWithPrompt(
+                      'عاوز أضيف علاج أو مكمل غذائي جديد — شوف جدولي في التقويم وأيامي وابحث علمياً عن أنسب ميعاد بدون تضارب قبل ما نثبته'
+                    )
+                  }
+                  className="text-xs text-zinc-400 hover:text-[#7FFFD4] cursor-pointer transition-colors"
+                  title="استشارة علمية عبر Gemini"
                 >
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <input
-                      type="text"
-                      value={newMedName}
-                      onChange={(e) => setNewMedName(e.target.value)}
-                      placeholder="اسم المكمل أو العلاج (مثال: كرياتين / فيتامين د)"
-                      className="rounded-lg border border-white/15 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
-                    />
-                    <input
-                      type="text"
-                      value={newMedNote}
-                      onChange={(e) => setNewMedNote(e.target.value)}
-                      placeholder="ملاحظة (مثال: بعد التمرين أو مع وجبة)"
-                      className="rounded-lg border border-white/15 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
-                    />
-                  </div>
+                  استشارة Gemini
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAddMedForm((v) => !v)}
+                  className="min-h-[32px] px-2.5 py-1 rounded-lg border border-white/[0.1] bg-white/[0.02] text-xs font-medium text-zinc-200 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>إضافة</span>
+                </button>
+              </div>
+            </div>
 
-                  {/* Optional Course End Date & Refill Dose Counter + Lead-Time Alert */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <label className="flex items-center justify-between gap-2 rounded-lg border border-white/15 bg-black px-2.5 py-1 text-[11px] text-zinc-400">
-                      <span>نهاية الكورس:</span>
-                      <input
-                        type="date"
-                        value={newMedCourseEnd}
-                        onChange={(e) => setNewMedCourseEnd(e.target.value)}
-                        className="bg-black text-zinc-200 focus:outline-none font-mono-tabular"
-                      />
-                    </label>
+            {showAddMedForm && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!newMedName.trim()) return;
+                  const trimmedName = newMedName.trim();
+                  const trimmedNote = newMedNote.trim();
+                  const finalTimes =
+                    newMedTimes24.length > 0 ? newMedTimes24 : [newMedCurrentTime24];
+                  const parsedRem = newMedRemainingDoses.trim()
+                    ? Math.max(0, Math.min(500, Math.round(Number(newMedRemainingDoses))))
+                    : -1;
+                  onAddMedication({
+                    name: trimmedName,
+                    time24: finalTimes[0],
+                    times24: finalTimes,
+                    daysOfWeek: newMedDaysOfWeek,
+                    doseNote: trimmedNote || '',
+                    courseEndDate: newMedCourseEnd.trim() || '',
+                    remainingDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
+                    totalDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
+                    refillAlertDays: newMedRefillAlertDays,
+                  });
+
+                  if (calendarConnected && newMedSyncCalendar) {
+                    const DAY_CODE_MAP = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+                    const byDays =
+                      newMedDaysOfWeek.length > 0
+                        ? newMedDaysOfWeek.map((d) => DAY_CODE_MAP[d]).filter(Boolean)
+                        : undefined;
+                    const calendarActions: CalendarActionProposal[] = finalTimes.map((t24) => ({
+                      operation: 'create',
+                      calendarId: 'primary',
+                      title: `💊 ⏰ ${trimmedName}`,
+                      dateIso: todayCairoIso,
+                      startTime24: t24,
+                      durationMinutes: 15,
+                      recurrenceRule: byDays && byDays.length > 0 ? 'WEEKLY' : 'DAILY',
+                      byDays,
+                      description: trimmedNote
+                        ? `موعد علاج/مكمل: ${trimmedName} · ${trimmedNote}`
+                        : `موعد علاج/مكمل مجدول عبر إيقاع اليوم | DayRhythm`,
+                    }));
+                    void onExecuteCalendarActions(calendarActions);
+                  }
+
+                  setNewMedName('');
+                  setNewMedNote('');
+                  setNewMedTimes24([]);
+                  setNewMedDaysOfWeek([]);
+                  setNewMedCourseEnd('');
+                  setNewMedRemainingDoses('');
+                  setNewMedRefillAlertDays(3);
+                  setShowAddMedForm(false);
+                }}
+                className="rounded-xl border border-white/[0.1] bg-black/55 p-3 space-y-2.5 text-xs"
+              >
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    value={newMedName}
+                    onChange={(e) => setNewMedName(e.target.value)}
+                    placeholder="اسم العلاج أو المكمل"
+                    className="rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+                  />
+                  <input
+                    type="text"
+                    value={newMedNote}
+                    onChange={(e) => setNewMedNote(e.target.value)}
+                    placeholder="ملاحظة (مثال: مع وجبة)"
+                    className="rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className="flex items-center justify-between gap-2 rounded-lg border border-white/12 bg-black px-2.5 py-1 text-[11px] text-zinc-400">
+                    <span>نهاية الكورس:</span>
+                    <input
+                      type="date"
+                      value={newMedCourseEnd}
+                      onChange={(e) => setNewMedCourseEnd(e.target.value)}
+                      className="bg-black text-zinc-200 focus:outline-none font-mono-tabular"
+                    />
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={500}
+                    value={newMedRemainingDoses}
+                    onChange={(e) => setNewMedRemainingDoses(e.target.value)}
+                    placeholder="عدد الجرعات بالعبوة (اختياري)"
+                    className="rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4] font-mono-tabular"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
+                  <span>تنبيه قبل النفاد:</span>
+                  <div className="flex items-center gap-1">
+                    {[2, 3, 5, 7].map((days) => (
+                      <button
+                        key={days}
+                        type="button"
+                        onClick={() => setNewMedRefillAlertDays(days)}
+                        className={`px-2 py-0.5 rounded-lg border text-[10px] cursor-pointer ${
+                          newMedRefillAlertDays === days
+                            ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                            : 'border-white/10 text-zinc-400 hover:text-white'
+                        }`}
+                      >
+                        {days} ي
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] text-zinc-400">الميعاد:</span>
+                    <select
+                      value={newMedHour12}
+                      onChange={(e) => setNewMedHour12(Number(e.target.value))}
+                      className="rounded-lg border border-white/12 bg-black px-2 py-1 text-white font-mono-tabular"
+                      aria-label="الساعة"
+                    >
+                      {[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => (
+                        <option key={h} value={h}>
+                          {String(h).padStart(2, '0')}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-zinc-500 font-mono-tabular">:</span>
                     <input
                       type="number"
                       min={0}
-                      max={500}
-                      value={newMedRemainingDoses}
-                      onChange={(e) => setNewMedRemainingDoses(e.target.value)}
-                      placeholder="عدد الجرعات بالعبوة (مثل 30 لتنبيه الشراء)"
-                      className="rounded-lg border border-white/15 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4] font-mono-tabular"
+                      max={59}
+                      value={newMedMinute}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        setNewMedMinute(Number.isFinite(v) ? Math.max(0, Math.min(59, v)) : 0);
+                      }}
+                      className="w-14 rounded-lg border border-white/12 bg-black px-2 py-1 text-center text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                      aria-label="الدقائق"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setNewMedPeriod((p) => (p === 'AM' ? 'PM' : 'AM'))}
+                      className="px-2.5 py-1 rounded-lg border border-white/12 bg-black text-[#7FFFD4] font-bold cursor-pointer"
+                    >
+                      {newMedPeriod === 'AM' ? 'ص' : 'م'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewMedTimes24((prev) =>
+                          prev.includes(newMedCurrentTime24)
+                            ? prev
+                            : [...prev, newMedCurrentTime24].slice(0, 6)
+                        );
+                      }}
+                      className="px-2 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[10px] text-[#7FFFD4] font-semibold cursor-pointer"
+                    >
+                      + جرعة
+                    </button>
                   </div>
+                  {newMedTimes24.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {newMedTimes24.map((t24) => (
+                        <span
+                          key={t24}
+                          className="inline-flex items-center gap-1 rounded-md border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 px-2 py-0.5 text-[10px] font-mono-tabular text-[#7FFFD4]"
+                        >
+                          {formatTime24To12h(t24, language)}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setNewMedTimes24((prev) => prev.filter((x) => x !== t24))
+                            }
+                            className="text-zinc-400 hover:text-white cursor-pointer"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
-                    <span>التنبيه قبل نفاد العبوة بـ:</span>
-                    <div className="flex items-center gap-1">
-                      {[2, 3, 5, 7].map((days) => (
+                {newMedConflict.hasConflict && (
+                  <div className="rounded-xl border border-amber-400/40 bg-amber-400/10 p-2.5 space-y-2 text-[11px] text-amber-100">
+                    <div className="flex items-start gap-1.5 font-semibold text-amber-200">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
+                      <span>تعارض محتمل مع جدولك:</span>
+                    </div>
+                    <ul className="space-y-0.5 pr-4 list-disc text-[10px] text-amber-100/90">
+                      {newMedConflict.warnings.map((w, idx) => (
+                        <li key={idx}>{w}</li>
+                      ))}
+                    </ul>
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      {newMedConflict.suggestedTime24 && newMedConflict.suggestedTime12Ar && (
                         <button
-                          key={days}
                           type="button"
-                          onClick={() => setNewMedRefillAlertDays(days)}
-                          className={`px-2 py-0.5 rounded-lg border text-[10px] cursor-pointer ${
-                            newMedRefillAlertDays === days
+                          onClick={() => {
+                            applyTime24To12hPicker(
+                              newMedConflict.suggestedTime24!,
+                              setNewMedHour12,
+                              setNewMedMinute,
+                              setNewMedPeriod
+                            );
+                            if (newMedTimes24.length > 0) {
+                              setNewMedTimes24([newMedConflict.suggestedTime24!]);
+                            }
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[10px] font-bold hover:bg-[#66eec2] cursor-pointer"
+                        >
+                          تطبيق {newMedConflict.suggestedTime12Ar}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const medLabel = newMedName.trim() || 'علاج جديد';
+                          const pickedLabel = formatTime24To12h(newMedCurrentTime24, 'ar');
+                          const conflictList = newMedConflict.warnings.join('، ');
+                          onOpenAssistantWithPrompt(
+                            `عاوز أضيف «${medLabel}»${newMedNote.trim() ? ` (${newMedNote.trim()})` : ''} الساعة ${pickedLabel}، بس النظام نبّهني إن فيه تعارض: ${conflictList}. ناقشني واقترح أنسب ميعاد علمي متوافق مع الصلاة والنوم والصيام والتقويم، ولما أوافق احجزه في التقويم.`
+                          );
+                        }}
+                        className="px-2.5 py-1 rounded-lg border border-amber-300/45 bg-black/50 text-amber-200 hover:text-white text-[10px] font-semibold cursor-pointer"
+                      >
+                        ناقش مع Gemini
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                    <span>الأيام (فارغ = يومياً):</span>
+                    {newMedDaysOfWeek.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setNewMedDaysOfWeek([])}
+                        className="text-[#7FFFD4] hover:underline cursor-pointer"
+                      >
+                        كل يوم
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {ARABIC_WEEKDAYS.map((day) => {
+                      const selected = newMedDaysOfWeek.includes(day.id);
+                      return (
+                        <button
+                          key={day.id}
+                          type="button"
+                          onClick={() =>
+                            setNewMedDaysOfWeek((prev) =>
+                              prev.includes(day.id)
+                                ? prev.filter((d) => d !== day.id)
+                                : [...prev, day.id].sort((a, b) => a - b)
+                            )
+                          }
+                          className={`px-2 py-1 rounded-lg border text-[10px] cursor-pointer ${
+                            selected
                               ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
                               : 'border-white/10 text-zinc-400 hover:text-white'
                           }`}
                         >
-                          {days} {days === 2 ? 'يومين' : 'أيام'}
+                          {day.shortAr}
                         </button>
-                      ))}
-                    </div>
+                      );
+                    })}
                   </div>
+                </div>
 
-                  {/* Flexible Multi-dose Time Builder (Free 0-59 minutes) */}
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-zinc-400">ميعاد الجرعة:</span>
-                      <select
-                        value={newMedHour12}
-                        onChange={(e) => setNewMedHour12(Number(e.target.value))}
-                        className="rounded-lg border border-white/15 bg-black px-2 py-1 text-white font-mono-tabular"
-                        aria-label="الساعة"
-                      >
-                        {[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => (
-                          <option key={h} value={h}>
-                            {String(h).padStart(2, '0')}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="text-zinc-500 font-mono-tabular">:</span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={59}
-                        value={newMedMinute}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          setNewMedMinute(Number.isFinite(v) ? Math.max(0, Math.min(59, v)) : 0);
-                        }}
-                        className="w-14 rounded-lg border border-white/15 bg-black px-2 py-1 text-center text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
-                        aria-label="الدقائق"
-                        title="أي دقيقة من 0 إلى 59"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setNewMedPeriod((p) => (p === 'AM' ? 'PM' : 'AM'))}
-                        className="px-2.5 py-1 rounded-lg border border-white/15 bg-black text-[#7FFFD4] font-bold cursor-pointer"
-                      >
-                        {newMedPeriod === 'AM' ? 'ص' : 'م'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setNewMedTimes24((prev) =>
-                            prev.includes(newMedCurrentTime24)
-                              ? prev
-                              : [...prev, newMedCurrentTime24].slice(0, 6)
-                          );
-                        }}
-                        className="px-2 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[10px] text-[#7FFFD4] font-semibold cursor-pointer"
-                      >
-                        + إضافة جرعة
-                      </button>
-                    </div>
-                    {newMedTimes24.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {newMedTimes24.map((t24) => (
-                          <span
-                            key={t24}
-                            className="inline-flex items-center gap-1 rounded-md border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 px-2 py-0.5 text-[10px] font-mono-tabular text-[#7FFFD4]"
-                          >
-                            {formatTime24To12h(t24, language)}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setNewMedTimes24((prev) => prev.filter((x) => x !== t24))
-                              }
-                              className="text-zinc-400 hover:text-white cursor-pointer"
-                            >
-                              ×
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                {calendarConnected && (
+                  <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer select-none pt-0.5">
+                    <input
+                      type="checkbox"
+                      checked={newMedSyncCalendar}
+                      onChange={(e) => setNewMedSyncCalendar(e.target.checked)}
+                      className="accent-[#7FFFD4] rounded"
+                    />
+                    <span>إضافة تلقائية للتقويم</span>
+                  </label>
+                )}
 
-                  {/* Live Smart Conflict Warning + Gemini Negotiation for Medications */}
-                  {newMedConflict.hasConflict && (
-                    <div className="rounded-xl border border-amber-400/45 bg-amber-400/10 p-2.5 space-y-2 text-[11px] text-amber-100">
-                      <div className="flex items-start gap-1.5 font-semibold text-amber-200">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
-                        <span>تحذير ذكي — هذا الموعد يتعارض مع ثوابتك أو جدولك:</span>
-                      </div>
-                      <ul className="space-y-0.5 pr-4 list-disc text-[10px] text-amber-100/90">
-                        {newMedConflict.warnings.map((w, idx) => (
-                          <li key={idx}>{w}</li>
-                        ))}
-                      </ul>
-                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                        {newMedConflict.suggestedTime24 && newMedConflict.suggestedTime12Ar && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              applyTime24To12hPicker(
-                                newMedConflict.suggestedTime24!,
-                                setNewMedHour12,
-                                setNewMedMinute,
-                                setNewMedPeriod
-                              );
-                              if (newMedTimes24.length > 0) {
-                                setNewMedTimes24([newMedConflict.suggestedTime24!]);
-                              }
-                            }}
-                            className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[10px] font-bold hover:bg-[#66eec2] cursor-pointer"
-                          >
-                            ✓ تطبيق {newMedConflict.suggestedTime12Ar}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const medLabel = newMedName.trim() || 'علاج جديد';
-                            const pickedLabel = formatTime24To12h(newMedCurrentTime24, 'ar');
-                            const conflictList = newMedConflict.warnings.join('، ');
-                            onOpenAssistantWithPrompt(
-                              `عاوز أضيف «${medLabel}»${newMedNote.trim() ? ` (${newMedNote.trim()})` : ''} الساعة ${pickedLabel}، بس النظام نبّهني إن فيه تعارض: ${conflictList}. ناقشني واقترح أنسب ميعاد علمي متوافق مع الصلاة والنوم والصيام والتقويم، ولما أوافق احجزه في التقويم.`
-                            );
-                          }}
-                          className="px-2.5 py-1 rounded-lg border border-amber-300/50 bg-black/50 text-amber-200 hover:text-white text-[10px] font-semibold cursor-pointer"
-                        >
-                          💬 ناقش أنسب موعد مع Gemini
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.08]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const medLabel = newMedName.trim() || 'علاج أو مكمل جديد';
+                      const pickedLabel = formatTime24To12h(newMedCurrentTime24, 'ar');
+                      onOpenAssistantWithPrompt(
+                        `هل ميعاد الساعة ${pickedLabel} مناسب لـ «${medLabel}»${newMedNote.trim() ? ` (${newMedNote.trim()})` : ''}؟ راجع توافقه مع الصلوات والنوم والصيام وجدولي في التقويم وأخبرني علمياً قبل تثبيته.`
+                      );
+                    }}
+                    className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
+                  >
+                    اسأل Gemini
+                  </button>
 
-                  {/* Specific days selector (empty = every day) */}
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between text-[10px] text-zinc-400">
-                      <span>الأيام (اتركها فارغة لكل يوم، أو اختر أياماً محددة مثل الجيم):</span>
-                      {newMedDaysOfWeek.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setNewMedDaysOfWeek([])}
-                          className="text-[#7FFFD4] hover:underline cursor-pointer"
-                        >
-                          كل يوم
-                        </button>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {ARABIC_WEEKDAYS.map((day) => {
-                        const selected = newMedDaysOfWeek.includes(day.id);
-                        return (
-                          <button
-                            key={day.id}
-                            type="button"
-                            onClick={() =>
-                              setNewMedDaysOfWeek((prev) =>
-                                prev.includes(day.id)
-                                  ? prev.filter((d) => d !== day.id)
-                                  : [...prev, day.id].sort((a, b) => a - b)
-                              )
-                            }
-                            className={`px-2 py-1 rounded-lg border text-[10px] cursor-pointer ${
-                              selected
-                                ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
-                                : 'border-white/10 text-zinc-400 hover:text-white'
-                            }`}
-                          >
-                            {day.shortAr}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Auto-book linked event in Google Calendar */}
-                  {calendarConnected && (
-                    <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer select-none pt-0.5">
-                      <input
-                        type="checkbox"
-                        checked={newMedSyncCalendar}
-                        onChange={(e) => setNewMedSyncCalendar(e.target.checked)}
-                        className="accent-[#7FFFD4] rounded"
-                      />
-                      <span>حجز موعد تلقائياً في Google Calendar (💊 ⏰)</span>
-                    </label>
-                  )}
-
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                  <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => {
-                        const medLabel = newMedName.trim() || 'علاج أو مكمل جديد';
-                        const pickedLabel = formatTime24To12h(newMedCurrentTime24, 'ar');
-                        onOpenAssistantWithPrompt(
-                          `هل ميعاد الساعة ${pickedLabel} مناسب لـ «${medLabel}»${newMedNote.trim() ? ` (${newMedNote.trim()})` : ''}؟ راجع توافقه مع الصلوات والنوم والصيام وجدولي في التقويم وأخبرني علمياً قبل تثبيته.`
-                        );
-                      }}
-                      className="text-[11px] text-[#7FFFD4] hover:underline cursor-pointer"
+                      onClick={() => setShowAddMedForm(false)}
+                      className="px-2.5 py-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
                     >
-                      💬 اسأل Gemini عن توافق الموعد
+                      إلغاء
                     </button>
-
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setShowAddMedForm(false)}
-                        className="px-2.5 py-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
-                      >
-                        إلغاء
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={!newMedName.trim()}
-                        className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold disabled:opacity-40 cursor-pointer"
-                      >
-                        حفظ
-                      </button>
-                    </div>
+                    <button
+                      type="submit"
+                      disabled={!newMedName.trim()}
+                      className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold disabled:opacity-40 cursor-pointer"
+                    >
+                      حفظ
+                    </button>
                   </div>
-                </form>
-              )}
+                </div>
+              </form>
+            )}
 
-              <div className="space-y-2">
+            {medications.length === 0 ? (
+              <div className="py-4 text-center text-xs text-zinc-500">
+                لا توجد علاجات أو مكملات مضافة بعد.
+              </div>
+            ) : (
+              <div className="divide-y divide-white/[0.06]">
                 {medications.map((med) => {
                   const doseTimes =
                     med.times24 && med.times24.length > 0
@@ -3988,46 +3442,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   return (
                     <div
                       key={med.id}
-                      className={`rounded-xl border p-2.5 text-xs transition-colors ${
-                        takenToday
-                          ? 'border-[#4ADE80]/45 bg-[#4ADE80]/10 text-[#4ADE80]'
-                          : 'border-white/10 bg-black/45 text-zinc-200'
+                      className={`py-3 first:pt-0 last:pb-0 text-xs transition-opacity ${
+                        takenToday ? 'opacity-85' : ''
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <button
                           type="button"
                           onClick={() => onToggleMedication(med.id)}
-                          className="flex items-center gap-1.5 cursor-pointer text-right min-w-0 flex-1"
+                          className="flex items-center gap-2 cursor-pointer text-right min-w-0 flex-1"
                           title={med.doseNote || undefined}
                         >
-                          <span>💊</span>
-                          <span className="font-semibold truncate">{med.name}</span>
+                          <span className={`font-semibold truncate ${takenToday ? 'text-[#4ADE80]' : 'text-zinc-100'}`}>
+                            {med.name}
+                          </span>
                           {doseTimes.length === 1 && (
-                            <span className="font-mono-tabular text-[10px] opacity-80 shrink-0">
+                            <span className="font-mono-tabular text-[11px] text-zinc-400 shrink-0">
                               · {formatTime24To12h(doseTimes[0], language)}
                             </span>
                           )}
                           {daysLabel && (
-                            <span className="text-[10px] text-zinc-400 shrink-0">
+                            <span className="text-[10px] text-zinc-500 shrink-0">
                               ({daysLabel})
                             </span>
                           )}
                         </button>
-                        <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex items-center gap-1 shrink-0">
                           <button
                             type="button"
                             onClick={() => onToggleMedication(med.id)}
                             aria-pressed={takenToday}
-                            title={
-                              takenToday
-                                ? `تم تسجيل كل جرعات «${med.name}» اليوم — اضغط للتراجع`
-                                : `تسجيل كل جرعات «${med.name}» لليوم بضغطة واحدة`
-                            }
                             className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
                               takenToday
-                                ? 'border-[#4ADE80] bg-[#4ADE80] text-black shadow-[0_0_12px_rgba(74,222,128,0.28)]'
-                                : 'border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4] hover:bg-[#7FFFD4] hover:text-black'
+                                ? 'border-[#4ADE80] bg-[#4ADE80] text-black'
+                                : 'border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4] hover:text-black'
                             }`}
                           >
                             {takenToday ? (
@@ -4037,20 +3485,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             )}
                             <span>
                               {takenToday
-                                ? 'تم اليوم'
+                                ? 'تم'
                                 : doseTimes.length > 1 && takenDoses.length > 0
-                                  ? `تم اليوم (${takenDoses.length}/${doseTimes.length})`
+                                  ? `${takenDoses.length}/${doseTimes.length}`
                                   : 'تم اليوم'}
                             </span>
                           </button>
                           <button
                             type="button"
-                            onClick={() => onDeleteMedication(med.id)}
-                            className="p-1 text-zinc-500 hover:text-rose-400 cursor-pointer shrink-0"
+                            onClick={() => {
+                              setPendingDeleteMed(med);
+                              setDeleteMedStep(1);
+                              setDeleteMedConfirmed(false);
+                            }}
+                            className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0 transition-colors"
                             title={`حذف ${med.name}`}
                             aria-label={`حذف ${med.name}`}
                           >
-                            <X className="w-3.5 h-3.5" />
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       </div>
@@ -4064,10 +3516,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 key={t24}
                                 type="button"
                                 onClick={() => onToggleMedication(med.id, t24)}
-                                className={`px-2 py-1 rounded-lg border font-mono-tabular text-[10px] cursor-pointer transition-colors ${
+                                className={`px-2 py-0.5 rounded-md border font-mono-tabular text-[10px] cursor-pointer transition-colors ${
                                   doseDone
-                                    ? 'border-[#4ADE80]/50 bg-[#4ADE80]/20 text-[#4ADE80] font-bold'
-                                    : 'border-white/15 bg-black/60 text-zinc-300 hover:border-[#7FFFD4]/50'
+                                    ? 'border-[#4ADE80]/45 bg-[#4ADE80]/15 text-[#4ADE80] font-bold'
+                                    : 'border-white/10 bg-white/[0.02] text-zinc-300 hover:border-[#7FFFD4]/45'
                                 }`}
                               >
                                 {formatTime24To12h(t24, language)} {doseDone ? '✓' : '○'}
@@ -4078,8 +3530,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       )}
 
                       {doseTimes.length === 0 && (
-                        <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-zinc-400">
-                          <span>بدون ميعاد ثابت بعد</span>
+                        <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                          <span>بدون ميعاد محدد</span>
                           <button
                             type="button"
                             onClick={() =>
@@ -4087,15 +3539,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 `عاوز أحدد أنسب ميعاد علمي لـ «${med.name}» — راجع تقويمي والذاكرة ولو مش متسجل ابحث علمياً واقترح عليّ التوقيت الأفضل قبل التثبيت`
                               )
                             }
-                            className="text-[#7FFFD4] hover:underline font-semibold cursor-pointer"
+                            className="text-[#7FFFD4] hover:underline font-medium cursor-pointer"
                           >
-                            اسأل Gemini عن الميعاد العلمي ←
+                            اسأل Gemini ←
                           </button>
                         </div>
                       )}
 
-                      {/* 7-Day Adherence Strip (click any day to mark taken / missed) */}
-                      <div className="mt-2 flex items-center justify-between gap-1.5 pt-2 border-t border-white/[0.06]">
+                      {/* Compact 7-Day Adherence Strip + Stock Action */}
+                      <div className="mt-2 flex items-center justify-between gap-1.5">
                         <div className="flex items-center gap-1">
                           {last7CairoDays.map((day) => {
                             const scheduled =
@@ -4109,7 +3561,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               return (
                                 <span
                                   key={day.dateIso}
-                                  className="w-6 h-6 rounded-md border border-white/5 bg-white/[0.02] text-[9px] text-zinc-600 flex items-center justify-center"
+                                  className="w-6 h-5 rounded border border-white/[0.05] text-[9px] text-zinc-600 flex items-center justify-center"
                                   title={`${day.dateIso} — راحة`}
                                 >
                                   –
@@ -4121,25 +3573,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 key={day.dateIso}
                                 type="button"
                                 onClick={() => onToggleMedicationDate(med.id, day.dateIso)}
-                                className={`h-6 min-w-[24px] px-1 rounded-md border text-[9px] font-bold flex items-center justify-center cursor-pointer transition-colors ${
+                                className={`h-5 min-w-[22px] px-1 rounded border text-[9px] font-bold flex items-center justify-center cursor-pointer transition-colors ${
                                   wasTaken
-                                    ? 'border-[#4ADE80]/50 bg-[#4ADE80]/20 text-[#4ADE80]'
+                                    ? 'border-[#4ADE80]/40 bg-[#4ADE80]/15 text-[#4ADE80]'
                                     : day.isToday
-                                      ? 'border-amber-400/50 bg-amber-400/15 text-amber-200'
-                                      : 'border-rose-500/35 bg-rose-500/10 text-rose-300 hover:border-rose-400'
+                                      ? 'border-amber-400/40 bg-amber-400/12 text-amber-200'
+                                      : 'border-rose-500/30 bg-rose-500/[0.08] text-rose-300/85 hover:border-rose-400'
                                 }`}
                                 title={
                                   wasTaken
-                                    ? `${day.dateIso}: تم الأخذ ✓ (اضغط للتعديل)`
+                                    ? `${day.dateIso}: تم ✓`
                                     : day.isToday
-                                      ? `اليوم: لم يؤخذ بعد (اضغط للتأكيد)`
-                                      : `${day.dateIso}: يوم فائت × (اضغط لتسجيل الأخذ)`
+                                      ? 'اليوم: لم يؤخذ بعد'
+                                      : `${day.dateIso}: فائت`
                                 }
                               >
                                 {day.isToday
                                   ? wasTaken
-                                    ? 'اليوم ✓'
-                                    : 'اليوم ○'
+                                    ? '✓'
+                                    : '○'
                                   : wasTaken
                                     ? `${day.shortAr}✓`
                                     : `${day.shortAr}×`}
@@ -4147,6 +3599,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             );
                           })}
                         </div>
+
                         <button
                           type="button"
                           onClick={() => {
@@ -4162,19 +3615,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               setEditStockAlertDays(med.refillAlertDays ?? 3);
                             }
                           }}
-                          className="text-[10px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer shrink-0"
-                          title="إدارة مخزون الجرعات وتنبيه إعادة الشراء"
+                          className="text-[10px] text-zinc-500 hover:text-[#7FFFD4] cursor-pointer shrink-0 transition-colors"
                         >
                           {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
-                            ? 'تعديل المخزون'
-                            : '+ تتبع المخزون'}
+                            ? 'المخزون'
+                            : '+ مخزون'}
                         </button>
                       </div>
 
-                      {/* Stock status & lead-time indicator */}
                       {((typeof med.remainingDoses === 'number' && med.remainingDoses >= 0) ||
                         Boolean(med.courseEndDate)) && (
-                        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-mono-tabular text-zinc-400">
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-mono-tabular text-zinc-500">
                           {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0 && (() => {
                             const dosesPerDay = Math.max(1, doseTimes.length || 1);
                             const daysLeft = med.remainingDoses / dosesPerDay;
@@ -4187,48 +3638,45 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                     ? 'text-rose-400 font-semibold'
                                     : isLowStock
                                       ? 'text-amber-300 font-semibold'
-                                      : 'text-zinc-400'
+                                      : 'text-zinc-500'
                                 }
                               >
                                 {med.remainingDoses === 0
-                                  ? 'نفدت العبوة (0 جرعة) · اشترِ جديد'
-                                  : `متبقٍ ${med.remainingDoses}${med.totalDoses && med.totalDoses > 0 ? `/${med.totalDoses}` : ''} جرعة (~${Math.ceil(daysLeft)} ي · تنبيه قبل ${alertDays} ي)`}
+                                  ? 'نفدت العبوة'
+                                  : `متبقٍ ${med.remainingDoses} جرعة (~${Math.ceil(daysLeft)} ي)`}
                               </span>
                             );
                           })()}
                           {med.courseEndDate && (
                             <span
                               className={
-                                med.courseEndDate < todayCairoIso
-                                  ? 'text-amber-300'
-                                  : 'text-zinc-500'
+                                med.courseEndDate < todayCairoIso ? 'text-amber-300' : 'text-zinc-500'
                               }
                             >
                               {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
                                 ? '· '
                                 : ''}
                               {med.courseEndDate < todayCairoIso
-                                ? `انتهى الكورس (${med.courseEndDate})`
-                                : `نهاية الكورس ${med.courseEndDate}`}
+                                ? `انتهى ${med.courseEndDate}`
+                                : `حتى ${med.courseEndDate}`}
                             </span>
                           )}
                         </div>
                       )}
 
-                      {/* Inline Stock & Refill Alert Lead-Time Editor */}
                       {editingStockMedId === med.id && (
-                        <div className="mt-2 rounded-lg border border-[#7FFFD4]/30 bg-black/75 p-2 space-y-2 text-[11px]">
+                        <div className="mt-2 rounded-lg border border-[#7FFFD4]/25 bg-black/75 p-2.5 space-y-2 text-[11px]">
                           <div className="flex flex-wrap items-center gap-2">
-                            <label className="text-zinc-400">الجرعات المتبقية:</label>
+                            <label className="text-zinc-400">المتبقي:</label>
                             <input
                               type="number"
                               min={0}
                               max={500}
                               value={editStockDosesInput}
                               onChange={(e) => setEditStockDosesInput(e.target.value)}
-                              className="w-20 rounded-lg border border-white/15 bg-black px-2 py-1 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                              className="w-18 rounded-lg border border-white/15 bg-black px-2 py-1 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
                             />
-                            <span className="text-zinc-400">تنبيه قبل:</span>
+                            <span className="text-zinc-400">تنبيه:</span>
                             {[2, 3, 5].map((d) => (
                               <button
                                 key={d}
@@ -4264,7 +3712,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               }}
                               className="px-2.5 py-0.5 rounded-lg bg-[#7FFFD4] text-black font-bold cursor-pointer"
                             >
-                              حفظ المخزون ✓
+                              حفظ ✓
                             </button>
                           </div>
                         </div>
@@ -4273,21 +3721,229 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   );
                 })}
               </div>
+            )}
 
-              <MedicationConsumptionChart
-                medications={medications}
-                todayCairoIso={todayCairoIso}
-              />
-            </div>
-
-            <HydrationWeeklyChart
-              hydrationHistory={hydrationHistory}
-              weatherInfo={weatherInfo}
-              cupSizeMl={lifeProfile.cupSizeMl}
-            />
+            {/* On-Demand 30-Day Consumption & Refill Forecast Analytics */}
+            {medications.length > 0 && (
+              <div className="pt-2 border-t border-white/[0.06]">
+                <button
+                  type="button"
+                  onClick={() => setShowMedChart((v) => !v)}
+                  className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1.5 cursor-pointer transition-colors"
+                >
+                  <BarChart3 className="w-3.5 h-3.5" />
+                  <span>تحليل 30 يوم وتوقع الشراء</span>
+                  {showMedChart ? (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                </button>
+                {showMedChart && (
+                  <MedicationConsumptionChart
+                    medications={medications}
+                    todayCairoIso={todayCairoIso}
+                  />
+                )}
+              </div>
+            )}
           </section>
 
-          {/* Compact Habits & Collapsible Periodic Maintenance Card (Daily Wird shown ONLY if user has it) */}
+          {/* 3. Sleep & Suhoor Rhythm (Checked morning/night — positioned cleanly below Water & Meds) */}
+          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                <Moon className="w-4 h-4 text-[#7FFFD4]" />
+                <span>النوم والسحور</span>
+              </h2>
+              <button
+                type="button"
+                onClick={onOpenLifeProfile}
+                className="text-xs text-zinc-400 hover:text-[#7FFFD4] cursor-pointer transition-colors"
+              >
+                الثوابت
+              </button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div
+                className={`rounded-xl border p-2.5 ${
+                  dailyRhythmPlan.nightlyRecoveryMin > 0
+                    ? 'border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.06]'
+                    : 'border-white/[0.07] bg-white/[0.02]'
+                }`}
+              >
+                <div className="text-[10px] text-zinc-400">النوم</div>
+                <div className="font-mono-tabular text-xs font-bold text-white mt-0.5">
+                  {formatMinutes12h(dailyRhythmPlan.bedtimeMin, language)}
+                </div>
+                <div
+                  className={`text-[10px] mt-0.5 ${
+                    dailyRhythmPlan.nightlyRecoveryMin > 0 ? 'text-[#7FFFD4]' : 'text-zinc-500'
+                  }`}
+                >
+                  {dailyRhythmPlan.nightlyRecoveryMin > 0
+                    ? `-${dailyRhythmPlan.nightlyRecoveryMin} د تعويض`
+                    : formatDurationAr(dailyRhythmPlan.coreNightSleepMin)}
+                </div>
+              </div>
+
+              <div
+                className={`rounded-xl border p-2.5 ${
+                  dailyRhythmPlan.suhoorStartMin !== null
+                    ? 'border-amber-400/35 bg-amber-400/[0.06]'
+                    : 'border-white/[0.07] bg-white/[0.02]'
+                }`}
+              >
+                <div className="text-[10px] text-zinc-400">
+                  {dailyRhythmPlan.suhoorStartMin !== null ? 'سحور غداً' : 'الاستيقاظ'}
+                </div>
+                <div
+                  className={`font-mono-tabular text-xs font-bold mt-0.5 ${
+                    dailyRhythmPlan.suhoorStartMin !== null ? 'text-amber-300' : 'text-[#7FFFD4]'
+                  }`}
+                >
+                  {formatMinutes12h(dailyRhythmPlan.wakeMin, language)}
+                </div>
+                <div className="text-[10px] text-zinc-500 mt-0.5">
+                  {dailyRhythmPlan.suhoorStartMin !== null
+                    ? `قبل الفجر بـ ${lifeProfile.suhoorLeadMinutes} د`
+                    : 'قبل الفجر بـ 15 د'}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-2.5">
+                {dailyRhythmPlan.qailulahStartMin !== null ? (
+                  <>
+                    <div className="text-[10px] text-zinc-400">القيلولة</div>
+                    <div className="font-mono-tabular text-xs font-bold text-[#4ADE80] mt-0.5">
+                      {formatMinutes12h(dailyRhythmPlan.qailulahStartMin, language)}
+                    </div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5">
+                      {dailyRhythmPlan.qailulahDurationMin} د
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-[10px] text-zinc-400">الشروق · الغروب</div>
+                    <div className="font-mono-tabular text-[11px] font-bold text-[#4ADE80] mt-0.5">
+                      {formatMinutes12h(dailyRhythmPlan.sunriseMin, language)}
+                    </div>
+                    <div className="font-mono-tabular text-[10px] text-zinc-500 mt-0.5">
+                      {formatMinutes12h(dailyRhythmPlan.maghribMin, language)}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {dailyRhythmPlan.conflictWarningAr && (
+              <div className="rounded-lg border border-amber-400/30 bg-amber-400/[0.08] px-3 py-2 text-[11px] text-amber-200">
+                ⚠️ {dailyRhythmPlan.conflictWarningAr}
+              </div>
+            )}
+
+            {/* Sleep Debt Recovery or Clean 1-Line Morning Check-In */}
+            {dailyRhythmPlan.sleepDebtMinutes > 0 ? (
+              <div className="rounded-xl border border-amber-400/30 bg-amber-400/[0.06] p-3 space-y-2 text-[11px]">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-bold text-amber-200">
+                    عجز نوم: {formatDurationAr(dailyRhythmPlan.sleepDebtMinutes)}
+                  </span>
+                  {dailyRhythmPlan.nightlyRecoveryMin > 0 && (
+                    <span className="font-mono-tabular text-[10px] text-[#7FFFD4]">
+                      تبكير الليلة -{dailyRhythmPlan.nightlyRecoveryMin} د
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => onLogSleepQuality('good')}
+                    className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold text-[10px] hover:bg-[#66eec2] cursor-pointer"
+                  >
+                    نمت كويس (-{Math.max(dailyRhythmPlan.nightlyRecoveryMin, 30)}د)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onLogSleepQuality('reset')}
+                    className="px-2.5 py-1 rounded-lg border border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80] font-semibold text-[10px] hover:bg-[#4ADE80]/20 cursor-pointer"
+                  >
+                    تصفير ✓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onLogSleepQuality('short_30')}
+                    className="px-2.5 py-1 rounded-lg border border-white/10 text-zinc-300 text-[10px] hover:text-white cursor-pointer"
+                  >
+                    +30 د نقص
+                  </button>
+                  {dailyRhythmPlan.sleepDebtMinutes >= 60 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onOpenAssistantWithPrompt(
+                          `عندي رصيد نوم ناقص ${dailyRhythmPlan.sleepDebtMinutes} دقيقة — فضّي لي مكان لقيلولة تعويضية 30 دقيقة النهاردة في التقويم بدون المساس بالصلاة`
+                        )
+                      }
+                      className="px-2.5 py-1 rounded-lg border border-indigo-400/35 bg-indigo-400/12 text-indigo-200 font-semibold text-[10px] hover:bg-indigo-400/20 cursor-pointer"
+                    >
+                      قيلولة بـ Gemini
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : lifeProfile.sleepDebtLogDateKey === todayCairoIso && !showSleepCheckinEdit ? (
+              <div className="pt-2 border-t border-white/[0.06] flex items-center justify-between gap-2 text-[11px]">
+                <span className="text-[#4ADE80]">✓ نومك متوازن اليوم</span>
+                <button
+                  type="button"
+                  onClick={() => setShowSleepCheckinEdit(true)}
+                  className="text-zinc-500 hover:text-zinc-300 text-[10px] cursor-pointer"
+                >
+                  تعديل
+                </button>
+              </div>
+            ) : (
+              <div className="pt-2 border-t border-white/[0.06] space-y-2 text-[11px]">
+                <div className="text-zinc-400 font-medium">كيف كان نومك الليلة الماضية؟</div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onLogSleepQuality('good');
+                      setShowSleepCheckinEdit(false);
+                    }}
+                    className="py-1.5 px-2 rounded-lg border border-[#4ADE80]/30 bg-[#4ADE80]/[0.07] text-[#4ADE80] font-semibold text-[10px] hover:bg-[#4ADE80]/15 cursor-pointer"
+                  >
+                    ممتاز ✓
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onLogSleepQuality('short_30');
+                      setShowSleepCheckinEdit(false);
+                    }}
+                    className="py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[10px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
+                  >
+                    أقل (-30د)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onLogSleepQuality('short_60');
+                      setShowSleepCheckinEdit(false);
+                    }}
+                    className="py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[10px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
+                  >
+                    سهر (-60د)
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* 4. Compact Streaks & Periodic Maintenance (Quiet Footer Card) */}
           <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
@@ -4296,17 +3952,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   {calendarConnected && hasDailyWirdHabit
                     ? t(language, 'dualStreaksTitle')
                     : language === 'ar'
-                      ? 'سلسلة الالتزام اليومي'
-                      : 'Daily Commitment Streak'}
+                      ? 'سلسلة الالتزام'
+                      : 'Streaks'}
                 </span>
               </h2>
               {calendarConnected && periodicRituals.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setShowPeriodicRituals((v) => !v)}
-                  className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer"
+                  className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
                 >
-                  <span>المهام الدورية ({periodicRituals.length})</span>
+                  <span>الدورية ({periodicRituals.length})</span>
                   {showPeriodicRituals ? (
                     <ChevronUp className="w-3.5 h-3.5" />
                   ) : (
@@ -4316,28 +3972,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               )}
             </div>
 
-            <div className={`grid gap-3 ${calendarConnected && hasDailyWirdHabit ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            <div className={`grid gap-2.5 ${calendarConnected && hasDailyWirdHabit ? 'grid-cols-2' : 'grid-cols-1'}`}>
               {calendarConnected && hasDailyWirdHabit && (
                 <button
                   type="button"
                   onClick={onToggleDailyCommitmentStreak}
                   className={`rounded-xl border p-3 text-right transition-colors cursor-pointer ${
                     streaks.dailyCommitmentDoneToday
-                      ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/[0.08]'
-                      : 'border-white/10 bg-black/40 hover:border-white/25'
+                      ? 'border-[#7FFFD4]/40 bg-[#7FFFD4]/[0.07]'
+                      : 'border-white/[0.07] bg-white/[0.02] hover:border-white/20'
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-base">📖 🌱</span>
+                    <span className="text-sm">📖</span>
                     <span className="font-mono-tabular text-base font-bold text-[#7FFFD4]">
                       {streaks.dailyCommitmentDays}
                     </span>
                   </div>
-                  <div className="text-xs font-semibold text-white mt-1">
-                    الورد والالتزام اليومي
-                  </div>
+                  <div className="text-xs font-semibold text-white mt-1">الورد اليومي</div>
                   <div className="text-[10px] text-zinc-400 mt-0.5">
-                    {streaks.dailyCommitmentDoneToday ? 'مكتمل اليوم ✓' : 'تأكيد الإنجاز'}
+                    {streaks.dailyCommitmentDoneToday ? 'مكتمل ✓' : 'تأكيد'}
                   </div>
                 </button>
               )}
@@ -4345,30 +3999,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div
                 className={`rounded-xl border p-3 text-right ${
                   streaks.waterTargetDoneToday
-                    ? 'border-[#4ADE80]/45 bg-[#4ADE80]/[0.08]'
-                    : 'border-white/10 bg-black/40'
+                    ? 'border-[#4ADE80]/35 bg-[#4ADE80]/[0.07]'
+                    : 'border-white/[0.07] bg-white/[0.02]'
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-base">💧 🥤</span>
+                  <span className="text-sm">💧</span>
                   <span className="font-mono-tabular text-base font-bold text-[#4ADE80]">
                     {calendarConnected ? streaks.waterTargetDays : 0}
                   </span>
                 </div>
-                <div className="text-xs font-semibold text-white mt-1">
-                  سلسلة الترطيب
-                </div>
+                <div className="text-xs font-semibold text-white mt-1">سلسلة الماء</div>
                 <div className="font-mono-tabular text-[10px] text-zinc-400 mt-0.5">
                   {calendarConnected
-                    ? `${hydrationToday.cupsLogged}/${hydrationToday.targetCups} (${waterPct}%)`
-                    : '0/0 (0%)'}
+                    ? `${hydrationToday.cupsLogged}/${hydrationToday.targetCups} · ${waterPct}%`
+                    : '0/0'}
                 </div>
               </div>
             </div>
 
             {(showPeriodicRituals ||
               periodicRituals.some((r) => r.daysSinceLast >= r.intervalDays)) && (
-              <div className="divide-y divide-white/[0.06] pt-1 border-t border-white/10">
+              <div className="divide-y divide-white/[0.06] pt-1 border-t border-white/[0.07]">
                 {periodicRituals.map((rit) => {
                   const dueSoon = rit.daysSinceLast >= rit.intervalDays;
                   return (
@@ -4382,8 +4034,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <div className="font-semibold text-white truncate">
                             {language === 'ar' ? rit.titleAr : rit.titleEn}
                           </div>
-                          <div className="text-[11px] text-zinc-400 font-mono-tabular">
-                            {rit.timeLabelAr} · منذ {rit.daysSinceLast} / {rit.intervalDays} يوم
+                          <div className="text-[11px] text-zinc-500 font-mono-tabular">
+                            منذ {rit.daysSinceLast} / {rit.intervalDays} يوم
                           </div>
                         </div>
                       </div>
@@ -4393,10 +4045,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer shrink-0 ${
                           dueSoon
                             ? 'bg-[#7FFFD4] text-black'
-                            : 'border border-white/15 text-zinc-300 hover:border-[#4ADE80]/50'
+                            : 'border border-white/10 text-zinc-300 hover:border-[#4ADE80]/45'
                         }`}
                       >
-                        تم الآن ✓
+                        تم ✓
                       </button>
                     </div>
                   );
@@ -4804,6 +4456,159 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 إلغاء
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2-Stage Safe Confirmation Modal: Prevent Accidental Medication Deletion */}
+      {pendingDeleteMed && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/85 backdrop-blur-sm p-2 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="تأكيد حذف العلاج على مرحلتين"
+        >
+          <div className="w-full max-w-md rounded-t-3xl sm:rounded-2xl border border-rose-500/40 bg-[#0A0C10] p-4 sm:p-5 space-y-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-rose-400 flex items-center gap-2">
+                  <Trash2 className="w-4 h-4 shrink-0" />
+                  <span>
+                    {deleteMedStep === 1
+                      ? 'تأكيد حذف العلاج — المرحلة 1 من 2'
+                      : 'التأكيد النهائي — المرحلة 2 من 2'}
+                  </span>
+                </h3>
+                <p className="mt-1 text-[11px] text-zinc-400">
+                  حماية ضد الحذف بالخطأ من قائمتك اليومية والسحابة.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingDeleteMed(null);
+                  setDeleteMedStep(1);
+                  setDeleteMedConfirmed(false);
+                }}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer"
+                aria-label="إغلاق"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-black/60 p-3.5 text-xs space-y-1.5">
+              <div className="font-bold text-white flex items-center gap-1.5">
+                <span>💊</span>
+                <span>{pendingDeleteMed.name}</span>
+              </div>
+              {(() => {
+                const times =
+                  pendingDeleteMed.times24 && pendingDeleteMed.times24.length > 0
+                    ? pendingDeleteMed.times24
+                    : pendingDeleteMed.time24
+                      ? [pendingDeleteMed.time24]
+                      : [];
+                return times.length > 0 ? (
+                  <div className="font-mono-tabular text-[11px] text-zinc-300">
+                    المواعيد: {times.map((t24) => formatTime24To12h(t24, language)).join(' · ')}
+                  </div>
+                ) : null;
+              })()}
+              {typeof pendingDeleteMed.remainingDoses === 'number' &&
+                pendingDeleteMed.remainingDoses >= 0 && (
+                  <div className="font-mono-tabular text-[11px] text-zinc-400">
+                    الجرعات المتبقية المسجلة: {pendingDeleteMed.remainingDoses}
+                  </div>
+                )}
+            </div>
+
+            {deleteMedStep === 1 ? (
+              <div className="space-y-2.5">
+                <p className="text-xs text-zinc-300 leading-relaxed">
+                  هل تريد حذف هذا العلاج نهائياً وإيقاف جميع تنبيهاته اليومية؟ يمكنك أيضاً ترك شات Gemini يراجع الحذف ويزيل حدثه من التقويم معك.
+                </p>
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteMedStep(2);
+                      setDeleteMedConfirmed(false);
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl bg-rose-500/20 border border-rose-500/50 text-rose-300 text-xs font-bold hover:bg-rose-500/30 cursor-pointer transition-colors"
+                  >
+                    متابعة للحذف (المرحلة 1 من 2) ←
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const medName = pendingDeleteMed.name;
+                      setPendingDeleteMed(null);
+                      setDeleteMedStep(1);
+                      setDeleteMedConfirmed(false);
+                      onOpenAssistantWithPrompt(
+                        `احذف علاج «${medName}» من قائمة العلاجات والمكملات نهائياً واحذف حدثه المرتبط في Google Calendar لو موجود`
+                      );
+                    }}
+                    className="w-full py-2.5 px-4 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[#7FFFD4] text-xs font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer transition-colors"
+                  >
+                    اطلب من شات Gemini الحذف والمراجعة
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingDeleteMed(null);
+                      setDeleteMedStep(1);
+                      setDeleteMedConfirmed(false);
+                    }}
+                    className="w-full py-2 px-4 rounded-xl border border-white/15 text-xs text-zinc-300 hover:bg-white/10 cursor-pointer"
+                  >
+                    إلغاء — الاحتفاظ بالعلاج
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <label className="flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/[0.06] p-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={deleteMedConfirmed}
+                    onChange={(e) => setDeleteMedConfirmed(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-rose-500 cursor-pointer shrink-0"
+                  />
+                  <span className="text-xs text-zinc-200 leading-relaxed">
+                    نعم، أؤكد حذف <strong className="text-white">«{pendingDeleteMed.name}»</strong> نهائياً من قائمتي والسحابة ولن يتم التذكير به مجدداً.
+                  </span>
+                </label>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!deleteMedConfirmed}
+                    onClick={() => {
+                      const targetId = pendingDeleteMed.id;
+                      setPendingDeleteMed(null);
+                      setDeleteMedStep(1);
+                      setDeleteMedConfirmed(false);
+                      onDeleteMedication(targetId);
+                    }}
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-rose-500 text-white text-xs font-bold hover:bg-rose-600 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                  >
+                    تأكيد الحذف النهائي
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteMedStep(1);
+                      setDeleteMedConfirmed(false);
+                    }}
+                    className="py-2.5 px-4 rounded-xl border border-white/15 text-xs text-zinc-300 hover:bg-white/10 cursor-pointer"
+                  >
+                    رجوع
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

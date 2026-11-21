@@ -21,11 +21,11 @@
         },
         "cupsLogged": {
           "type": "integer",
-          "description": "Water cups logged today (0 to 30)."
+          "description": "Water cups logged today (0 to 40)."
         },
         "targetCups": {
           "type": "integer",
-          "description": "Daily hydration target in cups (1 to 30), dynamically calculated from weight, fixed height, cup ml, and fasting status."
+          "description": "Daily hydration target in cups (1 to 40), dynamically calculated from weight, fixed height, cup ml, and fasting status."
         },
         "hydrationWeeklyCounts": {
           "type": "array",
@@ -78,6 +78,10 @@
         "phoneBattery": {
           "type": "object",
           "description": "Optional real-time synced mobile battery telemetry (levelPct 0..100, charging bool, chargeLimitPct 60..100, updatedAtMs int, deviceLabel string 1..40) for live desktop charging indicator and charge-limit alert."
+        },
+        "uiPrefs": {
+          "type": "object",
+          "description": "Optional cross-device UI preferences (selectedLogoId string 1..40, capsuleOrientation horizontal|vertical, capsuleSize sm|md|lg)."
         },
         "createdAt": {
           "type": "string",

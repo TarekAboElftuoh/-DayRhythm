@@ -502,6 +502,14 @@ namespace DayRhythm
         private void HandleUpdateAvailable(ReleaseUpdateInfo info)
         {
             _pendingUpdate = info;
+
+            // Automatic Silent Hot Update on launch when lightweight Web OTA zip is available (no EXE reinstall!)
+            if (info != null && !string.IsNullOrWhiteSpace(info.WebOtaZipUrl) && !_isDownloadingUpdate)
+            {
+                _ = InstallPendingUpdateAsync();
+                return;
+            }
+
             if (_updateMenuItem != null)
             {
                 _updateMenuItem.Text = $"🚀 تثبيت التحديث الجديد ({info.Tag})";
@@ -605,6 +613,24 @@ namespace DayRhythm
                     {
                         _capsuleMenuItem.Checked = isVisible;
                     }
+                }),
+                onQuickWater: () => RunOnUi(() =>
+                {
+                    if (_webView?.CoreWebView2 != null)
+                    {
+                        _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                            "window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));"
+                        );
+                    }
+                }),
+                onQuickMedication: () => RunOnUi(() =>
+                {
+                    if (_webView?.CoreWebView2 != null)
+                    {
+                        _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                            "window.dispatchEvent(new CustomEvent('dayrhythm:quick-med-confirm'));"
+                        );
+                    }
                 })
             );
             if (_settings.ShowDesktopCapsule)
@@ -633,6 +659,37 @@ namespace DayRhythm
                         {
                             _ = _webView.CoreWebView2.ExecuteScriptAsync(
                                 "window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));"
+                            );
+                        }
+                    }),
+                    onMedicationConfirmed: (medId, doseTime24) => RunOnUi(() =>
+                    {
+                        if (_webView?.CoreWebView2 != null)
+                        {
+                            string detailJson = JsonSerializer.Serialize(new { medicationId = medId ?? "", doseTime24 = doseTime24 ?? "" });
+                            _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                                $"window.dispatchEvent(new CustomEvent('dayrhythm:medication-confirmed', {{ detail: {detailJson} }}));"
+                            );
+                        }
+                    }),
+                    onSnoozed: (alertPayload, minutes) => RunOnUi(() =>
+                    {
+                        if (_webView?.CoreWebView2 != null)
+                        {
+                            string detailJson = JsonSerializer.Serialize(new
+                            {
+                                id = alertPayload?.id ?? "",
+                                emoji = alertPayload?.emoji ?? "🔔",
+                                title = alertPayload?.title ?? "",
+                                sourceLabel = alertPayload?.sourceLabel ?? "تنبيه مؤجّل",
+                                category = alertPayload?.category ?? "general",
+                                isHydration = alertPayload?.isHydration ?? false,
+                                medicationId = alertPayload?.medicationId ?? "",
+                                medicationDoseTime24 = alertPayload?.medicationDoseTime24 ?? "",
+                                minutes = minutes > 0 ? minutes : 15,
+                            });
+                            _ = _webView.CoreWebView2.ExecuteScriptAsync(
+                                $"window.dispatchEvent(new CustomEvent('dayrhythm:alert-snoozed', {{ detail: {detailJson} }}));"
                             );
                         }
                     }),

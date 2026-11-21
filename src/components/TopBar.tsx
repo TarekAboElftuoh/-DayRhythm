@@ -16,6 +16,7 @@ interface TopBarProps {
   onOpenCatchUp: () => void;
   language: AppLanguage;
   onToggleLanguage: () => void;
+  brandLogoSrc?: string | null;
 }
 
 function detectIsMobileEnvironment(): boolean {
@@ -31,6 +32,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenCatchUp,
   language,
   onToggleLanguage,
+  brandLogoSrc,
 }) => {
   const [isMobileEnv, setIsMobileEnv] = useState<boolean>(detectIsMobileEnvironment);
 
@@ -90,22 +92,30 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-black/90 backdrop-blur-md pt-[env(safe-area-inset-top)]">
-        <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3 sm:px-6 py-2.5 sm:py-3">
-          {/* Zone 1: Brand Wordmark */}
+      <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-black/85 backdrop-blur-xl pt-[env(safe-area-inset-top)]">
+        <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3.5 sm:px-6 h-14">
+          {/* Zone 1: Brand Lockup */}
           <button
             type="button"
             onClick={() => onSelectTab('dashboard')}
-            className="text-sm sm:text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0 hover:text-[#7FFFD4] transition-colors cursor-pointer min-h-[38px] flex items-center"
+            className="text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0 hover:text-[#7FFFD4] transition-colors cursor-pointer min-h-[40px] flex items-center gap-2.5"
           >
+            {brandLogoSrc && (
+              <img
+                src={brandLogoSrc}
+                alt="شعار إيقاع اليوم"
+                referrerPolicy="no-referrer"
+                className="w-7 h-7 rounded-lg object-cover ring-1 ring-white/15 shrink-0"
+              />
+            )}
             <span className="sm:hidden">
               {language === 'ar' ? 'إيقاع اليوم' : 'DayRhythm'}
             </span>
             <span className="hidden sm:inline">{t(language, 'brand')}</span>
           </button>
 
-          {/* Zone 2: Single-line navigation links (Desktop — only relevant tabs) */}
-          <nav className="hidden md:flex items-center gap-6 text-sm font-medium">
+          {/* Zone 2: Clean Single-Line Navigation (Desktop) */}
+          <nav className="hidden md:flex items-center gap-1 text-[13px] font-medium">
             {navItems.map((item) => {
               const active = activeTab === item.id;
               return (
@@ -113,32 +123,29 @@ export const TopBar: React.FC<TopBarProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => onSelectTab(item.id)}
-                  className={`relative py-1 whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                  className={`relative px-3.5 py-2 rounded-lg whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
                     active
-                      ? 'text-[#7FFFD4]'
-                      : 'text-zinc-400 hover:text-zinc-100'
+                      ? 'text-[#7FFFD4] bg-[#7FFFD4]/[0.08] font-semibold'
+                      : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]'
                   }`}
                 >
                   {item.label}
-                  {active && (
-                    <span className="absolute inset-x-0 -bottom-[13px] h-0.5 bg-[#7FFFD4]" />
-                  )}
                 </button>
               );
             })}
           </nav>
 
-          {/* Zone 3: PWA Install + Language Switcher + Primary Action */}
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          {/* Zone 3: Primary Action & Compact Utilities */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <PWAInstallButton language={language} />
 
             <button
               type="button"
               onClick={onToggleLanguage}
-              className="min-h-[38px] px-2 sm:px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-white/15 bg-white/[0.04] text-zinc-200 hover:border-[#7FFFD4]/50 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
-              title="تبديل فوري عربي ↔ English"
+              className="min-h-[36px] px-2.5 py-1.5 text-xs font-medium rounded-lg border border-white/[0.09] bg-white/[0.03] text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors"
+              title="عربي ↔ English"
             >
-              <Globe className="w-3.5 h-3.5 text-[#7FFFD4] shrink-0" />
+              <Globe className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
               <span className="sm:hidden">{language === 'ar' ? 'EN' : 'ع'}</span>
               <span className="hidden sm:inline">{t(language, 'langSwitchLabel')}</span>
             </button>
@@ -146,7 +153,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <button
               type="button"
               onClick={onOpenCatchUp}
-              className="min-h-[38px] px-2.5 sm:px-4 py-1.5 text-xs font-semibold rounded-lg bg-[#7FFFD4] text-black hover:bg-[#66eec2] active:scale-[0.98] transition-all whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[36px] px-3 sm:px-3.5 py-1.5 text-xs font-bold rounded-lg bg-[#7FFFD4] text-black hover:bg-[#66eec2] active:scale-[0.98] transition-all whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span className="sm:hidden">{language === 'ar' ? 'تدارك' : 'Catch-Up'}</span>
               <span className="hidden sm:inline">{t(language, 'ctaCatchUp')}</span>
@@ -155,12 +162,12 @@ export const TopBar: React.FC<TopBarProps> = ({
         </div>
       </header>
 
-      {/* Mobile Bottom Thumb-Zone Navigation (3 clean tabs: Today, Gemini, Phone — zero Desktop/System clutter) */}
+      {/* Mobile Bottom Thumb-Zone Navigation */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-white/12 bg-black/95 backdrop-blur-xl px-2 pt-1 pb-[max(0.45rem,env(safe-area-inset-bottom))]"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-white/[0.08] bg-black/92 backdrop-blur-xl px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
       >
-        <div className="grid grid-cols-3 gap-1.5">
+        <div className="grid grid-cols-3 gap-1">
           {navItems.map((item) => {
             const active = activeTab === item.id;
             const Icon = item.Icon;
@@ -169,10 +176,10 @@ export const TopBar: React.FC<TopBarProps> = ({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectTab(item.id)}
-                className={`min-h-[50px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer ${
+                className={`min-h-[48px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer ${
                   active
-                    ? 'bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
-                    : 'text-zinc-400 hover:text-zinc-200'
+                    ? 'bg-[#7FFFD4]/12 text-[#7FFFD4] font-bold'
+                    : 'text-zinc-500 hover:text-zinc-200'
                 }`}
               >
                 <Icon className="w-[19px] h-[19px] shrink-0" />

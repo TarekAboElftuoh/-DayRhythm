@@ -257,8 +257,42 @@ interface ClientCacheEntry {
   expiresAtMs: number;
 }
 
-const CLIENT_GEMINI_CACHE_MAX = 60;
+const CLIENT_GEMINI_CACHE_MAX = 80;
+const CLIENT_GEMINI_CACHE_STORAGE_KEY = 'dayrhythm_gemini_cache_v2';
 const clientGeminiCache = new Map<string, ClientCacheEntry>();
+let hasHydratedClientCache = false;
+
+function hydrateClientGeminiCache(): void {
+  if (hasHydratedClientCache || typeof window === 'undefined') return;
+  hasHydratedClientCache = true;
+  try {
+    const raw = localStorage.getItem(CLIENT_GEMINI_CACHE_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Array<[string, ClientCacheEntry]>;
+    if (!Array.isArray(parsed)) return;
+    const now = Date.now();
+    for (const [k, entry] of parsed) {
+      if (typeof k === 'string' && entry && typeof entry.expiresAtMs === 'number' && entry.expiresAtMs > now) {
+        clientGeminiCache.set(k, entry);
+      }
+    }
+  } catch {
+    // ignore corrupt cache storage
+  }
+}
+
+function persistClientGeminiCache(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const now = Date.now();
+    const entries = Array.from(clientGeminiCache.entries())
+      .filter(([, v]) => v.expiresAtMs > now)
+      .slice(-CLIENT_GEMINI_CACHE_MAX);
+    localStorage.setItem(CLIENT_GEMINI_CACHE_STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    // ignore quota errors
+  }
+}
 
 function fnv1aHash(str: string): string {
   let hash = 0x811c9dc5;
@@ -273,11 +307,21 @@ export function buildClientGeminiCacheKey(parts: unknown[]): string {
   return fnv1aHash(JSON.stringify(parts));
 }
 
+export function isContextDependentChatQuery(raw: string): boolean {
+  const q = raw.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (q.length <= 12) return true;
+  return /(^|\s)(ده|دي|دول|كمل|كمّل|أكمل|اكمل|وضح|وضّح|اشرح|لماذا|ليه|غيره|غيّره|عدله|عدّله|احذفه|تمام|نعم|لا|أوك|اوك|ok|yes|no|more|continue|it|that|this|above)(\s|$)/i.test(
+    q
+  );
+}
+
 export function getCachedGeminiResponse(key: string): ClientCachedGeminiResponse | null {
+  hydrateClientGeminiCache();
   const entry = clientGeminiCache.get(key);
   if (!entry) return null;
   if (Date.now() > entry.expiresAtMs) {
     clientGeminiCache.delete(key);
+    persistClientGeminiCache();
     return null;
   }
   // Refresh LRU position
@@ -291,6 +335,7 @@ export function setCachedGeminiResponse(
   value: ClientCachedGeminiResponse,
   ttlMs: number
 ): void {
+  hydrateClientGeminiCache();
   if (clientGeminiCache.has(key)) {
     clientGeminiCache.delete(key);
   } else if (clientGeminiCache.size >= CLIENT_GEMINI_CACHE_MAX) {
@@ -301,10 +346,252 @@ export function setCachedGeminiResponse(
     value,
     expiresAtMs: Date.now() + ttlMs,
   });
+  persistClientGeminiCache();
 }
 
 export function clearGeminiClientCache(): void {
   clientGeminiCache.clear();
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.removeItem(CLIENT_GEMINI_CACHE_STORAGE_KEY);
+    } catch {
+      // ignore storage errors
+    }
+  }
+}
+
+// Persistent Pre-Warmed WebSocket Channel for Zero-Handshake Gemini Chat Streaming
+interface PendingWsChatStream {
+  onStatus?: (statusText: string) => void;
+  onDelta: (deltaText: string) => void;
+  onDone: (payload: GeminiStreamDonePayload) => void;
+  resolve: (ok: boolean) => void;
+  reject: (err: Error) => void;
+  receivedAnyDelta: boolean;
+}
+
+let chatWs: WebSocket | null = null;
+let chatWsConnecting: Promise<WebSocket | null> | null = null;
+let chatWsPingTimer: number | null = null;
+const pendingWsChatStreams = new Map<string, PendingWsChatStream>();
+
+function resolveChatWsUrl(): string | null {
+  if (typeof window === 'undefined' || typeof WebSocket === 'undefined') return null;
+  const bases = getApiBaseCandidates();
+  const base = bases[0];
+  if (!base) {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/ws/sync`;
+  }
+  return `${base.replace(/^http/i, 'ws')}/ws/sync`;
+}
+
+function teardownChatWs(reasonError?: Error): void {
+  if (chatWsPingTimer !== null && typeof window !== 'undefined') {
+    window.clearInterval(chatWsPingTimer);
+    chatWsPingTimer = null;
+  }
+  if (chatWs) {
+    try {
+      chatWs.onopen = null;
+      chatWs.onmessage = null;
+      chatWs.onerror = null;
+      chatWs.onclose = null;
+      if (chatWs.readyState === WebSocket.OPEN || chatWs.readyState === WebSocket.CONNECTING) {
+        chatWs.close();
+      }
+    } catch {
+      // ignore close errors
+    }
+    chatWs = null;
+  }
+  chatWsConnecting = null;
+
+  for (const [, pending] of pendingWsChatStreams) {
+    if (pending.receivedAnyDelta && reasonError) {
+      pending.reject(reasonError);
+    } else {
+      pending.resolve(false);
+    }
+  }
+  pendingWsChatStreams.clear();
+}
+
+function ensureWarmGeminiChatSocket(maxWaitMs = 550): Promise<WebSocket | null> {
+  if (typeof window === 'undefined' || navigator.onLine === false) return Promise.resolve(null);
+  if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+    return Promise.resolve(chatWs);
+  }
+  if (!chatWsConnecting) {
+    const wsUrl = resolveChatWsUrl();
+    if (!wsUrl) return Promise.resolve(null);
+    chatWsConnecting = new Promise<WebSocket | null>((resolve) => {
+      try {
+        const ws = new WebSocket(wsUrl);
+        chatWs = ws;
+        let settled = false;
+        const finish = (sock: WebSocket | null) => {
+          if (settled) return;
+          settled = true;
+          chatWsConnecting = null;
+          resolve(sock);
+        };
+        const connectTimeout = window.setTimeout(() => {
+          if (!settled) {
+            finish(null);
+          }
+        }, 3500);
+
+        ws.onopen = () => {
+          window.clearTimeout(connectTimeout);
+          if (chatWsPingTimer !== null) window.clearInterval(chatWsPingTimer);
+          chatWsPingTimer = window.setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              try {
+                ws.send('{"type":"ping"}');
+              } catch {
+                // ignore
+              }
+            }
+          }, 25_000);
+          finish(ws);
+        };
+
+        ws.onmessage = (evt) => {
+          try {
+            const msg = JSON.parse(String(evt.data)) as {
+              type?: string;
+              requestId?: string;
+              text?: string;
+              error?: string;
+              places?: GroundingPlace[];
+              sources?: Array<{ title: string; uri: string }>;
+              pendingProposal?: PersistedChatMessage['pendingProposal'];
+              latencyMs?: number;
+              memoriesAppliedCount?: number;
+              model?: string;
+              cached?: boolean;
+            };
+            if (!msg.requestId) return;
+            const pending = pendingWsChatStreams.get(msg.requestId);
+            if (!pending) return;
+
+            if (msg.type === 'gemini_chat_status' && typeof msg.text === 'string') {
+              pending.onStatus?.(msg.text);
+            } else if (msg.type === 'gemini_chat_delta' && typeof msg.text === 'string') {
+              pending.receivedAnyDelta = true;
+              pending.onDelta(msg.text);
+            } else if (msg.type === 'gemini_chat_done') {
+              pendingWsChatStreams.delete(msg.requestId);
+              pending.onDone({
+                text: msg.text || '',
+                places: msg.places,
+                sources: msg.sources,
+                pendingProposal: msg.pendingProposal,
+                latencyMs: msg.latencyMs,
+                memoriesAppliedCount: msg.memoriesAppliedCount,
+                model: msg.model,
+                cached: Boolean(msg.cached),
+              });
+              pending.resolve(true);
+            } else if (msg.type === 'gemini_chat_error') {
+              pendingWsChatStreams.delete(msg.requestId);
+              pending.reject(new Error(msg.error || 'حدث خطأ أثناء بث الرد من Gemini.'));
+            }
+          } catch {
+            // ignore non-chat WS frames
+          }
+        };
+
+        ws.onerror = () => {
+          window.clearTimeout(connectTimeout);
+          teardownChatWs();
+          finish(null);
+        };
+
+        ws.onclose = () => {
+          window.clearTimeout(connectTimeout);
+          teardownChatWs(new Error('انقطع اتصال البث المباشر مع الخادم.'));
+          finish(null);
+        };
+      } catch {
+        chatWsConnecting = null;
+        resolve(null);
+      }
+    });
+  }
+
+  return Promise.race([
+    chatWsConnecting,
+    new Promise<WebSocket | null>((resolve) => {
+      window.setTimeout(() => resolve(chatWs && chatWs.readyState === WebSocket.OPEN ? chatWs : null), maxWaitMs);
+    }),
+  ]);
+}
+
+export function warmGeminiChatSocket(): void {
+  void ensureWarmGeminiChatSocket(3500);
+}
+
+export async function apiStreamGeminiOverWs(
+  body: Record<string, unknown>,
+  handlers: {
+    signal?: AbortSignal;
+    onStatus?: (statusText: string) => void;
+    onDelta: (deltaText: string) => void;
+    onDone: (payload: GeminiStreamDonePayload) => void;
+  }
+): Promise<boolean> {
+  if (handlers.signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+  const ws = await ensureWarmGeminiChatSocket(550);
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  const requestId = `gws_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+
+  return new Promise<boolean>((resolve, reject) => {
+    const onAbort = () => {
+      pendingWsChatStreams.delete(requestId);
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'gemini_chat_cancel', requestId }));
+        }
+      } catch {
+        // ignore cancel send errors
+      }
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+
+    if (handlers.signal) {
+      handlers.signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    const cleanupWrap = <T extends (...args: never[]) => void>(fn: T): T =>
+      ((...args: Parameters<T>) => {
+        if (handlers.signal) handlers.signal.removeEventListener('abort', onAbort);
+        fn(...args);
+      }) as T;
+
+    pendingWsChatStreams.set(requestId, {
+      onStatus: handlers.onStatus,
+      onDelta: handlers.onDelta,
+      onDone: handlers.onDone,
+      resolve: cleanupWrap(resolve),
+      reject: cleanupWrap(reject),
+      receivedAnyDelta: false,
+    });
+
+    try {
+      ws.send(JSON.stringify({ type: 'gemini_chat', requestId, payload: body }));
+    } catch {
+      pendingWsChatStreams.delete(requestId);
+      if (handlers.signal) handlers.signal.removeEventListener('abort', onAbort);
+      resolve(false);
+    }
+  });
 }
 
 /**

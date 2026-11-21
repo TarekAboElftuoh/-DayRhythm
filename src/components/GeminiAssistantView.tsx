@@ -46,20 +46,27 @@ import {
   TaskActionProposal,
   TaskExecutionResult,
 } from '../types/dayrhythm';
-import { formatIsoTo12h, formatTime24To12h, getCairoTodayIso } from '../engines/prayerEngine';
+import {
+  formatIsoTo12h,
+  formatTime24To12h,
+  getDateIsoInTimeZone,
+} from '../engines/prayerEngine';
 import { ARABIC_WEEKDAYS, MEMORY_CATEGORY_LABELS } from '../engines/lifeRhythmEngine';
 import {
   GeminiConnectionStatus,
   apiFetchJson,
   apiFetchStream,
+  apiStreamGeminiOverWs,
   buildClientGeminiCacheKey,
   checkGeminiStatus,
   cleanCalendarText,
   getCachedGeminiResponse,
   getSavedCloudApiUrl,
+  isContextDependentChatQuery,
   isStandaloneVirtualHost,
   setCachedGeminiResponse,
   setSavedCloudApiUrl,
+  warmGeminiChatSocket,
 } from '../services/apiClient';
 
 type AssistantMode = 'chat' | 'maps' | 'search';
@@ -297,6 +304,13 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   const [mode, setMode] = useState<AssistantMode>('chat');
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('memories');
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+
+  // Pre-warm the persistent Gemini WebSocket channel as soon as the view mounts or becomes active
+  useEffect(() => {
+    if (isActive) {
+      warmGeminiChatSocket();
+    }
+  }, [isActive]);
 
   // Separate drafts, loading flags, and abort controllers per mode (chat / maps / search)
   const [draftsByMode, setDraftsByMode] = useState<Record<AssistantMode, string>>({
@@ -876,6 +890,11 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         (proposal.profileUpdates ? 1 : 0) +
         (proposal.memoryActions?.length ?? 0);
       if (totalItems === 0) return;
+      // Never auto-execute destructive medication removal silently — always require explicit user confirmation
+      const hasMedicationRemove = Boolean(
+        proposal.medicationActions?.some((m) => m.operation === 'remove')
+      );
+      if (hasMedicationRemove) return;
       // Execute immediately so user never waits for a second confirmation round-trip
       window.setTimeout(() => {
         void handleConfirmProposal(
@@ -895,13 +914,16 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
       if (activeMode === 'chat') {
         const chatHistory = buildNormalizedHistory(messages);
-        const timeBucket5m = Math.floor(Date.now() / (5 * 60_000));
+        const timeBucket10m = Math.floor(Date.now() / (10 * 60_000));
+        const contextDependent = isContextDependentChatQuery(query);
+        const activeTz = activeLocation.timeZone || lifeProfile.currentTimeZone || 'Africa/Cairo';
+        const todayLocalIso = getDateIsoInTimeZone(activeTz);
         const clientCacheKey = buildClientGeminiCacheKey([
-          'chat',
-          getCairoTodayIso(),
-          timeBucket5m,
+          'chat_v2',
+          todayLocalIso,
+          timeBucket10m,
           normalizedQueryKey,
-          chatHistory.slice(-4),
+          contextDependent ? chatHistory.slice(-4) : '',
           contextSummary.slice(0, 800),
           serializedMemories.map((m) => `${m.id}:${m.category}:${m.ruleText}`),
           calendarEvents.slice(0, 30).map((e) => `${e.id}:${e.start}:${e.summary}`),
@@ -965,8 +987,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             times24: m.times24,
             daysOfWeek: m.daysOfWeek,
             doseNote: m.doseNote,
-            takenToday: m.takenDateKey === getCairoTodayIso(),
-            takenDosesToday: m.takenDateKey === getCairoTodayIso() ? m.takenDosesToday ?? [] : [],
+            takenToday: m.takenDateKey === todayLocalIso,
+            takenDosesToday: m.takenDateKey === todayLocalIso ? m.takenDosesToday ?? [] : [],
             courseEndDate: m.courseEndDate,
             remainingDoses: m.remainingDoses,
             totalDoses: m.totalDoses,
@@ -992,95 +1014,125 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         let streamInserted = false;
         let streamedSuccessfully = false;
 
-        try {
-          streamedSuccessfully = await apiFetchStream('/api/chat/stream', requestBody, {
-            signal: controller.signal,
-            onStatus: (statusText) => {
-              setStreamStatusByMode((prev) => ({ ...prev, chat: statusText }));
-            },
-            onDelta: (deltaText) => {
-              if (!streamInserted) {
-                streamInserted = true;
-                setStreamingMsgIdByMode((prev) => ({ ...prev, chat: streamId }));
-                onChangeMessages((prev) => [
-                  ...prev,
-                  {
-                    id: streamId,
-                    role: 'model',
-                    mode: 'chat',
-                    text: deltaText,
-                    createdAtIso: new Date().toISOString(),
-                  },
-                ]);
-              } else {
-                onChangeMessages((prev) =>
-                  prev.map((m) => (m.id === streamId ? { ...m, text: m.text + deltaText } : m))
-                );
-              }
-            },
-            onDone: (payload) => {
-              const latencyMs = payload.latencyMs ?? Math.max(1, Date.now() - startedAt);
-              setGeminiStatus({
-                ok: true,
-                connected: true,
-                status: 'online',
-                model: payload.model || 'gemini-3.1-flash-lite',
-                latencyMs,
-                checkedAtIso: new Date().toISOString(),
-              });
-              const preparedProposal = payload.pendingProposal
-                ? { ...payload.pendingProposal, status: 'pending' as const }
+        const chatStreamHandlers = {
+          signal: controller.signal,
+          onStatus: (statusText: string) => {
+            setStreamStatusByMode((prev) => ({ ...prev, chat: statusText }));
+          },
+          onDelta: (deltaText: string) => {
+            if (!streamInserted) {
+              streamInserted = true;
+              setStreamingMsgIdByMode((prev) => ({ ...prev, chat: streamId }));
+              onChangeMessages((prev) => [
+                ...prev,
+                {
+                  id: streamId,
+                  role: 'model',
+                  mode: 'chat',
+                  text: deltaText,
+                  createdAtIso: new Date().toISOString(),
+                },
+              ]);
+            } else {
+              onChangeMessages((prev) =>
+                prev.map((m) => (m.id === streamId ? { ...m, text: m.text + deltaText } : m))
+              );
+            }
+          },
+          onDone: (payload: {
+            text: string;
+            sources?: Array<{ title: string; uri: string }>;
+            pendingProposal?: PersistedChatMessage['pendingProposal'];
+            latencyMs?: number;
+            memoriesAppliedCount?: number;
+            model?: string;
+            cached?: boolean;
+          }) => {
+            const latencyMs = payload.latencyMs ?? Math.max(1, Date.now() - startedAt);
+            setGeminiStatus({
+              ok: true,
+              connected: true,
+              status: 'online',
+              model: payload.model || 'gemini-3.1-flash-lite',
+              latencyMs,
+              checkedAtIso: new Date().toISOString(),
+            });
+            const preparedProposal = payload.pendingProposal
+              ? { ...payload.pendingProposal, status: 'pending' as const }
+              : undefined;
+            const finalText = payload.text || 'تم إعداد التعديل.';
+            const finalSources =
+              Array.isArray(payload.sources) && payload.sources.length > 0
+                ? payload.sources
                 : undefined;
-              const finalText = payload.text || 'تم إعداد التعديل.';
-              const finalSources =
-                Array.isArray(payload.sources) && payload.sources.length > 0
-                  ? payload.sources
-                  : undefined;
 
-              // Cache non-mutating responses locally for instant repeated lookups
-              if (!preparedProposal && finalText.trim()) {
-                setCachedGeminiResponse(
-                  clientCacheKey,
-                  {
-                    text: finalText,
-                    sources: finalSources,
-                    memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
-                    model: payload.model,
-                  },
-                  2 * 60_000
-                );
-              }
+            // Cache non-mutating responses persistently in localStorage for instant repeated lookups
+            if (!preparedProposal && finalText.trim()) {
+              setCachedGeminiResponse(
+                clientCacheKey,
+                {
+                  text: finalText,
+                  sources: finalSources,
+                  memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
+                  model: payload.model,
+                },
+                15 * 60_000
+              );
+            }
 
-              const finalMsg: PersistedChatMessage = {
-                id: streamId,
-                role: 'model',
-                mode: 'chat',
-                text: finalText,
-                createdAtIso: new Date().toISOString(),
-                sources: finalSources,
-                pendingProposal: preparedProposal,
-                latencyMs,
-                memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
-                cached: Boolean(payload.cached),
-                retryPrompt: payload.cached ? query : undefined,
-              };
-              if (!streamInserted) {
-                streamInserted = true;
-                onChangeMessages((prev) => [...prev, finalMsg]);
-              } else {
-                onChangeMessages((prev) => prev.map((m) => (m.id === streamId ? finalMsg : m)));
-              }
-              maybeAutoExecuteProposal(streamId, preparedProposal);
-            },
-          });
-        } catch (streamErr: unknown) {
-          if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
-            throw streamErr;
+            const finalMsg: PersistedChatMessage = {
+              id: streamId,
+              role: 'model',
+              mode: 'chat',
+              text: finalText,
+              createdAtIso: new Date().toISOString(),
+              sources: finalSources,
+              pendingProposal: preparedProposal,
+              latencyMs,
+              memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
+              cached: Boolean(payload.cached),
+              retryPrompt: payload.cached ? query : undefined,
+            };
+            if (!streamInserted) {
+              streamInserted = true;
+              onChangeMessages((prev) => [...prev, finalMsg]);
+            } else {
+              onChangeMessages((prev) => prev.map((m) => (m.id === streamId ? finalMsg : m)));
+            }
+            maybeAutoExecuteProposal(streamId, preparedProposal);
+          },
+        };
+
+        // 1) Primary ultra-low-latency path: Pre-warmed WebSocket channel (zero HTTP handshake)
+        try {
+          streamedSuccessfully = await apiStreamGeminiOverWs(requestBody, chatStreamHandlers);
+        } catch (wsErr: unknown) {
+          if (wsErr instanceof DOMException && wsErr.name === 'AbortError') {
+            throw wsErr;
           }
           if (streamInserted) {
-            throw streamErr;
+            throw wsErr;
           }
-          // Fall through cleanly to JSON /api/chat
+          // Fall through seamlessly to SSE /api/chat/stream
+        }
+
+        // 2) Secondary low-latency path: HTTP SSE stream
+        if (!streamedSuccessfully) {
+          try {
+            streamedSuccessfully = await apiFetchStream(
+              '/api/chat/stream',
+              requestBody,
+              chatStreamHandlers
+            );
+          } catch (streamErr: unknown) {
+            if (streamErr instanceof DOMException && streamErr.name === 'AbortError') {
+              throw streamErr;
+            }
+            if (streamInserted) {
+              throw streamErr;
+            }
+            // Fall through cleanly to JSON /api/chat
+          }
         }
 
         if (!streamedSuccessfully) {
@@ -1125,7 +1177,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                 memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
                 model: data.model,
               },
-              2 * 60_000
+              15 * 60_000
             );
           }
 
@@ -1236,7 +1288,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                   memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
                   model: payload.model,
                 },
-                8 * 60_000
+                20 * 60_000
               );
               const finalMsg: PersistedChatMessage = {
                 id: streamId,
@@ -1300,7 +1352,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               places: finalPlaces,
               memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
             },
-            8 * 60_000
+            20 * 60_000
           );
           onChangeMessages((prev) => [
             ...prev,
@@ -1319,9 +1371,10 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           ]);
         }
       } else {
+        const activeTz = activeLocation.timeZone || lifeProfile.currentTimeZone || 'Africa/Cairo';
         const clientCacheKey = buildClientGeminiCacheKey([
           'search',
-          getCairoTodayIso(),
+          getDateIsoInTimeZone(activeTz),
           normalizedQueryKey,
           userCoords.lat.toFixed(2),
           userCoords.lng.toFixed(2),
@@ -1408,7 +1461,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                   memoriesAppliedCount: payload.memoriesAppliedCount ?? memories.length,
                   model: payload.model,
                 },
-                4 * 60_000
+                10 * 60_000
               );
               const finalMsg: PersistedChatMessage = {
                 id: streamId,
@@ -1472,7 +1525,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               sources: finalSources,
               memoriesAppliedCount: data.memoriesAppliedCount ?? memories.length,
             },
-            4 * 60_000
+            10 * 60_000
           );
           onChangeMessages((prev) => [
             ...prev,
@@ -1822,9 +1875,14 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                             <p className="text-[11px] text-zinc-400 line-clamp-2">{descClean}</p>
                           )}
                           <div className="font-mono-tabular text-[11px] text-[#7FFFD4] whitespace-nowrap">
-                            {formatIsoTo12h(ev.start, language)}
+                            {formatIsoTo12h(ev.start, language, {
+                              timeZone: activeLocation.timeZone || lifeProfile.currentTimeZone || 'Africa/Cairo',
+                            })}
                             {ev.end && !ev.isAllDay
-                              ? ` – ${formatIsoTo12h(ev.end, language, { includeDate: false })}`
+                              ? ` – ${formatIsoTo12h(ev.end, language, {
+                                  includeDate: false,
+                                  timeZone: activeLocation.timeZone || lifeProfile.currentTimeZone || 'Africa/Cairo',
+                                })}`
                               : ''}
                           </div>
                         </li>
@@ -2130,7 +2188,10 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                       </span>
                       {m.createdAtIso && (
                         <span className="font-mono-tabular">
-                          {formatIsoTo12h(m.createdAtIso, language, { includeDate: false })}
+                          {formatIsoTo12h(m.createdAtIso, language, {
+                            includeDate: false,
+                            timeZone: activeLocation.timeZone || lifeProfile.currentTimeZone || 'Africa/Cairo',
+                          })}
                         </span>
                       )}
                     </div>
@@ -2334,9 +2395,15 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                                         </span>
                                       ) : null}
                                     </span>
-                                    <span className="font-mono-tabular text-[#4ADE80] shrink-0 text-[11px]">
+                                    <span
+                                      className={`font-mono-tabular shrink-0 text-[11px] ${
+                                        mAct.operation === 'remove'
+                                          ? 'text-rose-400 font-bold'
+                                          : 'text-[#4ADE80]'
+                                      }`}
+                                    >
                                       {mAct.operation === 'remove'
-                                        ? 'حذف'
+                                        ? 'حذف نهائي'
                                         : mAct.operation === 'mark_taken'
                                           ? 'تم التناول ✓'
                                           : doseTimes.length > 0
