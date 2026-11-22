@@ -421,6 +421,10 @@ namespace DayRhythm
                 };
 
                 _webView.CoreWebView2.NewWindowRequested += OnNewWindowRequested;
+                // Windows' clock drifts (it was ~15 s fast) and only resyncs occasionally, so the PC
+                // rang before the phone. Measure real time and let the page fire on it instead.
+                _webView.CoreWebView2.NavigationCompleted += (_, __) => PushClockOffsetToWeb();
+                _ = RefreshClockOffsetLoopAsync();
                 _webView.CoreWebView2.Navigate(VirtualAppUrl);
                 _bgServices.Start(_settings.RemoteWsUrl);
             }
@@ -678,6 +682,28 @@ namespace DayRhythm
                 _activeScreenAlert.Dispose();
             }
             _activeScreenAlert = null;
+        }
+
+        private long _clockOffsetMs;
+
+        private void PushClockOffsetToWeb()
+        {
+            long off = _clockOffsetMs;
+            DispatchToWeb($"window.__drClockOffsetMs={off};window.dispatchEvent(new CustomEvent('dayrhythm:clock-offset',{{detail:{off}}}));");
+        }
+
+        private async System.Threading.Tasks.Task RefreshClockOffsetLoopAsync()
+        {
+            while (!_isQuitting)
+            {
+                long? off = await System.Threading.Tasks.Task.Run(NetworkClock.TryGetOffsetMs);
+                if (off.HasValue)
+                {
+                    _clockOffsetMs = off.Value;
+                    PushClockOffsetToWeb();
+                }
+                await System.Threading.Tasks.Task.Delay(off.HasValue ? TimeSpan.FromMinutes(30) : TimeSpan.FromMinutes(2));
+            }
         }
 
         private void DispatchToWeb(string script)

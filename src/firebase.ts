@@ -126,11 +126,30 @@ export interface FirestoreErrorInfo {
   };
 }
 
+// While the daily quota is spent, writes are rejected and Firestore rolls back its optimistic local
+// copy — the listeners then deliver the OLD values (a just-logged cup vanishes). The app keeps its
+// local state as the truth during this pause and pushes it once the pause ends.
+let cloudQuotaPausedUntil = 0;
+export function getCloudQuotaPausedUntil(): number {
+  return cloudQuotaPausedUntil;
+}
+export function markCloudQuotaExhausted(): void {
+  cloudQuotaPausedUntil = Date.now() + 15 * 60_000;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('dayrhythm:cloud-quota', { detail: { until: cloudQuotaPausedUntil } })
+    );
+  } catch {
+    // non-browser context
+  }
+}
+
 export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
 ): never {
+  if (isFirestoreQuotaError(error)) markCloudQuotaExhausted();
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -166,6 +185,15 @@ function computeExponentialBackoffMs(attempt: number, baseMs = FS_BASE_BACKOFF_M
   return Math.min(maxMs, exp + jitter);
 }
 
+/**
+ * The free-tier database has a hard daily read quota. Once it's spent every request fails until the
+ * daily reset, so retrying (and resetting the network, which re-attaches listeners) only burns more.
+ */
+export function isFirestoreQuotaError(error: unknown): boolean {
+  const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  return msg.includes('quota') || msg.includes('free daily read units');
+}
+
 function isTransientFirestoreError(error: unknown): boolean {
   const code =
     typeof error === 'object' && error !== null && 'code' in error
@@ -174,6 +202,9 @@ function isTransientFirestoreError(error: unknown): boolean {
   const msg = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
 
   if (code.includes('permission-denied') || msg.includes('missing or insufficient permissions')) {
+    return false;
+  }
+  if (isFirestoreQuotaError(error)) {
     return false;
   }
 
@@ -1133,7 +1164,11 @@ export async function saveUserRhythmState(
     try {
       await updateDoc(docRef, patch);
       return;
-    } catch {
+    } catch (err) {
+      if (isFirestoreQuotaError(err)) {
+        markCloudQuotaExhausted();
+        throw err;
+      }
       // Legacy/malformed doc that only a full write can repair — fall through to it.
     }
   }

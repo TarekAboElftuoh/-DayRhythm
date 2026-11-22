@@ -13,7 +13,7 @@ import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
-import android.media.ToneGenerator;
+import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -35,7 +35,11 @@ import org.json.JSONObject;
  * - Supports configurable Snooze (5/10/15m, default 5) and clean single "تم" action.
  */
 public class ReminderAlarmReceiver extends BroadcastReceiver {
-    public static final String CHANNEL_ID = "dayrhythm_exact_alarms_v2";
+    // v3: the v2 channel was created with the SYSTEM ALARM ringtone as its sound, and Android never
+    // lets a channel's sound change afterwards — so every reminder rang the phone's alarm tone on
+    // top of anything the app played. v3 is silent; the app plays its own per-category sounds.
+    public static final String CHANNEL_ID = "dayrhythm_reminders_v3";
+    private static final String LEGACY_CHANNEL_ID = "dayrhythm_exact_alarms_v2";
     public static final String ACTION_FIRE_ALARM = "app.dayrhythm.mobile.ACTION_FIRE_ALARM";
     public static final String ACTION_MARK_DONE = "app.dayrhythm.mobile.ACTION_MARK_DONE";
     public static final String ACTION_SNOOZE = "app.dayrhythm.mobile.ACTION_SNOOZE";
@@ -60,39 +64,11 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
     private static final Object AUDIO_LOCK = new Object();
     private static Ringtone activeRingtone = null;
-    private static ToneGenerator activeToneGenerator = null;
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Runnable autoStopRingtoneRunnable = ReminderAlarmReceiver::stopRinging;
 
-    // BUG THIS FIXES: every native alarm — prayer, water, medication, calendar event, task —
-    // used to play the phone's SYSTEM "alarm clock" ringtone, so the user couldn't tell by sound
-    // alone whether it was a reminder they'd set themselves or just a linked calendar event, and
-    // it felt exactly like a regular wake-up alarm going off. Each category now pulses its own
-    // short, distinct tone (same idea as the web app's per-category sounds in audioEngine.ts) on
-    // the ALARM stream via ToneGenerator — no audio assets to bundle, still loud/insistent, but
-    // now actually tells the categories apart by ear.
+    // Each category repeats the app's own sound for it (see soundResForKind) until dismissed.
     private static Runnable pulseRunnable = null;
-
-    private static int toneForKind(String kind) {
-        if (kind == null) return ToneGenerator.TONE_PROP_PROMPT;
-        switch (kind) {
-            case "prayer":
-                return ToneGenerator.TONE_SUP_PIP; // soft, dignified double-pip
-            case "water":
-                return ToneGenerator.TONE_PROP_BEEP; // single light beep
-            case "medication":
-                return ToneGenerator.TONE_PROP_BEEP2; // quicker, slightly more urgent beep
-            case "event":
-            case "calendar":
-                return ToneGenerator.TONE_SUP_CONFIRM; // two-tone chime
-            case "task":
-                return ToneGenerator.TONE_PROP_ACK; // short ack chirp
-            case "charge":
-                return ToneGenerator.TONE_SUP_PIP;
-            default:
-                return ToneGenerator.TONE_PROP_PROMPT; // general / meeting / misc
-        }
-    }
 
     // The status bar shrinks setSmallIcon to a plain monochrome silhouette, so a full-color
     // launcher icon reads as the same indistinct blob for every category — prayer, water, task
@@ -144,27 +120,24 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
 
+        try {
+            nm.deleteNotificationChannel(LEGACY_CHANNEL_ID);
+        } catch (Exception ignored) {
+        }
+
         NotificationChannel existing = nm.getNotificationChannel(CHANNEL_ID);
         if (existing != null) return;
 
-        Uri alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
-        if (alarmUri == null) {
-            alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
-        }
-        AudioAttributes attrs = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ALARM)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build();
-
         NotificationChannel ch = new NotificationChannel(
                 CHANNEL_ID,
-                "منبهات إيقاع اليوم الدقيقة (صوت عالٍ)",
+                "تنبيهات إيقاع اليوم",
                 NotificationManager.IMPORTANCE_HIGH
         );
-        ch.setDescription("تنبيهات الصلاة وشرب الماء والعلاجات والمهام بصوت واضح حتى مع قفل الشاشة");
+        ch.setDescription("تنبيهات الصلاة وشرب الماء والعلاجات والمهام — بصوت التطبيق نفسه لكل نوع");
         ch.enableVibration(true);
         ch.setVibrationPattern(VIBRATION_PATTERN);
-        ch.setSound(alarmUri, attrs);
+        // No channel sound: the app plays its own sound for each category (playNativeAlarmSound).
+        ch.setSound(null, null);
         ch.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         ch.setBypassDnd(true);
         nm.createNotificationChannel(ch);
@@ -180,22 +153,22 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         stopRinging();
 
         try {
-            final ToneGenerator tg = new ToneGenerator(AudioManager.STREAM_ALARM, 95);
-            final int toneType = toneForKind(kind);
+            // The app's own sound for this category — the exact signature the web app plays
+            // (rendered from audioEngine.ts into res/raw), not a system tone or alarm ringtone.
+            final int soundRes = soundResForKind(context, kind);
             final int periodMs = pulsePeriodMsForKind(kind);
+            final Context app = context.getApplicationContext();
+            final Object token = new Object();
             synchronized (AUDIO_LOCK) {
-                activeToneGenerator = tg;
+                activeSoundToken = token;
             }
             pulseRunnable = new Runnable() {
                 @Override
                 public void run() {
                     synchronized (AUDIO_LOCK) {
-                        if (activeToneGenerator != tg) return; // stopped/replaced meanwhile
+                        if (activeSoundToken != token) return; // stopped/replaced meanwhile
                     }
-                    try {
-                        tg.startTone(toneType, 260);
-                    } catch (Exception ignored) {
-                    }
+                    playSoundOnce(app, soundRes);
                     mainHandler.postDelayed(this, periodMs);
                 }
             };
@@ -233,13 +206,75 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 }
                 activeRingtone = null;
             }
-            if (activeToneGenerator != null) {
+            activeSoundToken = null;
+            if (activePlayer != null) {
                 try {
-                    activeToneGenerator.release();
+                    activePlayer.release();
                 } catch (Exception ignored) {
                 }
-                activeToneGenerator = null;
+                activePlayer = null;
             }
+        }
+    }
+
+    private static Object activeSoundToken = null;
+    private static MediaPlayer activePlayer = null;
+
+    private static int soundResForKind(Context context, String kind) {
+        String name;
+        if (kind == null) {
+            name = "general";
+        } else {
+            switch (kind) {
+                case "event":
+                case "calendar":
+                    name = "meeting_event";
+                    break;
+                case "task":
+                    name = "focus_work";
+                    break;
+                case "charge":
+                    name = "walk_health";
+                    break;
+                default:
+                    name = kind; // already one of the app's categories (prayer, water, ...)
+            }
+        }
+        int id = context.getResources().getIdentifier("dr_" + name, "raw", context.getPackageName());
+        return id != 0 ? id : R.raw.dr_general;
+    }
+
+    private static void playSoundOnce(Context app, int soundRes) {
+        try {
+            MediaPlayer mp = MediaPlayer.create(
+                    app,
+                    soundRes,
+                    new AudioAttributes.Builder()
+                            // Alarm usage so it is still heard when the ringer is on silent (the
+                            // app's own meeting / prayer quiet modes decide that, not the slider).
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    0
+            );
+            if (mp == null) return;
+            synchronized (AUDIO_LOCK) {
+                if (activePlayer != null) {
+                    try {
+                        activePlayer.release();
+                    } catch (Exception ignored) {
+                    }
+                }
+                activePlayer = mp;
+            }
+            mp.setOnCompletionListener(p -> {
+                synchronized (AUDIO_LOCK) {
+                    if (activePlayer == p) activePlayer = null;
+                }
+                p.release();
+            });
+            mp.start();
+        } catch (Exception ignored) {
         }
     }
 
