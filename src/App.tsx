@@ -111,6 +111,7 @@ import {
   sanitizeUiPrefs,
   saveUserRhythmState,
   saveUserAppSettings,
+  getCloudQuotaPausedUntil,
   type AppSyncSettings,
   type SyncedRhythmPayload,
   saveUserUiPrefs,
@@ -186,6 +187,7 @@ import {
   CapsuleTrackInfo,
 } from './components/FloatingPiPCapsule';
 import { LifeProfileModal } from './components/LifeProfileModal';
+import { trueNowMs } from './engines/trueClock';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import {
   PersistentAlertItem,
@@ -862,6 +864,7 @@ export default function App() {
   // being dropped (a dropped snapshot is never re-delivered, so that device stayed stale forever).
   const pendingRemoteRef = useRef<SyncedRhythmPayload | null>(null);
   const lastServerAppSettingsRef = useRef<string>('');
+  const [cloudPausedUntil, setCloudPausedUntil] = useState(0);
   const pendingRemoteTimerRef = useRef<number | null>(null);
 
   // Any LOCALLY-initiated lifeProfile edit arms the write lock (see the Firestore listener's
@@ -1380,15 +1383,17 @@ export default function App() {
 
   // High-precision wall-clock sync every 5s + instant visibility/focus resync (zero 30s drift!)
   useEffect(() => {
+    // trueNowMs(): network time, so a drifted Windows clock (it was ~15 s fast) can't make the PC
+    // ring before the phone.
     const syncClockNow = () => {
-      setNowTickMin(getNowMinutesInTimeZone(activeTimeZone));
+      setNowTickMin(getNowMinutesInTimeZone(activeTimeZone, new Date(trueNowMs())));
     };
     syncClockNow();
     // Fire exactly at hh:mm:00 so the PC rings in the same second as the phone's native alarm
     // (the 5s interval alone could be up to 5s late).
     let boundaryTimer = 0;
     const scheduleNextBoundary = () => {
-      const msToNextMinute = 60_000 - (Date.now() % 60_000) + 25;
+      const msToNextMinute = 60_000 - (trueNowMs() % 60_000) + 25;
       boundaryTimer = window.setTimeout(() => {
         syncClockNow();
         scheduleNextBoundary();
@@ -2446,6 +2451,23 @@ export default function App() {
     }
   }, [sunMode]);
 
+  // Daily cloud quota spent: hold saves (local stays the truth, badge stays steady instead of
+  // flipping every second), then retry automatically when the pause ends.
+  useEffect(() => {
+    const onQuota = (ev: Event) => {
+      const until = (ev as CustomEvent<{ until?: number }>).detail?.until ?? 0;
+      setCloudPausedUntil(until);
+      setFirestoreSynced(false);
+    };
+    window.addEventListener('dayrhythm:cloud-quota', onQuota);
+    return () => window.removeEventListener('dayrhythm:cloud-quota', onQuota);
+  }, []);
+  useEffect(() => {
+    if (cloudPausedUntil <= Date.now()) return;
+    const id = window.setTimeout(() => setCloudPausedUntil(0), cloudPausedUntil - Date.now() + 500);
+    return () => window.clearTimeout(id);
+  }, [cloudPausedUntil]);
+
   // App settings that used to be per-device only: change it on one device, it changes on the other.
   useEffect(() => {
     if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreReady || !hasHydratedRemoteRef.current) {
@@ -3190,20 +3212,20 @@ export default function App() {
       (remote) => {
         hasHydratedRemoteRef.current = true;
         setFirestoreReady(true);
+        if (remote.phoneBattery) {
+          setPhoneBattery((prev) =>
+            !prev || remote.phoneBattery!.updatedAtMs >= prev.updatedAtMs ? remote.phoneBattery! : prev
+          );
+        }
+        // Cloud paused (daily quota spent): this snapshot is Firestore rolling back our rejected
+        // write, so applying it would erase what was just logged. Local state stays the truth.
+        if (Date.now() < getCloudQuotaPausedUntil()) return;
         setFirestoreSynced(true);
         lastServerFieldsRef.current = serializeRhythmFields(remote);
         lastServerAppSettingsRef.current = remote.appSettings ? JSON.stringify(remote.appSettings) : '';
 
         if (remote.syncSignal) {
           callRemoteSync(remote.syncSignal);
-        }
-
-        if (remote.phoneBattery) {
-          setPhoneBattery((prev) =>
-            !prev || remote.phoneBattery!.updatedAtMs >= prev.updatedAtMs
-              ? remote.phoneBattery!
-              : prev
-          );
         }
 
         applyOrDefer(remote);
@@ -3268,6 +3290,7 @@ export default function App() {
     const unsubscribe = subscribeMedications(
       uid,
       (remoteItems) => {
+        if (Date.now() < getCloudQuotaPausedUntil()) return;
         seededDefaultMedRef.current = true;
         setMedications(remoteItems);
       },
@@ -3298,6 +3321,7 @@ export default function App() {
     const unsubscribe = subscribeCreativeActivities(
       uid,
       (remoteItems) => {
+        if (Date.now() < getCloudQuotaPausedUntil()) return;
         seededDefaultCreativeRef.current = true;
         setCreativeActivities(remoteItems);
       },
@@ -3368,6 +3392,7 @@ export default function App() {
     const unsubscribe = subscribeMemories(
       uid,
       (remoteItems) => {
+        if (Date.now() < getCloudQuotaPausedUntil()) return;
         seededDefaultMemoriesRef.current = true;
         setMemories(remoteItems);
       },
@@ -3526,6 +3551,8 @@ export default function App() {
       }),
     };
 
+    if (Date.now() < getCloudQuotaPausedUntil()) return;
+
     const localFields = serializeRhythmFields(sanitizeRhythmPayload(payload));
     const serverFields = lastServerFieldsRef.current;
     const changedKeys: Array<keyof SyncedRhythmPayload> = [];
@@ -3555,6 +3582,7 @@ export default function App() {
     selectedLogoId,
     capsulePrefs.orientation,
     capsulePrefs.size,
+    cloudPausedUntil,
   ]);
 
   const syncUiPrefsCloud = useCallback(
