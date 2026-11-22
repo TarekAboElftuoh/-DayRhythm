@@ -73,7 +73,13 @@ public class AlarmActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Turn on screen and show over lock screen
+        // Turn on screen and show over lock screen (unconditionally on OnePlus OxygenOS / Android)
+        getWindow().addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                        | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                        | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                        | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        );
         if (Build.VERSION.SDK_INT >= 27) {
             setShowWhenLocked(true);
             setTurnScreenOn(true);
@@ -84,12 +90,7 @@ public class AlarmActivity extends Activity {
                 }
             } catch (Exception ignored) {
             }
-        } else {
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-                    | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD);
         }
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         // Auto-dismiss safety timeout after 120s
         handler.postDelayed(() -> {

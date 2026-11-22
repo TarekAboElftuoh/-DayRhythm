@@ -35,7 +35,7 @@ import org.json.JSONObject;
  * - Supports configurable Snooze (5/10/15m, default 5) and clean single "تم" action.
  */
 public class ReminderAlarmReceiver extends BroadcastReceiver {
-    public static final String CHANNEL_ID = DayRhythmSyncService.CHANNEL_LIVE_ALERTS;
+    public static final String CHANNEL_ID = "dayrhythm_fullscreen_alarms_v4";
     private static final String LEGACY_CHANNEL_ID = "dayrhythm_exact_alarms_v2";
     public static final String ACTION_FIRE_ALARM = "app.dayrhythm.mobile.ACTION_FIRE_ALARM";
     public static final String ACTION_MARK_DONE = "app.dayrhythm.mobile.ACTION_MARK_DONE";
@@ -334,6 +334,17 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     "",
                     sanitizeSnoozeMinutes(snoozeMinutes)
             );
+            launchAlarmCard(
+                    context,
+                    notifId,
+                    "live_" + notifId,
+                    kind != null ? kind : "general",
+                    title != null ? title : "تنبيه إيقاع اليوم",
+                    body != null ? body : "",
+                    "",
+                    "",
+                    snoozeMinutes
+            );
         } finally {
             if (wakeLock != null && wakeLock.isHeld()) {
                 try { wakeLock.release(); } catch (Exception ignored) { }
@@ -427,22 +438,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
 
                 // Launch desktop-style AlarmActivity card over lock screen
-                try {
-                    Intent fsIntent = new Intent(context, AlarmActivity.class);
-                    fsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
-                    fsIntent.putExtra(EXTRA_NOTIF_ID, notifId);
-                    fsIntent.putExtra(EXTRA_ALARM_ID, alarmId);
-                    fsIntent.putExtra(EXTRA_KIND, kind);
-                    fsIntent.putExtra(EXTRA_TITLE, title);
-                    fsIntent.putExtra(EXTRA_BODY, body);
-                    fsIntent.putExtra(EXTRA_MED_ID, medId);
-                    fsIntent.putExtra(EXTRA_DOSE_TIME, doseTime);
-                    fsIntent.putExtra(EXTRA_SNOOZE_MIN, snoozeMin);
-                    context.startActivity(fsIntent);
-                } catch (Exception ignored) {
-                }
+                launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
 
                 // Sub-second instantaneous sync: notify PC over active WebSocket so desktop card pops up simultaneously!
                 DayRhythmSyncService.broadcastAlarmTrigger(title, body, kind, snoozeMin);
@@ -454,6 +450,46 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     try { wakeLock.release(); } catch (Exception ignored) { }
                 }
             }
+        }
+    }
+
+    public static void launchAlarmCard(
+            Context context,
+            int notifId,
+            String alarmId,
+            String kind,
+            String title,
+            String body,
+            String medId,
+            String doseTime,
+            int snoozeMin
+    ) {
+        if (context == null) return;
+        try {
+            Intent fsIntent = new Intent(context, AlarmActivity.class);
+            fsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            fsIntent.putExtra(EXTRA_NOTIF_ID, notifId);
+            fsIntent.putExtra(EXTRA_ALARM_ID, alarmId != null ? alarmId : ("live_" + notifId));
+            fsIntent.putExtra(EXTRA_KIND, kind != null ? kind : "general");
+            fsIntent.putExtra(EXTRA_TITLE, title != null ? title : "تنبيه إيقاع اليوم");
+            fsIntent.putExtra(EXTRA_BODY, body != null ? body : "");
+            fsIntent.putExtra(EXTRA_MED_ID, medId != null ? medId : "");
+            fsIntent.putExtra(EXTRA_DOSE_TIME, doseTime != null ? doseTime : "");
+            fsIntent.putExtra(EXTRA_SNOOZE_MIN, sanitizeSnoozeMinutes(snoozeMin));
+
+            if (Build.VERSION.SDK_INT >= 34) {
+                android.app.ActivityOptions options = android.app.ActivityOptions.makeBasic();
+                options.setPendingIntentBackgroundActivityStartMode(
+                        android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                );
+                context.startActivity(fsIntent, options.toBundle());
+            } else {
+                context.startActivity(fsIntent);
+            }
+        } catch (Exception ignored) {
         }
     }
 
