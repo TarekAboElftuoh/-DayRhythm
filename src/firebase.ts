@@ -401,6 +401,43 @@ export interface SyncedRhythmPayload {
   syncSignal?: WorkspaceSyncSignal;
   phoneBattery?: PhoneBatteryTelemetry;
   uiPrefs?: UiPrefs;
+  appSettings?: AppSyncSettings;
+}
+
+/** App preferences that must match on every device (they used to live only in localStorage). */
+export interface AppSyncSettings {
+  phoneChargeLimitPct: number;
+  smartChargeAlertEnabled: boolean;
+  smartChargeKeepUntilUnplugged: boolean;
+  waterRemindersEnabled: boolean;
+  sunMode: boolean;
+}
+
+export function sanitizeAppSyncSettings(raw: unknown): AppSyncSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  return {
+    phoneChargeLimitPct: clampInt(o.phoneChargeLimitPct, 60, 100, 90),
+    smartChargeAlertEnabled: o.smartChargeAlertEnabled !== false,
+    smartChargeKeepUntilUnplugged: o.smartChargeKeepUntilUnplugged !== false,
+    waterRemindersEnabled: o.waterRemindersEnabled !== false,
+    sunMode: o.sunMode === true,
+  };
+}
+
+/**
+ * Written on its own (only `appSettings` + `updatedAt` change) so that, until the updated Firestore
+ * rules are published, a rejection here can't break the main state saves.
+ */
+export async function saveUserAppSettings(uid: string, settings: AppSyncSettings): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+  const clean = sanitizeAppSyncSettings(settings);
+  if (!clean) return;
+  try {
+    await updateDoc(doc(db, 'users', uid), { appSettings: clean, updatedAt: serverTimestamp() });
+  } catch {
+    // rules not published yet, or offline — the next change retries
+  }
 }
 
 const VALID_LEAD_MINUTES: readonly LiveAlertsLeadMinutes[] = [5, 10, 15, 20, 30];
@@ -867,7 +904,7 @@ export function sanitizeUiPrefs(raw: unknown): UiPrefs | undefined {
   };
 }
 
-function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayload {
+export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayload {
   const dateOk = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(payload.hydrationDateKey);
   const safeDateKey = dateOk
     ? payload.hydrationDateKey
@@ -890,6 +927,7 @@ function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayloa
   const cleanSignal = sanitizeSyncSignal(payload.syncSignal);
   const cleanBattery = sanitizePhoneBattery(payload.phoneBattery);
   const cleanUiPrefs = sanitizeUiPrefs(payload.uiPrefs);
+  const cleanAppSettings = sanitizeAppSyncSettings(payload.appSettings);
 
   return {
     hydrationDateKey: safeDateKey,
@@ -908,6 +946,7 @@ function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayloa
     ...(cleanSignal ? { syncSignal: cleanSignal } : {}),
     ...(cleanBattery ? { phoneBattery: cleanBattery } : {}),
     ...(cleanUiPrefs ? { uiPrefs: cleanUiPrefs } : {}),
+    ...(cleanAppSettings ? { appSettings: cleanAppSettings } : {}),
   };
 }
 
@@ -963,6 +1002,7 @@ export function subscribeUserRhythmState(
               syncSignal: sanitizeSyncSignal(data.syncSignal),
               phoneBattery: sanitizePhoneBattery(data.phoneBattery),
               uiPrefs: sanitizeUiPrefs(data.uiPrefs),
+              appSettings: sanitizeAppSyncSettings(data.appSettings),
             })
           );
         },
@@ -1046,6 +1086,7 @@ const ALLOWED_USER_DOC_KEYS = new Set([
   'syncSignal',
   'phoneBattery',
   'uiPrefs',
+  'appSettings',
   'createdAt',
   'updatedAt',
 ]);
@@ -1064,7 +1105,8 @@ function isFirestoreTimestamp(val: unknown): val is Timestamp {
 
 export async function saveUserRhythmState(
   uid: string,
-  payload: SyncedRhythmPayload
+  payload: SyncedRhythmPayload,
+  onlyKeys?: ReadonlyArray<keyof SyncedRhythmPayload>
 ): Promise<void> {
   if (
     !auth.currentUser ||
@@ -1077,6 +1119,24 @@ export async function saveUserRhythmState(
   const path = `users/${uid}`;
   const docRef = doc(db, 'users', uid);
   const clean = sanitizeRhythmPayload(payload);
+
+  // Field-level patch: each device only writes the fields IT changed. Writing the whole document
+  // from every device meant a device holding a stale value (e.g. cupsLogged: 0 from before the
+  // phone logged two cups) silently overwrote the real value the next time it saved anything at
+  // all — the "cups reset on refresh" bug. No server read first either: the doc is known to
+  // exist, and that read was a full network round-trip of delay before every write.
+  if (onlyKeys && onlyKeys.length > 0 && knownCreatedAtByUid.has(uid)) {
+    const patch: Record<string, unknown> = { uid, updatedAt: serverTimestamp() };
+    for (const key of onlyKeys) {
+      if (clean[key] !== undefined) patch[key] = clean[key];
+    }
+    try {
+      await updateDoc(docRef, patch);
+      return;
+    } catch {
+      // Legacy/malformed doc that only a full write can repair — fall through to it.
+    }
+  }
 
   const attemptAtomicSave = async (isRetry: boolean): Promise<void> => {
     let existingSnap;
@@ -1582,7 +1642,8 @@ export function subscribeChatMessages(
 
 export async function upsertChatMessageRecord(
   uid: string,
-  message: PersistedChatMessage
+  message: PersistedChatMessage,
+  knownToExist?: boolean
 ): Promise<void> {
   if (!auth.currentUser || auth.currentUser.uid !== uid) return;
   const trimmedText = (message.text ?? '').trim().slice(0, 4000);
@@ -1603,8 +1664,11 @@ export async function upsertChatMessageRecord(
 
   await withFirestoreWriteRetry(
     async () => {
-      const existingSnap = await getDoc(docRef);
-      if (!existingSnap.exists()) {
+      // Every message write used to read the doc first. The caller already knows whether the
+      // message is in the cloud (it came from the snapshot or was written before), and the
+      // free-tier database has a hard daily read cap that, once spent, blocks ALL writes.
+      const exists = knownToExist ?? (await getDoc(docRef)).exists();
+      if (!exists) {
         await setDoc(docRef, {
           id: cleanId,
           uid,

@@ -1291,8 +1291,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 ).map((row) => (
                   <div key={row.mode} className="space-y-1">
                     <div className="text-[11px] font-medium text-zinc-300">{row.label}</div>
-                    <div className="grid grid-cols-4 gap-1">
-                      {[15, 30, 60, 120].map((mins) => (
+                    <div className="grid grid-cols-5 gap-1">
+                      {[15, 30, 60, 120, 0].map((mins) => (
                         <button
                           key={mins}
                           type="button"
@@ -1302,7 +1302,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           }}
                           className="min-h-[30px] rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-[11px] text-zinc-200 cursor-pointer"
                         >
-                          {mins >= 60 ? `${mins / 60} س` : `${mins} د`}
+                          {mins === 0 ? 'لحد ما ألغيه' : mins >= 60 ? `${mins / 60} س` : `${mins} د`}
                         </button>
                       ))}
                     </div>
@@ -1474,6 +1474,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       )}
+
+      {phoneBattery &&
+        phoneBattery.charging &&
+        phoneBattery.levelPct < phoneBattery.chargeLimitPct &&
+        Date.now() - phoneBattery.updatedAtMs < 3 * 60_000 &&
+        (() => {
+          const level = phoneBattery.levelPct;
+          const limit = phoneBattery.chargeLimitPct;
+          const etaFull = phoneBattery.chargeTimeRemainingMin ?? -1;
+          // Android reports time to 100%; scale it down to the charge limit.
+          const etaToLimit =
+            etaFull > 0 && level < 100 ? Math.max(1, Math.round((etaFull * (limit - level)) / (100 - level))) : -1;
+          return (
+            <div className="rounded-xl border border-[#7FFFD4]/30 bg-[#7FFFD4]/[0.06] px-4 py-2.5 text-xs flex flex-wrap items-center gap-x-4 gap-y-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <BatteryCharging className="w-4 h-4 text-[#7FFFD4] shrink-0 animate-pulse" />
+                <span className="font-medium text-white">
+                  {phoneBattery.deviceLabel || 'الهاتف'} بيشحن ·{' '}
+                  <span className="font-mono-tabular text-[#7FFFD4]">{level}%</span>
+                </span>
+              </div>
+              <div className="flex-1 min-w-[120px] h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[#7FFFD4] transition-all"
+                  style={{ width: `${Math.min(100, Math.round((level / limit) * 100))}%` }}
+                />
+              </div>
+              <span className="text-zinc-400 shrink-0">
+                {etaToLimit > 0 ? `فاضل ~${etaToLimit} د للوصول لـ ${limit}%` : `الهدف ${limit}%`}
+              </span>
+            </div>
+          );
+        })()}
 
       {(smartChargeAudioActive ||
         (phoneBattery &&
@@ -2184,38 +2217,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </button>
                 </div>
 
-                {/* Tomorrow Hydration Schedule Strip */}
-                <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3.5 py-2.5 space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-1.5 font-medium text-[#7FFFD4]">
-                      <Droplets className="w-3.5 h-3.5 shrink-0" />
-                      <span>
-                        ماء الغد · {dailyRhythmPlan.hydrationSlots.length} كوب ({dailyRhythmPlan.activeTargetMl} مل)
-                      </span>
-                    </div>
-                    {dailyRhythmPlan.hydrationSlots.length > 0 && (
-                      <span className="font-mono-tabular text-[11px] text-zinc-500">
-                        {formatMinutes12h(dailyRhythmPlan.hydrationSlots[0].timeMinutes, language)} –{' '}
-                        {formatMinutes12h(
-                          dailyRhythmPlan.hydrationSlots[dailyRhythmPlan.hydrationSlots.length - 1].timeMinutes,
-                          language
-                        )}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {dailyRhythmPlan.hydrationSlots.map((slot) => (
-                      <span
-                        key={`tmr-water-${slot.cupIndex}`}
-                        className="font-mono-tabular text-[11px] px-2 py-0.5 rounded-md bg-white/[0.04] text-zinc-300"
-                        title={`كوب ${slot.cupIndex}`}
-                      >
-                        💧 {formatMinutes12h(slot.timeMinutes, language)}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
                 {!calendarConnected ? (
                   <div className="py-6 text-center text-xs text-zinc-500">
                     سجّل الدخول بحساب Google لعرض مواعيد الغد.
@@ -2391,6 +2392,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     const display = resolveBlockDisplayInfo(block);
                     const showSecondaryCalendarLabel =
                       block.calendarTitle && block.calendarTitle !== calendarUserEmail;
+                    // Everything under "المنتهي" is over — show it as done, not as an open circle.
+                    const shownDone = block.completed || timelineFilter === 'done';
 
                     return (
                       <div
@@ -2398,7 +2401,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-3 px-2 rounded-xl transition-colors hover:bg-white/[0.02] ${
                           isHappeningNow ? 'bg-[#7FFFD4]/[0.05] my-1 px-3 ring-1 ring-[#7FFFD4]/25' : ''
                         } ${
-                          block.completed || isSkipped || isPostponed
+                          shownDone || isSkipped || isPostponed
                             ? 'opacity-50'
                             : lowEnergyActive && !block.isAnchor
                               ? 'opacity-75'
@@ -2412,7 +2415,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             className="min-h-[36px] min-w-[36px] flex items-center justify-center text-zinc-500 hover:text-[#7FFFD4] cursor-pointer shrink-0 -mt-0.5"
                             title={block.completed ? 'إعادة الفتح' : 'إنجاز'}
                           >
-                            {block.completed ? (
+                            {shownDone ? (
                               <CheckCircle2 className="w-5 h-5 text-[#4ADE80]" />
                             ) : (
                               <Circle className="w-5 h-5" />

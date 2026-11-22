@@ -657,7 +657,12 @@ namespace DayRhythm
                             "window.dispatchEvent(new CustomEvent('dayrhythm:quick-med-confirm'));"
                         );
                     }
-                })
+                }),
+                onPrefsChangedByUser: (orientation, size) =>
+                {
+                    string detailJson = JsonSerializer.Serialize(new { orientation, size });
+                    DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:capsule-prefs', {{ detail: {detailJson} }}));");
+                }
             );
             if (_settings.ShowDesktopCapsule)
             {

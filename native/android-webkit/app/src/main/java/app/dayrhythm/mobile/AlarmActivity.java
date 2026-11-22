@@ -43,6 +43,13 @@ public class AlarmActivity extends Activity {
                     | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // Keeping the screen on with no limit drained the battery when nobody was near the phone.
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            if (!isFinishing()) {
+                ReminderAlarmReceiver.stopRinging();
+                finish();
+            }
+        }, 120_000L);
         getWindow().setStatusBarColor(Color.BLACK);
         getWindow().setNavigationBarColor(Color.BLACK);
 

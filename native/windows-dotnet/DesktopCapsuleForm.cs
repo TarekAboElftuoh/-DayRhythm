@@ -35,6 +35,7 @@ namespace DayRhythm
         private readonly Action<bool> _onVisibilityChanged;
         private readonly Action _onQuickWater;
         private readonly Action _onQuickMedication;
+        private readonly Action<string, string> _onPrefsChangedByUser;
 
         private readonly ContextMenuStrip _contextMenu;
         private readonly ToolStripMenuItem _orientHorizItem;
@@ -55,13 +56,15 @@ namespace DayRhythm
             Action onOpenMainWindow,
             Action<bool> onVisibilityChanged,
             Action onQuickWater = null,
-            Action onQuickMedication = null)
+            Action onQuickMedication = null,
+            Action<string, string> onPrefsChangedByUser = null)
         {
             _settings = settings;
             _onOpenMainWindow = onOpenMainWindow;
             _onVisibilityChanged = onVisibilityChanged;
             _onQuickWater = onQuickWater;
             _onQuickMedication = onQuickMedication;
+            _onPrefsChangedByUser = onPrefsChangedByUser;
 
             _isVertical = string.Equals(_settings.CapsuleOrientation, "vertical", StringComparison.OrdinalIgnoreCase);
             _sizeMode = NormalizeSize(_settings.CapsuleSize);
@@ -290,6 +293,9 @@ namespace DayRhythm
             return "md";
         }
 
+        // A right-click change used to stay inside this window only: the main app kept pushing its
+        // own (old) orientation/size back a few seconds later, so the change never "took". The app
+        // is now told, so it adopts the choice and syncs it to the phone as well.
         private void SetOrientation(bool vertical)
         {
             _isVertical = vertical;
@@ -297,6 +303,7 @@ namespace DayRhythm
             AppConfig.SaveSettings(_settings);
             SyncMenuCheckmarks();
             PushStateToWeb();
+            _onPrefsChangedByUser?.Invoke(_settings.CapsuleOrientation, _sizeMode);
         }
 
         private void SetSizeMode(string mode)
@@ -306,6 +313,7 @@ namespace DayRhythm
             AppConfig.SaveSettings(_settings);
             SyncMenuCheckmarks();
             PushStateToWeb();
+            _onPrefsChangedByUser?.Invoke(_isVertical ? "vertical" : "horizontal", _sizeMode);
         }
 
         public void UpdateState(CapsuleStatePayload payload)

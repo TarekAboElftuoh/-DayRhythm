@@ -289,6 +289,22 @@ service cloud.firestore {
         && (!('cloudApiUrl' in u) || (u.cloudApiUrl is string && u.cloudApiUrl.size() <= 240));
     }
 
+    function isValidAppSettings(a) {
+      return a is map
+        && a.keys().hasOnly([
+          'phoneChargeLimitPct',
+          'smartChargeAlertEnabled',
+          'smartChargeKeepUntilUnplugged',
+          'waterRemindersEnabled',
+          'sunMode'
+        ])
+        && (!('phoneChargeLimitPct' in a) || (a.phoneChargeLimitPct is int && a.phoneChargeLimitPct >= 60 && a.phoneChargeLimitPct <= 100))
+        && (!('smartChargeAlertEnabled' in a) || a.smartChargeAlertEnabled is bool)
+        && (!('smartChargeKeepUntilUnplugged' in a) || a.smartChargeKeepUntilUnplugged is bool)
+        && (!('waterRemindersEnabled' in a) || a.waterRemindersEnabled is bool)
+        && (!('sunMode' in a) || a.sunMode is bool);
+    }
+
     function isValidUserRhythmState(data, userId) {
       return data.keys().hasAll([
           'uid',
@@ -326,6 +342,7 @@ service cloud.firestore {
           'syncSignal',
           'phoneBattery',
           'uiPrefs',
+          'appSettings',
           'createdAt',
           'updatedAt'
         ])
@@ -361,6 +378,7 @@ service cloud.firestore {
         && (!('syncSignal' in data) || isValidSyncSignal(data.syncSignal))
         && (!('phoneBattery' in data) || isValidPhoneBattery(data.phoneBattery))
         && (!('uiPrefs' in data) || isValidUiPrefs(data.uiPrefs))
+        && (!('appSettings' in data) || isValidAppSettings(data.appSettings))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -601,6 +619,9 @@ service cloud.firestore {
           // Action 2b: Cross-device UI preferences update (logo & capsule orientation/size)
           incoming().diff(existing()).affectedKeys().hasOnly(['uiPrefs', 'updatedAt'])
           ||
+          // Action 2c: Cross-device app settings (charge limit/alert, water reminders, sun mode)
+          incoming().diff(existing()).affectedKeys().hasOnly(['appSettings', 'updatedAt'])
+          ||
           // Action 3: Full user rhythm state & life profile sync (supports legacy field removal via deleteField)
           (
             incoming().diff(existing()).addedKeys().hasOnly([
@@ -621,6 +642,7 @@ service cloud.firestore {
               'syncSignal',
               'phoneBattery',
               'uiPrefs',
+              'appSettings',
               'createdAt',
               'updatedAt'
             ])
@@ -642,6 +664,7 @@ service cloud.firestore {
               'syncSignal',
               'phoneBattery',
               'uiPrefs',
+              'appSettings',
               'createdAt',
               'updatedAt'
             ])
