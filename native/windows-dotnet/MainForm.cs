@@ -48,6 +48,8 @@ namespace DayRhythm
         private bool _isDownloadingUpdate;
         private string _wsStatusText = "متصل 24/7 (Firestore لحظي)";
         private ReleaseUpdateInfo _pendingUpdate;
+        private DateTime _lastLanBatteryUtc = DateTime.MinValue;
+        private LanBatteryTelemetry _lastLanBattery;
 
         public MainForm(bool startHidden)
         {
@@ -375,6 +377,14 @@ namespace DayRhythm
                                         CapsuleStatePayload payload = JsonSerializer.Deserialize<CapsuleStatePayload>(msg);
                                         if (payload != null)
                                         {
+                                            // Guard: If LAN reported the phone charging within the last 30s, keep charging telemetry active
+                                            if (_lastLanBattery != null && _lastLanBattery.EffectiveCharging && (DateTime.UtcNow - _lastLanBatteryUtc).TotalSeconds < 30)
+                                            {
+                                                payload.phoneCharging = true;
+                                                payload.phoneBatteryPct = _lastLanBattery.EffectiveLevel;
+                                                payload.phoneChargeLimitPct = _lastLanBattery.EffectiveLimit;
+                                                payload.phoneChargeEtaMin = _lastLanBattery.EffectiveEta;
+                                            }
                                             RunOnUi(() => _capsuleForm?.UpdateState(payload));
                                         }
                                     }
@@ -881,6 +891,9 @@ namespace DayRhythm
             if (telemetry == null) return;
             RunOnUi(() =>
             {
+                _lastLanBattery = telemetry;
+                _lastLanBatteryUtc = DateTime.UtcNow;
+
                 int level = telemetry.EffectiveLevel;
                 bool charging = telemetry.EffectiveCharging;
                 int eta = telemetry.EffectiveEta;
@@ -896,6 +909,12 @@ namespace DayRhythm
                     p.phoneChargeLimitPct = limit;
                     p.phoneChargeEtaMin = eta;
                     _capsuleForm.UpdateState(p);
+
+                    // When charging begins, show floating capsule if not currently visible
+                    if (charging && !_capsuleForm.Visible)
+                    {
+                        _capsuleForm.ShowFloating();
+                    }
                 }
 
                 // 2. Dispatch to WebView2 web app

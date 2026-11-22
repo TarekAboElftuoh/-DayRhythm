@@ -113,6 +113,22 @@ public class DayRhythmSyncService extends Service {
             if (isDestroyed) return;
             refreshPersistentNotification();
             cancelLiveAlertCapsule();
+
+            // Periodic LAN battery broadcast heartbeat while charging (every 10 seconds)
+            if (lastBroadcastCharging) {
+                long now = System.currentTimeMillis();
+                if (now - lastPeriodicLanBroadcastMs >= 10_000L) {
+                    lastPeriodicLanBroadcastMs = now;
+                    sendLanBatteryBroadcast(
+                            lastBroadcastBatteryLevel,
+                            true,
+                            lastBroadcastEtaMinutes,
+                            lastBroadcastLimit,
+                            null
+                    );
+                }
+            }
+
             if (liveTargetEpochMs > 0L) {
                 long remainingMs = liveTargetEpochMs - System.currentTimeMillis();
                 long leadMs = Math.max(1, liveAlertsLeadMinutes) * 60_000L;
@@ -121,7 +137,11 @@ public class DayRhythmSyncService extends Service {
                 } else if (remainingMs > leadMs && liveAlertsEnabled) {
                     long waitMs = Math.min(remainingMs - leadMs + 100L, 15_000L);
                     handler.postDelayed(this, Math.max(1000L, waitMs));
+                } else if (lastBroadcastCharging) {
+                    handler.postDelayed(this, 10_000L);
                 }
+            } else if (lastBroadcastCharging) {
+                handler.postDelayed(this, 10_000L);
             }
         }
     };
@@ -309,6 +329,9 @@ public class DayRhythmSyncService extends Service {
     private int chargeSessionStartLevel = -1;
     private int lastBroadcastBatteryLevel = -1;
     private boolean lastBroadcastCharging = false;
+    private int lastBroadcastEtaMinutes = -1;
+    private int lastBroadcastLimit = 90;
+    private long lastPeriodicLanBroadcastMs = 0L;
 
     /** Called from the web app (JS bridge) whenever the limit or the on/off switch changes. */
     public static void saveChargeLimitSettings(Context context, int limitPct, boolean enabled) {
@@ -368,6 +391,7 @@ public class DayRhythmSyncService extends Service {
                     if (lastBroadcastCharging || lastBroadcastBatteryLevel != pct) {
                         lastBroadcastCharging = false;
                         lastBroadcastBatteryLevel = pct;
+                        lastBroadcastEtaMinutes = -1;
                         broadcastBatteryTelemetry(pct, false, 0, limit);
                     }
                     return;
@@ -393,11 +417,16 @@ public class DayRhythmSyncService extends Service {
                     etaMinutes = Math.max(1, Math.min(240, (int) Math.ceil((limit - pct) / rate)));
                 }
 
+                lastBroadcastEtaMinutes = etaMinutes;
+                lastBroadcastLimit = limit;
+
                 // 3. Broadcast live battery telemetry to PC over LAN / WebSocket
                 if (pct != lastBroadcastBatteryLevel || !lastBroadcastCharging) {
                     lastBroadcastBatteryLevel = pct;
                     lastBroadcastCharging = true;
                     broadcastBatteryTelemetry(pct, true, etaMinutes, limit);
+                    handler.removeCallbacks(liveCountdownTickRunnable);
+                    handler.post(liveCountdownTickRunnable);
                 }
 
                 // 4. Trigger alert when reaching limit (default 90%)

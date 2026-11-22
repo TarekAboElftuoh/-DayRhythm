@@ -5961,7 +5961,7 @@ export default function App() {
     handleAcknowledgeAudioAlert,
   ]);
 
-  // Real-time Mobile Battery Publisher (Streams Phone charging %, remaining charge ETA & limit to PC via WebSocket + Firestore)
+  // Real-time Phone Battery Sync (Mobile publishes local battery; PC receives & displays)
   useEffect(() => {
     const isMobileClient = detectIsMobileDeviceClient();
     const nativeWindow = window as Window & {
@@ -5970,15 +5970,80 @@ export default function App() {
         charging?: boolean;
         chargeTimeRemainingMin?: number;
         deviceLabel?: string;
+        chargeLimitPct?: number;
+        updatedAtMs?: number;
       };
       DayRhythmNative?: {
         getBatterySnapshotJson?: () => string;
       };
     };
-    if (!isMobileClient && !nativeWindow.__dayRhythmNativeBattery && !nativeWindow.DayRhythmNative) {
-      return;
+
+    // 1. DESKTOP / PC RECEIVER:
+    // We only listen for Phone battery telemetry forwarded from MainForm.cs via 'dayrhythm:native-battery'
+    // NEVER poll navigator.getBattery() on PC, as that would read the PC's power state and overwrite the phone!
+    if (!isMobileClient) {
+      const onNativeBattery = (ev: Event) => {
+        const detail = (
+          ev as CustomEvent<{
+            levelPct?: number;
+            charging?: boolean;
+            chargeTimeRemainingMin?: number;
+            chargeLimitPct?: number;
+            deviceLabel?: string;
+            updatedAtMs?: number;
+          }>
+        ).detail;
+        if (detail && typeof detail.levelPct === 'number') {
+          const clampedLevel = Math.max(0, Math.min(100, Math.round(detail.levelPct)));
+          const clampedEta =
+            typeof detail.chargeTimeRemainingMin === 'number' && Number.isFinite(detail.chargeTimeRemainingMin)
+              ? Math.max(-1, Math.min(1440, Math.round(detail.chargeTimeRemainingMin)))
+              : -1;
+          const limit =
+            typeof detail.chargeLimitPct === 'number' && detail.chargeLimitPct > 0
+              ? detail.chargeLimitPct
+              : phoneChargeLimitRef.current;
+          const incoming: PhoneBatteryTelemetry = {
+            levelPct: clampedLevel,
+            charging: Boolean(detail.charging),
+            chargeLimitPct: limit,
+            chargeTimeRemainingMin: detail.charging ? clampedEta : -1,
+            updatedAtMs: typeof detail.updatedAtMs === 'number' ? detail.updatedAtMs : Date.now(),
+            deviceLabel: detail.deviceLabel || 'OnePlus 12R',
+          };
+          setPhoneBattery(incoming);
+          setBatteryGuard((prev) => ({
+            ...prev,
+            levelPct: incoming.levelPct,
+            cableConnected: incoming.charging,
+            pcAlertActive:
+              incoming.charging &&
+              incoming.levelPct >= incoming.chargeLimitPct &&
+              prev.bypassChargingLimitPct === null,
+            autoSilencedByDisconnect: !incoming.charging && prev.cableConnected,
+          }));
+        }
+      };
+
+      window.addEventListener('dayrhythm:native-battery', onNativeBattery);
+      if (nativeWindow.__dayRhythmNativeBattery && typeof nativeWindow.__dayRhythmNativeBattery.levelPct === 'number') {
+        const b = nativeWindow.__dayRhythmNativeBattery;
+        setPhoneBattery({
+          levelPct: Math.max(0, Math.min(100, Math.round(b.levelPct ?? 0))),
+          charging: Boolean(b.charging),
+          chargeLimitPct: b.chargeLimitPct || phoneChargeLimitRef.current,
+          chargeTimeRemainingMin: b.charging ? (b.chargeTimeRemainingMin ?? -1) : -1,
+          updatedAtMs: b.updatedAtMs || Date.now(),
+          deviceLabel: b.deviceLabel || 'OnePlus 12R',
+        });
+      }
+
+      return () => {
+        window.removeEventListener('dayrhythm:native-battery', onNativeBattery);
+      };
     }
 
+    // 2. MOBILE PUBLISHER (Runs strictly on Phone: Android APK or mobile browser)
     let lastSentKey = '';
     let lastFirestorePushMs = 0;
     let pushedToFirestoreOnce = false;
@@ -6002,7 +6067,7 @@ export default function App() {
         chargeLimitPct: limit,
         chargeTimeRemainingMin: charging ? clampedEta : -1,
         updatedAtMs: nowMs,
-        deviceLabel: deviceLabel || 'الهاتف',
+        deviceLabel: deviceLabel || 'OnePlus 12R',
       };
       setPhoneBattery(snapshot);
 
@@ -6114,6 +6179,7 @@ export default function App() {
       getBattery?: () => Promise<BatteryManagerLike>;
     };
 
+    // Only query Web Battery API on mobile web browsers that lack the DayRhythmNative APK bridge
     if (!nativeWindow.DayRhythmNative && typeof navWithBattery.getBattery === 'function') {
       navWithBattery
         .getBattery()
