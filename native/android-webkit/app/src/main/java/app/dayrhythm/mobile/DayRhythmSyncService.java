@@ -96,13 +96,12 @@ public class DayRhythmSyncService extends Service {
         @Override
         public void run() {
             if (isDestroyed) return;
-            refreshLiveAlertCapsule();
+            refreshPersistentNotification();
+            cancelLiveAlertCapsule();
             if (liveTargetEpochMs > 0L) {
                 long remainingMs = liveTargetEpochMs - System.currentTimeMillis();
                 long leadMs = Math.max(1, liveAlertsLeadMinutes) * 60_000L;
-                if (remainingMs <= 0) {
-                    refreshPersistentNotification();
-                } else if (remainingMs <= leadMs && liveAlertsEnabled) {
+                if (remainingMs > 0 && remainingMs <= leadMs && liveAlertsEnabled) {
                     handler.postDelayed(this, 1000L);
                 } else if (remainingMs > leadMs && liveAlertsEnabled) {
                     long waitMs = Math.min(remainingMs - leadMs + 100L, 15_000L);
@@ -533,26 +532,22 @@ public class DayRhythmSyncService extends Service {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (nm == null) return;
 
-            NotificationChannel keepAlive = new NotificationChannel(
-                    CHANNEL_KEEPALIVE,
-                    "العد التنازلي الثابت للمهمة القادمة",
-                    NotificationManager.IMPORTANCE_LOW
-            );
-            keepAlive.setDescription("إشعار ثابت صامت يعرض العد التنازلي للحدث أو المهمة القادمة");
-            keepAlive.setShowBadge(false);
-            keepAlive.setSound(null, null);
-            keepAlive.enableVibration(false);
-            nm.createNotificationChannel(keepAlive);
+            try {
+                nm.deleteNotificationChannel(CHANNEL_KEEPALIVE);
+                nm.cancel(NOTIF_LIVE_ALERT_ID);
+            } catch (Exception ignored) {
+            }
 
             NotificationChannel liveAlerts = new NotificationChannel(
                     CHANNEL_LIVE_ALERTS,
-                    "كبسولة Dynamic Island (Live Alerts)",
+                    "العد التنازلي للمهمة القادمة (Live Alert)",
                     NotificationManager.IMPORTANCE_DEFAULT
             );
-            liveAlerts.setDescription("تظهر تلقائياً قبل التنبيه بـ 5 أو 10 دقائق مع الثواني والإيموجي");
+            liveAlerts.setDescription("يعرض اسم المهمة القادمة والعد التنازلي بالثواني والإيموجي");
             liveAlerts.setShowBadge(false);
             liveAlerts.setSound(null, null);
             liveAlerts.enableVibration(false);
+            liveAlerts.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
             nm.createNotificationChannel(liveAlerts);
 
             // Ensure high-priority audio alarm channel is initialized up-front
@@ -582,30 +577,48 @@ public class DayRhythmSyncService extends Service {
         long nowMs = System.currentTimeMillis();
         boolean hasUpcoming = persistentCountdownEnabled && liveTargetEpochMs > nowMs + 1000L;
 
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_KEEPALIVE)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_LIVE_ALERTS)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setOngoing(true)
                 .setSilent(true)
                 .setOnlyAlertOnce(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .setCategory(NotificationCompat.CATEGORY_STATUS)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setColor(0xFF7FFFD4)
                 .setContentIntent(pi);
 
+        Bundle liveExtras = new Bundle();
         if (hasUpcoming) {
-            String headerTitle = liveEmoji + " " + (liveTitle.isEmpty() ? liveStatusLabel : liveTitle);
-            builder.setContentTitle(headerTitle)
-                    .setContentText(liveStatusLabel)
+            long remainingMs = liveTargetEpochMs - nowMs;
+            long totalSec = Math.max(0L, (remainingMs + 500L) / 1000L);
+            long mins = totalSec / 60L;
+            long secs = totalSec % 60L;
+            String mmss = String.format(Locale.US, "%02d:%02d", mins, secs);
+            String compactPill = liveEmoji + " " + mmss;
+
+            liveExtras.putBoolean("android.requestPromotedOngoing", true);
+            liveExtras.putBoolean("oplus.live_alert.enable", true);
+            liveExtras.putString("android.shortCriticalText", compactPill);
+
+            builder.setContentTitle(compactPill)
+                    .setContentText(liveTitle.isEmpty() ? liveStatusLabel : liveTitle)
+                    .setSubText(liveStatusLabel)
                     .setShowWhen(true)
                     .setWhen(liveTargetEpochMs)
                     .setUsesChronometer(true)
-                    .setChronometerCountDown(true);
+                    .setChronometerCountDown(true)
+                    .setColor(totalSec <= 60 ? 0xFFFF6B6B : 0xFF7FFFD4)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setCategory(NotificationCompat.CATEGORY_EVENT)
+                    .addExtras(liveExtras);
         } else {
+            liveExtras.putBoolean("oplus.live_alert.enable", false);
             builder.setContentTitle("إيقاع اليوم | DayRhythm")
                     .setContentText(syncSubtitle)
                     .setShowWhen(false)
-                    .setUsesChronometer(false);
+                    .setUsesChronometer(false)
+                    .setColor(0xFF7FFFD4)
+                    .setPriority(NotificationCompat.PRIORITY_LOW)
+                    .setCategory(NotificationCompat.CATEGORY_STATUS)
+                    .addExtras(liveExtras);
         }
 
         return builder.build();
