@@ -64,6 +64,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Runnable autoStopRingtoneRunnable = ReminderAlarmReceiver::stopRinging;
     private static final java.util.Map<String, Long> RECENT_FIRED_KEYS = new java.util.concurrent.ConcurrentHashMap<>();
+    private static volatile Context lastAppContext = null;
 
     private static boolean isRecentlyFired(String key) {
         if (key == null || key.isEmpty()) return false;
@@ -162,8 +163,25 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         playNativeAlarmSound(context, continuous, null);
     }
 
+    private static void vibrateOnce(Context context) {
+        if (context == null) return;
+        try {
+            Vibrator vib = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            if (vib != null && vib.hasVibrator()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vib.vibrate(VibrationEffect.createWaveform(VIBRATION_PATTERN, -1));
+                } else {
+                    //noinspection deprecation
+                    vib.vibrate(VIBRATION_PATTERN, -1);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     public static void playNativeAlarmSound(Context context, boolean continuous, String kind) {
         if (context == null) return;
+        lastAppContext = context.getApplicationContext();
         stopRinging();
 
         try {
@@ -183,6 +201,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                         if (activeSoundToken != token) return; // stopped/replaced meanwhile
                     }
                     playSoundOnce(app, soundRes);
+                    vibrateOnce(app);
                     mainHandler.postDelayed(this, periodMs);
                 }
             };
@@ -192,18 +211,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         } catch (Exception ignored) {
         }
 
-        try {
-            Vibrator vib = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
-            if (vib != null && vib.hasVibrator()) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vib.vibrate(VibrationEffect.createWaveform(VIBRATION_PATTERN, -1));
-                } else {
-                    //noinspection deprecation
-                    vib.vibrate(VIBRATION_PATTERN, -1);
-                }
-            }
-        } catch (Exception ignored) {
-        }
+        vibrateOnce(context);
     }
 
     public static void stopRinging() {
@@ -227,6 +235,13 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 } catch (Exception ignored) {
                 }
                 activePlayer = null;
+            }
+        }
+        if (lastAppContext != null) {
+            try {
+                Vibrator vib = (Vibrator) lastAppContext.getSystemService(Context.VIBRATOR_SERVICE);
+                if (vib != null) vib.cancel();
+            } catch (Exception ignored) {
             }
         }
     }
@@ -304,18 +319,17 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         String dedupeKey = (title != null ? title : "") + ":" + (kind != null ? kind : "");
         if (isRecentlyFired(dedupeKey)) return;
 
-        PowerManager.WakeLock wakeLock = null;
         try {
             PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
             if (pm != null) {
                 // Wake screen so the card / alert is immediately visible
-                wakeLock = pm.newWakeLock(
+                PowerManager.WakeLock wakeLock = pm.newWakeLock(
                         PowerManager.SCREEN_BRIGHT_WAKE_LOCK
                                 | PowerManager.ACQUIRE_CAUSES_WAKEUP
                                 | PowerManager.ON_AFTER_RELEASE,
                         "DayRhythm:ImmediateAlarmWakeLock"
                 );
-                wakeLock.acquire(8_000L);
+                wakeLock.acquire(15_000L);
             }
         } catch (Exception ignored) {
         }
@@ -345,10 +359,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     "",
                     snoozeMinutes
             );
-        } finally {
-            if (wakeLock != null && wakeLock.isHeld()) {
-                try { wakeLock.release(); } catch (Exception ignored) { }
-            }
+        } catch (Exception ignored) {
         }
     }
 
@@ -417,23 +428,22 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             String dedupeKey = (title != null ? title : "") + ":" + (kind != null ? kind : "");
             if (isRecentlyFired(dedupeKey)) return;
 
-            PowerManager.WakeLock wakeLock = null;
             try {
                 PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
                 if (pm != null) {
-                    wakeLock = pm.newWakeLock(
+                    PowerManager.WakeLock wakeLock = pm.newWakeLock(
                             PowerManager.SCREEN_BRIGHT_WAKE_LOCK
                                     | PowerManager.ACQUIRE_CAUSES_WAKEUP
                                     | PowerManager.ON_AFTER_RELEASE,
                             "DayRhythm:AlarmWakeLock"
                     );
-                    wakeLock.acquire(10_000L);
+                    wakeLock.acquire(15_000L);
                 }
             } catch (Exception ignored) {
             }
             try {
-                // Play distinct per-category sound once with vibration; no infinite alarm takeover
-                boolean isContinuous = false;
+                // Play distinct per-category sound continuously with repeating vibration pulses
+                boolean isContinuous = true;
                 playNativeAlarmSound(context, isContinuous, kind);
                 showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
 
@@ -445,10 +455,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
                 // If the PC (or another device) stops this alert, stop it here too.
                 CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
-            } finally {
-                if (wakeLock != null && wakeLock.isHeld()) {
-                    try { wakeLock.release(); } catch (Exception ignored) { }
-                }
+            } catch (Exception ignored) {
             }
         }
     }
@@ -605,17 +612,13 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
         try {
             // setAlarmClock() bypasses OnePlus OxygenOS Doze & background throttling reliably!
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (am.canScheduleExactAlarms()) {
-                    am.setAlarmClock(new AlarmManager.AlarmClockInfo(triggerAtMs, showPi), pi);
-                } else {
-                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
-                }
-            } else {
-                am.setAlarmClock(new AlarmManager.AlarmClockInfo(triggerAtMs, showPi), pi);
+            // It does not depend on SCHEDULE_EXACT_ALARM special access toggles.
+            am.setAlarmClock(new AlarmManager.AlarmClockInfo(triggerAtMs, showPi), pi);
+        } catch (Throwable t) {
+            try {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
+            } catch (Throwable ignored) {
             }
-        } catch (SecurityException se) {
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
         }
     }
 

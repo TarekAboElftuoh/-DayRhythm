@@ -280,6 +280,7 @@ public class DayRhythmSyncService extends Service {
 
         registerNetworkRecoveryCallback();
         registerChargeLimitWatcher();
+        CloudSignalClient.startBackgroundSyncSignalWatcher(this);
     }
 
     // ── Charge-limit alert (works with the app closed) ─────────────────────────────
@@ -407,6 +408,7 @@ public class DayRhythmSyncService extends Service {
         }
         clearWsTimers();
         teardownActiveWebSocket("service_stopped");
+        CloudSignalClient.stopBackgroundSyncSignalWatcher();
         super.onDestroy();
     }
 
@@ -557,7 +559,7 @@ public class DayRhythmSyncService extends Service {
                                     title,
                                     body,
                                     kind,
-                                    false,
+                                    true,
                                     snoozeMin
                             );
                         } else if ("alarm_dismiss".equals(scope)) {

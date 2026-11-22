@@ -14,6 +14,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -46,6 +47,10 @@ public class AlarmActivity extends Activity {
     private long startedAtMs = 0L;
     private TextView elapsedView = null;
     private ObjectAnimator pulseAnim = null;
+    private ObjectAnimator cardAlphaAnim = null;
+    private ObjectAnimator cardScaleXAnim = null;
+    private ObjectAnimator cardScaleYAnim = null;
+    private PowerManager.WakeLock activityWakeLock = null;
 
     private final Runnable elapsedRunnable = new Runnable() {
         @Override
@@ -90,6 +95,20 @@ public class AlarmActivity extends Activity {
                 }
             } catch (Exception ignored) {
             }
+        }
+
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                activityWakeLock = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                                | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                                | PowerManager.ON_AFTER_RELEASE,
+                        "DayRhythm:AlarmActivityWakeLock"
+                );
+                activityWakeLock.acquire(60_000L);
+            }
+        } catch (Exception ignored) {
         }
 
         // Auto-dismiss safety timeout after 120s
@@ -172,6 +191,25 @@ public class AlarmActivity extends Activity {
         cardLp.leftMargin = dp(18);
         cardLp.rightMargin = dp(18);
         card.setLayoutParams(cardLp);
+
+        // Eye-catching breathing & pulsing animation for OnePlus 12R lock screen ("تبداء تظهر وتطفي")
+        cardAlphaAnim = ObjectAnimator.ofFloat(card, "alpha", 0.72f, 1.0f);
+        cardAlphaAnim.setDuration(750);
+        cardAlphaAnim.setRepeatMode(ValueAnimator.REVERSE);
+        cardAlphaAnim.setRepeatCount(ValueAnimator.INFINITE);
+        cardAlphaAnim.start();
+
+        cardScaleXAnim = ObjectAnimator.ofFloat(card, "scaleX", 0.985f, 1.015f);
+        cardScaleXAnim.setDuration(750);
+        cardScaleXAnim.setRepeatMode(ValueAnimator.REVERSE);
+        cardScaleXAnim.setRepeatCount(ValueAnimator.INFINITE);
+        cardScaleXAnim.start();
+
+        cardScaleYAnim = ObjectAnimator.ofFloat(card, "scaleY", 0.985f, 1.015f);
+        cardScaleYAnim.setDuration(750);
+        cardScaleYAnim.setRepeatMode(ValueAnimator.REVERSE);
+        cardScaleYAnim.setRepeatCount(ValueAnimator.INFINITE);
+        cardScaleYAnim.start();
 
         // 1. Emoji Breathing Glow Ring
         FrameLayout ringContainer = new FrameLayout(this);
@@ -374,8 +412,16 @@ public class AlarmActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(elapsedRunnable);
-        if (pulseAnim != null && pulseAnim.isRunning()) {
-            pulseAnim.cancel();
+        if (pulseAnim != null && pulseAnim.isRunning()) pulseAnim.cancel();
+        if (cardAlphaAnim != null && cardAlphaAnim.isRunning()) cardAlphaAnim.cancel();
+        if (cardScaleXAnim != null && cardScaleXAnim.isRunning()) cardScaleXAnim.cancel();
+        if (cardScaleYAnim != null && cardScaleYAnim.isRunning()) cardScaleYAnim.cancel();
+        if (activityWakeLock != null && activityWakeLock.isHeld()) {
+            try {
+                activityWakeLock.release();
+            } catch (Exception ignored) {
+            }
+            activityWakeLock = null;
         }
         try {
             unregisterReceiver(closeReceiver);
