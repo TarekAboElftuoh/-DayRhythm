@@ -204,6 +204,8 @@ export function evaluateAudioSanctuary(params: {
   fajrSilenceMinutes: number;
   oneTimeSilenceMinutes?: number;
   meetingActive: boolean;
+  /** true = fully silent (no vibration either), false/undefined = silent with vibration. */
+  meetingMuteFully?: boolean;
   isFriday?: boolean;
 }): ActiveSanctuaryState {
   const {
@@ -215,6 +217,7 @@ export function evaluateAudioSanctuary(params: {
     fajrSilenceMinutes,
     oneTimeSilenceMinutes = 0,
     meetingActive,
+    meetingMuteFully = false,
     isFriday = false,
   } = params;
 
@@ -246,8 +249,10 @@ export function evaluateAudioSanctuary(params: {
   if (meetingActive) {
     return {
       type: 'meeting',
-      labelAr: 'وضع الاجتماع نشط · صامت مع اهتزاز وحفظ الإشعارات',
-      vibrateOnly: true,
+      labelAr: meetingMuteFully
+        ? 'وضع الاجتماع نشط · كتم تام مع حفظ الإشعارات'
+        : 'وضع الاجتماع نشط · صامت مع اهتزاز وحفظ الإشعارات',
+      vibrateOnly: !meetingMuteFully,
     };
   }
 

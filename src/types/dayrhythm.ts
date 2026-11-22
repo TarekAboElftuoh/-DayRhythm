@@ -613,7 +613,8 @@ export interface AppSettingsPatch {
   liveAlertsEnabled?: boolean;
   liveAlertsLeadMinutes?: 5 | 10 | 15 | 20 | 30;
   persistentCountdownNotif?: boolean;
-  autoExecuteChat?: boolean;
+  // NOTE: deliberately no "autoExecuteChat" here — manual-confirm vs instant-execute is a trust
+  // setting only a direct tap on the toggle may change, never Gemini on the user's behalf.
   soundRepeats?: Partial<Record<
     'prayer' | 'water' | 'medication' | 'focus_work' | 'walk_health' | 'sleep_suhoor' | 'meeting_event' | 'general',
     number | 'continuous'

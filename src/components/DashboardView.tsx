@@ -217,8 +217,6 @@ interface DashboardViewProps {
   onDetectGpsLocation: () => Promise<void>;
   isDetectingGps: boolean;
   activeSanctuary: ActiveSanctuaryState;
-  meetingModeActive: boolean;
-  onToggleMeetingMode: () => void;
   silentNotifications: SilentNotificationItem[];
   onClearSilentNotifications: () => void;
   activeAudioAlert: {
@@ -369,8 +367,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onDetectGpsLocation,
   isDetectingGps,
   activeSanctuary,
-  meetingModeActive,
-  onToggleMeetingMode,
   silentNotifications,
   onClearSilentNotifications,
   activeAudioAlert,
@@ -417,6 +413,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [creatingTaskNow, setCreatingTaskNow] = useState(false);
   const [showAllCreative, setShowAllCreative] = useState(false);
   const [showHydrationSchedule, setShowHydrationSchedule] = useState(false);
+  // Timed meeting-mode picker: mode (mute vs vibrate) × duration, so it can't be forgotten-on.
+  const [meetingPickerOpen, setMeetingPickerOpen] = useState(false);
   const [showWaterChart, setShowWaterChart] = useState(false);
   const [showMedChart, setShowMedChart] = useState(false);
   const [pendingDeleteMed, setPendingDeleteMed] = useState<MedicationItem | null>(null);
@@ -1257,19 +1255,69 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <span>{lowEnergyActive ? 'يوم هادئ' : 'يوم هادئ'}</span>
           </button>
 
-          <button
-            type="button"
-            onClick={onToggleMeetingMode}
-            className={`min-h-[34px] px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-              meetingModeActive
-                ? 'border-amber-400/50 bg-amber-400/15 text-amber-200'
-                : 'border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/15'
-            }`}
-            title="كتم الصوت أثناء الاجتماع"
-          >
-            <MicOff className="w-3.5 h-3.5" />
-            <span>{meetingModeActive ? 'إنهاء الاجتماع' : 'اجتماع'}</span>
-          </button>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                // Timed quiet mode is the single source of truth here (it's the one that actually
+                // auto-expires on its own); if it's already running — from this button, from
+                // Gemini, or from another device — one tap ends it early, no picker needed.
+                if (quietMode !== 'normal') {
+                  onSetQuietMode('normal', 0);
+                  setMeetingPickerOpen(false);
+                  return;
+                }
+                setMeetingPickerOpen((v) => !v);
+              }}
+              className={`min-h-[34px] px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+                quietMode !== 'normal'
+                  ? 'border-amber-400/50 bg-amber-400/15 text-amber-200'
+                  : 'border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/15'
+              }`}
+              title="كتم الصوت أثناء الاجتماع (بتوقيت)"
+            >
+              <MicOff className="w-3.5 h-3.5" />
+              <span>{quietMode !== 'normal' ? 'إنهاء الاجتماع' : 'اجتماع'}</span>
+            </button>
+
+            {meetingPickerOpen && (
+              <div className="absolute z-30 top-full mt-1.5 right-0 w-64 rounded-xl border border-white/10 bg-[#0B0E14] p-3 shadow-2xl space-y-2.5">
+                <div className="text-[11px] text-zinc-400">اختر المدة والطريقة، وهتخلص لوحدها تلقائياً</div>
+                {(
+                  [
+                    { mode: 'mute_audio' as const, label: '🔇 ميوت تام + إشعار' },
+                    { mode: 'vibrate_only' as const, label: '📳 اهتزاز فقط + إشعار' },
+                  ]
+                ).map((row) => (
+                  <div key={row.mode} className="space-y-1">
+                    <div className="text-[11px] font-medium text-zinc-300">{row.label}</div>
+                    <div className="grid grid-cols-4 gap-1">
+                      {[15, 30, 60, 120].map((mins) => (
+                        <button
+                          key={mins}
+                          type="button"
+                          onClick={() => {
+                            onSetQuietMode(row.mode, mins);
+                            setMeetingPickerOpen(false);
+                          }}
+                          className="min-h-[30px] rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-[11px] text-zinc-200 cursor-pointer"
+                        >
+                          {mins >= 60 ? `${mins / 60} س` : `${mins} د`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setMeetingPickerOpen(false)}
+                  className="w-full text-[11px] text-zinc-500 hover:text-zinc-300 cursor-pointer pt-1"
+                >
+                  إلغاء
+                </button>
+              </div>
+            )}
+          </div>
 
           <button
             type="button"
@@ -1519,7 +1567,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {activeSanctuary.type === 'meeting' && (
             <button
               type="button"
-              onClick={onToggleMeetingMode}
+              onClick={() => onSetQuietMode('normal', 0)}
               className="px-3 py-1 rounded-lg bg-amber-400 text-black font-bold text-[11px] cursor-pointer"
             >
               إنهاء

@@ -161,14 +161,22 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
                       </button>
                       <button
                         type="button"
-                        onClick={() => setDecision(task.id, 'shift_evening')}
-                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap cursor-pointer transition-colors ${
-                          currentDecision === 'shift_evening'
-                            ? 'bg-indigo-400 text-black font-semibold'
-                            : 'text-zinc-400 hover:text-white'
+                        disabled={!task.canShiftEvening}
+                        onClick={() => task.canShiftEvening && setDecision(task.id, 'shift_evening')}
+                        title={
+                          task.canShiftEvening
+                            ? undefined
+                            : 'مربوط بوقته (زي الشروق أو الغروب) — مينفعش يترحّل'
+                        }
+                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors ${
+                          !task.canShiftEvening
+                            ? 'text-zinc-600 cursor-not-allowed opacity-50'
+                            : currentDecision === 'shift_evening'
+                              ? 'bg-indigo-400 text-black font-semibold cursor-pointer'
+                              : 'text-zinc-400 hover:text-white cursor-pointer'
                         }`}
                       >
-                        🌙 رحّل للمساء
+                        {task.canShiftEvening ? '🌙 رحّل للمساء' : '🔒 مربوط بوقته'}
                       </button>
                       <button
                         type="button"

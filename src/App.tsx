@@ -536,6 +536,18 @@ function resolveTaskActionTargets(
 const GOOGLE_SESSION_EXPIRED_AR =
   'انتهت صلاحية ربط Google — اضغط «تجديد ربط Google الآن» ثم أعد المحاولة.';
 
+const SKIP_PATTERN_STORAGE_KEY = 'dayrhythm_skip_pattern_counts_v1';
+
+/** Stable key for a block title across days (strips emoji/whitespace so "☕ 😌 استراحة" always matches itself). */
+function normalizeSkipPatternKey(titleAr: string): string {
+  return titleAr
+    .replace(/\p{Extended_Pictographic}/gu, '')
+    .replace(/[️‍\s]/g, '')
+    .trim()
+    .toLowerCase()
+    .slice(0, 80);
+}
+
 function detectIsMobileDeviceClient(): boolean {
   if (typeof window === 'undefined') return false;
   // The Android APK always exposes this native bridge.
@@ -760,8 +772,7 @@ export default function App() {
     'idle' | 'resolving_gps' | 'gps_locked' | 'timezone_fallback'
   >('idle');
 
-  // Automatic Audio Silence Sanctuaries + 1-Tap Meeting Mode + Preserved Silent Notifications
-  const [meetingModeActive, setMeetingModeActive] = useState(false);
+  // Automatic Audio Silence Sanctuaries + Timed Meeting Mode (driven by quietMode) + Preserved Silent Notifications
   const [workspaceTokenExpired, setWorkspaceTokenExpired] = useState(false);
   const [isRefreshingWorkspaceToken, setIsRefreshingWorkspaceToken] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
@@ -794,6 +805,20 @@ export default function App() {
   const skipNextRemotePushRef = useRef(false);
   const hasHydratedRemoteRef = useRef(false);
   const localWriteLockUntilRef = useRef<number>(0);
+
+  // Any LOCALLY-initiated lifeProfile edit arms the write lock (see the Firestore listener's
+  // "Date.now() < localWriteLockUntilRef.current" guard above) so a snapshot that happens to
+  // arrive mid-flight — triggered by something unrelated, like the phone's battery ping — can't
+  // revert the very click/tap that caused this edit back to its pre-click value. Previously only
+  // some lifeProfile updaters armed this lock by hand; the quiet-day toggle, the sleep buttons,
+  // and others did not, which is why clicking them could appear to silently "undo itself".
+  const updateLifeProfileLocal = useCallback(
+    (updater: Parameters<typeof setLifeProfile>[0]) => {
+      localWriteLockUntilRef.current = Date.now() + 4500;
+      setLifeProfile(updater);
+    },
+    []
+  );
 
   const [calendarList, setCalendarList] = useState<GoogleCalendarInfo[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<GoogleCalendarEventItem[]>([]);
@@ -964,7 +989,12 @@ export default function App() {
         prayerSilenceMinutes: lifeProfile.prayerSilenceMinutes,
         fajrSilenceMinutes: lifeProfile.fajrSilenceMinutes,
         oneTimeSilenceMinutes: activeOneTimeSilenceMinutes,
-        meetingActive: meetingModeActive,
+        // Any non-normal quietMode (set via the dashboard's timed meeting-mode picker, Gemini,
+        // or another device) now genuinely silences task/water/medication alerts — previously
+        // this depended on a separate meetingModeActive boolean that quietMode never touched,
+        // so picking "mute" or "vibrate" from the picker had no actual muting effect.
+        meetingActive: quietMode !== 'normal',
+        meetingMuteFully: quietMode === 'mute_audio' || quietMode === 'silent_all',
         isFriday: isFridayMode,
       }),
     [
@@ -975,7 +1005,7 @@ export default function App() {
       lifeProfile.prayerSilenceMinutes,
       lifeProfile.fajrSilenceMinutes,
       activeOneTimeSilenceMinutes,
-      meetingModeActive,
+      quietMode,
       isFridayMode,
     ]
   );
@@ -988,7 +1018,7 @@ export default function App() {
     }
     if (activeSanctuary.type !== 'prayer' && wasInPrayerSanctuaryRef.current) {
       wasInPrayerSanctuaryRef.current = false;
-      setLifeProfile((prev) =>
+      updateLifeProfileLocal((prev) =>
         sanitizeLifeProfile({
           ...prev,
           oneTimeSilenceMinutes: 0,
@@ -1320,18 +1350,6 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [activeTimeZone]);
-
-  const handleToggleMeetingMode = useCallback(() => {
-    setMeetingModeActive((prev) => {
-      const next = !prev;
-      showToast(
-        next
-          ? '🎙️ تم تفعيل وضع الاجتماع — كتم الصوت + اهتزاز فقط مع حفظ كل الإشعارات'
-          : '🔊 تم إنهاء وضع الاجتماع وعاد الصوت لوضعه الطبيعي'
-      );
-      return next;
-    });
-  }, [showToast]);
 
   const handleClearSilentNotifications = useCallback(() => {
     setSilentNotifications([]);
@@ -2974,11 +2992,20 @@ export default function App() {
           );
         }
 
-        // Prevent stale server snapshot echoes from reverting an in-flight local click
-        const isOtherDeviceSignal = Boolean(
-          remote.syncSignal && remote.syncSignal.clientId !== clientIdRef.current
-        );
-        if (Date.now() < localWriteLockUntilRef.current && !isOtherDeviceSignal) {
+        // Prevent stale server snapshot echoes from reverting an in-flight local click.
+        //
+        // BUG THIS FIXES: remote.syncSignal is just whatever syncSignal field last happened to be
+        // persisted on the document — it does NOT mean "this snapshot carries a fresh edit from
+        // another device". A snapshot can arrive during our own write-lock window for a totally
+        // unrelated reason (e.g. the phone's battery-telemetry ping touches only `phoneBattery`),
+        // yet still contain the document's lifeProfile/deviceSettings/etc as they stood BEFORE our
+        // in-flight write committed. The old code treated "syncSignal.clientId differs from ours"
+        // (true almost always, since it's a random id from whichever device/session last wrote it)
+        // as "another device just changed something, apply immediately" — which clobbered the
+        // button you *just* clicked with the stale pre-click value. Always honoring the lock here
+        // means a genuine concurrent edit from another device is merely delayed until our own
+        // write's lock window elapses, rather than racing and sometimes losing.
+        if (Date.now() < localWriteLockUntilRef.current) {
           return;
         }
 
@@ -3427,7 +3454,7 @@ export default function App() {
       Math.abs((lifeProfile.currentLat ?? 0) - 30.0444) < 0.005 &&
       Math.abs((lifeProfile.currentLng ?? 0) - 31.2357) < 0.005;
     if (isLegacyCairoDefault) {
-      setLifeProfile((prev) => ({
+      updateLifeProfileLocal((prev) => ({
         ...prev,
         currentCityName: HOME_LOCATION.nameAr,
         currentLat: HOME_LOCATION.lat,
@@ -3492,7 +3519,7 @@ export default function App() {
 
   const handleUpdateLifeProfile = useCallback(
     (patch: Partial<LifeProfile>) => {
-      setLifeProfile((prev) => sanitizeLifeProfile({ ...prev, ...patch }));
+      updateLifeProfileLocal((prev) => sanitizeLifeProfile({ ...prev, ...patch }));
       showToast('تم حفظ وتحديث «الدستور الشخصي» ومزامنته سحابياً ✓');
     },
     [showToast]
@@ -3501,7 +3528,7 @@ export default function App() {
   const handleQuickUpdateWeight = useCallback(
     (nextWeightKg: number) => {
       const clamped = Math.max(35, Math.min(220, Math.round(nextWeightKg * 2) / 2));
-      setLifeProfile((prev) => sanitizeLifeProfile({ ...prev, weightKg: clamped }));
+      updateLifeProfileLocal((prev) => sanitizeLifeProfile({ ...prev, weightKg: clamped }));
       showToast(`⚖️ تم تحديث الوزن إلى ${clamped} كجم وإعادة حساب الماء تلقائياً`);
     },
     [showToast]
@@ -3510,8 +3537,7 @@ export default function App() {
   const handleToggleLowEnergyToday = useCallback(() => {
     const todayIso = getDateIsoInTimeZone(activeTimeZone);
     const nextActive = lifeProfile.lowEnergyDateKey !== todayIso;
-    localWriteLockUntilRef.current = Date.now() + 4500;
-    setLifeProfile((prev) =>
+    updateLifeProfileLocal((prev) =>
       sanitizeLifeProfile({
         ...prev,
         lowEnergyDateKey: nextActive ? todayIso : '',
@@ -3526,7 +3552,7 @@ export default function App() {
 
   const handleUpdateSoundRepeat = useCallback(
     (category: TaskSoundCategory, setting: SoundRepeatSetting) => {
-      setLifeProfile((prev) => {
+      updateLifeProfileLocal((prev) => {
         const nextRepeats = sanitizeSoundRepeats({
           ...(prev.soundRepeats ?? DEFAULT_SOUND_REPEATS),
           [category]: setting,
@@ -3550,7 +3576,7 @@ export default function App() {
     (mode: 'good' | 'short_30' | 'short_60' | 'reset') => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       if (mode === 'reset') {
-        setLifeProfile((prev) =>
+        updateLifeProfileLocal((prev) =>
           sanitizeLifeProfile({
             ...prev,
             sleepDebtMinutes: 0,
@@ -3568,7 +3594,7 @@ export default function App() {
             ? Math.min(currentDebt, Math.max(dailyRhythmPlan.nightlyRecoveryMin, 30))
             : 0;
         const nextDebt = Math.max(0, currentDebt - paidBack);
-        setLifeProfile((prev) =>
+        updateLifeProfileLocal((prev) =>
           sanitizeLifeProfile({
             ...prev,
             sleepDebtMinutes: nextDebt,
@@ -3587,7 +3613,7 @@ export default function App() {
       }
       const addMin = mode === 'short_60' ? 60 : 30;
       const nextDebt = Math.min(480, lifeProfile.sleepDebtMinutes + addMin);
-      setLifeProfile((prev) =>
+      updateLifeProfileLocal((prev) =>
         sanitizeLifeProfile({
           ...prev,
           sleepDebtMinutes: nextDebt,
@@ -3758,7 +3784,7 @@ export default function App() {
         const offlineCity = resolveOfflineCityName(roundedLat, roundedLng, tz);
         const displayCity = geo.city ? `${geo.city}` : offlineCity;
         lastCoordsRef.current = { lat: roundedLat, lng: roundedLng };
-        setLifeProfile((prev) =>
+        updateLifeProfileLocal((prev) =>
           sanitizeLifeProfile({
             ...prev,
             currentCityName: displayCity,
@@ -3771,7 +3797,7 @@ export default function App() {
         showToast(`🌐 تم تحديد موقعك التقريبي (${displayCity}) — وموقع GPS الموبايل يتزامن تلقائياً`);
         void reverseGeocodeCityName(roundedLat, roundedLng, displayCity).then((refined) => {
           if (refined && refined !== displayCity) {
-            setLifeProfile((prev) => sanitizeLifeProfile({ ...prev, currentCityName: refined }));
+            updateLifeProfileLocal((prev) => sanitizeLifeProfile({ ...prev, currentCityName: refined }));
           }
         });
         return true;
@@ -3804,7 +3830,7 @@ export default function App() {
 
       const offlineCityName = resolveOfflineCityName(lat, lng, browserTz);
       lastCoordsRef.current = { lat, lng };
-      setLifeProfile((prev) =>
+      updateLifeProfileLocal((prev) =>
         sanitizeLifeProfile({
           ...prev,
           currentCityName: offlineCityName,
@@ -3823,7 +3849,7 @@ export default function App() {
       // Refine exact Arabic town/district name in background when online (non-blocking)
       void reverseGeocodeCityName(lat, lng, offlineCityName).then((refinedName) => {
         if (refinedName && refinedName !== offlineCityName) {
-          setLifeProfile((prev) =>
+          updateLifeProfileLocal((prev) =>
             sanitizeLifeProfile({
               ...prev,
               currentCityName: refinedName,
@@ -3883,7 +3909,7 @@ export default function App() {
           const cityName = resolveOfflineCityName(lat, lng, browserTz);
 
           lastCoordsRef.current = { lat, lng };
-          setLifeProfile((prev) =>
+          updateLifeProfileLocal((prev) =>
             sanitizeLifeProfile({
               ...prev,
               currentCityName: cityName,
@@ -3895,7 +3921,7 @@ export default function App() {
           showToast(`📍 تم رصد انتقالك تلقائياً (${Math.round(movedKm)} كم) وتحديث المواقيت أوفلاين: ${cityName}`);
           void reverseGeocodeCityName(lat, lng, cityName).then((refined) => {
             if (refined && refined !== cityName) {
-              setLifeProfile((prev) => sanitizeLifeProfile({ ...prev, currentCityName: refined }));
+              updateLifeProfileLocal((prev) => sanitizeLifeProfile({ ...prev, currentCityName: refined }));
             }
           });
         },
@@ -3937,7 +3963,7 @@ export default function App() {
 
     const tzPreset = PRESET_LOCATIONS.find((l) => l.timeZone === browserTz);
     if (tzPreset) {
-      setLifeProfile((prev) =>
+      updateLifeProfileLocal((prev) =>
         sanitizeLifeProfile({
           ...prev,
           currentCityName: tzPreset.nameAr,
@@ -3957,7 +3983,7 @@ export default function App() {
           if (perm.state === 'granted') {
             void handleDetectGpsLocation();
           } else {
-            setLifeProfile((prev) =>
+            updateLifeProfileLocal((prev) =>
               sanitizeLifeProfile({
                 ...prev,
                 currentCityName: browserTz.split('/').pop()?.replace(/_/g, ' ') || prev.currentCityName,
@@ -4020,7 +4046,7 @@ export default function App() {
         const offlineCityName = resolveOfflineCityName(lat, lng, browserTz);
 
         lastCoordsRef.current = { lat, lng };
-        setLifeProfile((prev) =>
+        updateLifeProfileLocal((prev) =>
           sanitizeLifeProfile({
             ...prev,
             currentCityName: offlineCityName,
@@ -4033,7 +4059,7 @@ export default function App() {
 
         void reverseGeocodeCityName(lat, lng, offlineCityName).then((refined) => {
           if (refined && refined !== offlineCityName) {
-            setLifeProfile((prev) => sanitizeLifeProfile({ ...prev, currentCityName: refined }));
+            updateLifeProfileLocal((prev) => sanitizeLifeProfile({ ...prev, currentCityName: refined }));
           }
         });
       },
@@ -5256,6 +5282,40 @@ export default function App() {
     }
     setReflowedBlocksOverride(reflowed);
     appendChangelog('Web/PC', 'تطبيق زحزحة وتدارك اليوم الخالية من التصادم', 'Applied Collision-Free Reflow');
+
+    // "خلي اللي بيتخطّى يبقى متعلَّم عليه، مش بس يروح كده وخلاص": a block picked "❌ تخطّي اليوم"
+    // used to just vanish for the day with nothing remembered. Once the SAME item has been
+    // skipped 3 times via تدارك اليوم, save one memory so Gemini notices the pattern and can
+    // proactively offer to retime/simplify/remove it, instead of silently proposing it again.
+    try {
+      const skipped = reflowed.filter((b) => b.reflowStatus === 'skipped');
+      if (skipped.length > 0) {
+        const counts: Record<string, number> = JSON.parse(
+          localStorage.getItem(SKIP_PATTERN_STORAGE_KEY) || '{}'
+        );
+        const flaggedTitles: string[] = [];
+        skipped.forEach((b) => {
+          const titleAr = cleanCalendarText(b.categoryAr) || b.emojiPair;
+          const key = normalizeSkipPatternKey(titleAr);
+          if (!key) return;
+          counts[key] = (counts[key] ?? 0) + 1;
+          const alreadyNoted = memories.some((m) => m.ruleText.includes(titleAr));
+          if (counts[key] === 3 && !alreadyNoted) {
+            flaggedTitles.push(titleAr);
+          }
+        });
+        localStorage.setItem(SKIP_PATTERN_STORAGE_KEY, JSON.stringify(counts));
+        flaggedTitles.forEach((titleAr) => {
+          handleAddMemory({
+            category: 'priority',
+            ruleText: `لاحظ النظام أن المستخدم تخطّى «${titleAr}» ٣ أيام على الأقل عبر "تدارك اليوم" — هذا نمط متكرر، فاقترح بنفسك تعديل ميعاده أو تبسيطه أو حذفه بدل الاستمرار في جدولته كما هو دون تغيير.`,
+            source: 'system_seed',
+          });
+        });
+      }
+    } catch {
+      // ignore skip-pattern tracking errors
+    }
   };
 
   const handleUndoReflow = () => {
@@ -5366,7 +5426,15 @@ export default function App() {
   const hydrationToday = hydrationHistory[hydrationHistory.length - 1];
 
   // Stable (useCallback) so the effects that depend on handleLogWaterCup don't re-subscribe every render.
+  //
+  // ROOT CAUSE of "water cups revert on their own": this never armed localWriteLockUntilRef, so a
+  // Firestore snapshot that arrived for any unrelated reason (even just the phone's battery ping)
+  // while our own save was still in flight would re-derive hydrationHistory from the document as it
+  // stood BEFORE this click — wiping out the cup you just logged. Same class of bug as the
+  // lifeProfile toggles above; arming the lock here is the actual fix (every previous attempt only
+  // patched symptoms around this).
   const updateTodayHydration = useCallback((updater: (today: HydrationDayLog) => HydrationDayLog) => {
+    localWriteLockUntilRef.current = Date.now() + 4500;
     setHydrationHistory((prev) => {
       if (prev.length === 0) return prev;
       const next = [...prev];
@@ -5469,9 +5537,8 @@ export default function App() {
       showToast('💧 اختصار سريع: تم تسجيل +1 كوب ماء بنجاح ✓');
     } else if (action === 'meeting') {
       setActiveTab('dashboard');
-      setMeetingModeActive(true);
+      handleSetQuietMode('vibrate_only', 30);
       triggerHapticWaveform('water_cup');
-      showToast('🔇 اختصار سريع: تم تفعيل وضع الاجتماع (صامت — الأذان محفوظ)');
     } else if (action === 'voice') {
       setActiveTab('assistant');
       setAutoStartVoice(true);
@@ -5479,7 +5546,7 @@ export default function App() {
     } else if (action === 'chat') {
       setActiveTab('assistant');
     }
-  }, [showToast]);
+  }, [showToast, handleSetQuietMode]);
 
   // Home-screen widget / native shortcuts while the app is already open.
   useEffect(() => {
@@ -8062,8 +8129,6 @@ ${lifeConstitution}
             onDetectGpsLocation={handleDetectGpsLocation}
             isDetectingGps={isDetectingGps}
             activeSanctuary={activeSanctuary}
-            meetingModeActive={meetingModeActive}
-            onToggleMeetingMode={handleToggleMeetingMode}
             silentNotifications={silentNotifications}
             onClearSilentNotifications={handleClearSilentNotifications}
             activeAudioAlert={activeAudioAlert}
