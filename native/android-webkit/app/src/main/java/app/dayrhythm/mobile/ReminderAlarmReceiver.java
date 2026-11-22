@@ -621,6 +621,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 .setColor(0xFF7FFFD4)
                 .setVibrate(VIBRATION_PATTERN)
                 .setAutoCancel(true)
+                .setFullScreenIntent(fullScreenPi, true)
                 .setContentIntent(contentPi)
                 .setDeleteIntent(dismissPi)
                 .addAction(0, doneLabel, donePi)
