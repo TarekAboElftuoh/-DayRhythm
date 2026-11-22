@@ -83,6 +83,7 @@ import {
   hasSameOriginBackend,
   resolveBlockDisplayInfo,
   sanitizePersistedChats,
+  sortChatMessagesChronologically,
   syncSavedCloudApiUrlFromRemote,
 } from './services/apiClient';
 import {
@@ -3474,7 +3475,7 @@ export default function App() {
             merged.push(localMsg);
           }
 
-          return merged;
+          return sortChatMessagesChronologically(merged);
         });
       },
       () => {

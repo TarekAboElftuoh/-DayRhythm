@@ -1650,14 +1650,49 @@ export function subscribeChatMessages(
               const mode: PersistedChatMessage['mode'] = VALID_CHAT_MODES.includes(rawMode)
                 ? rawMode
                 : 'chat';
-              const timestampMs =
-                typeof data.timestampMs === 'number' && Number.isFinite(data.timestampMs)
+              let timestampMs =
+                typeof data.timestampMs === 'number' && Number.isFinite(data.timestampMs) && data.timestampMs > 1_000_000_000_000
                   ? data.timestampMs
-                  : Date.now();
+                  : 0;
+
+              if (!timestampMs && typeof data.createdAtIso === 'string' && data.createdAtIso) {
+                const parsed = Date.parse(data.createdAtIso);
+                if (Number.isFinite(parsed) && parsed > 1_000_000_000_000) {
+                  timestampMs = parsed;
+                }
+              }
+
+              if (!timestampMs && data.createdAt) {
+                if (typeof data.createdAt.toMillis === 'function') {
+                  const ms = data.createdAt.toMillis();
+                  if (Number.isFinite(ms) && ms > 1_000_000_000_000) timestampMs = ms;
+                } else if (typeof data.createdAt.seconds === 'number') {
+                  timestampMs = data.createdAt.seconds * 1000;
+                }
+              }
+
+              if (!timestampMs) {
+                const docId = String(data.id ?? d.id);
+                const match = docId.match(/\b(?:u|m|msg|chat)-(\d{12,14})\b/);
+                if (match) {
+                  const parsed = parseInt(match[1], 10);
+                  if (Number.isFinite(parsed) && parsed > 1_000_000_000_000) {
+                    timestampMs = parsed;
+                  }
+                }
+              }
+
+              if (!timestampMs) {
+                timestampMs = 0;
+              }
+
               const createdAtIso =
                 typeof data.createdAtIso === 'string' && data.createdAtIso
                   ? data.createdAtIso
-                  : new Date(timestampMs).toISOString();
+                  : timestampMs > 0
+                    ? new Date(timestampMs).toISOString()
+                    : undefined;
+
               return {
                 timestampMs,
                 msg: {
@@ -1671,7 +1706,14 @@ export function subscribeChatMessages(
             })
             .filter((item): item is { timestampMs: number; msg: PersistedChatMessage } => item !== null);
 
-          rows.sort((a, b) => a.timestampMs - b.timestampMs);
+          rows.sort((a, b) => {
+            if (a.timestampMs !== b.timestampMs) {
+              return a.timestampMs - b.timestampMs;
+            }
+            if (a.msg.role === 'user' && b.msg.role === 'model') return -1;
+            if (a.msg.role === 'model' && b.msg.role === 'user') return 1;
+            return a.msg.id.localeCompare(b.msg.id);
+          });
           onMessages(rows.map((r) => r.msg));
         },
         onError
@@ -1725,6 +1767,8 @@ export async function upsertChatMessageRecord(
       } else {
         await updateDoc(docRef, {
           text: trimmedText,
+          timestampMs,
+          createdAtIso,
           updatedAt: serverTimestamp(),
         });
       }

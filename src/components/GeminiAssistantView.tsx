@@ -68,6 +68,7 @@ import {
   isContextDependentChatQuery,
   isStandaloneVirtualHost,
   setCachedGeminiResponse,
+  sortChatMessagesChronologically,
 } from '../services/apiClient';
 import {
   getGeminiApiKey,
@@ -280,8 +281,9 @@ function buildLongTermChatContext(
 function buildNormalizedHistory(
   msgs: PersistedChatMessage[]
 ): Array<{ role: 'user' | 'model'; text: string }> {
+  const sorted = sortChatMessagesChronologically(msgs);
   const merged: Array<{ role: 'user' | 'model'; text: string }> = [];
-  for (const m of msgs) {
+  for (const m of sorted) {
     if (m.mode !== 'chat' || m.error || m.id === 'welcome-1') continue;
     const text = (m.text || '').trim();
     if (!text) continue;
@@ -1824,7 +1826,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   );
 
   const visibleMessages = useMemo(
-    () => messages.filter((m) => m.mode === mode),
+    () => sortChatMessagesChronologically(messages.filter((m) => m.mode === mode)),
     [messages, mode]
   );
 
