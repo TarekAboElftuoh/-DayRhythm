@@ -577,6 +577,7 @@ export function sanitizeSyncSignal(raw: unknown): WorkspaceSyncSignal | undefine
     scope: scopeRaw as WorkspaceSyncSignal['scope'],
     action,
     timestampMs,
+    extra: r.extra && typeof r.extra === 'object' ? (r.extra as Record<string, unknown>) : undefined,
   };
 }
 

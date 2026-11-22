@@ -25,6 +25,8 @@ import android.os.SystemClock;
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 
+import org.json.JSONObject;
+
 import java.util.Locale;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
@@ -70,6 +72,8 @@ public class DayRhythmSyncService extends Service {
     private static final long MAX_BACKOFF_MS = 45000L;
     private static final long PING_INTERVAL_MS = 20000L;
     private static final long PONG_TIMEOUT_MS = 10000L;
+
+    private static volatile DayRhythmSyncService instance = null;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Random jitterRandom = new Random();
@@ -199,6 +203,29 @@ public class DayRhythmSyncService extends Service {
         }
     }
 
+    public static void broadcastAlarmTrigger(String title, String body, String kind, int snoozeMinutes) {
+        DayRhythmSyncService svc = instance;
+        if (svc != null && svc.activeWebSocket != null) {
+            try {
+                JSONObject packet = new JSONObject();
+                packet.put("type", "broadcast");
+                packet.put("opId", "op_mob_" + System.currentTimeMillis() + "_" + (new Random().nextInt(9000) + 1000));
+                packet.put("clientId", "android-native");
+                packet.put("scope", "alarm_trigger");
+                packet.put("action", kind != null ? kind : "general");
+                packet.put("timestampMs", System.currentTimeMillis());
+                JSONObject extra = new JSONObject();
+                extra.put("title", title != null ? title : "تنبيه إيقاع اليوم");
+                extra.put("body", body != null ? body : "");
+                extra.put("kind", kind != null ? kind : "general");
+                extra.put("snoozeMinutes", snoozeMinutes);
+                packet.put("extra", extra);
+                svc.activeWebSocket.send(packet.toString());
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     private void startForegroundCompat(Notification notif) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIF_KEEPALIVE_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
@@ -239,6 +266,7 @@ public class DayRhythmSyncService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         restorePersistedLiveState();
         createNotificationChannels();
         UpdateCheckWorker.schedulePeriodicCheck(this);
@@ -369,6 +397,7 @@ public class DayRhythmSyncService extends Service {
     @Override
     public void onDestroy() {
         isDestroyed = true;
+        if (instance == this) instance = null;
         handler.removeCallbacks(liveCountdownTickRunnable);
         cancelLiveAlertCapsule();
         unregisterNetworkRecoveryCallback();
@@ -510,6 +539,33 @@ public class DayRhythmSyncService extends Service {
                     if (isDestroyed || activeWebSocket != webSocket) return;
                     handler.removeCallbacks(pongWatchdogRunnable);
                     if (text.contains("\"pong\"")) return;
+
+                    // Direct native execution of sub-second cross-device alarm triggers & dismissals
+                    try {
+                        JSONObject json = new JSONObject(text);
+                        String scope = json.optString("scope", "");
+                        if ("alarm_trigger".equals(scope)) {
+                            JSONObject extra = json.optJSONObject("extra");
+                            String title = extra != null ? extra.optString("title", "") : json.optString("title", "");
+                            if (title == null || title.isEmpty()) title = "تنبيه إيقاع اليوم";
+                            String body = extra != null ? extra.optString("body", "") : json.optString("body", "");
+                            String kind = extra != null ? extra.optString("kind", "") : json.optString("action", "general");
+                            if (kind == null || kind.isEmpty()) kind = "general";
+                            int snoozeMin = extra != null ? extra.optInt("snoozeMinutes", 5) : 5;
+                            ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                                    DayRhythmSyncService.this,
+                                    title,
+                                    body,
+                                    kind,
+                                    false,
+                                    snoozeMin
+                            );
+                        } else if ("alarm_dismiss".equals(scope)) {
+                            ReminderAlarmReceiver.cancelAllActiveAlarms(DayRhythmSyncService.this);
+                        }
+                    } catch (Exception ignored) {
+                    }
+
                     Intent syncIntent = new Intent(ACTION_WS_SYNC_MESSAGE);
                     syncIntent.setPackage(getPackageName());
                     syncIntent.putExtra(EXTRA_WS_PAYLOAD, text);

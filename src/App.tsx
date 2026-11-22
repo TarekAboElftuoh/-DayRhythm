@@ -1423,7 +1423,8 @@ export default function App() {
     (
       scope: WorkspaceSyncSignal['scope'],
       action: string,
-      undoSnapshotPayload?: DeletedWorkspaceSnapshot
+      undoSnapshotPayload?: DeletedWorkspaceSnapshot,
+      extraPayload?: Record<string, unknown>
     ) => {
       const opId = `op_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
       seenSyncOpIdsRef.current.add(opId);
@@ -1435,6 +1436,7 @@ export default function App() {
         scope,
         action,
         undoSnapshot: undoSnapshotPayload,
+        extra: extraPayload,
         timestampMs,
       };
 
@@ -1463,6 +1465,7 @@ export default function App() {
           scope,
           action,
           timestampMs,
+          extra: extraPayload,
         });
       }
     },
@@ -1551,6 +1554,7 @@ export default function App() {
         taskListId?: string;
         durationMs?: number;
         description?: string;
+        suppressRemoteSync?: boolean;
       }
     ) => {
       const meta = TASK_SOUND_META[category];
@@ -1691,6 +1695,20 @@ export default function App() {
         // ignore WebView2 postMessage errors
       }
 
+      // Instantaneous sub-second cross-device synchronization (PC <-> OnePlus 12R)
+      if (!options?.suppressRemoteSync) {
+        emitCrossDeviceSync('alarm_trigger', category, undefined, {
+          title: visibleTitle,
+          body: visibleDescription
+            ? `${visibleDescription}\n${visibleSource} · ${nowTime12}`
+            : `${visibleSource} · ${nowTime12}`,
+          kind: category,
+          privacyEmoji: privacyBadge,
+          sourceLabel: visibleSource,
+          snoozeMinutes: defaultSnooze,
+        });
+      }
+
       if (!isNativeWin) {
         showToast(`${privacyBadge} · ${visibleTitle} · ${nowTime12}`);
       }
@@ -1698,6 +1716,7 @@ export default function App() {
     [
       activeSanctuary,
       activeTimeZone,
+      emitCrossDeviceSync,
       lifeProfile.cupSizeMl,
       lifeProfile.defaultSnoozeMinutes,
       lifeProfile.soundRepeats,
@@ -2713,6 +2732,7 @@ export default function App() {
       scope?: string;
       action?: string;
       undoSnapshot?: DeletedWorkspaceSnapshot;
+      extra?: Record<string, unknown>;
     }) => {
       if (!payload || payload.clientId === clientIdRef.current) return;
       if (payload.opId) {
@@ -2738,10 +2758,25 @@ export default function App() {
 
       if (payload.scope === 'alarm_trigger') {
         setAlarmRinging(true);
-        triggerTaskAlert('🔔', 'general', {
-          privacyEmoji: '🔔',
-          displayTitle: 'تنبيه متزامن (الموبايل ↔ الكمبيوتر)',
-          sourceLabel: 'مزامنة سحابية فورية',
+        const extra = payload.extra as
+          | {
+              title?: string;
+              body?: string;
+              kind?: TaskSoundCategory;
+              privacyEmoji?: string;
+              sourceLabel?: string;
+              snoozeMinutes?: number;
+            }
+          | undefined;
+        const emoji = extra?.privacyEmoji || '🔔';
+        const title = extra?.title || 'تنبيه متزامن (الموبايل ↔ الكمبيوتر)';
+        const source = extra?.sourceLabel || 'مزامنة سحابية فورية';
+        const soundCat = (extra?.kind || 'general') as TaskSoundCategory;
+        triggerTaskAlert(emoji, soundCat, {
+          privacyEmoji: emoji,
+          displayTitle: title,
+          sourceLabel: source,
+          suppressRemoteSync: true,
         });
         return;
       }
@@ -7930,7 +7965,7 @@ export default function App() {
     ).DayRhythmNative;
     if (!androidBridge?.scheduleExactAlarms || needsAuth) return;
 
-    const nowMs = Date.now();
+    const nowMs = trueNowMs();
     const nowMinInTz = getNowMinutesInTimeZone(activeTimeZone, new Date(nowMs));
     // Anchor on the start of the current minute. `nowMs + (target - nowMin) * 60s` kept the
     // current seconds: scheduling at 10:04:45 made a 10:10 reminder ring at 10:10:45, so the phone
@@ -7960,7 +7995,7 @@ export default function App() {
       for (const p of prayers) {
         if (!p.isObligatory) continue;
         const triggerAtMs = msForMinuteToday(p.alarmMinutes);
-        if (triggerAtMs > nowMs + 15_000) {
+        if (triggerAtMs > nowMs + 1_000) {
           alarms.push({
             id: `prayer_${todayCairoIso}_${p.id}`,
             kind: 'prayer',
@@ -7978,7 +8013,7 @@ export default function App() {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
         if (hydrationToday.slots[idx]) return;
         const triggerAtMs = msForMinuteToday(slot.timeMinutes);
-        if (triggerAtMs > nowMs + 15_000) {
+        if (triggerAtMs > nowMs + 1_000) {
           alarms.push({
             id: `water_${todayCairoIso}_${slot.cupIndex}`,
             kind: 'water',
@@ -8007,7 +8042,7 @@ export default function App() {
         if (!m) continue;
         const medMin = Number(m[1]) * 60 + Number(m[2]);
         const triggerAtMs = msForMinuteToday(medMin);
-        if (triggerAtMs > nowMs + 15_000) {
+        if (triggerAtMs > nowMs + 1_000) {
           alarms.push({
             id: `med_${todayCairoIso}_${med.id}_${t24}`,
             kind: 'medication',
@@ -8026,7 +8061,7 @@ export default function App() {
     for (const block of liveBlocks) {
       if (block.deleted || block.completed || block.isAllDay) continue;
       const triggerAtMs = msForMinuteToday(block.startMin);
-      if (triggerAtMs > nowMs + 15_000) {
+      if (triggerAtMs > nowMs + 1_000) {
         const emoji = (block.emojiPair || '📅').trim();
         const titleText = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
         const desc = cleanCalendarText(block.description || '').slice(0, 220);
@@ -8047,7 +8082,7 @@ export default function App() {
       const info = extractTaskTimeMinutesForToday(tk, todayCairoIso, activeTimeZone);
       if (!info || !info.hasExplicitTime) continue;
       const triggerAtMs = msForMinuteToday(info.startMin);
-      if (triggerAtMs > nowMs + 15_000) {
+      if (triggerAtMs > nowMs + 1_000) {
         const titleText = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
         const notes = cleanCalendarText(tk.notes || '').slice(0, 220);
         alarms.push({

@@ -444,6 +444,9 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 } catch (Exception ignored) {
                 }
 
+                // Sub-second instantaneous sync: notify PC over active WebSocket so desktop card pops up simultaneously!
+                DayRhythmSyncService.broadcastAlarmTrigger(title, body, kind, snoozeMin);
+
                 // If the PC (or another device) stops this alert, stop it here too.
                 CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
             } finally {
@@ -491,7 +494,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 JSONObject item = arr.optJSONObject(i);
                 if (item == null) continue;
                 long triggerAtMs = item.optLong("triggerAtMs", 0L);
-                if (triggerAtMs <= nowMs + 5_000L) continue;
+                if (triggerAtMs <= nowMs + 1_000L) continue;
 
                 String alarmId = item.optString("id", "alarm_" + i);
                 String kind = item.optString("kind", "general");

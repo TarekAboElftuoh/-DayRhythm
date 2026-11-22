@@ -292,6 +292,7 @@ export interface WorkspaceSyncSignal {
   scope: 'calendar' | 'tasks' | 'all' | 'alarm_dismiss' | 'alarm_trigger';
   action: string;
   timestampMs: number;
+  extra?: Record<string, unknown>;
 }
 
 export interface TodayCalendarMeta {
