@@ -100,7 +100,9 @@ public class DayRhythmSyncService extends Service {
             if (liveTargetEpochMs > 0L) {
                 long remainingMs = liveTargetEpochMs - System.currentTimeMillis();
                 long leadMs = Math.max(1, liveAlertsLeadMinutes) * 60_000L;
-                if (remainingMs > 0 && remainingMs <= leadMs && liveAlertsEnabled) {
+                if (remainingMs <= 0) {
+                    refreshPersistentNotification();
+                } else if (remainingMs <= leadMs && liveAlertsEnabled) {
                     handler.postDelayed(this, 1000L);
                 } else if (remainingMs > leadMs && liveAlertsEnabled) {
                     long waitMs = Math.min(remainingMs - leadMs + 100L, 15_000L);
@@ -595,8 +597,10 @@ public class DayRhythmSyncService extends Service {
             String headerTitle = liveEmoji + " " + (liveTitle.isEmpty() ? liveStatusLabel : liveTitle);
             builder.setContentTitle(headerTitle)
                     .setContentText(liveStatusLabel)
-                    .setShowWhen(false)
-                    .setUsesChronometer(false);
+                    .setShowWhen(true)
+                    .setWhen(liveTargetEpochMs)
+                    .setUsesChronometer(true)
+                    .setChronometerCountDown(true);
         } else {
             builder.setContentTitle("إيقاع اليوم | DayRhythm")
                     .setContentText(syncSubtitle)

@@ -66,6 +66,21 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     private static Ringtone activeRingtone = null;
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Runnable autoStopRingtoneRunnable = ReminderAlarmReceiver::stopRinging;
+    private static final java.util.Map<String, Long> RECENT_FIRED_KEYS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static boolean isRecentlyFired(String key) {
+        if (key == null || key.isEmpty()) return false;
+        long now = System.currentTimeMillis();
+        Long prev = RECENT_FIRED_KEYS.get(key);
+        if (prev != null && (now - prev) < 12_000L) {
+            return true;
+        }
+        RECENT_FIRED_KEYS.put(key, now);
+        if (RECENT_FIRED_KEYS.size() > 40) {
+            RECENT_FIRED_KEYS.entrySet().removeIf(entry -> (now - entry.getValue()) > 60_000L);
+        }
+        return false;
+    }
 
     // Each category repeats the app's own sound for it (see soundResForKind) until dismissed.
     private static Runnable pulseRunnable = null;
@@ -287,19 +302,44 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             int snoozeMinutes
     ) {
         if (context == null) return;
-        int notifId = 7100 + Math.abs((title != null ? title : "alarm").hashCode() % 1000);
-        playNativeAlarmSound(context, continuous, kind);
-        showInteractiveNotification(
-                context,
-                notifId,
-                "live_" + notifId,
-                kind != null ? kind : "general",
-                title != null ? title : "تنبيه إيقاع اليوم",
-                body != null ? body : "",
-                "",
-                "",
-                sanitizeSnoozeMinutes(snoozeMinutes)
-        );
+        String dedupeKey = (title != null ? title : "") + ":" + (kind != null ? kind : "");
+        if (isRecentlyFired(dedupeKey)) return;
+
+        PowerManager.WakeLock wakeLock = null;
+        try {
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                // Wake screen so the card / alert is immediately visible
+                wakeLock = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                                | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                                | PowerManager.ON_AFTER_RELEASE,
+                        "DayRhythm:ImmediateAlarmWakeLock"
+                );
+                wakeLock.acquire(8_000L);
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            int notifId = 7100 + Math.abs((title != null ? title : "alarm").hashCode() % 1000);
+            playNativeAlarmSound(context, continuous, kind);
+            showInteractiveNotification(
+                    context,
+                    notifId,
+                    "live_" + notifId,
+                    kind != null ? kind : "general",
+                    title != null ? title : "تنبيه إيقاع اليوم",
+                    body != null ? body : "",
+                    "",
+                    "",
+                    sanitizeSnoozeMinutes(snoozeMinutes)
+            );
+        } finally {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                try { wakeLock.release(); } catch (Exception ignored) { }
+            }
+        }
     }
 
     @Override
@@ -364,12 +404,20 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
 
         if (ACTION_FIRE_ALARM.equals(action)) {
+            String dedupeKey = (title != null ? title : "") + ":" + (kind != null ? kind : "");
+            if (isRecentlyFired(dedupeKey)) return;
+
             PowerManager.WakeLock wakeLock = null;
             try {
                 PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
                 if (pm != null) {
-                    wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DayRhythm:AlarmWakeLock");
-                    wakeLock.acquire(8_000L);
+                    wakeLock = pm.newWakeLock(
+                            PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                                    | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                                    | PowerManager.ON_AFTER_RELEASE,
+                            "DayRhythm:AlarmWakeLock"
+                    );
+                    wakeLock.acquire(10_000L);
                 }
             } catch (Exception ignored) {
             }
@@ -378,6 +426,25 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 boolean isContinuous = false;
                 playNativeAlarmSound(context, isContinuous, kind);
                 showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
+
+                // Launch desktop-style AlarmActivity card over lock screen
+                try {
+                    Intent fsIntent = new Intent(context, AlarmActivity.class);
+                    fsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
+                    fsIntent.putExtra(EXTRA_NOTIF_ID, notifId);
+                    fsIntent.putExtra(EXTRA_ALARM_ID, alarmId);
+                    fsIntent.putExtra(EXTRA_KIND, kind);
+                    fsIntent.putExtra(EXTRA_TITLE, title);
+                    fsIntent.putExtra(EXTRA_BODY, body);
+                    fsIntent.putExtra(EXTRA_MED_ID, medId);
+                    fsIntent.putExtra(EXTRA_DOSE_TIME, doseTime);
+                    fsIntent.putExtra(EXTRA_SNOOZE_MIN, snoozeMin);
+                    context.startActivity(fsIntent);
+                } catch (Exception ignored) {
+                }
+
                 // If the PC (or another device) stops this alert, stop it here too.
                 CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
             } finally {

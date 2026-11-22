@@ -5781,14 +5781,6 @@ export default function App() {
       }
     };
 
-    // Android APK: water/medication/calendar/task reminders are already scheduled as exact native
-    // alarms (same second as the PC, and they ring even with the app closed). Firing them here too
-    // made the phone ring two or three times for one reminder.
-    const nativeOwnsReminders = Boolean(
-      (window as Window & { DayRhythmNative?: { scheduleExactAlarms?: unknown } }).DayRhythmNative
-        ?.scheduleExactAlarms
-    );
-    if (!nativeOwnsReminders) {
     // 1. Water cup reminders (Emoji-only privacy notification — clicking confirms drinking)
     if (waterRemindersEnabled && hydrationToday) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
@@ -5895,8 +5887,6 @@ export default function App() {
         sendSystemNotification('☑️ مهمة الآن', `${cleanTitle} · ${time12}`, key);
       }
     });
-
-    } // end: reminders owned by native alarms on Android
 
     // 4. Proactive Medication Low-Stock Refill Reminder (default 3 days before running out)
     medications.forEach((med) => {
