@@ -67,17 +67,101 @@ export function isCustomGeminiApiKeySet(): boolean {
 }
 
 /**
- * Model chain: starts with the user-specified gemini-2.5-flash as default,
- * and seamlessly falls back to active fast models if Google reports 404/deprecated or 503.
+ * Smart model routing (measured 2026-11-22, time to first streamed token):
+ *   gemini-3.1-flash-lite ≈ 0.8 s · gemini-3.5-flash (minimal thinking) ≈ 2 s · gemini-3.5-flash (default thinking) ≈ 3 s.
+ *   gemini-2.5-flash now returns 404 ("no longer available to new users") and only wasted a round trip.
+ *
+ * - Plain chat / questions  → fastest model first.
+ * - Requests that may edit the calendar, tasks, meds, profile → stronger model with light thinking
+ *   (function-calling accuracy matters more than ~1 s there).
+ * Models that answer 404 are remembered for 24 h and skipped; the last model that worked is tried first.
  */
-export const GEMINI_MODEL_CHAIN = [
-  'gemini-2.5-flash',
-  'gemini-3.5-flash',
+export const GEMINI_FAST_CHAIN = [
   'gemini-3.1-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-3.5-flash',
+  'gemini-flash-latest',
+] as const;
+
+export const GEMINI_ACTION_CHAIN = [
+  'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-flash-latest',
   'gemini-3.8-flash',
+  'gemini-3.1-flash-lite',
 ] as const;
+
+/** Kept for callers/labels that need "the" default model. */
+export const GEMINI_MODEL_CHAIN = GEMINI_ACTION_CHAIN;
+
+type GeminiRoute = 'fast' | 'action';
+const GEMINI_DEAD_MODELS_KEY = 'dayrhythm_gemini_dead_models_v1';
+const GEMINI_LAST_GOOD_KEY = 'dayrhythm_gemini_last_good_v1';
+const DEAD_MODEL_TTL_MS = 24 * 60 * 60_000;
+
+function readJsonStorage<T>(key: string, fallback: T): T {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonStorage(key: string, value: unknown): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function markModelUnavailable(model: string): void {
+  const dead = readJsonStorage<Record<string, number>>(GEMINI_DEAD_MODELS_KEY, {});
+  dead[model] = Date.now() + DEAD_MODEL_TTL_MS;
+  writeJsonStorage(GEMINI_DEAD_MODELS_KEY, dead);
+}
+
+function rememberWorkingModel(route: GeminiRoute, model: string): void {
+  const last = readJsonStorage<Record<string, string>>(GEMINI_LAST_GOOD_KEY, {});
+  if (last[route] === model) return;
+  last[route] = model;
+  writeJsonStorage(GEMINI_LAST_GOOD_KEY, last);
+}
+
+/** Ordered candidates for a route: last working model first, models known to be gone skipped. */
+export function resolveGeminiModelOrder(route: GeminiRoute): string[] {
+  const base: string[] = [...(route === 'fast' ? GEMINI_FAST_CHAIN : GEMINI_ACTION_CHAIN)];
+  const lastGood = readJsonStorage<Record<string, string>>(GEMINI_LAST_GOOD_KEY, {})[route];
+  if (lastGood && base.includes(lastGood)) {
+    base.splice(base.indexOf(lastGood), 1);
+    base.unshift(lastGood);
+  }
+  const dead = readJsonStorage<Record<string, number>>(GEMINI_DEAD_MODELS_KEY, {});
+  const now = Date.now();
+  const alive = base.filter((m) => !(dead[m] && dead[m] > now));
+  return alive.length > 0 ? alive : base;
+}
+
+/** Light thinking for Gemini 3.x (default thinking added ~1 s+ before the first word). */
+function thinkingConfigFor(model: string, route: GeminiRoute): Record<string, unknown> | undefined {
+  if (!model.startsWith('gemini-3')) return undefined;
+  return { thinkingLevel: route === 'action' ? 'low' : 'minimal' };
+}
+
+function withModelConfig(
+  requestBody: Record<string, unknown>,
+  model: string,
+  route: GeminiRoute,
+  includeThinking: boolean
+): Record<string, unknown> {
+  const thinking = includeThinking ? thinkingConfigFor(model, route) : undefined;
+  if (!thinking) return requestBody;
+  const generationConfig = (requestBody.generationConfig as Record<string, unknown> | undefined) ?? {};
+  return { ...requestBody, generationConfig: { ...generationConfig, thinkingConfig: thinking } };
+}
 
 export interface GeminiConnectionStatus {
   ok: boolean;
@@ -516,20 +600,39 @@ export function buildChatSystemInstruction(payload: ChatRequestPayload): {
           .join('\n')}`
       : '';
 
+  // The fetched window starts YESTERDAY, and a full routine is ~20 events/day, so the old
+  // `.slice(0, 18)` only ever showed Gemini yesterday's events. Send what is still ahead, with dates.
+  // Events the user names in the message are always included, so Gemini never has to guess an id.
+  const nowMs = Date.now();
+  const userText = payload.message || '';
+  const allUpcoming = (Array.isArray(payload.calendarEvents) ? payload.calendarEvents : [])
+    .filter((e) => {
+      const endMs = new Date(e.end || e.start).getTime();
+      return Number.isNaN(endMs) || endMs >= nowMs;
+    })
+    .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+  const mentioned = allUpcoming.filter((e) => {
+    const s = (e.summary || '').trim();
+    return s.length >= 2 && userText.includes(s);
+  });
+  const upcomingEvents = [...mentioned, ...allUpcoming.filter((e) => !mentioned.includes(e))]
+    .slice(0, 45)
+    .sort((a, b) => String(a.start).localeCompare(String(b.start)));
   const eventsListText =
-    Array.isArray(payload.calendarEvents) && payload.calendarEvents.length > 0
-      ? `\n\nأحداث Google Calendar:\n${payload.calendarEvents
-          .slice(0, 18)
+    upcomingEvents.length > 0
+      ? `\n\nأحداث Google Calendar القادمة (من الآن):\n${upcomingEvents
           .map(
             (e) =>
-              `- [id=${e.id}${e.calendarId ? `|cal=${e.calendarId}` : ''}] ${e.summary} | ${formatServerIsoTo12h(e.start)}${e.end ? `–${formatServerIsoTo12h(e.end)}` : ''}`
+              `- [id=${e.id}${e.calendarId ? `|cal=${e.calendarId}` : ''}] ${e.summary} | ${String(e.start).slice(0, 10)} ${formatServerIsoTo12h(e.start)}${e.end ? `–${formatServerIsoTo12h(e.end)}` : ''}`
           )
           .join('\n')}`
       : '';
 
   const tasksListText =
     Array.isArray(payload.tasks) && payload.tasks.length > 0
-      ? `\n\nمهام Google Tasks:\n${payload.tasks
+      ? `\n\nمهام Google Tasks:\n${[...payload.tasks]
+          // open tasks first; completed ones only fill the remaining slots
+          .sort((a, b) => Number(a.status === 'completed') - Number(b.status === 'completed'))
           .slice(0, 15)
           .map(
             (t) =>
@@ -732,7 +835,7 @@ export async function checkGeminiStatus(forceProbe = false): Promise<GeminiConne
         ok: true,
         connected: true,
         status: 'online',
-        model: 'gemini-2.5-flash',
+        model: resolveGeminiModelOrder('fast')[0],
         latencyMs: roundTrip,
         checkedAtIso: new Date().toISOString(),
       };
@@ -745,7 +848,7 @@ export async function checkGeminiStatus(forceProbe = false): Promise<GeminiConne
         ok: true,
         connected: true,
         status: 'degraded',
-        model: 'gemini-2.5-flash',
+        model: resolveGeminiModelOrder('fast')[0],
         latencyMs: roundTrip,
         checkedAtIso: new Date().toISOString(),
         error: 'ضغط مؤقت على Gemini — المحاولة التلقائية نشطة ويمكنك الإرسال مباشرة.',
@@ -757,7 +860,7 @@ export async function checkGeminiStatus(forceProbe = false): Promise<GeminiConne
       ok: false,
       connected: false,
       status: 'offline',
-      model: 'gemini-2.5-flash',
+      model: resolveGeminiModelOrder('fast')[0],
       latencyMs: roundTrip,
       checkedAtIso: new Date().toISOString(),
       error: errData.error?.message ? formatFriendlyGeminiErrorAr(errData.error.message) : `تعذر التحقق من مفتاح Gemini (${res.status}).`,
@@ -769,7 +872,7 @@ export async function checkGeminiStatus(forceProbe = false): Promise<GeminiConne
       ok: false,
       connected: false,
       status: 'offline',
-      model: 'gemini-2.5-flash',
+      model: resolveGeminiModelOrder('fast')[0],
       latencyMs: Math.max(1, Date.now() - startedAt),
       checkedAtIso: new Date().toISOString(),
       error: isTimeout ? 'استغرق التحقق وقتاً طويلاً — ستتم إعادة المحاولة تلقائياً.' : formatFriendlyGeminiErrorAr(err),
@@ -828,26 +931,40 @@ export async function apiStreamGeminiChatClient(
   let fullText = '';
   const collectedFnCalls: GeminiFunctionCall[] = [];
   let succeeded = false;
-  let activeModelUsed: string = GEMINI_MODEL_CHAIN[0];
+  const route: GeminiRoute = needsTools ? 'action' : 'fast';
+  const modelOrder = resolveGeminiModelOrder(route);
+  let activeModelUsed: string = modelOrder[0];
   let lastErr: unknown = null;
 
-  for (const modelCandidate of GEMINI_MODEL_CHAIN) {
+  for (const modelCandidate of modelOrder) {
     if (handlers.signal?.aborted) {
       throw new DOMException('Aborted', 'AbortError');
     }
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-        signal: handlers.signal,
-      });
+      const send = (includeThinking: boolean) =>
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withModelConfig(requestBody, modelCandidate, route, includeThinking)),
+          signal: handlers.signal,
+        });
+      let res = await send(true);
+      // A model that rejects the thinking level (HTTP 400 "Thinking level ... not supported") is retried without it.
+      if (res.status === 400 && thinkingConfigFor(modelCandidate, route)) {
+        const peek = (await res.clone().json().catch(() => ({}))) as { error?: { message?: string } };
+        if (/thinking/i.test(peek.error?.message || '')) {
+          res = await send(false);
+        }
+      }
 
       if (!res.ok) {
         const errorJson = (await res.json().catch(() => ({}))) as { error?: { message?: string; code?: number } };
         const errMsg = errorJson?.error?.message || `HTTP ${res.status}`;
+        if (res.status === 404) {
+          markModelUnavailable(modelCandidate);
+        }
         // If 404 (model deprecated for key, e.g. gemini-2.5-flash) or 503 (high demand), try next candidate
         if (res.status === 404 || res.status === 503 || res.status === 429) {
           lastErr = new Error(errMsg);
@@ -931,6 +1048,7 @@ export async function apiStreamGeminiChatClient(
       }
 
       succeeded = true;
+      rememberWorkingModel(route, modelCandidate);
       break;
     } catch (modelErr: unknown) {
       if (modelErr instanceof DOMException && modelErr.name === 'AbortError') {
@@ -949,7 +1067,7 @@ export async function apiStreamGeminiChatClient(
   if (!succeeded && !fullText) {
     // Non-streaming fallback attempt if SSE had issues
     try {
-      const nonStreamFallback = await fetchGeminiChatNonStream(requestBody, apiKey);
+      const nonStreamFallback = await fetchGeminiChatNonStream(requestBody, apiKey, modelOrder, route);
       if (nonStreamFallback) {
         fullText = nonStreamFallback.text;
         if (nonStreamFallback.fnCalls) {
@@ -987,15 +1105,18 @@ export async function apiStreamGeminiChatClient(
 
 async function fetchGeminiChatNonStream(
   requestBody: Record<string, unknown>,
-  apiKey: string
+  apiKey: string,
+  modelOrder: string[],
+  route: GeminiRoute
 ): Promise<{ text: string; fnCalls: GeminiFunctionCall[] } | null> {
-  for (const modelCandidate of GEMINI_MODEL_CHAIN) {
+  for (const modelCandidate of modelOrder) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+        // Plain body (no thinking override) — this is the last-resort path.
+        body: JSON.stringify(withModelConfig(requestBody, modelCandidate, route, false)),
       });
       if (!res.ok) continue;
       const data = (await res.json()) as {

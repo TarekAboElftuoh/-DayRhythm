@@ -431,6 +431,65 @@ function rollOverHydrationHistoryIfNeeded(
   });
 }
 
+/**
+ * Gemini sometimes invents an event id (e.g. "test_event_123") when the target event was not in
+ * its context. Google then answers 404 on DELETE, which the executor treats as "already deleted",
+ * so the user saw "done" while nothing changed. Resolve every update/delete target against the
+ * events we actually fetched: exact id first, then exact title (+ date when given), and refuse
+ * clearly when the event can't be found or the title is ambiguous.
+ */
+function resolveCalendarActionTargets(
+  actions: CalendarActionProposal[],
+  knownEvents: GoogleCalendarEventItem[]
+): CalendarActionProposal[] {
+  const norm = (s: string | undefined) => (s || '').replace(/\s+/g, ' ').trim();
+  return actions.map((act) => {
+    if (act.operation !== 'delete' && act.operation !== 'update' && act.operation !== 'shift') {
+      return act;
+    }
+    const byId = act.eventId ? knownEvents.find((e) => e.id === act.eventId) : undefined;
+    if (byId) {
+      return { ...act, calendarId: byId.calendarId || act.calendarId };
+    }
+    const title = norm(act.title);
+    let candidates = knownEvents.filter((e) => norm(e.summary) === title);
+    if (act.dateIso && candidates.length > 1) {
+      const sameDay = candidates.filter((e) => String(e.start).startsWith(act.dateIso!));
+      if (sameDay.length > 0) candidates = sameDay;
+    }
+    if (candidates.length === 1) {
+      return { ...act, eventId: candidates[0].id, calendarId: candidates[0].calendarId || act.calendarId };
+    }
+    throw new Error(
+      candidates.length === 0
+        ? `مش لاقي موعد «${title}» في تقويمك — حدّث الجدول واطلبها تاني.`
+        : `فيه أكتر من موعد باسم «${title}» — قول اليوم والساعة بالظبط.`
+    );
+  });
+}
+
+/** Same protection for Google Tasks: never act on a task id Gemini made up. */
+function resolveTaskActionTargets(
+  actions: TaskActionProposal[],
+  knownTasks: GoogleTaskItem[]
+): TaskActionProposal[] {
+  const norm = (s: string | undefined) => (s || '').replace(/\s+/g, ' ').trim();
+  return actions.map((act) => {
+    if (act.operation === 'create') return act;
+    const byId = act.taskId ? knownTasks.find((t) => t.id === act.taskId) : undefined;
+    if (byId) return { ...act, taskListId: byId.taskListId || act.taskListId };
+    const candidates = knownTasks.filter((t) => norm(t.title) === norm(act.title));
+    if (candidates.length === 1) {
+      return { ...act, taskId: candidates[0].id, taskListId: candidates[0].taskListId };
+    }
+    throw new Error(
+      candidates.length === 0
+        ? `مش لاقي مهمة «${norm(act.title)}» — حدّث المهام واطلبها تاني.`
+        : `فيه أكتر من مهمة باسم «${norm(act.title)}» — وضّح أنهي واحدة.`
+    );
+  });
+}
+
 const GOOGLE_SESSION_EXPIRED_AR =
   'انتهت صلاحية ربط Google — اضغط «تجديد ربط Google الآن» ثم أعد المحاولة.';
 
@@ -4252,6 +4311,10 @@ export default function App() {
       options?: { isUndoRestore?: boolean }
     ): Promise<{ googleSynced: boolean; results: CalendarExecutionResult[] }> => {
       if (actions.length === 0) return { googleSynced: false, results: [] };
+      // Undo-restores re-create events that are no longer in the list, so only validate normal runs.
+      if (!options?.isUndoRestore) {
+        actions = resolveCalendarActionTargets(actions, calendarEvents);
+      }
       const token = getCalendarAccessToken();
       let results: CalendarExecutionResult[] = [];
       let googleSynced = false;
@@ -4470,6 +4533,9 @@ export default function App() {
       options?: { isUndoRestore?: boolean }
     ): Promise<{ googleSynced: boolean; results: TaskExecutionResult[] }> => {
       if (taskActions.length === 0) return { googleSynced: false, results: [] };
+      if (!options?.isUndoRestore) {
+        taskActions = resolveTaskActionTargets(taskActions, googleTasks);
+      }
       const token = getCalendarAccessToken();
       if (!token) {
         throw new Error('يرجى تسجيل الدخول بحساب Google لتنفيذ تعديلات Google Tasks.');

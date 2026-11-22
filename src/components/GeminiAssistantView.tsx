@@ -1010,7 +1010,14 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           contextSummary,
           longTermChatContext,
           memories: serializedMemories,
-          calendarEvents: calendarEvents.slice(0, 40).map((e) => ({
+          // Only events that haven't ended yet (the list starts yesterday; slicing first dropped today).
+          calendarEvents: calendarEvents
+            .filter((e) => {
+              const endMs = new Date(e.end || e.start).getTime();
+              return Number.isNaN(endMs) || endMs >= Date.now();
+            })
+            .slice(0, 120)
+            .map((e) => ({
             id: e.id,
             calendarId: e.calendarId,
             calendarTitle: e.calendarTitle,
