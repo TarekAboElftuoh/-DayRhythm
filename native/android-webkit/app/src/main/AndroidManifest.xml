@@ -18,6 +18,15 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -43,6 +52,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Full-screen alert when the phone is locked / screen off -->
+        <activity
+            android:name=".AlarmActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:showWhenLocked="true"
+            android:taskAffinity="app.dayrhythm.mobile.alarm"
+            android:theme="@style/Theme.DayRhythm"
+            android:turnScreenOn="true" />
+
         <service
             android:name=".DayRhythmSyncService"
             android:enabled="true"
@@ -63,6 +83,19 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
+        </receiver>
+
+        <!-- Home-screen widget: type or speak to Gemini -->
+        <receiver
+            android:name=".GeminiWidgetProvider"
+            android:exported="true"
+            android:label="Gemini · إيقاع اليوم">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_gemini_info" />
         </receiver>
 
         <receiver

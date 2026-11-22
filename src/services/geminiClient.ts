@@ -1,4 +1,5 @@
 import {
+  AppSettingsPatch,
   CalendarActionProposal,
   CreativeActivityActionProposal,
   GroundingPlace,
@@ -368,6 +369,7 @@ export const DAYRHYTHM_SYSTEM_INSTRUCTION = `
 5. تحديث الوزن والماء والثوابت بمرونة كاملة:
    - الوزن متغيّر دائماً: لو أبلغك المستخدم بتغيّر وزنه، اقترح فوراً تحديث weightKg عبر propose_profile_updates فيُعاد حساب هدف الماء العلمي وتوزيع الأكواب تلقائياً.
    - عدّل أي ثابت بلا قيود عبر propose_profile_updates، واحفظ أي قاعدة أو مبدأ دائم عبر propose_memory_actions.
+   - أي إعداد في التطبيق نفسه (حد الشحن وتنبيهه، تنبيهات المية، وضع الصمت، صوت الأذان، المود النهاري/الليلي، اللغة، كبسولة الكمبيوتر، التنبيهات الحية، تكرار الرنين، التنفيذ الفوري) غيّره فوراً عبر propose_app_settings بدل ما تطلب من المستخدم يغيّره يدوياً.
 6. الأنشطة الإبداعية والهوايات والمشاريع:
    - استخدم propose_creative_actions لإضافة أو تعديل أو حذف أو تسجيل جلسة نشاط إبداعي، وعند جدولته في Google Calendar ضعه دائماً في الأوقات الفارغة الفعلية.
 7. وضع اليوم الهادئ / الطاقة المنخفضة، وتعديل مدة الصمت لمرة واحدة، وتكرار الرنين، ومدة التأجيل (Snooze):
@@ -545,6 +547,51 @@ export const GEMINI_CHAT_TOOLS = [
         },
       },
       {
+        name: 'propose_app_settings',
+        description:
+          'تغيير أي إعداد في التطبيق نفسه (غير الدستور الشخصي) بناءً على طلب المستخدم: حد الشحن وتنبيهه، تنبيهات المية، وضع الصمت ومدته، صوت الأذان في الصمت، المود النهاري/الليلي، اللغة، شكل وحجم كبسولة الكمبيوتر، التنبيهات الحية والإشعار الثابت، عدد مرات رنين كل نوع تنبيه، والتنفيذ الفوري في الشات. ضع فقط الحقول المطلوب تغييرها.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            summaryAr: { type: 'STRING', description: 'ملخص عربي قصير للتغيير.' },
+            phoneChargeLimitPct: { type: 'INTEGER', description: 'نسبة الشحن (60-100) التي يُنبَّه عندها لفصل الشاحن.' },
+            chargeAlertEnabled: { type: 'BOOLEAN', description: 'تشغيل/إيقاف تنبيه اكتمال الشحن.' },
+            chargeAlertKeepUntilUnplugged: { type: 'BOOLEAN', description: 'استمرار رنين تنبيه الشحن حتى فصل الشاحن.' },
+            waterRemindersEnabled: { type: 'BOOLEAN', description: 'تشغيل/إيقاف تنبيهات أكواب المية.' },
+            quietMode: {
+              type: 'STRING',
+              enum: ['normal', 'mute_audio', 'vibrate_only', 'silent_all'],
+              description: 'وضع الصمت: normal عادي، mute_audio كتم الصوت، vibrate_only اهتزاز فقط، silent_all صمت كامل.',
+            },
+            quietModeMinutes: { type: 'INTEGER', description: 'مدة وضع الصمت بالدقائق (0 = حتى يُلغى يدوياً).' },
+            adhanSoundInSilent: { type: 'BOOLEAN', description: 'تشغيل نداء الأذان حتى أثناء الصمت.' },
+            sunMode: { type: 'BOOLEAN', description: 'true = المود النهاري (مود الشمس)، false = المود الليلي.' },
+            language: { type: 'STRING', enum: ['ar', 'en'], description: 'لغة الواجهة.' },
+            capsuleOrientation: { type: 'STRING', enum: ['horizontal', 'vertical'], description: 'اتجاه كبسولة الكمبيوتر.' },
+            capsuleSize: { type: 'STRING', enum: ['sm', 'md', 'lg'], description: 'حجم كبسولة الكمبيوتر.' },
+            liveAlertsEnabled: { type: 'BOOLEAN', description: 'التنبيهات الحية قبل المواعيد على الموبايل.' },
+            liveAlertsLeadMinutes: { type: 'INTEGER', description: 'كم دقيقة قبل الموعد تبدأ التنبيهات الحية (5/10/15/20/30).' },
+            persistentCountdownNotif: { type: 'BOOLEAN', description: 'الإشعار الثابت بالعد التنازلي على الموبايل.' },
+            autoExecuteChat: { type: 'BOOLEAN', description: 'تنفيذ أوامر الشات فوراً بدون خطوة تأكيد.' },
+            soundRepeats: {
+              type: 'OBJECT',
+              description: 'عدد مرات تكرار رنين كل نوع تنبيه (رقم 1-10).',
+              properties: {
+                prayer: { type: 'INTEGER' },
+                water: { type: 'INTEGER' },
+                medication: { type: 'INTEGER' },
+                focus_work: { type: 'INTEGER' },
+                walk_health: { type: 'INTEGER' },
+                sleep_suhoor: { type: 'INTEGER' },
+                meeting_event: { type: 'INTEGER' },
+                general: { type: 'INTEGER' },
+              },
+            },
+          },
+          required: ['summaryAr'],
+        },
+      },
+      {
         name: 'propose_memory_actions',
         description: 'حفظ أو تحديث أو حذف قاعدة أو مبدأ شخصي دائم في ذاكرة Gemini الدائمة.',
         parameters: {
@@ -575,7 +622,7 @@ export const GEMINI_CHAT_TOOLS = [
 export function shouldAttachChatTools(message: string): boolean {
   const text = (message || '').trim();
   if (!text) return false;
-  return /(أضف|اضف|أضيف|اضيف|ضف|ضيف|احجز|حجز|حط|سجّل|سجل|عدّل|عدل|تعديل|غيّر|غير|تغيير|احذف|حذف|شيل|امسح|الغ|ألغ|رحّل|رحل|انقل|أجّل|اجل|رتّب|رتب|احفظ|حفظ|تذكر|افتكر|تثبيت|ثبّت|جدول|ميعاد|موعد|مهمة|مهام|تاسك|دواء|علاج|فيتامين|مكمل|جرعة|وزن|طول|كوب|صيام|صايم|سحور|نمت|نوم|أرق|ارق|قيلولة|تعبان|مرهق|سفر|مسافر|مدينة|هواية|نشاط|مشروع|صمت|رنين|رنة|add|create|book|schedule|update|edit|delete|remove|move|shift|save|remember|task|event|med|supplement|sleep|weight|fast|travel|done|complete)/i.test(
+  return /(أضف|اضف|أضيف|اضيف|ضف|ضيف|احجز|حجز|حط|سجّل|سجل|عدّل|عدل|تعديل|غيّر|غير|تغيير|احذف|حذف|شيل|امسح|الغ|ألغ|رحّل|رحل|انقل|أجّل|اجل|رتّب|رتب|احفظ|حفظ|تذكر|افتكر|تثبيت|ثبّت|جدول|ميعاد|موعد|مهمة|مهام|تاسك|دواء|علاج|فيتامين|مكمل|جرعة|وزن|طول|كوب|صيام|صايم|سحور|نمت|نوم|أرق|ارق|قيلولة|تعبان|مرهق|سفر|مسافر|مدينة|هواية|نشاط|مشروع|صمت|رنين|رنة|add|create|book|schedule|update|edit|delete|remove|move|shift|save|remember|task|event|med|supplement|sleep|weight|fast|travel|done|complete|خلي|خلّي|فعل|فعّل|اقفل|قفل|شغل|شغّل|وقف|ظبط|اضبط|الشحن|شحن|تنبيه|إشعار|اشعار|مود|نهاري|ليلي|لغة|كبسولة|صوت|أذان|اذان|إعداد|اعداد|setting|mode|charge)/i.test(
     text
   );
 }
@@ -728,8 +775,9 @@ export function extractPendingProposalFromFunctionCalls(fnCalls?: GeminiFunction
   const creativeCall = fnCalls.find((f) => f.name === 'propose_creative_actions');
   const profileCall = fnCalls.find((f) => f.name === 'propose_profile_updates');
   const memoryCall = fnCalls.find((f) => f.name === 'propose_memory_actions');
+  const settingsCall = fnCalls.find((f) => f.name === 'propose_app_settings');
 
-  if (!calCall && !taskCall && !medCall && !creativeCall && !profileCall && !memoryCall) {
+  if (!calCall && !taskCall && !medCall && !creativeCall && !profileCall && !memoryCall && !settingsCall) {
     return undefined;
   }
 
@@ -741,6 +789,10 @@ export function extractPendingProposalFromFunctionCalls(fnCalls?: GeminiFunction
   const { summaryAr: profileSummaryAr, ...rawProfilePatch } = profileArgs;
   const profileUpdates = profileCall && Object.keys(rawProfilePatch).length > 0 ? rawProfilePatch : undefined;
   const memoryArgs = (memoryCall?.args ?? {}) as { summaryAr?: string; memoryActions?: MemoryActionProposal[] };
+  const settingsArgs = (settingsCall?.args ?? {}) as Record<string, unknown>;
+  const { summaryAr: settingsSummaryAr, ...rawSettings } = settingsArgs;
+  const appSettings =
+    settingsCall && Object.keys(rawSettings).length > 0 ? (rawSettings as AppSettingsPatch) : undefined;
 
   const actions = Array.isArray(calArgs.actions) ? calArgs.actions : [];
   const taskActions = Array.isArray(taskArgs.taskActions) ? taskArgs.taskActions : [];
@@ -756,6 +808,7 @@ export function extractPendingProposalFromFunctionCalls(fnCalls?: GeminiFunction
       creativeArgs.summaryAr,
       typeof profileSummaryAr === 'string' ? profileSummaryAr : undefined,
       memoryArgs.summaryAr,
+      typeof settingsSummaryAr === 'string' ? settingsSummaryAr : undefined,
     ]
       .filter(Boolean)
       .join(' · ') || 'تعديل التقويم والدستور والذاكرة الدائمة';
@@ -768,6 +821,7 @@ export function extractPendingProposalFromFunctionCalls(fnCalls?: GeminiFunction
     creativeActions,
     profileUpdates,
     memoryActions,
+    appSettings,
     status: 'pending',
   };
 }

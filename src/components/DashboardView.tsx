@@ -1312,21 +1312,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={() =>
-              onToggleSurfaceTheme(surfaceTheme === 'amoled' ? 'obsidian' : 'amoled')
-            }
-            className="min-h-[34px] w-[34px] rounded-lg border border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-[#7FFFD4] hover:border-white/20 flex items-center justify-center cursor-pointer transition-colors"
-            title={surfaceTheme === 'amoled' ? 'تبديل إلى Obsidian' : 'تبديل إلى AMOLED'}
-            aria-label="تبديل المظهر"
-          >
-            {surfaceTheme === 'amoled' ? (
-              <Moon className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            ) : (
-              <Sun className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            )}
-          </button>
         </div>
       </header>
 

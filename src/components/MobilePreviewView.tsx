@@ -224,8 +224,8 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
         </div>
       </section>
 
-      {/* Primary Section 2: Unified GPS & Battery Sync with PC */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      {/* Primary Section 2: GPS (the phone is the location source for the PC) */}
+      <div className="grid grid-cols-1 gap-5">
         {/* GPS Authority -> PC */}
         <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
           <div className="space-y-1">
@@ -265,54 +265,6 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
           )}
         </section>
 
-        {/* Battery & Smart Charge Limit -> PC */}
-        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
-          <div className="flex items-start justify-between gap-2">
-            <div className="space-y-1">
-              <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                <BatteryCharging className="w-4 h-4 text-amber-300" />
-                <span>البطارية والشحن الذكي</span>
-              </h2>
-              <p className="text-xs text-zinc-400">
-                تصل النسبة ووقت الشحن المتبقي لبرنامج الكمبيوتر لحظياً
-              </p>
-            </div>
-            {phoneBattery && (
-              <div className="text-left">
-                <div className="font-digits text-xl font-extrabold text-white">
-                  {phoneBattery.levelPct}%
-                </div>
-                <div className="text-[11px] text-zinc-400">{batteryEtaText}</div>
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <div className="text-xs text-zinc-400">حد الشحن المفضل (تنبيه تلقائي على الكمبيوتر)</div>
-            <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/50 border border-white/[0.07]">
-              {(
-                [
-                  { val: null, label: 'عادي' },
-                  { val: 80 as const, label: '80%' },
-                  { val: 90 as const, label: '90%' },
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={String(opt.val)}
-                  type="button"
-                  onClick={() => onToggleBypassCharging(opt.val)}
-                  className={`min-h-[38px] rounded-lg text-xs font-bold transition-colors cursor-pointer ${
-                    batteryGuard.bypassChargingLimitPct === opt.val
-                      ? 'bg-[#7FFFD4] text-black'
-                      : 'text-zinc-300 hover:bg-white/[0.05]'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
       </div>
 
       {/* Primary Section 3: Synced Quiet Mode */}
@@ -370,24 +322,9 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
               {(
                 [
                   {
-                    key: 'alertSliderLinked' as const,
-                    title: 'ربط مفتاح Alert Slider',
-                    desc: 'مزامنة وضع الصامت مع الكمبيوتر عند تحريك الزر الجانبي',
-                  },
-                  {
                     key: 'aquaTouchMode' as const,
                     title: 'وضع اللمس المبلل (Aqua Touch)',
                     desc: 'تكبير أزرار التأكيد عند الوضوء أو المطر',
-                  },
-                  {
-                    key: 'ltpoNight1Hz' as const,
-                    title: 'توفير الطاقة الليلي (1Hz)',
-                    desc: 'تعتيم تلقائي للشاشة ليلاً لحفظ البطارية',
-                  },
-                  {
-                    key: 'pocketProtectionEnabled' as const,
-                    title: 'حماية الجيب',
-                    desc: 'منع الإغلاق العرضي للمنبه داخل الجيب',
                   },
                 ] as const
               ).map((item) => {
@@ -415,38 +352,6 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                   </div>
                 );
               })}
-            </div>
-
-            {/* Haptics test */}
-            <div className="space-y-2 pt-2 border-t border-white/[0.06]">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-                  <Vibrate className="w-3.5 h-3.5 text-[#7FFFD4]" />
-                  <span>اختبار اهتزاز الهاتف</span>
-                </span>
-                {lastHapticNote && (
-                  <span className="text-[11px] text-[#7FFFD4]">{lastHapticNote}</span>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {(Object.entries(HAPTIC_WAVEFORMS) as Array<[HapticWaveformKind, (typeof HAPTIC_WAVEFORMS)[HapticWaveformKind]]>).map(
-                  ([kind, wf]) => (
-                    <button
-                      key={kind}
-                      type="button"
-                      onClick={() => {
-                        const supported = triggerHapticWaveform(kind);
-                        setLastHapticNote(
-                          supported ? `تم تشغيل: ${wf.labelAr}` : 'الاهتزاز غير مدعوم في المتصفح الحالي'
-                        );
-                      }}
-                      className="min-h-[36px] px-3 rounded-lg border border-white/[0.08] bg-black/40 text-xs text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-white cursor-pointer"
-                    >
-                      {wf.labelAr}
-                    </button>
-                  )
-                )}
-              </div>
             </div>
 
             {/* Background Permissions Checklist */}

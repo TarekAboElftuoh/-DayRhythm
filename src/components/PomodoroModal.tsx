@@ -42,6 +42,15 @@ export const PomodoroModal: React.FC<PomodoroModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="مؤقت بومودورو القياسي"
+      tabIndex={-1}
+      ref={(el) => el?.focus()}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onClose();
+      }}
+      onClick={(e) => {
+        // Tap outside the card closes it (the timer keeps running).
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div className="w-full max-w-md rounded-2xl border border-white/15 bg-[#0A0D12] p-6 text-zinc-100 shadow-2xl">
         <div className="flex items-center justify-between pb-4 border-b border-white/10">

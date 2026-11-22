@@ -36,6 +36,7 @@ namespace DayRhythm
         private NotifyIcon _trayIcon;
         private DesktopCapsuleForm _capsuleForm;
         private SecondaryMonitorToastForm _activeToastForm;
+        private SecondaryScreenAlertForm _activeScreenAlert;
         private ToolStripMenuItem _wsStatusItem;
         private ToolStripMenuItem _capsuleMenuItem;
         private ToolStripMenuItem _secondaryScreenMenuItem;
@@ -317,7 +318,12 @@ namespace DayRhythm
             try
             {
                 string userDataDir = Path.Combine(AppConfig.GetDataDir(), "WebView2Data");
-                _webViewEnv = await CoreWebView2Environment.CreateAsync(null, userDataDir);
+                // The app lives in the tray most of the time: stop Chromium from throttling timers in a
+                // hidden/minimized window, otherwise alerts could fire up to a minute late.
+                var envOptions = new CoreWebView2EnvironmentOptions(
+                    "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
+                );
+                _webViewEnv = await CoreWebView2Environment.CreateAsync(null, userDataDir, envOptions);
                 await _webView.EnsureCoreWebView2Async(_webViewEnv);
 
                 _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
@@ -396,6 +402,7 @@ namespace DayRhythm
                                                 _activeToastForm.Dispose();
                                                 _activeToastForm = null;
                                             }
+                                            CloseActiveScreenAlert();
                                         });
                                     }
                                 }
@@ -658,8 +665,78 @@ namespace DayRhythm
             }
         }
 
+        private void CloseActiveScreenAlert()
+        {
+            if (_activeScreenAlert != null && !_activeScreenAlert.IsDisposed)
+            {
+                _activeScreenAlert.Close();
+                _activeScreenAlert.Dispose();
+            }
+            _activeScreenAlert = null;
+        }
+
+        private void DispatchToWeb(string script)
+        {
+            RunOnUi(() =>
+            {
+                if (_webView?.CoreWebView2 != null) _ = _webView.CoreWebView2.ExecuteScriptAsync(script);
+            });
+        }
+
+        /// <summary>
+        /// Two monitors + "alerts on secondary screen": take over the whole secondary screen with a big,
+        /// pulsing alert (the screen you're not working on). Returns false to fall back to the small card.
+        /// </summary>
+        private bool TryShowFullScreenSecondaryAlert(NativeAlertPayload payload)
+        {
+            Screen secondary = SecondaryScreenAlertForm.FindSecondaryScreen();
+            if (!_settings.AlertsOnSecondaryScreen || secondary == null || _webViewEnv == null) return false;
+            try
+            {
+                CloseActiveScreenAlert();
+                int fallbackSnooze = payload != null && payload.snoozeMinutes > 0 ? payload.snoozeMinutes : 5;
+                var form = new SecondaryScreenAlertForm(
+                    payload,
+                    secondary,
+                    onWaterConfirmed: () => DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));"),
+                    onMedicationConfirmed: (medId, doseTime24) =>
+                    {
+                        string detailJson = JsonSerializer.Serialize(new { medicationId = medId ?? "", doseTime24 = doseTime24 ?? "" });
+                        DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:medication-confirmed', {{ detail: {detailJson} }}));");
+                    },
+                    onSnoozed: (alertPayload, minutes) =>
+                    {
+                        string detailJson = JsonSerializer.Serialize(new
+                        {
+                            id = alertPayload?.id ?? "",
+                            emoji = alertPayload?.emoji ?? "🔔",
+                            title = alertPayload?.title ?? "",
+                            sourceLabel = alertPayload?.sourceLabel ?? "تنبيه مؤجّل",
+                            category = alertPayload?.category ?? "general",
+                            isHydration = alertPayload?.isHydration ?? false,
+                            medicationId = alertPayload?.medicationId ?? "",
+                            medicationDoseTime24 = alertPayload?.medicationDoseTime24 ?? "",
+                            minutes = minutes > 0 ? minutes : fallbackSnooze,
+                        });
+                        DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:alert-snoozed', {{ detail: {detailJson} }}));");
+                    },
+                    onDismissed: () => DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));")
+                );
+                _activeScreenAlert = form;
+                form.FormClosed += (_, __) => { if (_activeScreenAlert == form) _activeScreenAlert = null; };
+                form.Show();
+                _ = form.LoadAsync(_webViewEnv, ResolveWwwDirectory());
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private void ShowSecondaryMonitorAlert(NativeAlertPayload payload)
         {
+            if (TryShowFullScreenSecondaryAlert(payload)) return;
             try
             {
                 if (_activeToastForm != null && !_activeToastForm.IsDisposed)

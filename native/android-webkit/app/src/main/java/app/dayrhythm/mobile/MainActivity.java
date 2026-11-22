@@ -20,6 +20,9 @@ import android.os.Bundle;
 import android.os.Message;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.speech.RecognizerIntent;
+import org.json.JSONObject;
+import java.util.ArrayList;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -192,6 +195,7 @@ public class MainActivity extends Activity {
         // 3. Request Android 13+ notification permission + OnePlus 12R battery optimization whitelist
         requestEssentialPermissions();
         promptBatteryWhitelistOnce();
+        promptFullScreenAlertsOnce();
 
         // 4. Register receiver for APK downloads, update banners, background WebSocket events, notification actions, and live battery telemetry
         IntentFilter filter = new IntentFilter();
@@ -316,11 +320,74 @@ public class MainActivity extends Activity {
         return "application/octet-stream";
     }
 
+    // ── Home-screen widget + native voice input ─────────────────────────────────────
+    public static final String EXTRA_WIDGET_ACTION = "dayrhythm_widget_action";
+    private static final int REQ_VOICE_INPUT = 4401;
+
+    private static String readWidgetAction(Intent intent) {
+        if (intent == null) return null;
+        String a = intent.getStringExtra(EXTRA_WIDGET_ACTION);
+        return ("chat".equals(a) || "voice".equals(a)) ? a : null;
+    }
+
+    /** App already open: switch to the chat (and start voice) without reloading the page. */
+    private void handleWidgetIntent(Intent intent, boolean appAlreadyRunning) {
+        String action = readWidgetAction(intent);
+        if (action == null || webView == null || !appAlreadyRunning) return;
+        intent.removeExtra(EXTRA_WIDGET_ACTION);
+        boolean voice = "voice".equals(action);
+        webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('dayrhythm:open-assistant',{detail:{voice:" + voice + "}}));",
+                null
+        );
+    }
+
+    private void launchVoiceRecognizer(String lang) {
+        try {
+            Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang == null || lang.isEmpty() ? "ar-EG" : lang);
+            i.putExtra(RecognizerIntent.EXTRA_PROMPT, "قول أمرك لـ Gemini");
+            i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+            startActivityForResult(i, REQ_VOICE_INPUT);
+        } catch (Exception e) {
+            dispatchVoiceResult(null, "الإدخال الصوتي مش متاح على الجهاز ده.");
+        }
+    }
+
+    private void dispatchVoiceResult(String text, String error) {
+        if (webView == null) return;
+        try {
+            JSONObject detail = new JSONObject();
+            if (text != null) detail.put("text", text);
+            if (error != null) detail.put("error", error);
+            webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:voice-result',{detail:" + detail + "}));",
+                    null
+            );
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_VOICE_INPUT) return;
+        if (resultCode == Activity.RESULT_OK && data != null) {
+            ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            String text = results != null && !results.isEmpty() ? results.get(0) : null;
+            dispatchVoiceResult(text, text == null ? "مسمعتش حاجة — جرّب تاني." : null);
+        } else {
+            dispatchVoiceResult(null, null);
+        }
+    }
+
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
         handleIncomingUpdateIntent(intent);
+        handleWidgetIntent(intent, true);
     }
 
     @Override
@@ -364,6 +431,27 @@ public class MainActivity extends Activity {
                     needed.toArray(new String[0]),
                     201
             );
+        }
+    }
+
+    /**
+     * Android 14+: full-screen alerts need "Full screen notifications" access; without it the alarm is
+     * downgraded to a banner even on the lock screen. Ask once.
+     */
+    private void promptFullScreenAlertsOnce() {
+        if (Build.VERSION.SDK_INT < 34) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (prefs.getBoolean("full_screen_alerts_prompted", false)) return;
+        try {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null && !nm.canUseFullScreenIntent()) {
+                prefs.edit().putBoolean("full_screen_alerts_prompted", true).apply();
+                Intent i = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
+                i.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(i);
+            }
+        } catch (Exception ignored) {
         }
     }
 
@@ -480,6 +568,21 @@ public class MainActivity extends Activity {
                         continuous,
                         snoozeMinutes
                 ));
+            }
+
+            @JavascriptInterface
+            public void setCloudAuth(String authJson) {
+                CloudSignalClient.saveAuth(MainActivity.this, authJson);
+            }
+
+            @JavascriptInterface
+            public void startVoiceInput(String lang) {
+                runOnUiThread(() -> launchVoiceRecognizer(lang));
+            }
+
+            @JavascriptInterface
+            public void setChargeLimit(int limitPct, boolean enabled) {
+                DayRhythmSyncService.saveChargeLimitSettings(MainActivity.this, limitPct, enabled);
             }
 
             @JavascriptInterface
@@ -786,7 +889,8 @@ public class MainActivity extends Activity {
         root.addView(updateBar, barLp);
 
         setContentView(root);
-        webView.loadUrl(APP_ORIGIN);
+        String widgetAction = readWidgetAction(getIntent());
+        webView.loadUrl(widgetAction != null ? APP_ORIGIN + "?action=" + widgetAction : APP_ORIGIN);
     }
 
     private void handleIncomingUpdateIntent(Intent intent) {

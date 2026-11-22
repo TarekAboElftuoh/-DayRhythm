@@ -152,6 +152,8 @@ export default defineConfig(() => {
         input: {
           main: path.resolve(rootDir, 'index.html'),
           capsule: path.resolve(rootDir, 'capsule.html'),
+          // alert.html = full-screen alert on the secondary monitor (SecondaryScreenAlertForm.cs)
+          alert: path.resolve(rootDir, 'alert.html'),
         },
       },
     },

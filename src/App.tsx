@@ -11,6 +11,7 @@ import {
   ActiveTab,
   AppLanguage,
   BatteryGuardState,
+  AppSettingsPatch,
   CalendarActionProposal,
   CalendarExecutionResult,
   CalendarTombstone,
@@ -95,6 +96,7 @@ import {
   deleteMedicationRecord,
   deleteMemoryRecord,
   publishPhoneBatteryTelemetry,
+  getNativeCloudAuthPayload,
   publishWorkspaceSyncSignal,
   sanitizeCreativeActivityId,
   sanitizeCreativeActivityItem,
@@ -1294,6 +1296,17 @@ export default function App() {
       setNowTickMin(getNowMinutesInTimeZone(activeTimeZone));
     };
     syncClockNow();
+    // Fire exactly at hh:mm:00 so the PC rings in the same second as the phone's native alarm
+    // (the 5s interval alone could be up to 5s late).
+    let boundaryTimer = 0;
+    const scheduleNextBoundary = () => {
+      const msToNextMinute = 60_000 - (Date.now() % 60_000) + 25;
+      boundaryTimer = window.setTimeout(() => {
+        syncClockNow();
+        scheduleNextBoundary();
+      }, msToNextMinute);
+    };
+    scheduleNextBoundary();
     const id = window.setInterval(syncClockNow, 5_000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') syncClockNow();
@@ -1301,6 +1314,7 @@ export default function App() {
     window.addEventListener('focus', syncClockNow);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
+      window.clearTimeout(boundaryTimer);
       window.clearInterval(id);
       window.removeEventListener('focus', syncClockNow);
       document.removeEventListener('visibilitychange', onVisible);
@@ -2295,6 +2309,35 @@ export default function App() {
     }
   }, [refreshWorkspace, showToast]);
 
+  // Give the Android service what it needs to send/receive "alarm dismissed" by itself when the
+  // app's WebView isn't running (phone ↔ PC: stopping on one stops the other).
+  useEffect(() => {
+    const native = (window as Window & { DayRhythmNative?: { setCloudAuth?: (json: string) => void } })
+      .DayRhythmNative;
+    if (!native?.setCloudAuth || !firebaseUser?.uid) return;
+    const payload = getNativeCloudAuthPayload();
+    if (!payload) return;
+    try {
+      native.setCloudAuth(payload);
+    } catch {
+      // older APK without this bridge method
+    }
+  }, [firebaseUser?.uid, firebaseUser?.emailVerified]);
+
+  // Keep the Android service's charge-limit alert in sync with the app setting.
+  useEffect(() => {
+    try {
+      (window as Window & { DayRhythmNative?: { setChargeLimit?: (l: number, e: boolean) => void } })
+        .DayRhythmNative?.setChargeLimit?.(phoneChargeLimitPct, smartChargeAlertEnabled);
+    } catch {
+      // older APK without this bridge method
+    }
+  }, [phoneChargeLimitPct, smartChargeAlertEnabled]);
+
+  // The phone itself doesn't show its charge % (that's for following it from the PC);
+  // it still gets the charge-limit alert.
+  const isPhoneClient = useMemo(() => detectIsMobileDeviceClient(), []);
+
   // ── ☀️ Sunlight mode (per device; the night theme stays the default) ───────────────
   const [sunMode, setSunMode] = useState<boolean>(() => {
     try {
@@ -2579,6 +2622,21 @@ export default function App() {
     [fetchCalendarEvents, fetchGoogleTasks, refreshWorkspace, showToast, stopNativeAlerts, triggerTaskAlert]
   );
 
+  // The long-lived listeners below (WebSocket + Firestore) must NOT re-subscribe whenever these
+  // callbacks change identity. They used to: every Firestore snapshot replaced lifeProfile →
+  // triggerTaskAlert/handleIncomingRemoteSync changed → the Firestore listener re-subscribed →
+  // a fresh (stale) snapshot arrived → loop. That reset just-tapped water cups and spammed
+  // WebSocket reconnects. The listeners now call the latest version through refs.
+  const handleIncomingRemoteSyncRef = useRef(handleIncomingRemoteSync);
+  handleIncomingRemoteSyncRef.current = handleIncomingRemoteSync;
+  const refreshWorkspaceRef = useRef(refreshWorkspace);
+  refreshWorkspaceRef.current = refreshWorkspace;
+  const callRemoteSync = useCallback(
+    (payload: Parameters<typeof handleIncomingRemoteSync>[0]) => handleIncomingRemoteSyncRef.current(payload),
+    []
+  );
+  const callRefreshWorkspace = useCallback(() => refreshWorkspaceRef.current(), []);
+
   // Instant Cross-Device WebSocket Sync Hub (/ws/sync) + Auto-Recovery (Dead-Socket Teardown + Exponential Backoff + Wake/Online Recovery)
   useEffect(() => {
     const uid = firebaseUser?.uid;
@@ -2593,6 +2651,10 @@ export default function App() {
     let heartbeatTimer: number | null = null;
     let pongTimeoutTimer: number | null = null;
     let backoffAttempt = 0;
+    // A host with no sync server (static build, plain preview) never accepts the socket:
+    // stop retrying after a few failures instead of reconnecting forever.
+    let everConnected = false;
+    let failedWithoutConnect = 0;
     let hadPreviousDisconnect = false;
     let lastVisibleAtMs = Date.now();
 
@@ -2636,6 +2698,10 @@ export default function App() {
     const scheduleReconnect = () => {
       if (closedByCleanup) return;
       if (reconnectTimer !== null) return;
+      if (!everConnected) {
+        failedWithoutConnect += 1;
+        if (failedWithoutConnect >= 5) return;
+      }
       const baseMs = Math.min(30_000, 1000 * Math.pow(2, backoffAttempt));
       const jitterMs = Math.floor(Math.random() * Math.min(1500, baseMs * 0.3));
       const delayMs = Math.min(30_000, baseMs + jitterMs);
@@ -2679,6 +2745,7 @@ export default function App() {
             connectWatchdogTimer = null;
           }
           backoffAttempt = 0;
+          everConnected = true;
           setWsConnected(true);
           ws.send(
             JSON.stringify({
@@ -2690,7 +2757,7 @@ export default function App() {
 
           if (hadPreviousDisconnect) {
             hadPreviousDisconnect = false;
-            void refreshWorkspace();
+            void callRefreshWorkspace();
             triggerFirestoreRecovery(false);
           }
 
@@ -2773,7 +2840,7 @@ export default function App() {
               return;
             }
             if (msg.type === 'sync') {
-              handleIncomingRemoteSync(msg);
+              callRemoteSync(msg);
             }
           } catch {
             // ignore malformed message
@@ -2811,7 +2878,7 @@ export default function App() {
         bc = new BroadcastChannel('dayrhythm_sync');
         bc.onmessage = (ev) => {
           if (ev.data?.type === 'sync') {
-            handleIncomingRemoteSync(ev.data);
+            callRemoteSync(ev.data);
           }
         };
       } catch {
@@ -2823,11 +2890,11 @@ export default function App() {
       if (closedByCleanup) return;
       backoffAttempt = 0;
       const sock = wsRef.current;
-      if (!sock || sock.readyState !== WebSocket.OPEN) {
+      if ((everConnected || failedWithoutConnect < 5) && (!sock || sock.readyState !== WebSocket.OPEN)) {
         connectWs();
       }
       triggerFirestoreRecovery(forceFirestoreReset);
-      void refreshWorkspace();
+      void callRefreshWorkspace();
     };
 
     const handleOnline = () => {
@@ -2844,7 +2911,7 @@ export default function App() {
         if (typeof detail === 'string') {
           const parsed = JSON.parse(detail);
           if (parsed && typeof parsed === 'object') {
-            handleIncomingRemoteSync(parsed);
+            callRemoteSync(parsed);
           }
         }
       } catch {
@@ -2879,7 +2946,7 @@ export default function App() {
       window.removeEventListener('dayrhythm:ws-sync', handleNativeWsSync);
       document.removeEventListener('visibilitychange', handleResumeSync);
     };
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified, handleIncomingRemoteSync, refreshWorkspace]);
+  }, [firebaseUser?.uid, firebaseUser?.emailVerified, callRemoteSync, callRefreshWorkspace]);
 
   // Real-time Firebase Firestore listener (strictly verified non-anonymous user; auto-bootstraps new accounts immediately!)
   useEffect(() => {
@@ -2896,7 +2963,7 @@ export default function App() {
         setFirestoreSynced(true);
 
         if (remote.syncSignal) {
-          handleIncomingRemoteSync(remote.syncSignal);
+          callRemoteSync(remote.syncSignal);
         }
 
         if (remote.phoneBattery) {
@@ -2918,7 +2985,7 @@ export default function App() {
         skipNextRemotePushRef.current = true;
         setQuietMode(remote.quietMode);
         setAdhanOverrideSilent(remote.adhanOverrideSilent);
-        setSurfaceTheme(remote.surfaceTheme);
+        setSurfaceTheme('amoled'); // Obsidian removed: night = AMOLED, day = sunlight mode (top-bar button)
         setDeviceSettings(remote.deviceSettings);
         setLifeProfile(remote.lifeProfile);
         if (remote.uiPrefs) {
@@ -3029,7 +3096,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, handleIncomingRemoteSync]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, callRemoteSync]);
 
   // Immediate real-time Firestore subscription for Medications (non-anonymous verified users only)
   useEffect(() => {
@@ -5409,8 +5476,21 @@ export default function App() {
       setActiveTab('assistant');
       setAutoStartVoice(true);
       showToast('🎙️ اختصار سريع: فتح شات Gemini بالصوت');
+    } else if (action === 'chat') {
+      setActiveTab('assistant');
     }
   }, [showToast]);
+
+  // Home-screen widget / native shortcuts while the app is already open.
+  useEffect(() => {
+    const onOpenAssistant = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ voice?: boolean }>).detail || {};
+      setActiveTab('assistant');
+      if (detail.voice) setAutoStartVoice(true);
+    };
+    window.addEventListener('dayrhythm:open-assistant', onOpenAssistant);
+    return () => window.removeEventListener('dayrhythm:open-assistant', onOpenAssistant);
+  }, []);
 
   // Active Water Cup & Multi-Dose Medication Reminder Engine (fires every 5s/30s tick, respects Fasting & Silence Sanctuaries)
   useEffect(() => {
@@ -5445,6 +5525,14 @@ export default function App() {
       }
     };
 
+    // Android APK: water/medication/calendar/task reminders are already scheduled as exact native
+    // alarms (same second as the PC, and they ring even with the app closed). Firing them here too
+    // made the phone ring two or three times for one reminder.
+    const nativeOwnsReminders = Boolean(
+      (window as Window & { DayRhythmNative?: { scheduleExactAlarms?: unknown } }).DayRhythmNative
+        ?.scheduleExactAlarms
+    );
+    if (!nativeOwnsReminders) {
     // 1. Water cup reminders (Emoji-only privacy notification — clicking confirms drinking)
     if (waterRemindersEnabled && hydrationToday) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
@@ -5549,6 +5637,8 @@ export default function App() {
         sendSystemNotification('☑️ مهمة الآن', `${cleanTitle} · ${time12}`, key);
       }
     });
+
+    } // end: reminders owned by native alarms on Android
 
     // 4. Proactive Medication Low-Stock Refill Reminder (default 3 days before running out)
     medications.forEach((med) => {
@@ -5792,7 +5882,7 @@ export default function App() {
     setPhoneChargeAlertDismissed(true);
     setPersistentAlert((prev) => (prev?.id.startsWith('charge_') ? null : prev));
     emitCrossDeviceSync('alarm_dismiss', 'charge_dismiss');
-    showToast('🔕 تم إيقاف التنبيه الذكي لاكتمال الشحن على أجهزتك ✓');
+    showToast('🔕 تم إسكات تنبيه الشحن على كل أجهزتك ✓ (هينبّه تاني في الشحنة الجاية)');
   }, [emitCrossDeviceSync, showToast, stopNativeAlerts]);
 
   const handleToggleSmartChargeKeepUntilUnplugged = useCallback(() => {
@@ -5833,6 +5923,71 @@ export default function App() {
     });
   }, [showToast]);
 
+  // Settings changed from the Gemini chat (propose_app_settings). Each field is optional.
+  const handleApplyAppSettings = useCallback(
+    (patch: AppSettingsPatch) => {
+      const persist = (key: string, value: string) => {
+        try {
+          localStorage.setItem(key, value);
+        } catch {
+          // ignore storage errors
+        }
+      };
+      if (typeof patch.phoneChargeLimitPct === 'number') handleUpdatePhoneChargeLimit(patch.phoneChargeLimitPct);
+      if (typeof patch.chargeAlertEnabled === 'boolean') {
+        setSmartChargeAlertEnabled(patch.chargeAlertEnabled);
+        persist('dayrhythm_smart_charge_alert_enabled', String(patch.chargeAlertEnabled));
+        if (!patch.chargeAlertEnabled) {
+          stopSmartChargeCompleteAlert();
+          setSmartChargeAudioActive(false);
+        }
+      }
+      if (typeof patch.chargeAlertKeepUntilUnplugged === 'boolean') {
+        setSmartChargeKeepUntilUnplugged(patch.chargeAlertKeepUntilUnplugged);
+        persist(SMART_CHARGE_KEEP_KEY, String(patch.chargeAlertKeepUntilUnplugged));
+      }
+      if (typeof patch.waterRemindersEnabled === 'boolean') setWaterRemindersEnabled(patch.waterRemindersEnabled);
+      if (patch.quietMode) {
+        handleSetQuietMode(patch.quietMode, patch.quietMode === 'normal' ? 0 : Math.max(0, patch.quietModeMinutes ?? 0));
+      }
+      if (typeof patch.adhanSoundInSilent === 'boolean') setAdhanOverrideSilent(patch.adhanSoundInSilent);
+      if (typeof patch.sunMode === 'boolean') setSunMode(patch.sunMode);
+      if (patch.language === 'ar' || patch.language === 'en') setLanguage(patch.language);
+      if (patch.capsuleOrientation || patch.capsuleSize) {
+        handleUpdateCapsulePrefs({
+          orientation: patch.capsuleOrientation ?? capsulePrefs.orientation,
+          size: patch.capsuleSize ?? capsulePrefs.size,
+        });
+      }
+      const devicePatch: Partial<OnePlusDeviceSettings> = {};
+      if (typeof patch.liveAlertsEnabled === 'boolean') devicePatch.liveAlertsEnabled = patch.liveAlertsEnabled;
+      if (patch.liveAlertsLeadMinutes) devicePatch.liveAlertsLeadMinutes = patch.liveAlertsLeadMinutes;
+      if (typeof patch.persistentCountdownNotif === 'boolean') {
+        devicePatch.persistentCountdownNotif = patch.persistentCountdownNotif;
+      }
+      if (Object.keys(devicePatch).length > 0) handleUpdateDeviceSettings(devicePatch);
+      if (patch.soundRepeats) {
+        for (const [category, value] of Object.entries(patch.soundRepeats)) {
+          if (value === undefined) continue;
+          const setting: SoundRepeatSetting =
+            value === 'continuous' ? 'continuous' : (Math.max(1, Math.min(10, Math.round(Number(value)))) as SoundRepeatSetting);
+          handleUpdateSoundRepeat(category as TaskSoundCategory, setting);
+        }
+      }
+      showToast('⚙️ تم تطبيق الإعدادات من Gemini ✓');
+    },
+    [
+      capsulePrefs.orientation,
+      capsulePrefs.size,
+      handleSetQuietMode,
+      handleUpdateCapsulePrefs,
+      handleUpdateDeviceSettings,
+      handleUpdatePhoneChargeLimit,
+      handleUpdateSoundRepeat,
+      showToast,
+    ]
+  );
+
   const handleTestSmartChargeAlert = useCallback(() => {
     if (smartChargeAudioActive) {
       handleStopSmartChargeAlert();
@@ -5849,10 +6004,11 @@ export default function App() {
     };
   }, []);
 
-  // Desktop Real-time Smart Charge Complete Alert when Phone reaches configured charge limit (default 90%)
+  // Charge-limit alert (default 90%) on BOTH the PC and the phone, so the phone gets unplugged
+  // before 100% (keeping a Li-ion battery at 100% on the charger shortens its life).
   useEffect(() => {
     if (!phoneBattery) return;
-    const isDesktopClient = !detectIsMobileDeviceClient();
+    const isPhoneClient = detectIsMobileDeviceClient();
 
     if (!phoneBattery.charging || phoneBattery.levelPct < phoneBattery.chargeLimitPct - 2) {
       if (phoneChargeNotifiedCycleRef.current || smartChargeAudioActive) {
@@ -5866,7 +6022,6 @@ export default function App() {
     }
 
     if (
-      isDesktopClient &&
       smartChargeAlertEnabled &&
       phoneBattery.charging &&
       phoneBattery.levelPct >= phoneBattery.chargeLimitPct &&
@@ -5919,6 +6074,9 @@ export default function App() {
           // ignore notification errors
         }
       }
+
+      // Phone (APK): the Android background service rings its own notification at the limit
+      // (also when the app is closed), so nothing extra is triggered from here.
 
       // Windows Secondary Monitor Toast (zero focus-steal on Screen 1!)
       try {
@@ -7740,7 +7898,7 @@ ${lifeConstitution}
         </div>
       )}
 
-      <main className="pb-24 md:pb-8">
+      <main className={activeTab === 'assistant' ? 'md:pb-8' : 'pb-24 md:pb-8'}>
         {authUser && !needsAuth && (workspaceTokenExpired || (!permanentLinkActive && isPermanentLinkAvailable() && !permanentLinkHintDismissed)) && (
           <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-3">
             <div
@@ -7882,7 +8040,7 @@ ${lifeConstitution}
             periodicRituals={periodicRituals}
             onCompletePeriodicRitual={handleCompletePeriodicRitual}
             batteryGuard={batteryGuard}
-            phoneBattery={phoneBattery}
+            phoneBattery={isPhoneClient ? null : phoneBattery}
             phoneChargeLimitPct={phoneChargeLimitPct}
             onUpdatePhoneChargeLimit={handleUpdatePhoneChargeLimit}
             phoneChargeAlertDismissed={phoneChargeAlertDismissed}
@@ -7955,7 +8113,7 @@ ${lifeConstitution}
             activeLocation={activeLocation}
             onRefreshGps={handleDetectGpsLocation}
             gpsSyncing={isDetectingGps}
-            phoneBattery={phoneBattery}
+            phoneBattery={isPhoneClient ? null : phoneBattery}
             upcomingPreview={{
               emoji: capsuleTimerState.emoji,
               title: capsuleTimerState.title,
@@ -8040,6 +8198,7 @@ ${lifeConstitution}
             onExecuteMedicationActions={handleExecuteMedicationActions}
             onExecuteCreativeActions={handleExecuteCreativeActions}
             onApplyProfileUpdates={handleUpdateLifeProfile}
+            onApplyAppSettings={handleApplyAppSettings}
             onExecuteMemoryActions={handleExecuteMemoryActions}
             onOpenLifeProfile={() => setIsLifeProfileModalOpen(true)}
             initialPrompt={pendingAssistantPrompt}
@@ -8072,7 +8231,7 @@ ${lifeConstitution}
         calendarTrack={capsuleTimerState.calendarTrack}
         taskTrack={capsuleTimerState.taskTrack}
         upcomingQueue={capsuleTimerState.upcomingQueue}
-        phoneBattery={phoneBattery}
+        phoneBattery={isPhoneClient ? null : phoneBattery}
         capsulePrefs={capsulePrefs}
         onChangeCapsulePrefs={handleUpdateCapsulePrefs}
         onQuickLogWater={handleLogWaterCup}
