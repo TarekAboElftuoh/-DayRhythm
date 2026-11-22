@@ -50,6 +50,7 @@ namespace DayRhythm
         private ReleaseUpdateInfo _pendingUpdate;
         private DateTime _lastLanBatteryUtc = DateTime.MinValue;
         private LanBatteryTelemetry _lastLanBattery;
+        private bool _lanChargeAlertShownThisCycle;
 
         public MainForm(bool startHidden)
         {
@@ -920,7 +921,18 @@ namespace DayRhythm
                 // 2. Dispatch to WebView2 web app
                 if (_webView?.CoreWebView2 != null)
                 {
-                    string js = $"window.__dayRhythmNativeBattery = {{ levelPct: {level}, charging: {(charging ? "true" : "false")}, chargeTimeRemainingMin: {eta}, deviceLabel: '{device}', chargeLimitPct: {limit}, updatedAtMs: {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} }};"
+                    // Serialized, never spliced as text: the device name arrives from the network, and
+                    // pasting it inside quotes let any device on the Wi-Fi run code in this window.
+                    string batteryJson = JsonSerializer.Serialize(new
+                    {
+                        levelPct = level,
+                        charging,
+                        chargeTimeRemainingMin = eta,
+                        deviceLabel = device.Length > 40 ? device.Substring(0, 40) : device,
+                        chargeLimitPct = limit,
+                        updatedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    });
+                    string js = $"window.__dayRhythmNativeBattery = {batteryJson};"
                         + "window.dispatchEvent(new CustomEvent('dayrhythm:native-battery', { detail: window.__dayRhythmNativeBattery }));";
                     _ = _webView.CoreWebView2.ExecuteScriptAsync(js);
                 }
@@ -940,8 +952,15 @@ namespace DayRhythm
                         _ = _webView.CoreWebView2.ExecuteScriptAsync("if (window.__stopSmartChargeAlert) window.__stopSmartChargeAlert();");
                     }
                 }
-                else if (charging && (level >= limit || "alarm_trigger".Equals(telemetry.action, StringComparison.OrdinalIgnoreCase)))
+                // Once per charging cycle: the phone repeats its battery packet every 10 s while on
+                // the charger, which used to reopen this alert every 10 s.
+                if (!charging || level < limit - 2)
                 {
+                    _lanChargeAlertShownThisCycle = false;
+                }
+                else if (level >= limit && !_lanChargeAlertShownThisCycle)
+                {
+                    _lanChargeAlertShownThisCycle = true;
                     NativeAlertPayload alert = new NativeAlertPayload
                     {
                         emoji = $"🔋 {level}%",
@@ -951,7 +970,7 @@ namespace DayRhythm
                         category = "charge",
                         isHydration = false,
                         isContinuous = true,
-                        durationSeconds = 300,
+                        durationSeconds = 120,
                     };
                     ShowSecondaryMonitorAlert(alert);
                     if (_activeToastForm != null)

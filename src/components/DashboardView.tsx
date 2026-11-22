@@ -1364,7 +1364,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       </header>
 
       {/* Live Phone Charging Status Strip (Visible whenever OnePlus/Android phone is plugged in) */}
-      {phoneBattery?.charging && phoneBattery.levelPct < phoneBattery.chargeLimitPct && (
+      {/* Stale reading (no update for 3 min: unplugged while offline, app killed) ≠ still charging. */}
+      {phoneBattery?.charging &&
+        phoneBattery.levelPct < phoneBattery.chargeLimitPct &&
+        Date.now() - phoneBattery.updatedAtMs < 3 * 60_000 && (
         <div className="flex items-center justify-between gap-4 rounded-xl border border-[#7FFFD4]/25 bg-[#0A0F16]/90 px-4 py-2.5 text-xs">
           <div className="flex items-center gap-3 min-w-0">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#7FFFD4]/30 bg-[#7FFFD4]/10 text-[#7FFFD4] shrink-0">
