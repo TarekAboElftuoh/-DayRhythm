@@ -374,8 +374,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             } catch (Exception ignored) {
             }
             try {
-                // Ring until answered (45 s cap); water reminders stay short.
-                boolean isContinuous = !"water".equals(kind);
+                // Play distinct per-category sound once with vibration; no infinite alarm takeover
+                boolean isContinuous = false;
                 playNativeAlarmSound(context, isContinuous, kind);
                 showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
                 // If the PC (or another device) stops this alert, stop it here too.
@@ -622,7 +622,6 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 .setVibrate(VIBRATION_PATTERN)
                 .setAutoCancel(true)
                 .setContentIntent(contentPi)
-                .setFullScreenIntent(fullScreenPi, true)
                 .setDeleteIntent(dismissPi)
                 .addAction(0, doneLabel, donePi)
                 .addAction(0, "تأجيل " + snoozeMin + " د", snoozePi);

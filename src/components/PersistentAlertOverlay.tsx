@@ -44,6 +44,13 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
   useEffect(() => {
     if (!alert) return;
     setNowMs(Date.now());
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate([0, 180, 90, 260, 90, 180]);
+      } catch {
+        // ignore vibrate errors
+      }
+    }
     const id = window.setInterval(() => {
       const t = Date.now();
       setNowMs(t);
