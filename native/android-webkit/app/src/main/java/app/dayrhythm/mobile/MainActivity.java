@@ -195,6 +195,7 @@ public class MainActivity extends Activity {
         // 3. Request Android 13+ notification permission + OnePlus 12R battery optimization whitelist
         requestEssentialPermissions();
         promptBatteryWhitelistOnce();
+        promptFullScreenAlertsOnce();
 
         // 4. Register receiver for APK downloads, update banners, background WebSocket events, notification actions, and live battery telemetry
         IntentFilter filter = new IntentFilter();
@@ -433,6 +434,27 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Android 14+: full-screen alerts need "Full screen notifications" access; without it the alarm is
+     * downgraded to a banner even on the lock screen. Ask once.
+     */
+    private void promptFullScreenAlertsOnce() {
+        if (Build.VERSION.SDK_INT < 34) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (prefs.getBoolean("full_screen_alerts_prompted", false)) return;
+        try {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null && !nm.canUseFullScreenIntent()) {
+                prefs.edit().putBoolean("full_screen_alerts_prompted", true).apply();
+                Intent i = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
+                i.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(i);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     private void promptBatteryWhitelistOnce() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         if (prefs.getBoolean(KEY_BATTERY_PROMPTED, false)) return;
@@ -546,6 +568,11 @@ public class MainActivity extends Activity {
                         continuous,
                         snoozeMinutes
                 ));
+            }
+
+            @JavascriptInterface
+            public void setCloudAuth(String authJson) {
+                CloudSignalClient.saveAuth(MainActivity.this, authJson);
             }
 
             @JavascriptInterface

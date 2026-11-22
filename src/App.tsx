@@ -96,6 +96,7 @@ import {
   deleteMedicationRecord,
   deleteMemoryRecord,
   publishPhoneBatteryTelemetry,
+  getNativeCloudAuthPayload,
   publishWorkspaceSyncSignal,
   sanitizeCreativeActivityId,
   sanitizeCreativeActivityItem,
@@ -1295,6 +1296,17 @@ export default function App() {
       setNowTickMin(getNowMinutesInTimeZone(activeTimeZone));
     };
     syncClockNow();
+    // Fire exactly at hh:mm:00 so the PC rings in the same second as the phone's native alarm
+    // (the 5s interval alone could be up to 5s late).
+    let boundaryTimer = 0;
+    const scheduleNextBoundary = () => {
+      const msToNextMinute = 60_000 - (Date.now() % 60_000) + 25;
+      boundaryTimer = window.setTimeout(() => {
+        syncClockNow();
+        scheduleNextBoundary();
+      }, msToNextMinute);
+    };
+    scheduleNextBoundary();
     const id = window.setInterval(syncClockNow, 5_000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') syncClockNow();
@@ -1302,6 +1314,7 @@ export default function App() {
     window.addEventListener('focus', syncClockNow);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
+      window.clearTimeout(boundaryTimer);
       window.clearInterval(id);
       window.removeEventListener('focus', syncClockNow);
       document.removeEventListener('visibilitychange', onVisible);
@@ -2295,6 +2308,21 @@ export default function App() {
       setIsRefreshingWorkspaceToken(false);
     }
   }, [refreshWorkspace, showToast]);
+
+  // Give the Android service what it needs to send/receive "alarm dismissed" by itself when the
+  // app's WebView isn't running (phone ↔ PC: stopping on one stops the other).
+  useEffect(() => {
+    const native = (window as Window & { DayRhythmNative?: { setCloudAuth?: (json: string) => void } })
+      .DayRhythmNative;
+    if (!native?.setCloudAuth || !firebaseUser?.uid) return;
+    const payload = getNativeCloudAuthPayload();
+    if (!payload) return;
+    try {
+      native.setCloudAuth(payload);
+    } catch {
+      // older APK without this bridge method
+    }
+  }, [firebaseUser?.uid, firebaseUser?.emailVerified]);
 
   // Keep the Android service's charge-limit alert in sync with the app setting.
   useEffect(() => {
@@ -5497,6 +5525,14 @@ export default function App() {
       }
     };
 
+    // Android APK: water/medication/calendar/task reminders are already scheduled as exact native
+    // alarms (same second as the PC, and they ring even with the app closed). Firing them here too
+    // made the phone ring two or three times for one reminder.
+    const nativeOwnsReminders = Boolean(
+      (window as Window & { DayRhythmNative?: { scheduleExactAlarms?: unknown } }).DayRhythmNative
+        ?.scheduleExactAlarms
+    );
+    if (!nativeOwnsReminders) {
     // 1. Water cup reminders (Emoji-only privacy notification — clicking confirms drinking)
     if (waterRemindersEnabled && hydrationToday) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
@@ -5601,6 +5637,8 @@ export default function App() {
         sendSystemNotification('☑️ مهمة الآن', `${cleanTitle} · ${time12}`, key);
       }
     });
+
+    } // end: reminders owned by native alarms on Android
 
     // 4. Proactive Medication Low-Stock Refill Reminder (default 3 days before running out)
     medications.forEach((med) => {

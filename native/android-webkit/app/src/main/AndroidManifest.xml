@@ -52,6 +52,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Full-screen alert when the phone is locked / screen off -->
+        <activity
+            android:name=".AlarmActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:showWhenLocked="true"
+            android:taskAffinity="app.dayrhythm.mobile.alarm"
+            android:theme="@style/Theme.DayRhythm"
+            android:turnScreenOn="true" />
+
         <service
             android:name=".DayRhythmSyncService"
             android:enabled="true"

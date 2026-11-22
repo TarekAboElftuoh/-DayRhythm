@@ -37,6 +37,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     public static final String ACTION_FIRE_ALARM = "app.dayrhythm.mobile.ACTION_FIRE_ALARM";
     public static final String ACTION_MARK_DONE = "app.dayrhythm.mobile.ACTION_MARK_DONE";
     public static final String ACTION_SNOOZE = "app.dayrhythm.mobile.ACTION_SNOOZE";
+    /** Notification swiped away / "stop" without marking anything done. */
+    public static final String ACTION_DISMISS = "app.dayrhythm.mobile.ACTION_DISMISS";
     public static final String ACTION_PENDING_QUEUE_UPDATED = "app.dayrhythm.mobile.ACTION_PENDING_QUEUE_UPDATED";
 
     public static final String EXTRA_ALARM_ID = "alarm_id";
@@ -188,9 +190,20 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         String doseTime = intent.getStringExtra(EXTRA_DOSE_TIME);
         int snoozeMin = sanitizeSnoozeMinutes(intent.getIntExtra(EXTRA_SNOOZE_MIN, 5));
 
+        if (ACTION_DISMISS.equals(action)) {
+            stopRinging();
+            cancelNotification(context, notifId);
+            closeAlarmUi(context);
+            CloudSignalClient.sendAlarmDismiss(context, "native_dismiss");
+            return;
+        }
+
         if (ACTION_SNOOZE.equals(action)) {
             stopRinging();
             cancelNotification(context, notifId);
+            closeAlarmUi(context);
+            // Stopping here stops the PC too (and vice versa — see CloudSignalClient).
+            CloudSignalClient.sendAlarmDismiss(context, "native_snooze");
             long snoozeAtMs = System.currentTimeMillis() + (long) snoozeMin * 60_000L;
             scheduleSingleExactAlarm(
                     context,
@@ -214,6 +227,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         if (ACTION_MARK_DONE.equals(action)) {
             stopRinging();
             cancelNotification(context, notifId);
+            closeAlarmUi(context);
+            CloudSignalClient.sendAlarmDismiss(context, "native_done");
             enqueuePendingQuickAction(context, kind, alarmId, medId, doseTime);
             Intent notifyIntent = new Intent(ACTION_PENDING_QUEUE_UPDATED);
             notifyIntent.setPackage(context.getPackageName());
@@ -232,9 +247,12 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             } catch (Exception ignored) {
             }
             try {
-                boolean isContinuous = "prayer".equals(kind) || "medication".equals(kind);
+                // Ring until answered (45 s cap); water reminders stay short.
+                boolean isContinuous = !"water".equals(kind);
                 playNativeAlarmSound(context, isContinuous);
                 showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
+                // If the PC (or another device) stops this alert, stop it here too.
+                CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
             } finally {
                 if (wakeLock != null && wakeLock.isHeld()) {
                     try { wakeLock.release(); } catch (Exception ignored) { }
@@ -425,6 +443,35 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
+        // Locked / screen off → full-screen alert (AlarmActivity). Phone in use → Android shows a
+        // heads-up banner from the top instead, never a full-screen takeover.
+        Intent fsIntent = new Intent(context, AlarmActivity.class);
+        fsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
+        fsIntent.putExtra(EXTRA_NOTIF_ID, notifId);
+        fsIntent.putExtra(EXTRA_ALARM_ID, alarmId);
+        fsIntent.putExtra(EXTRA_KIND, kind);
+        fsIntent.putExtra(EXTRA_TITLE, title);
+        fsIntent.putExtra(EXTRA_BODY, body);
+        fsIntent.putExtra(EXTRA_MED_ID, medId);
+        fsIntent.putExtra(EXTRA_DOSE_TIME, doseTime);
+        fsIntent.putExtra(EXTRA_SNOOZE_MIN, snoozeMin);
+        PendingIntent fullScreenPi = PendingIntent.getActivity(
+                context,
+                notifId + 300_000,
+                fsIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        Intent dismissIntent = new Intent(context, ReminderAlarmReceiver.class);
+        dismissIntent.setAction(ACTION_DISMISS);
+        dismissIntent.putExtra(EXTRA_NOTIF_ID, notifId);
+        PendingIntent dismissPi = PendingIntent.getBroadcast(
+                context,
+                notifId + 400_000,
+                dismissIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
         String doneLabel = "water".equals(kind)
                 ? "شربت كوب ماء"
                 : "medication".equals(kind)
@@ -442,6 +489,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 .setVibrate(VIBRATION_PATTERN)
                 .setAutoCancel(true)
                 .setContentIntent(contentPi)
+                .setFullScreenIntent(fullScreenPi, true)
+                .setDeleteIntent(dismissPi)
                 .addAction(0, doneLabel, donePi)
                 .addAction(0, "تأجيل " + snoozeMin + " د", snoozePi);
 
@@ -466,9 +515,20 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
     }
 
+    private static void closeAlarmUi(Context context) {
+        try {
+            Intent close = new Intent(AlarmActivity.ACTION_CLOSE_ALARM_UI);
+            close.setPackage(context.getPackageName());
+            context.sendBroadcast(close);
+        } catch (Exception ignored) {
+        }
+    }
+
     public static void cancelAllActiveAlarms(Context context) {
         stopRinging();
+        CloudSignalClient.stopWatching();
         if (context == null) return;
+        closeAlarmUi(context);
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
         String csv = prefs.getString(KEY_ACTIVE_NOTIF_IDS, "");

@@ -58,6 +58,23 @@ const configuredDbId =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-dayrhythm-1f2dd321-5d9e-4566-bb4c-87a3962fa6f7';
 
+/**
+ * What the Android background service needs to send/receive the "alarm dismissed" signal on its
+ * own (when the app's WebView isn't running): project ids + the signed-in user's Firebase
+ * refresh token. It stays in the app's private storage on the phone.
+ */
+export function getNativeCloudAuthPayload(): string | null {
+  const user = auth.currentUser;
+  if (!user || user.isAnonymous || !user.emailVerified || !user.refreshToken) return null;
+  return JSON.stringify({
+    apiKey: firebaseConfig.apiKey,
+    projectId: firebaseConfig.projectId,
+    databaseId: configuredDbId,
+    uid: user.uid,
+    refreshToken: user.refreshToken,
+  });
+}
+
 function createResilientFirestore() {
   try {
     return initializeFirestore(
