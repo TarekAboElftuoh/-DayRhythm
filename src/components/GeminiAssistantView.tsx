@@ -605,7 +605,9 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   // Smooth auto-scroll only when the user hasn't scrolled up to read earlier messages
   useEffect(() => {
     if (!userScrolledUpRef.current) {
-      threadEndRef.current?.scrollIntoView({ behavior: streamingMsgId ? 'auto' : 'smooth' });
+      // Scroll only the message list (scrollIntoView also scrolled the whole page on phones).
+      const el = scrollContainerRef.current;
+      el?.scrollTo({ top: el.scrollHeight, behavior: streamingMsgId ? 'auto' : 'smooth' });
     }
   }, [messages, loading, streamingMsgId]);
 
@@ -630,15 +632,34 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     }
   }, []);
 
+  // Opening the chat (or switching mode) = ready to type AND looking at the latest messages.
+  // The view stays mounted but hidden on other tabs, and a hidden element loses its scroll
+  // position, so jump the thread to the bottom every time it becomes visible.
+  const scrollThreadToBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    userScrolledUpRef.current = false;
+  }, []);
+
   useEffect(() => {
     if (!isActive) return;
-    const rafId = window.requestAnimationFrame(() => focusComposerInput());
-    const timerId = window.setTimeout(() => focusComposerInput(), 80);
+    const rafId = window.requestAnimationFrame(() => {
+      scrollThreadToBottom();
+      focusComposerInput();
+    });
+    const timerId = window.setTimeout(() => {
+      scrollThreadToBottom();
+      focusComposerInput();
+    }, 80);
+    // Messages restored from the cloud can arrive a moment later.
+    const lateId = window.setTimeout(scrollThreadToBottom, 600);
     return () => {
       window.cancelAnimationFrame(rafId);
       window.clearTimeout(timerId);
+      window.clearTimeout(lateId);
     };
-  }, [isActive, mode, focusComposerInput]);
+  }, [isActive, mode, focusComposerInput, scrollThreadToBottom]);
 
   useEffect(() => {
     const onFocusChat = () => {
