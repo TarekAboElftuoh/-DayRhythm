@@ -11,6 +11,7 @@ import {
   User,
 } from 'firebase/auth';
 import { auth } from '../firebase';
+import { clearPermanentLink, hasPermanentLink, refreshAccessTokenSilently } from './googleOfflineAccess';
 
 export const CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
@@ -135,10 +136,10 @@ function readStoredAccessToken(expectedUid?: string | null): string | null {
 let cachedAccessToken: string | null = readStoredAccessToken();
 let cachedExpiresAtMs: number = readStoredOAuthRecord()?.expiresAtMs ?? 0;
 
-function persistAccessToken(uid: string, token: string): void {
+function persistAccessToken(uid: string, token: string, expiresInSec = 3600): void {
   if (typeof window === 'undefined' || !token) return;
-  // Google OAuth access tokens live 60 minutes; track 59-minute lifetime and only expire on real 401
-  const expiresAtMs = Date.now() + 59 * 60_000;
+  // Google OAuth access tokens live ~60 minutes; keep a 1-minute safety margin.
+  const expiresAtMs = Date.now() + Math.max(60, expiresInSec - 60) * 1000;
   cachedExpiresAtMs = expiresAtMs;
   try {
     const payload: StoredOAuthToken = {
@@ -316,10 +317,34 @@ export async function refreshGoogleCalendarToken(): Promise<{
   if (inFlightTokenRefresh) {
     return inFlightTokenRefresh;
   }
-  inFlightTokenRefresh = signInWithGoogleCalendar({ forceAccountChooser: false }).finally(() => {
+  inFlightTokenRefresh = (async () => {
+    // Permanent link: renew silently, no popup.
+    const silent = await refreshGoogleCalendarTokenSilently();
+    if (silent && auth.currentUser) return { user: auth.currentUser, accessToken: silent };
+    return signInWithGoogleCalendar({ forceAccountChooser: false });
+  })().finally(() => {
     inFlightTokenRefresh = null;
   });
   return inFlightTokenRefresh;
+}
+
+/** Stores an access token obtained outside Firebase (permanent-link exchange or silent refresh). */
+export function applyFreshAccessToken(uid: string, token: string, expiresInSec = 3600): void {
+  cachedAccessToken = token;
+  persistAccessToken(uid, token, expiresInSec);
+}
+
+/**
+ * Renews the Google access token from the device's refresh token with no UI.
+ * Returns the new token, or null when there is no permanent link (or it was revoked).
+ */
+export async function refreshGoogleCalendarTokenSilently(): Promise<string | null> {
+  const uid = auth.currentUser?.uid;
+  if (!uid || !hasPermanentLink(uid)) return null;
+  const fresh = await refreshAccessTokenSilently();
+  if (!fresh) return null;
+  applyFreshAccessToken(uid, fresh.accessToken, fresh.expiresInSec);
+  return fresh.accessToken;
 }
 
 export function getCalendarAccessToken(): string | null {
@@ -333,5 +358,6 @@ export function getCalendarAccessToken(): string | null {
 
 export async function signOutGoogleCalendar(): Promise<void> {
   clearStoredAccessToken();
+  clearPermanentLink();
   await auth.signOut();
 }

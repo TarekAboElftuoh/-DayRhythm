@@ -146,6 +146,15 @@ export default defineConfig(() => {
         },
       },
     ],
+    build: {
+      rollupOptions: {
+        // capsule.html = the Windows desktop capsule (rendered by DesktopCapsuleForm.cs in WebView2)
+        input: {
+          main: path.resolve(rootDir, 'index.html'),
+          capsule: path.resolve(rootDir, 'capsule.html'),
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve(rootDir, '.'),

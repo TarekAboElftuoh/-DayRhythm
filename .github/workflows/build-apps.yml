@@ -30,6 +30,8 @@ jobs:
       - name: Install dependencies cleanly and build standalone web bundle
         env:
           VITE_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || vars.GEMINI_API_KEY }}
+          VITE_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          VITE_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
         run: |
           rm -f bun.lock package-lock.json
           npm install --no-package-lock --legacy-peer-deps --no-audit --no-fund

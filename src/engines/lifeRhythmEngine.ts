@@ -164,6 +164,9 @@ export function computeDailyRhythmPlan(
     tomorrowWeekday: number;
     fastingOverride?: 'auto' | 'fasting' | 'normal';
     heatBonusMl?: number;
+    /** Arabic name of a special Sunnah fast today/tomorrow (يوم عرفة / يوم عاشوراء), if any. */
+    specialFastTodayAr?: string | null;
+    specialFastTomorrowAr?: string | null;
   }
 ): DailyRhythmPlan {
   const fajr = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
@@ -173,7 +176,8 @@ export function computeDailyRhythmPlan(
   const maghrib = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
   const isha = prayers.find((p) => p.id === 'isha')?.adhanMinutes ?? 19 * 60;
 
-  const autoFastToday = profile.fastingDays.includes(options.todayWeekday);
+  const autoFastToday =
+    profile.fastingDays.includes(options.todayWeekday) || Boolean(options.specialFastTodayAr);
   const isFastingToday =
     options.fastingOverride === 'fasting'
       ? true
@@ -181,7 +185,8 @@ export function computeDailyRhythmPlan(
         ? false
         : autoFastToday;
 
-  const isFastingTomorrow = profile.fastingDays.includes(options.tomorrowWeekday);
+  const isFastingTomorrow =
+    profile.fastingDays.includes(options.tomorrowWeekday) || Boolean(options.specialFastTomorrowAr);
 
   const dayNameMap: Record<number, string> = {
     0: 'الأحد',
@@ -196,7 +201,9 @@ export function computeDailyRhythmPlan(
   const fastingReasonAr = isFastingToday
     ? options.fastingOverride === 'fasting' && !autoFastToday
       ? 'صيام إضافي مفعّل لليوم'
-      : `صيام تلقائي (${dayNameMap[options.todayWeekday] ?? 'اليوم'})`
+      : options.specialFastTodayAr
+        ? `صيام ${options.specialFastTodayAr}`
+        : `صيام تلقائي (${dayNameMap[options.todayWeekday] ?? 'اليوم'})`
     : options.fastingOverride === 'normal' && autoFastToday
       ? 'إفطار مستثنى لليوم'
       : 'يوم عادي';

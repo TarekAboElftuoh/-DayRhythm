@@ -172,7 +172,7 @@ export const LogoPickerModal: React.FC<LogoPickerModalProps> = ({
                         referrerPolicy="no-referrer"
                         className="w-10 h-10 rounded-[11px] object-cover border border-white/15 shadow-md shrink-0"
                       />
-                      <div className="text-[10px] text-zinc-400 leading-tight">
+                      <div className="text-[11px] text-zinc-400 leading-tight">
                         <div className="flex items-center gap-1 text-zinc-200 font-semibold">
                           <Smartphone className="w-3 h-3 text-[#7FFFD4]" />
                           <span>الموبايل</span>
@@ -193,7 +193,7 @@ export const LogoPickerModal: React.FC<LogoPickerModalProps> = ({
                         />
                         <span className="h-1 w-2 rounded-full bg-[#7FFFD4]" />
                       </div>
-                      <div className="text-[10px] text-zinc-400 leading-tight">
+                      <div className="text-[11px] text-zinc-400 leading-tight">
                         <div className="flex items-center gap-1 text-zinc-200 font-semibold">
                           <Monitor className="w-3 h-3 text-sky-300" />
                           <span>ويندوز</span>

@@ -135,17 +135,17 @@ export const MemoryItemCard: React.FC<MemoryItemCardProps> = ({
               ))}
             </select>
           ) : (
-            <span className="text-[10px] font-semibold text-[#7FFFD4]">
+            <span className="text-[11px] font-semibold text-[#7FFFD4]">
               {MEMORY_CATEGORY_LABELS[draftCategory] ?? 'قواعد عامة'}
             </span>
           )}
 
           {variant === 'modal' && (
-            <span className="text-[10px] text-zinc-500">· {sourceLabel}</span>
+            <span className="text-[11px] text-zinc-500">· {sourceLabel}</span>
           )}
 
           {justSaved && !hasChanges && (
-            <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-[#4ADE80]">
+            <span className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-[#4ADE80]">
               <Check className="w-3 h-3" />
               <span>تم الحفظ</span>
             </span>
@@ -214,7 +214,7 @@ export const MemoryItemCard: React.FC<MemoryItemCardProps> = ({
       {/* Explicit Save & Revert Actions whenever text or category is modified */}
       {isEditable && (hasChanges || isFocused) && (
         <div className="flex items-center justify-between gap-2 pt-0.5">
-          <span className="text-[10px] text-zinc-500 font-mono-tabular">
+          <span className="text-[11px] text-zinc-500 font-mono-tabular">
             {trimmedDraft.length}/320
             {hasChanges ? ' · تعديل غير محفوظ' : ' · اضغط لتحرير النص'}
           </span>

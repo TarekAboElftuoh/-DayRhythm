@@ -61,11 +61,18 @@ import {
   getCalendarAccessToken,
   initCalendarAuth,
   markCalendarTokenExpired,
+  isCalendarTokenExpiringSoon,
   observeFirebaseUser,
   refreshGoogleCalendarToken,
+  refreshGoogleCalendarTokenSilently,
   signInWithGoogleCalendar,
   signOutGoogleCalendar,
 } from './services/googleCalendarAuth';
+import {
+  hasPermanentLink,
+  isPermanentLinkAvailable,
+  startPermanentLink,
+} from './services/googleOfflineAccess';
 import {
   apiFetchJson,
   cleanCalendarText,
@@ -123,6 +130,7 @@ import {
   getNowMinutesInTimeZone,
   getTimeZoneUtcOffsetHours,
   getTodayCalendarMeta,
+  getSpecialFastDay,
   getWeekdayInTimeZone,
   haversineDistanceKm,
   parseIsoToTimeZoneInfo,
@@ -466,6 +474,39 @@ function resolveCalendarActionTargets(
         : `فيه أكتر من موعد باسم «${title}» — قول اليوم والساعة بالظبط.`
     );
   });
+}
+
+interface QueuedGoogleOp {
+  id: string;
+  kind: 'calendar' | 'tasks';
+  actions: CalendarActionProposal[] | TaskActionProposal[];
+  createdAtMs: number;
+}
+
+const GOOGLE_OFFLINE_QUEUE_KEY = 'dayrhythm_google_offline_queue_v1';
+
+function readGoogleOfflineQueue(): QueuedGoogleOp[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(GOOGLE_OFFLINE_QUEUE_KEY) || '[]');
+    return Array.isArray(parsed) ? (parsed as QueuedGoogleOp[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeGoogleOfflineQueue(queue: QueuedGoogleOp[]): void {
+  try {
+    if (queue.length === 0) localStorage.removeItem(GOOGLE_OFFLINE_QUEUE_KEY);
+    else localStorage.setItem(GOOGLE_OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+/** fetch() rejects with a TypeError ("Failed to fetch" / "Load failed") when there is no network. */
+function isNetworkFailure(err: unknown): boolean {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+  return err instanceof TypeError && /fetch|network|load failed/i.test(err.message);
 }
 
 /** Same protection for Google Tasks: never act on a task id Gemini made up. */
@@ -854,6 +895,16 @@ export default function App() {
     };
   }, [activeLocation.timeZone, lifeProfile.currentTimeZone, todayCairoIso]);
 
+  // Sunnah fasts from the Hijri calendar: يوم عرفة (9 Dhu al-Hijjah) and يوم عاشوراء (10 Muharram).
+  const specialFastToday = useMemo(
+    () => getSpecialFastDay(todayCairoIso, activeTimeZone),
+    [todayCairoIso, activeTimeZone]
+  );
+  const specialFastTomorrow = useMemo(
+    () => getSpecialFastDay(tomorrowInfo.tomorrowIso, activeTimeZone),
+    [tomorrowInfo.tomorrowIso, activeTimeZone]
+  );
+
   const dailyRhythmPlan = useMemo(
     () =>
       computeDailyRhythmPlan(lifeProfile, prayers, {
@@ -861,14 +912,39 @@ export default function App() {
         tomorrowWeekday: tomorrowInfo.tomorrowW,
         fastingOverride,
         heatBonusMl: weatherInfo?.heatBonusMl ?? 0,
+        specialFastTodayAr: specialFastToday?.nameAr ?? null,
+        specialFastTomorrowAr: specialFastTomorrow?.nameAr ?? null,
       }),
-    [tomorrowInfo.todayW, tomorrowInfo.tomorrowW, fastingOverride, lifeProfile, prayers, weatherInfo?.heatBonusMl]
+    [
+      tomorrowInfo.todayW,
+      tomorrowInfo.tomorrowW,
+      fastingOverride,
+      lifeProfile,
+      prayers,
+      weatherInfo?.heatBonusMl,
+      specialFastToday,
+      specialFastTomorrow,
+    ]
   );
 
-  const tomorrowAlert: TomorrowAlertInfo | null = useMemo(
-    () => analyzeTomorrowAlert(calendarEvents, tomorrowInfo.tomorrowIso, tomorrowInfo.tomorrowW),
-    [calendarEvents, tomorrowInfo.tomorrowIso, tomorrowInfo.tomorrowW]
-  );
+  const tomorrowAlert: TomorrowAlertInfo | null = useMemo(() => {
+    const base = analyzeTomorrowAlert(calendarEvents, tomorrowInfo.tomorrowIso, tomorrowInfo.tomorrowW);
+    if (!specialFastTomorrow) return base;
+    const headline = `${specialFastTomorrow.emoji} بكرة ${specialFastTomorrow.nameAr} — صيام سُنّة`;
+    const detail = 'السحور ومواعيد المية اتظبطوا تلقائياً على الصيام';
+    if (base) return { ...base, headlineAr: headline, detailAr: `${detail} · ${base.detailAr}` };
+    return {
+      tomorrowIso: tomorrowInfo.tomorrowIso,
+      weekdayAr: ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'][tomorrowInfo.tomorrowW] ?? '',
+      isBusy: false,
+      hasSpecialEvent: true,
+      eventCount: 0,
+      totalHours: 0,
+      specialEvents: [],
+      headlineAr: headline,
+      detailAr: detail,
+    };
+  }, [calendarEvents, tomorrowInfo.tomorrowIso, tomorrowInfo.tomorrowW, specialFastTomorrow]);
 
   const lowEnergyActive = lifeProfile.lowEnergyDateKey === todayCairoIso;
   const activeOneTimeSilenceMinutes =
@@ -1677,15 +1753,27 @@ export default function App() {
       await Promise.all(
         targetCals.map(async (cal) => {
           try {
-            const url =
+            const baseUrl =
               `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events` +
               `?singleEvents=true&orderBy=startTime&maxResults=250&timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`;
-            const evRes = await fetch(url, {
-              headers: { Authorization: `Bearer ${token}` },
-            });
-            if (!evRes.ok) return;
-            const evJson = (await evRes.json()) as { items?: Array<Record<string, unknown>> };
-            for (const ev of evJson.items || []) {
+            // A full daily routine is ~20 events/day, so 15 days can exceed one page (250): follow pageToken.
+            const items: Array<Record<string, unknown>> = [];
+            let pageToken = '';
+            for (let page = 0; page < 6; page += 1) {
+              const evRes = await fetch(
+                pageToken ? `${baseUrl}&pageToken=${encodeURIComponent(pageToken)}` : baseUrl,
+                { headers: { Authorization: `Bearer ${token}` } }
+              );
+              if (!evRes.ok) break;
+              const evJson = (await evRes.json()) as {
+                items?: Array<Record<string, unknown>>;
+                nextPageToken?: string;
+              };
+              items.push(...(evJson.items || []));
+              pageToken = evJson.nextPageToken || '';
+              if (!pageToken) break;
+            }
+            for (const ev of items) {
               const startObj = (ev.start || {}) as { dateTime?: string; date?: string };
               const endObj = (ev.end || {}) as { dateTime?: string; date?: string };
               const startVal = startObj.dateTime || startObj.date || '';
@@ -2206,6 +2294,93 @@ export default function App() {
       setIsRefreshingWorkspaceToken(false);
     }
   }, [refreshWorkspace, showToast]);
+
+  // ── ☀️ Sunlight mode (per device; the night theme stays the default) ───────────────
+  const [sunMode, setSunMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('dayrhythm_sun_mode_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    document.documentElement.classList.toggle('theme-sun', sunMode);
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', sunMode ? '#eef1f4' : '#000000');
+    try {
+      localStorage.setItem('dayrhythm_sun_mode_v1', sunMode ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [sunMode]);
+
+  // ── Permanent Google link ────────────────────────────────────────────────────────────
+  const [permanentLinkActive, setPermanentLinkActive] = useState<boolean>(() => hasPermanentLink());
+  const [isStartingPermanentLink, setIsStartingPermanentLink] = useState(false);
+  const [permanentLinkHintDismissed, setPermanentLinkHintDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('dayrhythm_permanent_link_hint_dismissed_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleStartPermanentLink = useCallback(async () => {
+    if (!authUser) return;
+    setIsStartingPermanentLink(true);
+    try {
+      await startPermanentLink({ uid: authUser.uid, loginHint: authUser.email });
+    } catch (err: unknown) {
+      setIsStartingPermanentLink(false);
+      showToast(err instanceof Error ? err.message : 'تعذر بدء الربط الدائم.');
+    }
+  }, [authUser, showToast]);
+
+  // Report the result of the Google redirect handled in main.tsx.
+  useEffect(() => {
+    const w = window as Window & {
+      __dayRhythmPermanentLinkResult?: { ok: boolean; error?: string };
+    };
+    const result = w.__dayRhythmPermanentLinkResult;
+    if (!result) return;
+    delete w.__dayRhythmPermanentLinkResult;
+    if (result.ok) {
+      setPermanentLinkActive(true);
+      setWorkspaceTokenExpired(false);
+      showToast('🔗 تم الربط الدائم مع Google — مش هتحتاج تجدد الربط تاني على الجهاز ده ✓');
+    } else if (result.error) {
+      showToast(result.error);
+    }
+  }, [showToast]);
+
+  // Silent renewal: when the token is missing/expired, or 5 minutes before it expires.
+  useEffect(() => {
+    if (!authUser || needsAuth) return;
+    let cancelled = false;
+    const renewIfNeeded = async (force: boolean) => {
+      if (!hasPermanentLink(authUser.uid)) return;
+      if (!force && !isCalendarTokenExpiringSoon(5 * 60_000)) return;
+      const token = await refreshGoogleCalendarTokenSilently();
+      if (cancelled) return;
+      if (token) {
+        setWorkspaceTokenExpired(false);
+        setGmailNeedsReauth(false);
+        if (force) void refreshWorkspace(token);
+      } else {
+        setPermanentLinkActive(hasPermanentLink(authUser.uid));
+      }
+    };
+    if (workspaceTokenExpired) void renewIfNeeded(true);
+    const id = window.setInterval(() => void renewIfNeeded(false), 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void renewIfNeeded(false);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [authUser, needsAuth, workspaceTokenExpired, refreshWorkspace]);
 
   // Automatic Background Poller for Gmail Digest (silently skips when OAuth token is absent — zero annoying hourly banners!)
   useEffect(() => {
@@ -4305,14 +4480,14 @@ export default function App() {
     []
   );
 
-  const handleExecuteCalendarActions = useCallback(
+  const executeCalendarActionsNow = useCallback(
     async (
       actions: CalendarActionProposal[],
-      options?: { isUndoRestore?: boolean }
+      options?: { isUndoRestore?: boolean; alreadyResolved?: boolean }
     ): Promise<{ googleSynced: boolean; results: CalendarExecutionResult[] }> => {
       if (actions.length === 0) return { googleSynced: false, results: [] };
       // Undo-restores re-create events that are no longer in the list, so only validate normal runs.
-      if (!options?.isUndoRestore) {
+      if (!options?.isUndoRestore && !options?.alreadyResolved) {
         actions = resolveCalendarActionTargets(actions, calendarEvents);
       }
       const token = getCalendarAccessToken();
@@ -4527,13 +4702,13 @@ export default function App() {
     ]
   );
 
-  const handleExecuteTaskActions = useCallback(
+  const executeTaskActionsNow = useCallback(
     async (
       taskActions: TaskActionProposal[],
-      options?: { isUndoRestore?: boolean }
+      options?: { isUndoRestore?: boolean; alreadyResolved?: boolean }
     ): Promise<{ googleSynced: boolean; results: TaskExecutionResult[] }> => {
       if (taskActions.length === 0) return { googleSynced: false, results: [] };
-      if (!options?.isUndoRestore) {
+      if (!options?.isUndoRestore && !options?.alreadyResolved) {
         taskActions = resolveTaskActionTargets(taskActions, googleTasks);
       }
       const token = getCalendarAccessToken();
@@ -4708,6 +4883,141 @@ export default function App() {
       showToast,
     ]
   );
+
+  // ── Offline queue for Google Calendar / Tasks edits ──────────────────────────────────
+  // With no internet, an edit is validated, shown right away, saved, and sent to Google
+  // automatically when the connection returns (also after an app restart).
+  const [queuedGoogleOpsCount, setQueuedGoogleOpsCount] = useState<number>(
+    () => readGoogleOfflineQueue().length
+  );
+
+  const queueGoogleOp = useCallback(
+    (kind: QueuedGoogleOp['kind'], actions: QueuedGoogleOp['actions']) => {
+      const next = [
+        ...readGoogleOfflineQueue(),
+        { id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, kind, actions, createdAtMs: Date.now() },
+      ];
+      writeGoogleOfflineQueue(next);
+      setQueuedGoogleOpsCount(next.length);
+      showToast('📴 مفيش إنترنت — التعديل اتحفظ وهيتنفذ في Google لوحده أول ما النت يرجع');
+    },
+    [showToast]
+  );
+
+  const handleExecuteCalendarActions = useCallback(
+    async (
+      actions: CalendarActionProposal[],
+      options?: { isUndoRestore?: boolean }
+    ): Promise<{ googleSynced: boolean; results: CalendarExecutionResult[]; queued?: boolean }> => {
+      if (actions.length === 0) return { googleSynced: false, results: [] };
+      const queueNow = (resolved: CalendarActionProposal[]) => {
+        queueGoogleOp('calendar', resolved);
+        // Show the change immediately.
+        const deleteIds = new Set(resolved.filter((a) => a.operation === 'delete').map((a) => a.eventId));
+        setCalendarEvents((prev) => {
+          const kept = prev.filter((e) => !deleteIds.has(e.id));
+          const created = resolved
+            .filter((a) => a.operation === 'create' && a.dateIso && a.startTime24)
+            .map((a, i) => {
+              const start = `${a.dateIso}T${a.startTime24}:00${formatUtcOffsetForIso(activeTimeZone)}`;
+              const end = new Date(new Date(start).getTime() + (a.durationMinutes || 30) * 60_000).toISOString();
+              return {
+                id: `queued-${Date.now()}-${i}`,
+                calendarId: a.calendarId || 'primary',
+                summary: a.title,
+                description: a.description || '',
+                start,
+                end,
+                isAllDay: false,
+              } as GoogleCalendarEventItem;
+            });
+          return [...kept, ...created].sort((x, y) => x.start.localeCompare(y.start));
+        });
+        return { googleSynced: false, results: [], queued: true };
+      };
+      const resolved = options?.isUndoRestore ? actions : resolveCalendarActionTargets(actions, calendarEvents);
+      if (navigator.onLine === false) return queueNow(resolved);
+      try {
+        return await executeCalendarActionsNow(resolved, { ...options, alreadyResolved: true });
+      } catch (err: unknown) {
+        if (isNetworkFailure(err)) return queueNow(resolved);
+        throw err;
+      }
+    },
+    [activeTimeZone, calendarEvents, executeCalendarActionsNow, queueGoogleOp]
+  );
+
+  const handleExecuteTaskActions = useCallback(
+    async (
+      taskActions: TaskActionProposal[],
+      options?: { isUndoRestore?: boolean }
+    ): Promise<{ googleSynced: boolean; results: TaskExecutionResult[]; queued?: boolean }> => {
+      if (taskActions.length === 0) return { googleSynced: false, results: [] };
+      const queueNow = (resolved: TaskActionProposal[]) => {
+        queueGoogleOp('tasks', resolved);
+        setGoogleTasks((prev) =>
+          prev
+            .filter((t) => !resolved.some((a) => a.operation === 'delete' && a.taskId === t.id))
+            .map((t) => {
+              const act = resolved.find((a) => a.taskId === t.id);
+              if (!act) return t;
+              if (act.operation === 'complete') return { ...t, status: 'completed' as const };
+              if (act.operation === 'reopen') return { ...t, status: 'needsAction' as const };
+              if (act.operation === 'update') return { ...t, title: act.title || t.title };
+              return t;
+            })
+        );
+        return { googleSynced: false, results: [], queued: true };
+      };
+      const resolved = options?.isUndoRestore ? taskActions : resolveTaskActionTargets(taskActions, googleTasks);
+      if (navigator.onLine === false) return queueNow(resolved);
+      try {
+        return await executeTaskActionsNow(resolved, { ...options, alreadyResolved: true });
+      } catch (err: unknown) {
+        if (isNetworkFailure(err)) return queueNow(resolved);
+        throw err;
+      }
+    },
+    [executeTaskActionsNow, googleTasks, queueGoogleOp]
+  );
+
+  // Flush the queue when the connection returns, on start-up, and when Google access is renewed.
+  const flushingQueueRef = useRef(false);
+  useEffect(() => {
+    if (!authUser || needsAuth || workspaceTokenExpired) return;
+    const flush = async () => {
+      if (flushingQueueRef.current || navigator.onLine === false || !getCalendarAccessToken()) return;
+      const queue = readGoogleOfflineQueue();
+      if (queue.length === 0) return;
+      flushingQueueRef.current = true;
+      let done = 0;
+      try {
+        for (const op of queue) {
+          try {
+            if (op.kind === 'calendar') {
+              await executeCalendarActionsNow(op.actions as CalendarActionProposal[], { alreadyResolved: true });
+            } else {
+              await executeTaskActionsNow(op.actions as TaskActionProposal[], { alreadyResolved: true });
+            }
+            done += 1;
+          } catch (err: unknown) {
+            if (isNetworkFailure(err)) break;
+            // a permanent failure (e.g. event deleted elsewhere): drop it and tell the user
+            showToast(`تعذر تنفيذ تعديل محفوظ: ${err instanceof Error ? err.message : ''}`);
+          }
+          const rest = readGoogleOfflineQueue().filter((q) => q.id !== op.id);
+          writeGoogleOfflineQueue(rest);
+          setQueuedGoogleOpsCount(rest.length);
+        }
+        if (done > 0) showToast(`✓ رجع النت — اتنفذ ${done} تعديل محفوظ في Google`);
+      } finally {
+        flushingQueueRef.current = false;
+      }
+    };
+    void flush();
+    window.addEventListener('online', flush);
+    return () => window.removeEventListener('online', flush);
+  }, [authUser, needsAuth, workspaceTokenExpired, executeCalendarActionsNow, executeTaskActionsNow, showToast]);
 
   const handleUndoWorkspaceDelete = useCallback(async () => {
     const snap = lastDeletedWorkspaceItem;
@@ -7407,7 +7717,7 @@ ${lifeConstitution}
 
   return (
     <div
-      className={`min-h-[100dvh] overflow-x-clip transition-colors ${
+      className={`app-root min-h-[100dvh] overflow-x-clip transition-colors ${
         surfaceTheme === 'amoled' ? 'bg-black' : 'bg-[#070A0F]'
       } text-zinc-100 pb-16`}
     >
@@ -7420,6 +7730,8 @@ ${lifeConstitution}
         brandLogoSrc={activeBrandLogo?.src ?? null}
         onCheckAppUpdates={handleCheckAppUpdates}
         isCheckingUpdates={isCheckingUpdates}
+        sunMode={sunMode}
+        onToggleSunMode={() => setSunMode((v) => !v)}
       />
 
       {toastMessage && (
@@ -7429,6 +7741,71 @@ ${lifeConstitution}
       )}
 
       <main className="pb-24 md:pb-8">
+        {authUser && !needsAuth && (workspaceTokenExpired || (!permanentLinkActive && isPermanentLinkAvailable() && !permanentLinkHintDismissed)) && (
+          <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-3">
+            <div
+              className={`rounded-xl border px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs ${
+                workspaceTokenExpired
+                  ? 'border-amber-400/35 bg-amber-400/[0.06]'
+                  : 'border-[#7FFFD4]/25 bg-[#7FFFD4]/[0.04]'
+              }`}
+            >
+              <span className={workspaceTokenExpired ? 'text-amber-200 font-semibold' : 'text-zinc-300'}>
+                {workspaceTokenExpired
+                  ? 'ربط Google انتهى — التقويم والمهام مش بيتحدّثوا دلوقتي.'
+                  : 'فعّل الربط الدائم مع Google علشان الربط ميقعش كل ساعة.'}
+              </span>
+              <div className="flex items-center gap-2">
+                {isPermanentLinkAvailable() && !permanentLinkActive && (
+                  <button
+                    type="button"
+                    onClick={() => void handleStartPermanentLink()}
+                    disabled={isStartingPermanentLink}
+                    className="min-h-[34px] px-3 rounded-lg bg-[#7FFFD4] text-black font-bold hover:bg-[#7FFFD4]/90 disabled:opacity-60 cursor-pointer"
+                  >
+                    {isStartingPermanentLink ? 'جارٍ التحويل لـ Google…' : '🔗 ربط دائم'}
+                  </button>
+                )}
+                {workspaceTokenExpired && (
+                  <button
+                    type="button"
+                    onClick={() => void handleRefreshWorkspaceToken()}
+                    disabled={isRefreshingWorkspaceToken}
+                    className="min-h-[34px] px-3 rounded-lg border border-amber-400/40 text-amber-200 font-semibold hover:bg-amber-400/10 disabled:opacity-60 cursor-pointer"
+                  >
+                    {isRefreshingWorkspaceToken ? 'جارٍ التجديد…' : 'تجديد الربط'}
+                  </button>
+                )}
+                {!workspaceTokenExpired && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPermanentLinkHintDismissed(true);
+                      try {
+                        localStorage.setItem('dayrhythm_permanent_link_hint_dismissed_v1', '1');
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                    aria-label="إخفاء"
+                    className="min-h-[34px] px-2 rounded-lg text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {queuedGoogleOpsCount > 0 && (
+          <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-3">
+            <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-xs text-zinc-300">
+              ⏳ {queuedGoogleOpsCount} تعديل مستني النت — هيتنفذوا في Google لوحدهم أول ما الاتصال يرجع.
+            </div>
+          </div>
+        )}
+
         {activeTab === 'dashboard' && (
           <DashboardView
             language={language}

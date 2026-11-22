@@ -330,6 +330,13 @@ namespace DayRhythm
                     CoreWebView2HostResourceAccessKind.Allow
                 );
 
+                // The desktop capsule renders the app's own capsule page (same theme as the app).
+                if (_capsuleForm != null)
+                {
+                    try { await _capsuleForm.AttachWebContentAsync(_webViewEnv, wwwDir); }
+                    catch { /* capsule is optional */ }
+                }
+
                 _webView.CoreWebView2.WebMessageReceived += (_, args) =>
                 {
                     try
@@ -575,6 +582,10 @@ namespace DayRhythm
                                     CoreWebView2HostResourceAccessKind.Allow
                                 );
                                 _webView.CoreWebView2.Navigate(VirtualAppUrl + "?v=" + Uri.EscapeDataString(tagDone));
+                            }
+                            if (_capsuleForm != null && _webViewEnv != null)
+                            {
+                                _ = _capsuleForm.AttachWebContentAsync(_webViewEnv, newWwwDir);
                             }
                             ShowTrayBalloon("تم التحديث بنجاح ✓", $"تم تحديث إيقاع اليوم فوراً إلى {tagDone}.");
                         });

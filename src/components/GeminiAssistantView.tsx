@@ -101,10 +101,10 @@ interface GeminiAssistantViewProps {
   onRefreshWorkspace: () => Promise<void>;
   onExecuteCalendarActions: (
     actions: CalendarActionProposal[]
-  ) => Promise<{ googleSynced: boolean; results: CalendarExecutionResult[] }>;
+  ) => Promise<{ googleSynced: boolean; results: CalendarExecutionResult[]; queued?: boolean }>;
   onExecuteTaskActions: (
     taskActions: TaskActionProposal[]
-  ) => Promise<{ googleSynced: boolean; results: TaskExecutionResult[] }>;
+  ) => Promise<{ googleSynced: boolean; results: TaskExecutionResult[]; queued?: boolean }>;
   onExecuteMedicationActions: (
     medicationActions: MedicationActionProposal[],
     linkedCalendarIds?: Record<string, string>
@@ -132,6 +132,32 @@ interface GeminiAssistantViewProps {
   onUpdateMemory: (id: string, patch: { category: MemoryCategory; ruleText: string }) => void;
   onDeleteMemory: (id: string) => void;
   onSaveCloudApiUrl?: (url: string) => void;
+}
+
+interface QueuedChatMessage {
+  id: string;
+  text: string;
+  mode: AssistantMode;
+}
+
+const CHAT_OFFLINE_QUEUE_KEY = 'dayrhythm_chat_offline_queue_v1';
+
+function readChatOfflineQueue(): QueuedChatMessage[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CHAT_OFFLINE_QUEUE_KEY) || '[]');
+    return Array.isArray(parsed) ? (parsed as QueuedChatMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeChatOfflineQueue(queue: QueuedChatMessage[]): void {
+  try {
+    if (queue.length === 0) localStorage.removeItem(CHAT_OFFLINE_QUEUE_KEY);
+    else localStorage.setItem(CHAT_OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  } catch {
+    // ignore storage errors
+  }
 }
 
 const SUGGESTED_PROMPTS: Record<AssistantMode, string[]> = {
@@ -786,6 +812,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       const links: Array<{ title: string; htmlLink: string }> = [];
       const summaryParts: string[] = [];
       const linkedCalendarIds: Record<string, string> = {};
+      let queuedOffline = false;
 
       if (profileUpdates && Object.keys(profileUpdates).length > 0) {
         onApplyProfileUpdates(profileUpdates);
@@ -799,6 +826,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
       if (actions.length > 0) {
         const calRes = await onExecuteCalendarActions(actions);
+        if (calRes.queued) queuedOffline = true;
         calRes.results.forEach((r) => {
           if (r.htmlLink) links.push({ title: r.title, htmlLink: r.htmlLink });
           if (r.id) {
@@ -819,6 +847,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
       if (taskActions.length > 0) {
         const taskRes = await onExecuteTaskActions(taskActions);
+        if (taskRes.queued) queuedOffline = true;
         summaryParts.push(`Google Tasks (${taskRes.results.length})`);
       }
 
@@ -832,26 +861,22 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         summaryParts.push(`الأنشطة (${crRes.length})`);
       }
 
-      const confirmText = `تم التنفيذ والمزامنة بنجاح: ${summaryParts.join(' + ')} ✓`;
-
+      // One message per action: the proposal card itself becomes "done" (with the Google links)
+      // instead of a second "done" message underneath it.
+      const queuedNote = queuedOffline
+        ? '\n\n⏳ مفيش إنترنت — التعديل محفوظ وهيتنفذ في Google لوحده أول ما النت يرجع.'
+        : '';
       onChangeMessages((prev) =>
-        prev
-          .map((m): PersistedChatMessage =>
-            m.id === msgId && m.pendingProposal
-              ? {
-                  ...m,
-                  pendingProposal: { ...m.pendingProposal, status: 'confirmed' as const },
-                }
-              : m
-          )
-          .concat({
-            id: `exec-ok-${Date.now()}`,
-            role: 'model',
-            mode: 'chat',
-            text: confirmText,
-            createdAtIso: new Date().toISOString(),
-            executionLinks: links.length > 0 ? links : undefined,
-          })
+        prev.map((m): PersistedChatMessage =>
+          m.id === msgId && m.pendingProposal
+            ? {
+                ...m,
+                text: queuedNote ? `${m.text}${queuedNote}` : m.text,
+                pendingProposal: { ...m.pendingProposal, status: 'confirmed' as const },
+                executionLinks: links.length > 0 ? links : m.executionLinks,
+              }
+            : m
+        )
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'فشل تنفيذ التعديل.';
@@ -891,7 +916,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   const sendMessage = async (
     overrideText?: string,
     overrideMode?: AssistantMode,
-    options?: { bypassCache?: boolean }
+    options?: { bypassCache?: boolean; queuedId?: string }
   ) => {
     const activeMode = overrideMode ?? mode;
     const query = (overrideText ?? draftsByMode[activeMode]).trim();
@@ -907,7 +932,31 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       createdAtIso: new Date().toISOString(),
     };
 
-    onChangeMessages((prev) => [...prev, userMsg]);
+    // No internet: keep the message and send it automatically when the connection returns.
+    if (!options?.queuedId && navigator.onLine === false) {
+      onChangeMessages((prev) => [
+        ...prev,
+        userMsg,
+        {
+          id: `q-${userMsg.id}`,
+          role: 'model',
+          mode: activeMode,
+          text: '⏳ مفيش إنترنت دلوقتي — رسالتك محفوظة وهتتبعت لوحدها أول ما النت يرجع.',
+          createdAtIso: new Date().toISOString(),
+        },
+      ]);
+      if (!overrideText) setInputForMode(activeMode, '');
+      writeChatOfflineQueue([...readChatOfflineQueue(), { id: userMsg.id, text: query, mode: activeMode }]);
+      return;
+    }
+
+    if (options?.queuedId) {
+      // The user message is already in the chat; drop the "waiting for internet" note.
+      const placeholderId = `q-${options.queuedId}`;
+      onChangeMessages((prev) => prev.filter((m) => m.id !== placeholderId));
+    } else {
+      onChangeMessages((prev) => [...prev, userMsg]);
+    }
     if (!overrideText) setInputForMode(activeMode, '');
     setLoadingByMode((prev) => ({ ...prev, [activeMode]: true }));
     setStreamStatusByMode((prev) => ({
@@ -1645,6 +1694,34 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     }
   };
 
+  // Send messages that were written while offline, once the connection is back (or on next launch).
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+  useEffect(() => {
+    let flushing = false;
+    const flush = async () => {
+      if (flushing || navigator.onLine === false) return;
+      const queue = readChatOfflineQueue();
+      if (queue.length === 0) return;
+      flushing = true;
+      try {
+        for (const item of queue) {
+          writeChatOfflineQueue(readChatOfflineQueue().filter((q) => q.id !== item.id));
+          await sendMessageRef.current(item.text, item.mode, { queuedId: item.id });
+        }
+      } finally {
+        flushing = false;
+      }
+    };
+    // Give the app a moment to load the Gemini key and context before the first flush.
+    const startTimer = window.setTimeout(() => void flush(), 2500);
+    window.addEventListener('online', flush);
+    return () => {
+      window.clearTimeout(startTimer);
+      window.removeEventListener('online', flush);
+    };
+  }, []);
+
   const handleQuickAddMemory = (e: React.FormEvent) => {
     e.preventDefault();
     const cleaned = newMemoryRule.trim();
@@ -1677,7 +1754,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     geminiStatus.status === 'checking'
       ? 'جارٍ فحص اتصال Gemini...'
       : geminiStatus.connected
-        ? `متصل بـ Gemini · ${geminiStatus.latencyMs} مللي ثانية`
+        ? 'متصل بـ Gemini ✓'
         : 'تعذر الاتصال بـ Gemini';
 
   const statusDotClass =
@@ -1865,7 +1942,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                   <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
                   <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
                 </svg>
-                <span>{isLoggingIn ? 'جارٍ الاتصال...' : 'Sign in with Google'}</span>
+                <span>{isLoggingIn ? 'جارٍ الاتصال...' : 'تسجيل الدخول بحساب Google'}</span>
               </button>
             </div>
           ) : (
@@ -1962,7 +2039,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                         {tk.status === 'completed' ? '✓ ' : '○ '}
                         {tk.title}
                       </div>
-                      <div className="text-[10px] text-zinc-500 mt-1 flex items-center justify-between gap-2">
+                      <div className="text-[11px] text-zinc-500 mt-1 flex items-center justify-between gap-2">
                         <span className="truncate">{tk.taskListTitle}</span>
                         {tk.due && (
                           <span className="font-mono-tabular text-[#7FFFD4] shrink-0">
@@ -2372,7 +2449,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
                     {/* Subtle Grounding Footer for Model Replies */}
                     {m.role === 'model' && !m.error && !isStreamingThis && m.id !== 'welcome-1' && (m.latencyMs || m.memoriesAppliedCount !== undefined || m.cached) && (
-                      <div className="mt-2 pt-1.5 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-[10px] text-zinc-500 font-mono-tabular">
+                      <div className="mt-2 pt-1.5 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-500 font-mono-tabular">
                         <div className="flex flex-wrap items-center gap-x-2">
                           <span>
                             معتمد على الدستور و {m.memoriesAppliedCount ?? memories.length} ذاكرة
@@ -2394,7 +2471,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                             type="button"
                             disabled={loading}
                             onClick={() => void sendMessage(m.retryPrompt, m.mode, { bypassCache: true })}
-                            className="inline-flex items-center gap-1 text-[10px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer disabled:opacity-40"
+                            className="inline-flex items-center gap-1 text-[11px] text-zinc-400 hover:text-[#7FFFD4] cursor-pointer disabled:opacity-40"
                             title="توليد رد جديد وتجاوز الذاكرة المؤقتة"
                           >
                             <RefreshCw className="w-2.5 h-2.5" />

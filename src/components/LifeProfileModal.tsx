@@ -377,7 +377,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             <label className="space-y-1">
               <span className="text-[#7FFFD4] font-semibold flex items-center justify-between">
                 <span>الوزن (كجم)</span>
-                <span className="text-[10px] text-zinc-400 font-normal">متغيّر · يدوي أو شات</span>
+                <span className="text-[11px] text-zinc-400 font-normal">متغيّر · يدوي أو شات</span>
               </span>
               <input
                 type="number"
@@ -398,7 +398,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setUnlockHeight((v) => !v)}
-                  className="text-[10px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-0.5 cursor-pointer"
+                  className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-0.5 cursor-pointer"
                 >
                   {unlockHeight ? <Unlock className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
                   <span>{unlockHeight ? 'قفل' : 'تعديل'}</span>
@@ -454,7 +454,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 </button>
               ))}
             </div>
-            <span className="text-[10px] text-zinc-500">
+            <span className="text-[11px] text-zinc-500">
               يمكنك تعديل الوزن أو حجم الكوب لأي رقم عبر شات Gemini
             </span>
           </div>
@@ -716,7 +716,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               <Brain className="w-4 h-4 text-[#7FFFD4]" />
               <span>5. ذاكرة Gemini الدائمة ({memories.length} قواعد محفوظة)</span>
             </h3>
-            <span className="text-[10px] text-zinc-400">
+            <span className="text-[11px] text-zinc-400">
               يقرؤها Gemini في كل محادثة ويضيف إليها ما تعلّمه له
             </span>
           </div>
@@ -852,7 +852,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                       }`}
                     >
                       <div className="text-[11px] font-semibold">{QUIET_MODE_LABELS[qm].ar}</div>
-                      <div className="text-[10px] text-zinc-500 mt-0.5 truncate">
+                      <div className="text-[11px] text-zinc-500 mt-0.5 truncate">
                         {QUIET_MODE_LABELS[qm].descAr}
                       </div>
                     </button>
@@ -940,7 +940,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                               key={String(opt)}
                               type="button"
                               onClick={() => onUpdateSoundRepeat(cat, opt)}
-                              className={`px-2 py-0.5 rounded-md border text-[10px] cursor-pointer transition-colors ${
+                              className={`px-2 py-0.5 rounded-md border text-[11px] cursor-pointer transition-colors ${
                                 selected
                                   ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
                                   : 'border-white/10 text-zinc-400 hover:text-zinc-200'

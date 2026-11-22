@@ -114,3 +114,92 @@
     animation: none !important;
   }
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   ☀️ Sunlight mode (html.theme-sun) — an optional light theme for reading outdoors.
+   The night theme stays the default and is untouched. Tailwind v4 colours are CSS
+   variables, so swapping black/white and inverting the zinc greys flips every
+   translucent overlay/border too; hard-coded accent hex values get darker shades
+   that stay readable on white.
+   ─────────────────────────────────────────────────────────────────────────── */
+html.theme-sun {
+  color-scheme: light;
+  --color-black: #ffffff;
+  --color-white: #0b0d10;
+  --color-zinc-50: #18181b;
+  --color-zinc-100: #18181b;
+  --color-zinc-200: #27272a;
+  --color-zinc-300: #3f3f46;
+  --color-zinc-400: #4b4b55;
+  --color-zinc-500: #62626c;
+  --color-zinc-600: #9a9aa3;
+  --color-zinc-700: #cfcfd6;
+  --color-zinc-800: #e2e2e7;
+  --color-zinc-900: #f1f1f4;
+  --color-zinc-950: #f8f8fa;
+  /* pastel text colours used on dark → deep shades on light */
+  --color-amber-100: #92400e;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-rose-100: #9f1239;
+  --color-rose-200: #9f1239;
+  --color-rose-300: #be123c;
+  --color-rose-400: #e11d48;
+  --color-sky-200: #0369a1;
+  --color-sky-300: #0369a1;
+  --color-orange-200: #c2410c;
+  --color-orange-300: #c2410c;
+  --color-emerald-100: #047857;
+  --color-emerald-200: #047857;
+  --color-emerald-300: #047857;
+  --color-indigo-200: #4338ca;
+  --color-indigo-300: #4338ca;
+  --color-cyan-200: #0e7490;
+  --color-cyan-300: #0e7490;
+  --color-purple-300: #7e22ce;
+}
+
+html.theme-sun body,
+html.theme-sun .app-root {
+  background-color: #eef1f4;
+  color: #0b0d10;
+}
+
+/* Dark card surfaces (any bg-[#0…]/bg-[#1…] arbitrary colour) → white cards on the light page */
+html.theme-sun [class*="bg-[#0"],
+html.theme-sun [class*="bg-[#1"] {
+  background-color: #ffffff;
+}
+html.theme-sun [class*="from-[#0"],
+html.theme-sun [class*="from-[#1"] {
+  background-image: none;
+  background-color: #ffffff;
+}
+
+/* Accent text: same hues, darker so they read on white */
+html.theme-sun .text-\[\#7FFFD4\],
+html.theme-sun .hover\:text-\[\#7FFFD4\]:hover {
+  color: #0a7a61;
+}
+html.theme-sun .text-\[\#4ADE80\] {
+  color: #15803d;
+}
+html.theme-sun .text-\[\#66eec2\] {
+  color: #0f766e;
+}
+html.theme-sun .text-\[\#FF6B6B\] {
+  color: #dc2626;
+}
+
+/* Solid accent buttons keep black text on aqua/green */
+html.theme-sun .bg-\[\#7FFFD4\],
+html.theme-sun .bg-\[\#66eec2\],
+html.theme-sun .bg-\[\#4ADE80\] {
+  --color-black: #000000;
+  --color-white: #ffffff;
+}
+
+html.theme-sun ::selection {
+  background: rgb(10 122 97 / 0.2);
+  color: #0a7a61;
+}
