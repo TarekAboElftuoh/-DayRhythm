@@ -853,9 +853,16 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       let queuedOffline = false;
 
       if (appSettings && Object.keys(appSettings).length > 0) {
-        const { autoExecuteChat, ...rest } = appSettings;
-        if (typeof autoExecuteChat === 'boolean') setAutoExecute(autoExecuteChat);
-        if (Object.keys(rest).length > 0) onApplyAppSettings?.(rest);
+        // "تأكيد يدوي / تنفيذ فوري" is a trust setting, not an app preference — it decides whether
+        // Gemini's OWN future proposals need your click at all. Letting Gemini flip it on your
+        // behalf (even via an explicit request) meant a single confirmed message could silently
+        // turn manual-confirm off, and every action after that "confirmed itself" with no visible
+        // click — exactly the bug reported ("it executed on its own, I never turned that on").
+        // It must only ever change from the toggle button itself, a direct human click.
+        if ('autoExecuteChat' in appSettings) {
+          delete (appSettings as { autoExecuteChat?: boolean }).autoExecuteChat;
+        }
+        if (Object.keys(appSettings).length > 0) onApplyAppSettings?.(appSettings);
       }
 
       if (profileUpdates && Object.keys(profileUpdates).length > 0) {
@@ -1015,6 +1022,16 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
     const controller = new AbortController();
     abortControllersRef.current[activeMode] = controller;
+    // Without this, a request that never gets a response (nor an error — a genuinely stuck
+    // connection) left loadingByMode stuck true forever: the "جارٍ التفكير..." spinner never
+    // cleared and the only way out was reloading the whole app. 45s is generous enough for a
+    // legitimate slow multi-step tool-calling turn, but bounds the worst case to something
+    // the user can recover from with "إعادة المحاولة".
+    let hangTimedOut = false;
+    const hangTimeoutId = window.setTimeout(() => {
+      hangTimedOut = true;
+      controller.abort();
+    }, 45_000);
     const startedAt = Date.now();
     const normalizedQueryKey = query.replace(/\s+/g, ' ').toLowerCase();
 
@@ -1696,9 +1713,14 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        return;
+        if (!hangTimedOut) return;
       }
-      const rawMsg = err instanceof Error ? err.message : 'حدث خطأ غير متوقع.';
+      const rawMsg =
+        err instanceof DOMException && err.name === 'AbortError' && hangTimedOut
+          ? 'طلب Gemini استغرق وقتاً أطول من اللازم بدون رد — اضغط «إعادة المحاولة».'
+          : err instanceof Error
+            ? err.message
+            : 'حدث خطأ غير متوقع.';
       const errMsg =
         rawMsg.includes('RESOURCE_EXHAUSTED') || rawMsg.includes('429')
           ? 'تم الوصول للحد المؤقت لطلبات Gemini — انتظر بضع ثوانٍ ثم اضغط «إعادة المحاولة».'
@@ -1733,6 +1755,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         },
       ]);
     } finally {
+      window.clearTimeout(hangTimeoutId);
       abortControllersRef.current[activeMode] = null;
       setLoadingByMode((prev) => ({ ...prev, [activeMode]: false }));
       setStreamingMsgIdByMode((prev) => ({ ...prev, [activeMode]: null }));
@@ -2229,7 +2252,13 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
           <button
             type="button"
-            onClick={() => onResetChat(mode)}
+            onClick={() => {
+              // A reply still in flight when "new conversation" is clicked used to land anyway —
+              // its request wasn't cancelled, so once Gemini answered it got appended to the
+              // freshly-cleared conversation, making an old reply appear to leak into the new one.
+              stopGeneration(mode);
+              onResetChat(mode);
+            }}
             aria-label="محادثة جديدة"
             className="min-h-[40px] px-3 max-sm:px-2.5 py-1.5 rounded-xl border border-white/10 text-xs text-zinc-300 hover:border-white/25 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
             title={
