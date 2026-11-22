@@ -57,10 +57,7 @@ function broadcastUserSync(
 }
 
 function getGeminiClient(): GoogleGenAI {
-  const apiKey =
-    process.env.GEMINI_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY ||
-    'AQ.Ab8RN6KYU8hmrsLsq5-BkhWfEqE7ZGbFf2L-Ey77b5a6LgK9Mw';
+  const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not configured.');
   }

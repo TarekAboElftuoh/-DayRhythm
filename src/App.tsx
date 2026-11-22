@@ -70,8 +70,9 @@ import {
   apiFetchJson,
   cleanCalendarText,
   clearGeminiClientCache,
+  BackendUnavailableError,
   getSavedCloudApiUrl,
-  isStandaloneVirtualHost,
+  hasSameOriginBackend,
   resolveBlockDisplayInfo,
   sanitizePersistedChats,
   syncSavedCloudApiUrlFromRemote,
@@ -430,11 +431,18 @@ function rollOverHydrationHistoryIfNeeded(
   });
 }
 
+const GOOGLE_SESSION_EXPIRED_AR =
+  'انتهت صلاحية ربط Google — اضغط «تجديد ربط Google الآن» ثم أعد المحاولة.';
+
 function detectIsMobileDeviceClient(): boolean {
   if (typeof window === 'undefined') return false;
+  // The Android APK always exposes this native bridge.
+  if ((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative) return true;
   const ua = navigator.userAgent || '';
-  if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return true;
-  return window.innerWidth < 768;
+  // NOTE: never decide by window width. A narrow PC window used to be treated as the phone,
+  // which published the PC's battery as "phone battery" (false "unplug the charger" alerts)
+  // and let the PC overwrite the phone's GPS location.
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
 }
 
 function extractTaskTimeMinutesForToday(
@@ -1548,16 +1556,19 @@ export default function App() {
       return;
     }
     setLoadingEvents(true);
-    try {
+    // Dev backend (server.ts) only — static APK/EXE/PWA builds skip straight to Google.
+    if (hasSameOriginBackend()) try {
       const res = await fetch('/api/calendar/events', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.status === 401) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.status === 401 && contentType.includes('application/json')) {
         handleWorkspaceUnauthorized();
+        setLoadingEvents(false);
         return;
       }
-      const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
+        setLoadingEvents(false);
         setWorkspaceTokenExpired(false);
         const data = await res.json();
         const nextCals = Array.isArray(data.calendars) ? data.calendars : undefined;
@@ -1609,7 +1620,7 @@ export default function App() {
           try {
             const url =
               `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events` +
-              `?singleEvents=true&orderBy=startTime&maxResults=80&timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`;
+              `?singleEvents=true&orderBy=startTime&maxResults=250&timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}`;
             const evRes = await fetch(url, {
               headers: { Authorization: `Bearer ${token}` },
             });
@@ -1663,16 +1674,19 @@ export default function App() {
     const token = tokenOverride ?? getCalendarAccessToken();
     if (!token) return;
     setLoadingTasks(true);
-    try {
+    // Dev backend (server.ts) only — static APK/EXE/PWA builds skip straight to Google.
+    if (hasSameOriginBackend()) try {
       const res = await fetch('/api/tasks', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.status === 401) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.status === 401 && contentType.includes('application/json')) {
         handleWorkspaceUnauthorized();
+        setLoadingTasks(false);
         return;
       }
-      const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
+        setLoadingTasks(false);
         setWorkspaceTokenExpired(false);
         const data = await res.json();
         const nextLists = Array.isArray(data.taskLists) ? data.taskLists : undefined;
@@ -1998,8 +2012,26 @@ export default function App() {
       };
 
       try {
-        // Standalone Windows EXE / Android APK: read Gmail directly via Google REST API v1 using user's OAuth token (zero Cloud Run dependency!)
-        if (isStandaloneVirtualHost()) {
+        type GmailProxyReply = {
+          needsReauth?: boolean;
+          error?: string;
+          scannedCount?: number;
+          digestItems?: GmailDigestItem[];
+        };
+        let proxied: { ok: boolean; status: number; data: GmailProxyReply } | null = null;
+        if (hasSameOriginBackend()) {
+          try {
+            proxied = await apiFetchJson<GmailProxyReply>('/api/gmail/digest', {
+              headers: { Authorization: `Bearer ${token}` },
+              signal: controller.signal,
+            });
+          } catch (proxyErr: unknown) {
+            if (!(proxyErr instanceof BackendUnavailableError)) throw proxyErr;
+          }
+        }
+
+        // No backend (Android APK / Windows EXE / hosted PWA): read Gmail directly via Google REST API v1
+        if (!proxied) {
           const direct = await fetchGmailDigestDirectClient(token, controller.signal);
           if (direct.needsReauth || direct.status === 401 || direct.status === 403) {
             clearGmailRetryTimers();
@@ -2019,15 +2051,7 @@ export default function App() {
           return;
         }
 
-        const { ok, status, data } = await apiFetchJson<{
-          needsReauth?: boolean;
-          error?: string;
-          scannedCount?: number;
-          digestItems?: GmailDigestItem[];
-        }>('/api/gmail/digest', {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        });
+        const { ok, status, data } = proxied;
         if (status === 401 || status === 403 || data.needsReauth) {
           clearGmailRetryTimers();
           gmailRetryAttemptRef.current = 0;
@@ -3648,13 +3672,10 @@ export default function App() {
   // Unified Phone-First GPS Resolution:
   // - On Mobile (OnePlus 12R): acquire hardware GPS and sync to Firestore so PC automatically follows!
   // - On Desktop (Windows EXE / Web PC): NEVER overwrite synced Phone GPS with Cairo/timezone fallback!
+  // Prayer times are computed fully offline, so they must NOT wait for Google sign-in.
+  // (Sign-out resets gpsFirstAttemptedRef; the needsAuth dependency then re-runs this effect.)
   const gpsFirstAttemptedRef = useRef<boolean>(false);
   useEffect(() => {
-    if (needsAuth) {
-      gpsFirstAttemptedRef.current = false;
-      setLocationResolutionState('idle');
-      return;
-    }
     if (gpsFirstAttemptedRef.current) return;
     gpsFirstAttemptedRef.current = true;
 
@@ -3730,8 +3751,7 @@ export default function App() {
   }, [needsAuth, lifeProfile.currentTimeZone]);
 
   const prayersReady =
-    !needsAuth &&
-    (locationResolutionState === 'gps_locked' || locationResolutionState === 'timezone_fallback');
+    locationResolutionState === 'gps_locked' || locationResolutionState === 'timezone_fallback';
 
   // Receive real-time update status callbacks from native Windows EXE & Android APK shells
   useEffect(() => {
@@ -4312,7 +4332,7 @@ export default function App() {
               if (r.status === 401) {
                 handleWorkspaceUnauthorized();
                 showToast('انتهت صلاحية رمز Google Calendar — اضغط «تجديد ربط Google الآن» بضغطة واحدة');
-                throw proxyErr;
+                throw new Error(GOOGLE_SESSION_EXPIRED_AR);
               }
               if (!r.ok && r.status !== 404 && r.status !== 410) {
                 throw new Error('تعذر حذف الحدث من Google Calendar.');
@@ -4346,7 +4366,7 @@ export default function App() {
               if (r.status === 401) {
                 handleWorkspaceUnauthorized();
                 showToast('انتهت صلاحية رمز Google Calendar — اضغط «تجديد ربط Google الآن» بضغطة واحدة');
-                throw proxyErr;
+                throw new Error(GOOGLE_SESSION_EXPIRED_AR);
               }
               if (!r.ok) throw new Error('تعذر إنشاء الحدث في Google Calendar.');
               const created = (await r.json()) as { id?: string; htmlLink?: string };
@@ -4381,7 +4401,7 @@ export default function App() {
               if (r.status === 401) {
                 handleWorkspaceUnauthorized();
                 showToast('انتهت صلاحية رمز Google Calendar — اضغط «تجديد ربط Google الآن» بضغطة واحدة');
-                throw proxyErr;
+                throw new Error(GOOGLE_SESSION_EXPIRED_AR);
               }
               if (!r.ok) throw new Error('تعذر تحديث الحدث في Google Calendar.');
               const updated = (await r.json()) as { id?: string; htmlLink?: string };
@@ -4521,7 +4541,7 @@ export default function App() {
             if (r.status === 401) {
               handleWorkspaceUnauthorized();
               showToast('انتهت صلاحية رمز Google Tasks — اضغط «تجديد ربط Google الآن» في الأعلى');
-              throw proxyErr;
+              throw new Error(GOOGLE_SESSION_EXPIRED_AR);
             }
             if (!r.ok) throw new Error('تعذر إنشاء المهمة في Google Tasks.');
             const created = (await r.json()) as { id?: string };
@@ -4540,7 +4560,7 @@ export default function App() {
             if (r.status === 401) {
               handleWorkspaceUnauthorized();
               showToast('انتهت صلاحية رمز Google Tasks — اضغط «تجديد ربط Google الآن» في الأعلى');
-              throw proxyErr;
+              throw new Error(GOOGLE_SESSION_EXPIRED_AR);
             }
             if (!r.ok && r.status !== 404) throw new Error('تعذر حذف المهمة من Google Tasks.');
             directResults.push({
@@ -4573,7 +4593,7 @@ export default function App() {
             if (r.status === 401) {
               handleWorkspaceUnauthorized();
               showToast('انتهت صلاحية رمز Google Tasks — اضغط «تجديد ربط Google الآن» في الأعلى');
-              throw proxyErr;
+              throw new Error(GOOGLE_SESSION_EXPIRED_AR);
             }
             if (!r.ok) throw new Error('تعذر تحديث المهمة في Google Tasks.');
             directResults.push({
@@ -4902,8 +4922,10 @@ export default function App() {
 
   const hydrationToday = hydrationHistory[hydrationHistory.length - 1];
 
-  const updateTodayHydration = (updater: (today: HydrationDayLog) => HydrationDayLog) => {
+  // Stable (useCallback) so the effects that depend on handleLogWaterCup don't re-subscribe every render.
+  const updateTodayHydration = useCallback((updater: (today: HydrationDayLog) => HydrationDayLog) => {
     setHydrationHistory((prev) => {
+      if (prev.length === 0) return prev;
       const next = [...prev];
       const updated = updater(next[next.length - 1]);
       next[next.length - 1] = updated;
@@ -4929,9 +4951,9 @@ export default function App() {
 
       return next;
     });
-  };
+  }, []);
 
-  const handleLogWaterCup = () => {
+  const handleLogWaterCup = useCallback(() => {
     updateTodayHydration((today) => {
       const nextIdx = today.slots.findIndex((filled) => !filled);
       if (nextIdx === -1) return today;
@@ -4943,7 +4965,7 @@ export default function App() {
         cupsLogged: nextSlots.filter(Boolean).length,
       };
     });
-  };
+  }, [updateTodayHydration]);
 
   const handleToggleWaterSlot = (index: number) => {
     updateTodayHydration((today) => {

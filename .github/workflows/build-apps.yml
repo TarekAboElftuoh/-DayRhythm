@@ -22,14 +22,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 22
+      - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Install dependencies cleanly and build standalone web bundle
         env:
-          VITE_GEMINI_API_KEY: ${{ vars.GEMINI_API_KEY || secrets.GEMINI_API_KEY || 'AQ.Ab8RN6KYU8hmrsLsq5-BkhWfEqE7ZGbFf2L-Ey77b5a6LgK9Mw' }}
+          VITE_GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || vars.GEMINI_API_KEY }}
         run: |
           rm -f bun.lock package-lock.json
           npm install --no-package-lock --legacy-peer-deps --no-audit --no-fund

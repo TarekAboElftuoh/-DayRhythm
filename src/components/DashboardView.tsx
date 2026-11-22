@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import {
   Droplets,
   Trash2,
@@ -38,8 +38,16 @@ import {
   BarChart3,
   Pill,
 } from 'lucide-react';
-import { HydrationWeeklyChart } from './HydrationWeeklyChart';
-import { MedicationConsumptionChart } from './MedicationConsumptionChart';
+// Charts (recharts) are only shown when expanded, so load them on demand to keep app start-up light.
+const HydrationWeeklyChart = lazy(() =>
+  import('./HydrationWeeklyChart').then((m) => ({ default: m.HydrationWeeklyChart }))
+);
+const MedicationConsumptionChart = lazy(() =>
+  import('./MedicationConsumptionChart').then((m) => ({ default: m.MedicationConsumptionChart }))
+);
+const ChartLoadingFallback = () => (
+  <div className="mt-3 h-40 rounded-xl border border-white/[0.06] bg-white/[0.02] animate-pulse" />
+);
 import {
   ActiveSanctuaryState,
   AppLanguage,
@@ -810,8 +818,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [nextAlarmBlock]
   );
 
+  // Signed-out users still get a live countdown to the next prayer (prayer times are computed offline).
+  const guestNextPrayer = useMemo(() => {
+    if (calendarConnected || !(prayersReady ?? false)) return null;
+    const prayer = prayers.find((p) => p.id === nextObligatoryPrayerId);
+    if (!prayer) return null;
+    const isTomorrow = prayer.adhanMinutes < nowMinutes;
+    return { prayer, targetSec: (prayer.adhanMinutes + (isTomorrow ? 1440 : 0)) * 60 };
+  }, [calendarConnected, prayersReady, prayers, nextObligatoryPrayerId, nowMinutes]);
+
   const countdownMeta = useMemo(() => {
+    const formatSecClock = (totalSec: number) => {
+      const safe = Math.max(0, Math.floor(totalSec));
+      const h = Math.floor(safe / 3600);
+      const m = Math.floor((safe % 3600) / 60);
+      const s = safe % 60;
+      if (h > 0) {
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      }
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
     if (!calendarConnected) {
+      if (guestNextPrayer) {
+        return {
+          clock: formatSecClock(guestNextPrayer.targetSec - liveClockParts.nowSecOfDay),
+          caption:
+            language === 'ar'
+              ? `حتى أذان ${guestNextPrayer.prayer.nameAr}`
+              : `Until ${guestNextPrayer.prayer.nameEn} adhan`,
+        };
+      }
       return {
         clock: '00:00',
         caption: language === 'ar' ? 'سجّل الدخول لعرض جدولك' : 'Sign in to sync schedule',
@@ -829,16 +865,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         caption: language === 'ar' ? 'انتهى اليوم' : 'All done',
       };
     }
-    const formatSecClock = (totalSec: number) => {
-      const safe = Math.max(0, Math.floor(totalSec));
-      const h = Math.floor(safe / 3600);
-      const m = Math.floor((safe % 3600) / 60);
-      const s = safe % 60;
-      if (h > 0) {
-        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-      }
-      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    };
 
     if (isNextBlockHappeningNow) {
       const endSec = (nextAlarmBlock.startMin + nextAlarmBlock.durationMin) * 60;
@@ -876,6 +902,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     };
   }, [
     calendarConnected,
+    guestNextPrayer,
     nextAlarmBlock,
     isNextBlockHappeningNow,
     liveClockParts.nowSecOfDay,
@@ -1795,7 +1822,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                 <div className="flex items-start gap-3">
                   <span className="text-2xl sm:text-3xl shrink-0 leading-none mt-0.5">
-                    {nextAlarmBlock?.emojiPair ?? '✅'}
+                    {nextAlarmBlock?.emojiPair ?? guestNextPrayer?.prayer.emojiPair ?? '✅'}
                   </span>
                   <div className="min-w-0 flex-1">
                     <h2 className="text-base sm:text-xl font-bold text-white leading-snug break-words">
@@ -1803,7 +1830,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         ? nextAlarmDisplay.title
                         : calendarConnected
                           ? 'أنجزت مهام اليوم ✓'
-                          : 'اربط حساب Google للبدء'}
+                          : guestNextPrayer
+                            ? language === 'ar'
+                              ? `أذان ${guestNextPrayer.prayer.nameAr}`
+                              : `${guestNextPrayer.prayer.nameEn} adhan`
+                            : 'اربط حساب Google للبدء'}
                     </h2>
                     {nextAlarmBlock && nextAlarmDisplay.detail && (
                       <p className="text-xs text-zinc-400 mt-0.5 leading-relaxed line-clamp-1">
@@ -1815,7 +1846,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         ? nextAlarmBlock.isAllDay
                           ? 'طوال اليوم'
                           : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)} · ${formatDurationLabel(nextAlarmBlock.durationMin)}`
-                        : 'سجّل الدخول لعرض جدولك الفعلي'}
+                        : guestNextPrayer
+                          ? `${formatMinutes12h(guestNextPrayer.prayer.adhanMinutes, language)} · ${
+                              language === 'ar' ? 'التنبيه' : 'alarm'
+                            } ${formatMinutes12h(guestNextPrayer.prayer.alarmMinutes, language)} · ${
+                              language === 'ar' ? 'سجّل الدخول لعرض جدولك' : 'sign in for your schedule'
+                            }`
+                          : 'سجّل الدخول لعرض جدولك الفعلي'}
                     </div>
                   </div>
                 </div>
@@ -3302,11 +3339,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             )}
 
             {showWaterChart && (
-              <HydrationWeeklyChart
-                hydrationHistory={hydrationHistory}
-                weatherInfo={weatherInfo}
-                cupSizeMl={lifeProfile.cupSizeMl}
-              />
+              <Suspense fallback={<ChartLoadingFallback />}>
+                <HydrationWeeklyChart
+                  hydrationHistory={hydrationHistory}
+                  weatherInfo={weatherInfo}
+                  cupSizeMl={lifeProfile.cupSizeMl}
+                />
+              </Suspense>
             )}
           </section>
 
@@ -4009,10 +4048,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   )}
                 </button>
                 {showMedChart && (
-                  <MedicationConsumptionChart
-                    medications={medications}
-                    todayCairoIso={todayCairoIso}
-                  />
+                  <Suspense fallback={<ChartLoadingFallback />}>
+                    <MedicationConsumptionChart
+                      medications={medications}
+                      todayCairoIso={todayCairoIso}
+                    />
+                  </Suspense>
                 )}
               </div>
             )}
