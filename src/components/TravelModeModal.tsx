@@ -179,7 +179,7 @@ export const TravelModeModal: React.FC<TravelModeModalProps> = ({
                         {formatMinutes12h(tp.alarmMinutes)}
                       </div>
                       <div
-                        className={`font-mono-tabular text-[10px] mt-0.5 ${
+                        className={`font-mono-tabular text-[11px] mt-0.5 ${
                           delta === 0
                             ? 'text-zinc-500'
                             : delta > 0

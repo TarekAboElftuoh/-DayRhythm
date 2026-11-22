@@ -220,7 +220,7 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
                           : `${b.emojiPair} ${b.categoryAr}`
                       }
                       style={{ flexGrow: Math.max(10, b.durationMin) }}
-                      className={`h-full border-l border-black/60 flex items-center justify-center text-[10px] overflow-hidden ${
+                      className={`h-full border-l border-black/60 flex items-center justify-center text-[11px] overflow-hidden ${
                         b.isAnchor
                           ? 'bg-[#7FFFD4]/25 text-[#7FFFD4]'
                           : 'bg-zinc-800 text-zinc-300'
@@ -253,7 +253,7 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
                       key={`after-${b.id}`}
                       title={`${b.emojiPair} (${formatMinutes12h(b.startMin)} · ${b.durationMin}د)`}
                       style={{ flexGrow: Math.max(10, b.durationMin) }}
-                      className={`h-full border-l border-black/60 flex items-center justify-center text-[10px] overflow-hidden ${
+                      className={`h-full border-l border-black/60 flex items-center justify-center text-[11px] overflow-hidden ${
                         b.isAnchor
                           ? 'bg-[#7FFFD4]/30 text-[#7FFFD4]'
                           : b.reflowStatus === 'shifted_evening'

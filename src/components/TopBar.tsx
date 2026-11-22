@@ -6,6 +6,8 @@ import {
   Monitor,
   MessageSquare,
   RefreshCw,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { ActiveTab, AppLanguage } from '../types/dayrhythm';
 import { t } from '../engines/i18n';
@@ -20,13 +22,14 @@ interface TopBarProps {
   brandLogoSrc?: string | null;
   onCheckAppUpdates?: () => void;
   isCheckingUpdates?: boolean;
+  sunMode?: boolean;
+  onToggleSunMode?: () => void;
 }
 
 function detectIsMobileEnvironment(): boolean {
   if (typeof window === 'undefined') return false;
   const ua = navigator.userAgent || '';
-  if (/Android|iPhone|iPad|iPod|Mobile/i.test(ua)) return true;
-  return window.innerWidth < 768;
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || window.innerWidth < 768;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -38,6 +41,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   brandLogoSrc,
   onCheckAppUpdates,
   isCheckingUpdates = false,
+  sunMode = false,
+  onToggleSunMode,
 }) => {
   const [isMobileEnv, setIsMobileEnv] = useState<boolean>(detectIsMobileEnvironment);
 
@@ -156,6 +161,19 @@ export const TopBar: React.FC<TopBarProps> = ({
                 <RefreshCw
                   className={`w-3.5 h-3.5 ${isCheckingUpdates ? 'animate-spin text-[#7FFFD4]' : ''}`}
                 />
+              </button>
+            )}
+
+            {onToggleSunMode && (
+              <button
+                type="button"
+                onClick={onToggleSunMode}
+                className="w-9 h-9 rounded-lg text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                title={sunMode ? 'الرجوع للمود الليلي' : 'مود الشمس (للقراءة في النور)'}
+                aria-label={sunMode ? 'المود الليلي' : 'مود الشمس'}
+                aria-pressed={sunMode}
+              >
+                {sunMode ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
               </button>
             )}
 

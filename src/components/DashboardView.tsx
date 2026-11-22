@@ -38,6 +38,7 @@ import {
   BarChart3,
   Pill,
 } from 'lucide-react';
+import { WeeklyReportCard } from './WeeklyReportCard';
 // Charts (recharts) are only shown when expanded, so load them on demand to keep app start-up light.
 const HydrationWeeklyChart = lazy(() =>
   import('./HydrationWeeklyChart').then((m) => ({ default: m.HydrationWeeklyChart }))
@@ -307,6 +308,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onLogWaterCup,
   onToggleWaterSlot,
   medications,
+  streaks,
   onToggleMedication,
   onToggleMedicationDate,
   onRefillMedication,
@@ -1306,7 +1308,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
                 <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
               </svg>
-              <span>{isLoggingIn ? 'جارٍ الاتصال...' : 'Sign in with Google'}</span>
+              <span>{isLoggingIn ? 'جارٍ الاتصال...' : 'تسجيل الدخول بحساب Google'}</span>
             </button>
           )}
 
@@ -1564,9 +1566,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div className="flex items-center gap-2 min-w-0">
                   <span>{TASK_SOUND_META[sn.soundCategory].icon}</span>
                   <span className="text-zinc-200 truncate">{sn.title}</span>
-                  <span className="text-[10px] text-zinc-500 shrink-0">· {sn.reasonAr}</span>
+                  <span className="text-[11px] text-zinc-500 shrink-0">· {sn.reasonAr}</span>
                 </div>
-                <span className="font-mono-tabular text-[10px] text-zinc-500 shrink-0">
+                <span className="font-mono-tabular text-[11px] text-zinc-500 shrink-0">
                   {sn.time12h}
                 </span>
               </div>
@@ -1641,7 +1643,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             key={qty}
                             type="button"
                             onClick={() => setPurchaseAddDoses(String(qty))}
-                            className={`px-2 py-0.5 rounded-md border font-mono-tabular text-[10px] cursor-pointer ${
+                            className={`px-2 py-0.5 rounded-md border font-mono-tabular text-[11px] cursor-pointer ${
                               purchaseAddDoses === String(qty)
                                 ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
                                 : 'border-white/10 text-zinc-400 hover:text-white'
@@ -1666,7 +1668,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <button
                             type="button"
                             onClick={() => setPurchaseMode('add')}
-                            className={`px-2 py-0.5 rounded-md border text-[10px] cursor-pointer ${
+                            className={`px-2 py-0.5 rounded-md border text-[11px] cursor-pointer ${
                               purchaseMode === 'add'
                                 ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
                                 : 'border-white/10 text-zinc-400'
@@ -1677,7 +1679,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <button
                             type="button"
                             onClick={() => setPurchaseMode('set')}
-                            className={`px-2 py-0.5 rounded-md border text-[10px] cursor-pointer ${
+                            className={`px-2 py-0.5 rounded-md border text-[11px] cursor-pointer ${
                               purchaseMode === 'set'
                                 ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
                                 : 'border-white/10 text-zinc-400'
@@ -1686,13 +1688,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             تعيين إجمالي
                           </button>
                         </div>
-                        <span className="font-mono-tabular text-[10px] text-[#4ADE80]">
+                        <span className="font-mono-tabular text-[11px] text-[#4ADE80]">
                           الرصيد: {previewTotal} (~{previewDays} ي)
                         </span>
                       </div>
 
                       <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-white/10">
-                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-400">
+                        <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
                           <span>تنبيه قبل:</span>
                           {[2, 3, 5].map((d) => (
                             <button
@@ -1934,7 +1936,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     >
                       <div className="text-xs sm:text-sm leading-none">{p.emojiPair.split(' ')[1]}</div>
                       <div
-                        className={`text-[10px] sm:text-[11px] mt-1.5 truncate ${
+                        className={`text-[11px] sm:text-[11px] mt-1.5 truncate ${
                           isNextPrayer ? 'font-bold text-white' : 'font-medium text-zinc-400'
                         }`}
                       >
@@ -1946,12 +1948,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             ? isNextPrayer
                               ? 'text-[#7FFFD4]'
                               : 'text-zinc-200'
-                            : 'text-zinc-600'
+                            : 'text-zinc-500'
                         }`}
                       >
                         {showLivePrayer ? formatMinutes12h(p.alarmMinutes, language) : '00:00'}
                       </div>
-                      <div className="font-mono-tabular text-[9px] text-zinc-500 mt-0.5 whitespace-nowrap truncate">
+                      <div className="font-mono-tabular text-[10px] text-zinc-500 mt-0.5 whitespace-nowrap truncate">
                         {showLivePrayer ? formatMinutes12h(p.adhanMinutes, language) : '00:00'}
                       </div>
                     </div>
@@ -2172,7 +2174,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     {dailyRhythmPlan.hydrationSlots.map((slot) => (
                       <span
                         key={`tmr-water-${slot.cupIndex}`}
-                        className="font-mono-tabular text-[10px] px-2 py-0.5 rounded-md bg-white/[0.04] text-zinc-300"
+                        className="font-mono-tabular text-[11px] px-2 py-0.5 rounded-md bg-white/[0.04] text-zinc-300"
                         title={`كوب ${slot.cupIndex}`}
                       >
                         💧 {formatMinutes12h(slot.timeMinutes, language)}
@@ -3066,7 +3068,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             <div className="text-[11px] text-zinc-400 leading-relaxed">
                               {item.summaryAr}
                             </div>
-                            <div className="flex flex-wrap items-center gap-2 text-[10px] text-zinc-500 font-mono-tabular">
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500 font-mono-tabular">
                               {item.dateIso && <span>{item.dateIso}</span>}
                               {item.startTime24 && (
                                 <span className="text-[#7FFFD4]">
@@ -3115,11 +3117,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <span className="font-bold text-[#7FFFD4]">
                   {hydrationToday.cupsLogged}/{hydrationToday.targetCups}
                 </span>
-                <span className="text-zinc-600">·</span>
+                <span className="text-zinc-500">·</span>
                 <span className="text-zinc-400">
                   {totalMl} / {targetMl} مل
                 </span>
-                <span className="text-zinc-600">·</span>
+                <span className="text-zinc-500">·</span>
                 <span className={waterPct >= 100 ? 'text-[#4ADE80] font-bold' : 'text-zinc-300'}>
                   {waterPct}%
                 </span>
@@ -3163,7 +3165,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="flex items-center gap-1.5 text-zinc-300 min-w-0">
                 <Bell
                   className={`w-3.5 h-3.5 shrink-0 ${
-                    waterRemindersEnabled ? 'text-[#7FFFD4]' : 'text-zinc-600'
+                    waterRemindersEnabled ? 'text-[#7FFFD4]' : 'text-zinc-500'
                   }`}
                 />
                 {nextWaterSlot ? (
@@ -3219,7 +3221,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {/* Rolling 7-Day Water Log (always visible, auto-drops day 8) */}
             {hydrationHistory.length > 0 && (
               <div className="pt-2.5 border-t border-white/[0.06] space-y-1.5">
-                <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                <div className="flex items-center justify-between text-[11px] text-zinc-400">
                   <span>سجل آخر 7 أيام</span>
                   <span className="font-mono-tabular text-[#7FFFD4]">
                     {hydrationHistory.reduce((acc, d) => acc + d.cupsLogged, 0)} كوب ·{' '}
@@ -3244,7 +3246,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         }`}
                       >
                         <div
-                          className={`text-[9px] truncate ${
+                          className={`text-[10px] truncate ${
                             isTodayCell ? 'text-[#7FFFD4] font-bold' : 'text-zinc-500'
                           }`}
                         >
@@ -3259,12 +3261,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           />
                         </div>
                         <div
-                          className={`font-mono-tabular text-[10px] font-bold ${
+                          className={`font-mono-tabular text-[11px] font-bold ${
                             hitGoal
                               ? 'text-[#4ADE80]'
                               : day.cupsLogged > 0
                                 ? 'text-zinc-200'
-                                : 'text-zinc-600'
+                                : 'text-zinc-500'
                           }`}
                         >
                           {day.cupsLogged}
@@ -3328,7 +3330,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <span>{formatMinutes12h(slot.timeMinutes, language)}</span>
                       </div>
                       {slot.windowAr ? (
-                        <div className="text-[10px] text-zinc-500 truncate mt-0.5">
+                        <div className="text-[11px] text-zinc-500 truncate mt-0.5">
                           {slot.windowAr}
                         </div>
                       ) : null}
@@ -3501,7 +3503,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         key={days}
                         type="button"
                         onClick={() => setNewMedRefillAlertDays(days)}
-                        className={`px-2 py-0.5 rounded-lg border text-[10px] cursor-pointer ${
+                        className={`px-2 py-0.5 rounded-lg border text-[11px] cursor-pointer ${
                           newMedRefillAlertDays === days
                             ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
                             : 'border-white/10 text-zinc-400 hover:text-white'
@@ -3515,7 +3517,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                 <div className="space-y-1.5">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-[10px] text-zinc-400">الميعاد:</span>
+                    <span className="text-[11px] text-zinc-400">الميعاد:</span>
                     <select
                       value={newMedHour12}
                       onChange={(e) => setNewMedHour12(Number(e.target.value))}
@@ -3557,7 +3559,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             : [...prev, newMedCurrentTime24].slice(0, 6)
                         );
                       }}
-                      className="px-2 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[10px] text-[#7FFFD4] font-semibold cursor-pointer"
+                      className="px-2 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[11px] text-[#7FFFD4] font-semibold cursor-pointer"
                     >
                       + جرعة
                     </button>
@@ -3567,7 +3569,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       {newMedTimes24.map((t24) => (
                         <span
                           key={t24}
-                          className="inline-flex items-center gap-1 rounded-md border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 px-2 py-0.5 text-[10px] font-mono-tabular text-[#7FFFD4]"
+                          className="inline-flex items-center gap-1 rounded-md border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 px-2 py-0.5 text-[11px] font-mono-tabular text-[#7FFFD4]"
                         >
                           {formatTime24To12h(t24, language)}
                           <button
@@ -3591,7 +3593,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
                       <span>تعارض محتمل مع جدولك:</span>
                     </div>
-                    <ul className="space-y-0.5 pr-4 list-disc text-[10px] text-amber-100/90">
+                    <ul className="space-y-0.5 pr-4 list-disc text-[11px] text-amber-100/90">
                       {newMedConflict.warnings.map((w, idx) => (
                         <li key={idx}>{w}</li>
                       ))}
@@ -3611,7 +3613,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               setNewMedTimes24([newMedConflict.suggestedTime24!]);
                             }
                           }}
-                          className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[10px] font-bold hover:bg-[#66eec2] cursor-pointer"
+                          className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[11px] font-bold hover:bg-[#66eec2] cursor-pointer"
                         >
                           تطبيق {newMedConflict.suggestedTime12Ar}
                         </button>
@@ -3626,7 +3628,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             `عاوز أضيف «${medLabel}»${newMedNote.trim() ? ` (${newMedNote.trim()})` : ''} الساعة ${pickedLabel}، بس النظام نبّهني إن فيه تعارض: ${conflictList}. ناقشني واقترح أنسب ميعاد علمي متوافق مع الصلاة والنوم والصيام والتقويم، ولما أوافق احجزه في التقويم.`
                           );
                         }}
-                        className="px-2.5 py-1 rounded-lg border border-amber-300/45 bg-black/50 text-amber-200 hover:text-white text-[10px] font-semibold cursor-pointer"
+                        className="px-2.5 py-1 rounded-lg border border-amber-300/45 bg-black/50 text-amber-200 hover:text-white text-[11px] font-semibold cursor-pointer"
                       >
                         ناقش مع Gemini
                       </button>
@@ -3635,7 +3637,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
 
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
                     <span>الأيام (فارغ = يومياً):</span>
                     {newMedDaysOfWeek.length > 0 && (
                       <button
@@ -3661,7 +3663,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 : [...prev, day.id].sort((a, b) => a - b)
                             )
                           }
-                          className={`px-2 py-1 rounded-lg border text-[10px] cursor-pointer ${
+                          className={`px-2 py-1 rounded-lg border text-[11px] cursor-pointer ${
                             selected
                               ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
                               : 'border-white/10 text-zinc-400 hover:text-white'
@@ -3770,7 +3772,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             </span>
                           )}
                           {daysLabel && (
-                            <span className="text-[10px] text-zinc-500 shrink-0">
+                            <span className="text-[11px] text-zinc-500 shrink-0">
                               ({daysLabel})
                             </span>
                           )}
@@ -3824,7 +3826,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 key={t24}
                                 type="button"
                                 onClick={() => onToggleMedication(med.id, t24)}
-                                className={`px-2 py-0.5 rounded-md border font-mono-tabular text-[10px] cursor-pointer transition-colors ${
+                                className={`px-2 py-0.5 rounded-md border font-mono-tabular text-[11px] cursor-pointer transition-colors ${
                                   doseDone
                                     ? 'border-[#4ADE80]/45 bg-[#4ADE80]/15 text-[#4ADE80] font-bold'
                                     : 'border-white/10 bg-white/[0.02] text-zinc-300 hover:border-[#7FFFD4]/45'
@@ -3838,7 +3840,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       )}
 
                       {doseTimes.length === 0 && (
-                        <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                        <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-zinc-500">
                           <span>بدون ميعاد محدد</span>
                           <button
                             type="button"
@@ -3869,7 +3871,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               return (
                                 <span
                                   key={day.dateIso}
-                                  className="w-6 h-5 rounded border border-white/[0.05] text-[9px] text-zinc-600 flex items-center justify-center"
+                                  className="w-6 h-5 rounded border border-white/[0.05] text-[10px] text-zinc-500 flex items-center justify-center"
                                   title={`${day.dateIso} — راحة`}
                                 >
                                   –
@@ -3881,7 +3883,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 key={day.dateIso}
                                 type="button"
                                 onClick={() => onToggleMedicationDate(med.id, day.dateIso)}
-                                className={`h-5 min-w-[22px] px-1 rounded border text-[9px] font-bold flex items-center justify-center cursor-pointer transition-colors ${
+                                className={`h-5 min-w-[22px] px-1 rounded border text-[10px] font-bold flex items-center justify-center cursor-pointer transition-colors ${
                                   wasTaken
                                     ? 'border-[#4ADE80]/40 bg-[#4ADE80]/15 text-[#4ADE80]'
                                     : day.isToday
@@ -3923,7 +3925,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               setEditStockAlertDays(med.refillAlertDays ?? 3);
                             }
                           }}
-                          className="text-[10px] text-zinc-500 hover:text-[#7FFFD4] cursor-pointer shrink-0 transition-colors"
+                          className="text-[11px] text-zinc-500 hover:text-[#7FFFD4] cursor-pointer shrink-0 transition-colors"
                         >
                           {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
                             ? 'المخزون'
@@ -3933,7 +3935,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                       {((typeof med.remainingDoses === 'number' && med.remainingDoses >= 0) ||
                         Boolean(med.courseEndDate)) && (
-                        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-mono-tabular text-zinc-500">
+                        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono-tabular text-zinc-500">
                           {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0 && (() => {
                             const dosesPerDay = Math.max(1, doseTimes.length || 1);
                             const daysLeft = med.remainingDoses / dosesPerDay;
@@ -3990,7 +3992,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 key={d}
                                 type="button"
                                 onClick={() => setEditStockAlertDays(d)}
-                                className={`px-1.5 py-0.5 rounded border text-[10px] cursor-pointer ${
+                                className={`px-1.5 py-0.5 rounded border text-[11px] cursor-pointer ${
                                   editStockAlertDays === d
                                     ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
                                     : 'border-white/10 text-zinc-400'
@@ -4083,12 +4085,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'border-white/[0.07] bg-white/[0.02]'
                 }`}
               >
-                <div className="text-[10px] text-zinc-400">النوم</div>
+                <div className="text-[11px] text-zinc-400">النوم</div>
                 <div className="font-mono-tabular text-xs font-bold text-white mt-0.5">
                   {formatMinutes12h(dailyRhythmPlan.bedtimeMin, language)}
                 </div>
                 <div
-                  className={`text-[10px] mt-0.5 ${
+                  className={`text-[11px] mt-0.5 ${
                     dailyRhythmPlan.nightlyRecoveryMin > 0 ? 'text-[#7FFFD4]' : 'text-zinc-500'
                   }`}
                 >
@@ -4105,7 +4107,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     : 'border-white/[0.07] bg-white/[0.02]'
                 }`}
               >
-                <div className="text-[10px] text-zinc-400">
+                <div className="text-[11px] text-zinc-400">
                   {dailyRhythmPlan.suhoorStartMin !== null ? 'سحور غداً' : 'الاستيقاظ'}
                 </div>
                 <div
@@ -4115,7 +4117,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 >
                   {formatMinutes12h(dailyRhythmPlan.wakeMin, language)}
                 </div>
-                <div className="text-[10px] text-zinc-500 mt-0.5">
+                <div className="text-[11px] text-zinc-500 mt-0.5">
                   {dailyRhythmPlan.suhoorStartMin !== null
                     ? `قبل الفجر بـ ${lifeProfile.suhoorLeadMinutes} د`
                     : 'قبل الفجر بـ 15 د'}
@@ -4125,17 +4127,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-2.5">
                 {dailyRhythmPlan.qailulahStartMin !== null ? (
                   <>
-                    <div className="text-[10px] text-zinc-400">القيلولة</div>
+                    <div className="text-[11px] text-zinc-400">القيلولة</div>
                     <div className="font-mono-tabular text-xs font-bold text-[#4ADE80] mt-0.5">
                       {formatMinutes12h(dailyRhythmPlan.qailulahStartMin, language)}
                     </div>
-                    <div className="text-[10px] text-zinc-500 mt-0.5">
+                    <div className="text-[11px] text-zinc-500 mt-0.5">
                       {dailyRhythmPlan.qailulahDurationMin} د
                     </div>
                   </>
                 ) : (
                   <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                    <div className="flex items-center justify-between gap-1 text-[11px]">
                       <span className="inline-flex items-center gap-1 text-[#FBBF24]">
                         <Sunrise className="w-3 h-3 shrink-0" />
                         <span>الشروق</span>
@@ -4145,7 +4147,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </span>
                     </div>
                     <div className="h-px bg-white/[0.06]" />
-                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                    <div className="flex items-center justify-between gap-1 text-[11px]">
                       <span className="inline-flex items-center gap-1 text-[#FB7185]">
                         <Sunset className="w-3 h-3 shrink-0" />
                         <span>الغروب</span>
@@ -4173,7 +4175,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     عجز نوم: {formatDurationAr(dailyRhythmPlan.sleepDebtMinutes)}
                   </span>
                   {dailyRhythmPlan.nightlyRecoveryMin > 0 && (
-                    <span className="font-mono-tabular text-[10px] text-[#7FFFD4]">
+                    <span className="font-mono-tabular text-[11px] text-[#7FFFD4]">
                       تبكير الليلة -{dailyRhythmPlan.nightlyRecoveryMin} د
                     </span>
                   )}
@@ -4182,21 +4184,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <button
                     type="button"
                     onClick={() => onLogSleepQuality('good')}
-                    className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold text-[10px] hover:bg-[#66eec2] cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold text-[11px] hover:bg-[#66eec2] cursor-pointer"
                   >
                     نمت كويس (-{Math.max(dailyRhythmPlan.nightlyRecoveryMin, 30)}د)
                   </button>
                   <button
                     type="button"
                     onClick={() => onLogSleepQuality('reset')}
-                    className="px-2.5 py-1 rounded-lg border border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80] font-semibold text-[10px] hover:bg-[#4ADE80]/20 cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg border border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80] font-semibold text-[11px] hover:bg-[#4ADE80]/20 cursor-pointer"
                   >
                     تصفير ✓
                   </button>
                   <button
                     type="button"
                     onClick={() => onLogSleepQuality('short_30')}
-                    className="px-2.5 py-1 rounded-lg border border-white/10 text-zinc-300 text-[10px] hover:text-white cursor-pointer"
+                    className="px-2.5 py-1 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:text-white cursor-pointer"
                   >
                     +30 د نقص
                   </button>
@@ -4208,7 +4210,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           `عندي رصيد نوم ناقص ${dailyRhythmPlan.sleepDebtMinutes} دقيقة — فضّي لي مكان لقيلولة تعويضية 30 دقيقة النهاردة في التقويم بدون المساس بالصلاة`
                         )
                       }
-                      className="px-2.5 py-1 rounded-lg border border-indigo-400/35 bg-indigo-400/12 text-indigo-200 font-semibold text-[10px] hover:bg-indigo-400/20 cursor-pointer"
+                      className="px-2.5 py-1 rounded-lg border border-indigo-400/35 bg-indigo-400/12 text-indigo-200 font-semibold text-[11px] hover:bg-indigo-400/20 cursor-pointer"
                     >
                       قيلولة بـ Gemini
                     </button>
@@ -4221,7 +4223,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowSleepCheckinEdit(true)}
-                  className="text-zinc-500 hover:text-zinc-300 text-[10px] cursor-pointer"
+                  className="text-zinc-500 hover:text-zinc-300 text-[11px] cursor-pointer"
                 >
                   تعديل
                 </button>
@@ -4236,7 +4238,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       onLogSleepQuality('good');
                       setShowSleepCheckinEdit(false);
                     }}
-                    className="py-1.5 px-2 rounded-lg border border-[#4ADE80]/30 bg-[#4ADE80]/[0.07] text-[#4ADE80] font-semibold text-[10px] hover:bg-[#4ADE80]/15 cursor-pointer"
+                    className="py-1.5 px-2 rounded-lg border border-[#4ADE80]/30 bg-[#4ADE80]/[0.07] text-[#4ADE80] font-semibold text-[11px] hover:bg-[#4ADE80]/15 cursor-pointer"
                   >
                     ممتاز ✓
                   </button>
@@ -4246,7 +4248,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       onLogSleepQuality('short_30');
                       setShowSleepCheckinEdit(false);
                     }}
-                    className="py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[10px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
+                    className="py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
                   >
                     أقل (-30د)
                   </button>
@@ -4256,7 +4258,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       onLogSleepQuality('short_60');
                       setShowSleepCheckinEdit(false);
                     }}
-                    className="py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[10px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
+                    className="py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
                   >
                     سهر (-60د)
                   </button>
@@ -4264,6 +4266,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             )}
           </section>
+
+          {/* 4. Compact weekly report (last 7 days) */}
+          <WeeklyReportCard
+            hydrationHistory={hydrationHistory}
+            medications={medications}
+            streaks={streaks}
+            lifeProfile={lifeProfile}
+            todayIso={todayCairoIso}
+            cardSurface={cardSurface}
+          />
         </div>
       </div>
 
@@ -4499,7 +4511,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-300" />
                           <span>تعارض مع جدولك:</span>
                         </div>
-                        <ul className="space-y-0.5 pr-4 list-disc text-[10px] text-amber-100/90">
+                        <ul className="space-y-0.5 pr-4 list-disc text-[11px] text-amber-100/90">
                           {newEventConflict.warnings.map((w, idx) => (
                             <li key={idx}>{w}</li>
                           ))}
@@ -4516,7 +4528,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   setNewEvPeriod
                                 )
                               }
-                              className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[10px] font-bold hover:bg-[#66eec2] cursor-pointer"
+                              className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black text-[11px] font-bold hover:bg-[#66eec2] cursor-pointer"
                             >
                               تطبيق {newEventConflict.suggestedTime12Ar}
                             </button>
@@ -4532,7 +4544,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 `عاوز أضيف حدث «${titleLabel}» يوم ${newEvDate} الساعة ${pickedLabel} لمدة ${newEvDuration} دقيقة، بس النظام نبّهني إن فيه تعارض: ${conflictList}. اقترح عليّ أنسب وقت فاضي بدون تضارب مع الصلاة والنوم وأحداثي.`
                               );
                             }}
-                            className="px-2.5 py-1 rounded-lg border border-white/15 bg-black/50 text-zinc-200 hover:text-white text-[10px] font-semibold cursor-pointer"
+                            className="px-2.5 py-1 rounded-lg border border-white/15 bg-black/50 text-zinc-200 hover:text-white text-[11px] font-semibold cursor-pointer"
                           >
                             💬 رتّبه بـ Gemini
                           </button>

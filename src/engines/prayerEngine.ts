@@ -653,6 +653,38 @@ function parseArabicOrLatinInt(raw: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export interface SpecialFastDay {
+  id: 'arafah' | 'ashura';
+  nameAr: string;
+  emoji: string;
+}
+
+/**
+ * Detects the special Sunnah fasting days from the Hijri date (Umm al-Qura calendar):
+ *   9 Dhu al-Hijjah → يوم عرفة · 10 Muharram → يوم عاشوراء.
+ * Note: Egypt's official start of a Hijri month (moon sighting) can differ by a day from Umm al-Qura;
+ * the user can always switch the day back to normal with the fasting override.
+ */
+export function getSpecialFastDay(dateIso: string, timeZone = 'Africa/Cairo'): SpecialFastDay | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return null;
+  // Noon UTC keeps the calendar date stable across time zones.
+  const date = new Date(`${dateIso}T12:00:00Z`);
+  try {
+    const parts = new Intl.DateTimeFormat('en-u-ca-islamic-umalqura-nu-latn', {
+      timeZone: timeZone || 'Africa/Cairo',
+      day: 'numeric',
+      month: 'numeric',
+    }).formatToParts(date);
+    const day = Number(parts.find((p) => p.type === 'day')?.value);
+    const month = Number(parts.find((p) => p.type === 'month')?.value);
+    if (month === 12 && day === 9) return { id: 'arafah', nameAr: 'يوم عرفة', emoji: '🕋' };
+    if (month === 1 && day === 10) return { id: 'ashura', nameAr: 'يوم عاشوراء', emoji: '🌙' };
+  } catch {
+    // Intl without the islamic calendar: no special days
+  }
+  return null;
+}
+
 /**
  * Returns today's Arabic & English weekday, Gregorian date, Islamic Hijri date (Umm al-Qura),
  * and detects the 3 mid-month Full Moon White Days (13, 14, 15 Hijri) for the 🌕 badge.
