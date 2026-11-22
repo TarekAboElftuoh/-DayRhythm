@@ -2204,24 +2204,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             <span className="max-sm:hidden">الذاكرة والتقويم</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setApiKeyDraft(getGeminiApiKey());
-              setKeySaveMessage(null);
-              setShowApiKeyModal(true);
-            }}
-            aria-label="مفتاح Gemini"
-            className={`min-h-[40px] px-3 max-sm:px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
-              isCustomGeminiApiKeySet()
-                ? 'border-[#7FFFD4]/60 bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                : 'border-white/10 text-zinc-300 hover:border-white/25 hover:text-white'
-            }`}
-            title="إعدادات مفتاح Google Gemini API وحفظه في localStorage"
-          >
-            <Key className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            <span className="max-sm:hidden">مفتاح Gemini</span>
-          </button>
+          {/* The Gemini key lives in Settings (and the warning bar offers it when the key fails). */}
 
           <button
             type="button"
