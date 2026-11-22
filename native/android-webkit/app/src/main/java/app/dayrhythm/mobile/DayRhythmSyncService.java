@@ -595,10 +595,8 @@ public class DayRhythmSyncService extends Service {
             String headerTitle = liveEmoji + " " + (liveTitle.isEmpty() ? liveStatusLabel : liveTitle);
             builder.setContentTitle(headerTitle)
                     .setContentText(liveStatusLabel)
-                    .setShowWhen(true)
-                    .setWhen(liveTargetEpochMs)
-                    .setUsesChronometer(true)
-                    .setChronometerCountDown(true);
+                    .setShowWhen(false)
+                    .setUsesChronometer(false);
         } else {
             builder.setContentTitle("إيقاع اليوم | DayRhythm")
                     .setContentText(syncSubtitle)
@@ -610,64 +608,8 @@ public class DayRhythmSyncService extends Service {
     }
 
     private void refreshLiveAlertCapsule() {
-        long nowMs = System.currentTimeMillis();
-        long remainingMs = liveTargetEpochMs - nowMs;
-        long leadMs = Math.max(1, liveAlertsLeadMinutes) * 60_000L;
-
-        if (!liveAlertsEnabled || liveTargetEpochMs <= 0L || remainingMs <= 0L || remainingMs > leadMs) {
-            if (liveIslandCurrentlyShown) {
-                cancelLiveAlertCapsule();
-            }
-            return;
-        }
-
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm == null) return;
-
-        long totalSec = Math.max(0L, (remainingMs + 500L) / 1000L);
-        long mins = totalSec / 60L;
-        long secs = totalSec % 60L;
-        String mmss = String.format(Locale.US, "%02d:%02d", mins, secs);
-        String compactPill = liveEmoji + " " + mmss;
-
-        Intent openIntent = new Intent(this, MainActivity.class);
-        openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pi = PendingIntent.getActivity(
-                this,
-                1002,
-                openIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
-
-        Bundle liveExtras = new Bundle();
-        liveExtras.putBoolean("android.requestPromotedOngoing", true);
-        liveExtras.putBoolean("oplus.live_alert.enable", true);
-        liveExtras.putString("android.shortCriticalText", compactPill);
-
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_LIVE_ALERTS)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentTitle(compactPill)
-                .setContentText(liveTitle.isEmpty() ? liveStatusLabel : liveTitle)
-                .setSubText(liveStatusLabel)
-                .setOngoing(true)
-                .setSilent(true)
-                .setOnlyAlertOnce(true)
-                .setShowWhen(true)
-                .setWhen(liveTargetEpochMs)
-                .setUsesChronometer(true)
-                .setChronometerCountDown(true)
-                .setColor(totalSec <= 60 ? 0xFFFF6B6B : 0xFF7FFFD4)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .setCategory(NotificationCompat.CATEGORY_EVENT)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .addExtras(liveExtras)
-                .setContentIntent(pi);
-
-        try {
-            nm.notify(NOTIF_LIVE_ALERT_ID, builder.build());
-            liveIslandCurrentlyShown = true;
-        } catch (SecurityException ignored) {
-        }
+        // Countdown capsule notification disabled — keeping only the single persistent status notification
+        cancelLiveAlertCapsule();
     }
 
     private void cancelLiveAlertCapsule() {
