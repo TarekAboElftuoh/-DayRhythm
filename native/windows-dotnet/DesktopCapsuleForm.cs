@@ -316,6 +316,8 @@ namespace DayRhythm
             _onPrefsChangedByUser?.Invoke(_isVertical ? "vertical" : "horizontal", _sizeMode);
         }
 
+        public CapsuleStatePayload GetLastPayload() => _lastPayload;
+
         public void UpdateState(CapsuleStatePayload payload)
         {
             if (payload == null) return;

@@ -27,6 +27,15 @@ import androidx.core.app.NotificationCompat;
 
 import org.json.JSONObject;
 
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.InterfaceAddress;
+import java.net.NetworkInterface;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Enumeration;
 import java.util.Locale;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
@@ -225,6 +234,7 @@ public class DayRhythmSyncService extends Service {
             }
         }
         if (svc != null) {
+            svc.sendLanBatteryBroadcast(90, true, 0, 90, "alarm_trigger");
             CloudSignalClient.sendAlarmTrigger(svc, title, body, kind, snoozeMinutes);
         }
     }
@@ -353,6 +363,7 @@ public class DayRhythmSyncService extends Service {
                         ReminderAlarmReceiver.cancelAllActiveAlarms(DayRhythmSyncService.this);
                         // Instantly notify PC to silence smart charge alert and close popup!
                         CloudSignalClient.sendAlarmDismiss(DayRhythmSyncService.this, "unplugged");
+                        sendLanBatteryBroadcast(pct, false, 0, limit, "alarm_dismiss");
                     }
                     if (lastBroadcastCharging || lastBroadcastBatteryLevel != pct) {
                         lastBroadcastCharging = false;
@@ -440,16 +451,110 @@ public class DayRhythmSyncService extends Service {
                 }
             }
 
-            // 2. Publish to Firestore REST so PC gets live telemetry even with app closed & screen off
+            // 2. Broadcast over local Wi-Fi LAN (UDP port 48721 + HTTP POST) for instant PC sync (< 5ms)
+            sendLanBatteryBroadcast(level, charging, etaMinutes, limit, null);
+
+            // 3. Publish to Firestore REST so PC gets live telemetry even with app closed & screen off
             CloudSignalClient.publishBatteryTelemetry(this, level, charging, etaMinutes, limit);
 
-            // 3. Broadcast internal intent for local web view
+            // 4. Broadcast internal intent for local web view
             Intent syncIntent = new Intent(ACTION_WS_SYNC_MESSAGE);
             syncIntent.setPackage(getPackageName());
             syncIntent.putExtra(EXTRA_WS_PAYLOAD, packet.toString());
             sendBroadcast(syncIntent);
         } catch (Exception ignored) {
         }
+    }
+
+    public static final int LAN_PORT = 48721;
+    private static volatile String lastDiscoveredPcIp = null;
+
+    public void sendLanBatteryBroadcast(int level, boolean charging, int etaMinutes, int limit, String action) {
+        new Thread(() -> {
+            DatagramSocket socket = null;
+            try {
+                JSONObject json = new JSONObject();
+                json.put("type", "battery");
+                json.put("level", level);
+                json.put("levelPct", level);
+                json.put("is_charging", charging);
+                json.put("charging", charging);
+                json.put("eta_minutes_90", etaMinutes);
+                json.put("chargeTimeRemainingMin", etaMinutes);
+                json.put("limit", limit);
+                json.put("chargeLimitPct", limit);
+                json.put("source_device", "OnePlus 12R");
+                json.put("deviceLabel", "OnePlus 12R");
+                json.put("action", action != null ? action : (charging ? "charging" : "unplugged"));
+                json.put("updatedAtMs", System.currentTimeMillis());
+
+                byte[] data = json.toString().getBytes(StandardCharsets.UTF_8);
+                socket = new DatagramSocket();
+                socket.setBroadcast(true);
+
+                // 1. Send to global subnet broadcast (255.255.255.255:48721)
+                DatagramPacket globalPacket = new DatagramPacket(
+                        data,
+                        data.length,
+                        InetAddress.getByName("255.255.255.255"),
+                        LAN_PORT
+                );
+                socket.send(globalPacket);
+
+                // 2. Also send to each interface's local broadcast (e.g. 192.168.1.255)
+                try {
+                    Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+                    while (interfaces.hasMoreElements()) {
+                        NetworkInterface ni = interfaces.nextElement();
+                        if (ni.isLoopback() || !ni.isUp()) continue;
+                        for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
+                            InetAddress bcast = ia.getBroadcast();
+                            if (bcast != null) {
+                                DatagramPacket p = new DatagramPacket(data, data.length, bcast, LAN_PORT);
+                                socket.send(p);
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+
+                // 3. Direct HTTP POST if PC IP was previously recorded
+                String targetIp = lastDiscoveredPcIp;
+                if (targetIp != null && !targetIp.isEmpty()) {
+                    try {
+                        URL url = new URL("http://" + targetIp + ":" + LAN_PORT + "/api/v1/battery/update");
+                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                        conn.setRequestMethod("POST");
+                        conn.setConnectTimeout(800);
+                        conn.setReadTimeout(800);
+                        conn.setDoOutput(true);
+                        conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                        conn.getOutputStream().write(data);
+                        conn.getResponseCode();
+                        conn.disconnect();
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                // 4. Listen briefly for PC UDP response to record its IP address for future HTTP POSTs
+                try {
+                    socket.setSoTimeout(350);
+                    byte[] buf = new byte[256];
+                    DatagramPacket ack = new DatagramPacket(buf, buf.length);
+                    socket.receive(ack);
+                    InetAddress sender = ack.getAddress();
+                    if (sender != null) {
+                        lastDiscoveredPcIp = sender.getHostAddress();
+                    }
+                } catch (Exception ignored) {
+                }
+            } catch (Exception ignored) {
+            } finally {
+                if (socket != null) {
+                    try { socket.close(); } catch (Exception ignored) {}
+                }
+            }
+        }).start();
     }
 
     @Override

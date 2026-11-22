@@ -37,6 +37,7 @@ namespace DayRhythm
         private DesktopCapsuleForm _capsuleForm;
         private SecondaryMonitorToastForm _activeToastForm;
         private SecondaryScreenAlertForm _activeScreenAlert;
+        private LanBatteryServer _lanBatteryServer;
         private ToolStripMenuItem _wsStatusItem;
         private ToolStripMenuItem _capsuleMenuItem;
         private ToolStripMenuItem _secondaryScreenMenuItem;
@@ -78,6 +79,9 @@ namespace DayRhythm
             InitializeTray(appIcon);
             InitializeDesktopCapsule();
             InitializeWebViewControl();
+
+            _lanBatteryServer = new LanBatteryServer(OnLanBatteryTelemetry);
+            _lanBatteryServer.Start();
 
             HandleCreated += (_, __) => ApplyDarkObsidianTitleBar(Handle);
             Load += async (_, __) => await OnFormLoadedAsync();
@@ -867,7 +871,76 @@ namespace DayRhythm
                 _trayIcon.Dispose();
                 _trayIcon = null;
             }
+            _lanBatteryServer?.Dispose();
+            _lanBatteryServer = null;
             _bgServices.Dispose();
+        }
+
+        private void OnLanBatteryTelemetry(LanBatteryTelemetry telemetry)
+        {
+            if (telemetry == null) return;
+            RunOnUi(() =>
+            {
+                int level = telemetry.EffectiveLevel;
+                bool charging = telemetry.EffectiveCharging;
+                int eta = telemetry.EffectiveEta;
+                int limit = telemetry.EffectiveLimit;
+                string device = telemetry.EffectiveDevice;
+
+                // 1. Update floating desktop capsule live
+                if (_capsuleForm != null)
+                {
+                    CapsuleStatePayload p = _capsuleForm.GetLastPayload() ?? new CapsuleStatePayload();
+                    p.phoneBatteryPct = charging && level >= 0 ? level : -1;
+                    p.phoneCharging = charging;
+                    p.phoneChargeLimitPct = limit;
+                    p.phoneChargeEtaMin = eta;
+                    _capsuleForm.UpdateState(p);
+                }
+
+                // 2. Dispatch to WebView2 web app
+                if (_webView?.CoreWebView2 != null)
+                {
+                    string js = $"window.__dayRhythmNativeBattery = {{ levelPct: {level}, charging: {(charging ? "true" : "false")}, chargeTimeRemainingMin: {eta}, deviceLabel: '{device}', chargeLimitPct: {limit}, updatedAtMs: {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()} }};"
+                        + "window.dispatchEvent(new CustomEvent('dayrhythm:native-battery', { detail: window.__dayRhythmNativeBattery }));";
+                    _ = _webView.CoreWebView2.ExecuteScriptAsync(js);
+                }
+
+                // 3. Handle 90% alarm & unplug cancellation
+                if ("alarm_dismiss".Equals(telemetry.action, StringComparison.OrdinalIgnoreCase) || (!charging && _activeToastForm != null && "charge".Equals(_activeToastForm.Tag as string, StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (_activeToastForm != null && !_activeToastForm.IsDisposed)
+                    {
+                        _activeToastForm.Close();
+                        _activeToastForm.Dispose();
+                        _activeToastForm = null;
+                    }
+                    CloseActiveScreenAlert();
+                    if (_webView?.CoreWebView2 != null)
+                    {
+                        _ = _webView.CoreWebView2.ExecuteScriptAsync("if (window.__stopSmartChargeAlert) window.__stopSmartChargeAlert();");
+                    }
+                }
+                else if (charging && (level >= limit || "alarm_trigger".Equals(telemetry.action, StringComparison.OrdinalIgnoreCase)))
+                {
+                    NativeAlertPayload alert = new NativeAlertPayload
+                    {
+                        emoji = $"🔋 {level}%",
+                        title = $"وصل شحن {device} إلى {level}% — افصل الشاحن الآن",
+                        sourceLabel = "تنبيه الشحن الذكي (LAN)",
+                        time12h = DateTime.Now.ToString("hh:mm tt"),
+                        category = "charge",
+                        isHydration = false,
+                        isContinuous = true,
+                        durationSeconds = 300,
+                    };
+                    ShowSecondaryMonitorAlert(alert);
+                    if (_activeToastForm != null)
+                    {
+                        _activeToastForm.Tag = "charge";
+                    }
+                }
+            });
         }
 
         private void RunOnUi(Action action)
