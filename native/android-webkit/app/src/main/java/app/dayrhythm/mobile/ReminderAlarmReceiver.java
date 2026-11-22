@@ -450,8 +450,6 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 // Launch desktop-style AlarmActivity card over lock screen
                 launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
 
-                // Sub-second instantaneous sync: notify PC over active WebSocket so desktop card pops up simultaneously!
-                DayRhythmSyncService.broadcastAlarmTrigger(title, body, kind, snoozeMin);
 
                 // If the PC (or another device) stops this alert, stop it here too.
                 CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
@@ -472,6 +470,18 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             int snoozeMin
     ) {
         if (context == null) return;
+        // Phone in use → the heads-up banner from showInteractiveNotification is enough; taking over
+        // the whole screen mid-use is exactly what the full-screen card must not do. Only when the
+        // phone is locked or the screen is off does the card cover the screen.
+        try {
+            android.app.KeyguardManager km =
+                    (android.app.KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            boolean locked = km != null && km.isKeyguardLocked();
+            boolean screenOff = pm != null && !pm.isInteractive();
+            if (!locked && !screenOff) return;
+        } catch (Exception ignored) {
+        }
         try {
             Intent fsIntent = new Intent(context, AlarmActivity.class);
             fsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
@@ -736,10 +746,10 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 .addAction(0, "تأجيل " + snoozeMin + " د", snoozePi);
 
         try {
-            // Update the single unified notification (ID 1001) so there are NEVER duplicate notifications!
-            nm.notify(DayRhythmSyncService.NOTIF_UNIFIED_ID, builder.build());
-            nm.cancel(1002);
-            trackActiveNotifId(context, DayRhythmSyncService.NOTIF_UNIFIED_ID);
+            // Its own id, never the service's 1001: the service rewrites 1001 with the countdown
+            // every few seconds, which wiped this alert (and its تم / تأجيل buttons) right away.
+            nm.notify(notifId, builder.build());
+            trackActiveNotifId(context, notifId);
         } catch (SecurityException ignored) {
         }
     }
@@ -773,21 +783,24 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         if (context == null) return;
         closeAlarmUi(context);
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null) {
-            nm.cancel(1002);
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
+        String csv = prefs.getString(KEY_ACTIVE_NOTIF_IDS, "");
+        if (nm != null && csv != null && !csv.isEmpty()) {
+            for (String token : csv.split(",")) {
+                try {
+                    nm.cancel(Integer.parseInt(token.trim()));
+                } catch (Exception ignored) {
+                }
+            }
         }
-        DayRhythmSyncService.refreshServiceNotification(context);
+        prefs.edit().putString(KEY_ACTIVE_NOTIF_IDS, "").apply();
     }
 
     private static void cancelNotification(Context context, int notifId) {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null) {
-            nm.cancel(1002);
-            if (notifId != DayRhythmSyncService.NOTIF_UNIFIED_ID) {
-                nm.cancel(notifId);
-            }
+            nm.cancel(notifId);
         }
-        DayRhythmSyncService.refreshServiceNotification(context);
     }
 
     private static void enqueuePendingQuickAction(

@@ -158,7 +158,10 @@ namespace DayRhythm
             {
                 var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 LanBatteryTelemetry telemetry = JsonSerializer.Deserialize<LanBatteryTelemetry>(json, options);
-                if (telemetry != null && (telemetry.EffectiveLevel >= 0 || !string.IsNullOrEmpty(telemetry.action)))
+                // Anything on the Wi-Fi can send to this port: drop values no real battery reports.
+                if (telemetry != null
+                    && telemetry.EffectiveLevel >= 0 && telemetry.EffectiveLevel <= 100
+                    && telemetry.EffectiveLimit >= 60 && telemetry.EffectiveLimit <= 100)
                 {
                     _onTelemetryReceived(telemetry);
                 }

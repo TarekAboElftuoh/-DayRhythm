@@ -581,7 +581,9 @@ export function sanitizeSyncSignal(raw: unknown): WorkspaceSyncSignal | undefine
     scope: scopeRaw as WorkspaceSyncSignal['scope'],
     action,
     timestampMs,
-    extra: r.extra && typeof r.extra === 'object' ? (r.extra as Record<string, unknown>) : undefined,
+    // No `extra` here: this object is written to Firestore, whose rules allow exactly these five
+    // keys — an `extra` map got every signal rejected, and `extra: undefined` made the SDK refuse
+    // the write outright. Rich alert content travels over the WebSocket only.
   };
 }
 

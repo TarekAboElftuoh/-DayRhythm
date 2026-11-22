@@ -1465,7 +1465,6 @@ export default function App() {
           scope,
           action,
           timestampMs,
-          extra: extraPayload,
         });
       }
     },
@@ -1554,7 +1553,6 @@ export default function App() {
         taskListId?: string;
         durationMs?: number;
         description?: string;
-        suppressRemoteSync?: boolean;
       }
     ) => {
       const meta = TASK_SOUND_META[category];
@@ -1695,19 +1693,6 @@ export default function App() {
         // ignore WebView2 postMessage errors
       }
 
-      // Instantaneous sub-second cross-device synchronization (PC <-> OnePlus 12R)
-      if (!options?.suppressRemoteSync) {
-        emitCrossDeviceSync('alarm_trigger', category, undefined, {
-          title: visibleTitle,
-          body: visibleDescription
-            ? `${visibleDescription}\n${visibleSource} · ${nowTime12}`
-            : `${visibleSource} · ${nowTime12}`,
-          kind: category,
-          privacyEmoji: privacyBadge,
-          sourceLabel: visibleSource,
-          snoozeMinutes: defaultSnooze,
-        });
-      }
 
       if (!isNativeWin) {
         showToast(`${privacyBadge} · ${visibleTitle} · ${nowTime12}`);
@@ -2776,7 +2761,6 @@ export default function App() {
           privacyEmoji: emoji,
           displayTitle: title,
           sourceLabel: source,
-          suppressRemoteSync: true,
         });
         return;
       }
@@ -5816,6 +5800,13 @@ export default function App() {
       }
     };
 
+    // Android APK: these reminders are already exact native alarms (they ring even with the app
+    // closed). Firing them here as well made the phone ring two or three times for one reminder.
+    const nativeOwnsReminders = Boolean(
+      (window as Window & { DayRhythmNative?: { scheduleExactAlarms?: unknown } }).DayRhythmNative
+        ?.scheduleExactAlarms
+    );
+    if (!nativeOwnsReminders) {
     // 1. Water cup reminders (Emoji-only privacy notification — clicking confirms drinking)
     if (waterRemindersEnabled && hydrationToday) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
@@ -5922,6 +5913,7 @@ export default function App() {
         sendSystemNotification('☑️ مهمة الآن', `${cleanTitle} · ${time12}`, key);
       }
     });
+    } // end: reminders owned by native alarms on Android
 
     // 4. Proactive Medication Low-Stock Refill Reminder (default 3 days before running out)
     medications.forEach((med) => {

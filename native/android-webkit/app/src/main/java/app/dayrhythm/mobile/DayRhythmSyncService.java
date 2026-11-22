@@ -232,33 +232,6 @@ public class DayRhythmSyncService extends Service {
         }
     }
 
-    public static void broadcastAlarmTrigger(String title, String body, String kind, int snoozeMinutes) {
-        DayRhythmSyncService svc = instance;
-        if (svc != null && svc.activeWebSocket != null) {
-            try {
-                JSONObject packet = new JSONObject();
-                packet.put("type", "broadcast");
-                packet.put("opId", "op_mob_" + System.currentTimeMillis() + "_" + (new Random().nextInt(9000) + 1000));
-                packet.put("clientId", "android-native");
-                packet.put("scope", "alarm_trigger");
-                packet.put("action", kind != null ? kind : "general");
-                packet.put("timestampMs", System.currentTimeMillis());
-                JSONObject extra = new JSONObject();
-                extra.put("title", title != null ? title : "تنبيه إيقاع اليوم");
-                extra.put("body", body != null ? body : "");
-                extra.put("kind", kind != null ? kind : "general");
-                extra.put("snoozeMinutes", snoozeMinutes);
-                packet.put("extra", extra);
-                svc.activeWebSocket.send(packet.toString());
-            } catch (Exception ignored) {
-            }
-        }
-        if (svc != null) {
-            svc.sendLanBatteryBroadcast(90, true, 0, 90, "alarm_trigger");
-            CloudSignalClient.sendAlarmTrigger(svc, title, body, kind, snoozeMinutes);
-        }
-    }
-
     private void startForegroundCompat(Notification notif) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIF_KEEPALIVE_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
@@ -313,7 +286,6 @@ public class DayRhythmSyncService extends Service {
 
         registerNetworkRecoveryCallback();
         registerChargeLimitWatcher();
-        CloudSignalClient.startBackgroundSyncSignalWatcher(this);
     }
 
     // ── Charge-limit alert & Live Battery LAN Sync (works with the app closed) ─────
@@ -442,7 +414,6 @@ public class DayRhythmSyncService extends Service {
                             0
                     );
                     // Broadcast trigger to PC so desktop card pops up simultaneously
-                    broadcastAlarmTrigger("🔋 الشحن وصل " + pct + "%", "افصل الشاحن دلوقتي لحماية البطارية", "charge", 0);
                     broadcastBatteryTelemetry(pct, true, 0, limit);
                 }
             }
@@ -652,7 +623,6 @@ public class DayRhythmSyncService extends Service {
         }
         clearWsTimers();
         teardownActiveWebSocket("service_stopped");
-        CloudSignalClient.stopBackgroundSyncSignalWatcher();
         super.onDestroy();
     }
 
