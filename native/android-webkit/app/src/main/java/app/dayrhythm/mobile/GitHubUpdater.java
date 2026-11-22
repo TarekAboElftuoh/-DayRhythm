@@ -275,7 +275,7 @@ public class GitHubUpdater {
         f.delete();
     }
 
-    private static boolean isVersionNewer(String remoteTag, String localTag) {
+    public static boolean isVersionNewer(String remoteTag, String localTag) {
         String r = remoteTag.replaceFirst("^[vV]", "");
         String l = localTag.replaceFirst("^[vV]", "");
         String[] rp = r.split("\\.");
