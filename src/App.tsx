@@ -106,9 +106,13 @@ import {
   sanitizeMedicationItem,
   sanitizeMemoryId,
   sanitizeMemoryItem,
+  sanitizeRhythmPayload,
   sanitizeSoundRepeats,
   sanitizeUiPrefs,
   saveUserRhythmState,
+  saveUserAppSettings,
+  type AppSyncSettings,
+  type SyncedRhythmPayload,
   saveUserUiPrefs,
   subscribeChatMessages,
   subscribeCreativeActivities,
@@ -478,6 +482,32 @@ function resolveCalendarActionTargets(
   });
 }
 
+/**
+ * "Remind me in 5 minutes": Gemini only says how many minutes; the start time is computed here from
+ * the device clock. Asking the model to do the clock arithmetic itself produced reminders at the
+ * wrong time (a 5-minute request landed 10 minutes later).
+ */
+function resolveRelativeCalendarStarts(
+  actions: CalendarActionProposal[],
+  timeZone: string
+): CalendarActionProposal[] {
+  return actions.map((act) => {
+    const mins = Number(act.startInMinutes);
+    if (!Number.isFinite(mins) || mins <= 0 || mins > 7 * 24 * 60) return act;
+    // Round to the nearest whole minute (events are minute-precise).
+    const target = new Date(Date.now() + Math.round(mins) * 60_000 + 30_000);
+    const minuteOfDay = getNowMinutesInTimeZone(timeZone, target);
+    const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, '0');
+    const mm = String(minuteOfDay % 60).padStart(2, '0');
+    return {
+      ...act,
+      dateIso: getDateIsoInTimeZone(timeZone, target),
+      startTime24: `${hh}:${mm}`,
+      durationMinutes: act.durationMinutes && act.durationMinutes > 0 ? act.durationMinutes : 15,
+    };
+  });
+}
+
 interface QueuedGoogleOp {
   id: string;
   kind: 'calendar' | 'tasks';
@@ -537,6 +567,27 @@ const GOOGLE_SESSION_EXPIRED_AR =
   'انتهت صلاحية ربط Google — اضغط «تجديد ربط Google الآن» ثم أعد المحاولة.';
 
 const SKIP_PATTERN_STORAGE_KEY = 'dayrhythm_skip_pattern_counts_v1';
+
+// Fields that only make sense together are written together (a cup count without its date key
+// could land on the wrong day).
+const RHYTHM_FIELD_GROUPS: ReadonlyArray<ReadonlyArray<keyof SyncedRhythmPayload>> = [
+  ['hydrationDateKey', 'cupsLogged', 'targetCups', 'hydrationWeeklyCounts'],
+  ['dailyCommitmentDays', 'dailyCommitmentDoneToday', 'waterTargetDays', 'waterTargetDoneToday'],
+  ['quietMode'],
+  ['adhanOverrideSilent'],
+  ['surfaceTheme'],
+  ['deviceSettings'],
+  ['lifeProfile'],
+  ['uiPrefs'],
+];
+
+function serializeRhythmFields(p: SyncedRhythmPayload): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const group of RHYTHM_FIELD_GROUPS) {
+    for (const key of group) out[key] = JSON.stringify(p[key] ?? null);
+  }
+  return out;
+}
 
 /** Stable key for a block title across days (strips emoji/whitespace so "☕ 😌 استراحة" always matches itself). */
 function normalizeSkipPatternKey(titleAr: string): string {
@@ -802,9 +853,16 @@ export default function App() {
   const [lastDeletedWorkspaceItem, setLastDeletedWorkspaceItem] =
     useState<DeletedWorkspaceSnapshot | null>(null);
 
-  const skipNextRemotePushRef = useRef(false);
   const hasHydratedRemoteRef = useRef(false);
   const localWriteLockUntilRef = useRef<number>(0);
+  // Last value of each synced field as the server has it (from snapshots). A save only sends the
+  // fields whose local value differs from this, so a device never pushes a field it didn't change.
+  const lastServerFieldsRef = useRef<Record<string, string>>({});
+  // Newest snapshot that arrived during the write-lock; applied when the lock ends instead of
+  // being dropped (a dropped snapshot is never re-delivered, so that device stayed stale forever).
+  const pendingRemoteRef = useRef<SyncedRhythmPayload | null>(null);
+  const lastServerAppSettingsRef = useRef<string>('');
+  const pendingRemoteTimerRef = useRef<number | null>(null);
 
   // Any LOCALLY-initiated lifeProfile edit arms the write lock (see the Firestore listener's
   // "Date.now() < localWriteLockUntilRef.current" guard above) so a snapshot that happens to
@@ -1245,7 +1303,7 @@ export default function App() {
             // ignore ws send errors
           }
         }
-        if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+        if (firebaseUser?.uid && firebaseUser.emailVerified) {
           void publishPhoneBatteryTelemetry(firebaseUser.uid, updated).catch(() => {});
         }
         return updated;
@@ -1393,7 +1451,7 @@ export default function App() {
         }
       }
 
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void publishWorkspaceSyncSignal(firebaseUser.uid, {
           opId,
           clientId: clientIdRef.current,
@@ -1487,6 +1545,7 @@ export default function App() {
         taskId?: string;
         taskListId?: string;
         durationMs?: number;
+        description?: string;
       }
     ) => {
       const meta = TASK_SOUND_META[category];
@@ -1499,7 +1558,10 @@ export default function App() {
           : category === 'medication'
             ? 'موعد العلاج'
             : 'تقويم ومهام اليوم');
-      const durationMs = options?.durationMs ?? 300_000; // 5 minutes persistent non-intrusive display
+      // Two minutes on screen at most, then it goes away by itself — a full-screen alert left up
+      // longer just burns battery on the phone and blocks the secondary monitor.
+      const durationMs = Math.min(options?.durationMs ?? 120_000, 120_000);
+      const visibleDescription = cleanCalendarText(options?.description || '').slice(0, 220);
       const repeatCount: SoundRepeatSetting =
         (lifeProfile.soundRepeats ?? DEFAULT_SOUND_REPEATS)[category] ??
         DEFAULT_SOUND_REPEATS[category] ??
@@ -1585,7 +1647,9 @@ export default function App() {
       try {
         androidNative?.triggerNativeAlarm?.(
           `${privacyBadge} ${visibleTitle}`,
-          `${visibleSource} · ${nowTime12}`,
+          visibleDescription
+            ? `${visibleDescription}\n${visibleSource} · ${nowTime12}`
+            : `${visibleSource} · ${nowTime12}`,
           category,
           Boolean(playRes.isContinuous),
           defaultSnooze
@@ -1603,6 +1667,7 @@ export default function App() {
               id: alertId,
               emoji: privacyBadge,
               title: visibleTitle,
+              description: visibleDescription,
               sourceLabel: visibleSource,
               time12h: nowTime12,
               category,
@@ -1694,9 +1759,13 @@ export default function App() {
   const handleSetQuietMode = useCallback(
     (mode: QuietModeType, durationMinutes: number) => {
       setQuietMode(mode);
-      if (mode === 'normal' || durationMinutes <= 0) {
+      if (mode === 'normal') {
         setQuietRemainingSec(0);
         showToast('🔊 تم التبديل للوضع العادي الكامل');
+      } else if (durationMinutes <= 0) {
+        // No timer: stays on until turned off (the auto-revert only runs while seconds remain).
+        setQuietRemainingSec(0);
+        showToast(mode === 'vibrate_only' ? '📳 اهتزاز فقط لحد ما تلغيه' : '🔇 ميوت لحد ما تلغيه');
       } else {
         setQuietRemainingSec(durationMinutes * 60);
         showToast(`🔕 تفعيل وضع الهدوء (${mode}) لمدة ${durationMinutes} دقيقة`);
@@ -1952,6 +2021,9 @@ export default function App() {
   const [gmailLastSyncedIso, setGmailLastSyncedIso] = useState<string>('');
   const [gmailNextRetryInSec, setGmailNextRetryInSec] = useState<number>(0);
   const syncedChatTextByIdRef = useRef<Map<string, string>>(new Map());
+  // Message ids that definitely exist in the cloud (seen in a snapshot or written OK) — lets a
+  // write skip its read-before-write. Never cleared on a failed write.
+  const cloudChatIdsRef = useRef<Set<string>>(new Set());
   const hasHydratedCloudChatRef = useRef<boolean>(false);
 
   useEffect(() => {
@@ -2374,6 +2446,34 @@ export default function App() {
     }
   }, [sunMode]);
 
+  // App settings that used to be per-device only: change it on one device, it changes on the other.
+  useEffect(() => {
+    if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreReady || !hasHydratedRemoteRef.current) {
+      return;
+    }
+    // Same key order as sanitizeAppSyncSettings, so equal settings serialize identically.
+    const next: AppSyncSettings = {
+      phoneChargeLimitPct,
+      smartChargeAlertEnabled,
+      smartChargeKeepUntilUnplugged,
+      waterRemindersEnabled,
+      sunMode,
+    };
+    const json = JSON.stringify(next);
+    if (json === lastServerAppSettingsRef.current) return;
+    lastServerAppSettingsRef.current = json;
+    void saveUserAppSettings(firebaseUser.uid, next);
+  }, [
+    firebaseUser?.uid,
+    firebaseUser?.emailVerified,
+    firestoreReady,
+    phoneChargeLimitPct,
+    smartChargeAlertEnabled,
+    smartChargeKeepUntilUnplugged,
+    waterRemindersEnabled,
+    sunMode,
+  ]);
+
   // ── Permanent Google link ────────────────────────────────────────────────────────────
   const [permanentLinkActive, setPermanentLinkActive] = useState<boolean>(() => hasPermanentLink());
   const [isStartingPermanentLink, setIsStartingPermanentLink] = useState(false);
@@ -2552,6 +2652,7 @@ export default function App() {
         hasHydratedRemoteRef.current = false;
         hasHydratedCloudChatRef.current = false;
         syncedChatTextByIdRef.current.clear();
+        cloudChatIdsRef.current.clear();
         setFirestoreReady(false);
         setFirestoreSynced(false);
         return;
@@ -2973,43 +3074,44 @@ export default function App() {
     }
 
     const uid = firebaseUser.uid;
-    const unsubscribe = subscribeUserRhythmState(
-      uid,
-      (remote) => {
-        hasHydratedRemoteRef.current = true;
-        setFirestoreReady(true);
-        setFirestoreSynced(true);
 
-        if (remote.syncSignal) {
-          callRemoteSync(remote.syncSignal);
+    // A snapshot arriving during our own write-lock may predate our in-flight edit, so applying
+    // it right away would revert the click. Keep the newest one and apply it once the lock ends
+    // (by then Firestore's snapshot already includes our own write).
+    const applyOrDefer = (remote: SyncedRhythmPayload) => {
+      const waitMs = localWriteLockUntilRef.current - Date.now();
+      if (waitMs > 0) {
+        pendingRemoteRef.current = remote;
+        if (pendingRemoteTimerRef.current !== null) {
+          window.clearTimeout(pendingRemoteTimerRef.current);
         }
+        pendingRemoteTimerRef.current = window.setTimeout(() => {
+          pendingRemoteTimerRef.current = null;
+          const latest = pendingRemoteRef.current;
+          pendingRemoteRef.current = null;
+          if (latest) applyOrDefer(latest);
+        }, waitMs + 50);
+        return;
+      }
+      applyRemote(remote);
+    };
 
-        if (remote.phoneBattery) {
-          setPhoneBattery((prev) =>
-            !prev || remote.phoneBattery!.updatedAtMs >= prev.updatedAtMs
-              ? remote.phoneBattery!
-              : prev
-          );
+    const applyRemote = (remote: SyncedRhythmPayload) => {
+        if (remote.appSettings) {
+          const a = remote.appSettings;
+          setPhoneChargeLimitPct(a.phoneChargeLimitPct);
+          setSmartChargeAlertEnabled(a.smartChargeAlertEnabled);
+          setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
+          setWaterRemindersEnabled(a.waterRemindersEnabled);
+          setSunMode(a.sunMode);
+          try {
+            localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
+            localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
+            localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
+          } catch {
+            // ignore storage errors
+          }
         }
-
-        // Prevent stale server snapshot echoes from reverting an in-flight local click.
-        //
-        // BUG THIS FIXES: remote.syncSignal is just whatever syncSignal field last happened to be
-        // persisted on the document — it does NOT mean "this snapshot carries a fresh edit from
-        // another device". A snapshot can arrive during our own write-lock window for a totally
-        // unrelated reason (e.g. the phone's battery-telemetry ping touches only `phoneBattery`),
-        // yet still contain the document's lifeProfile/deviceSettings/etc as they stood BEFORE our
-        // in-flight write committed. The old code treated "syncSignal.clientId differs from ours"
-        // (true almost always, since it's a random id from whichever device/session last wrote it)
-        // as "another device just changed something, apply immediately" — which clobbered the
-        // button you *just* clicked with the stale pre-click value. Always honoring the lock here
-        // means a genuine concurrent edit from another device is merely delayed until our own
-        // write's lock window elapses, rather than racing and sometimes losing.
-        if (Date.now() < localWriteLockUntilRef.current) {
-          return;
-        }
-
-        skipNextRemotePushRef.current = true;
         setQuietMode(remote.quietMode);
         setAdhanOverrideSilent(remote.adhanOverrideSilent);
         setSurfaceTheme('amoled'); // Obsidian removed: night = AMOLED, day = sunlight mode (top-bar button)
@@ -3081,6 +3183,30 @@ export default function App() {
             };
           })
         );
+    };
+
+    const unsubscribe = subscribeUserRhythmState(
+      uid,
+      (remote) => {
+        hasHydratedRemoteRef.current = true;
+        setFirestoreReady(true);
+        setFirestoreSynced(true);
+        lastServerFieldsRef.current = serializeRhythmFields(remote);
+        lastServerAppSettingsRef.current = remote.appSettings ? JSON.stringify(remote.appSettings) : '';
+
+        if (remote.syncSignal) {
+          callRemoteSync(remote.syncSignal);
+        }
+
+        if (remote.phoneBattery) {
+          setPhoneBattery((prev) =>
+            !prev || remote.phoneBattery!.updatedAtMs >= prev.updatedAtMs
+              ? remote.phoneBattery!
+              : prev
+          );
+        }
+
+        applyOrDefer(remote);
       },
       () => {
         // Brand-new account: immediately create clean root users/{uid} document so all subcollections sync right away!
@@ -3122,12 +3248,19 @@ export default function App() {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (pendingRemoteTimerRef.current !== null) {
+        window.clearTimeout(pendingRemoteTimerRef.current);
+        pendingRemoteTimerRef.current = null;
+      }
+      pendingRemoteRef.current = null;
+    };
   }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, callRemoteSync]);
 
   // Immediate real-time Firestore subscription for Medications (non-anonymous verified users only)
   useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreSynced) {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreReady) {
       return;
     }
 
@@ -3144,7 +3277,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreSynced]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
 
   useEffect(() => {
     if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
@@ -3157,7 +3290,7 @@ export default function App() {
 
   // Immediate real-time Firestore subscription for Creative Activities (non-anonymous verified users only)
   useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreSynced) {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreReady) {
       return;
     }
 
@@ -3174,7 +3307,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreSynced]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
 
   useEffect(() => {
     if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
@@ -3227,7 +3360,7 @@ export default function App() {
 
   // Immediate real-time Firestore subscription for Memories (non-anonymous verified users only)
   useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreSynced) {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreReady) {
       return;
     }
 
@@ -3244,7 +3377,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreSynced]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
 
   useEffect(() => {
     if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
@@ -3257,7 +3390,7 @@ export default function App() {
 
   // Immediate real-time Firestore cloud vault for Gemini conversation archive (non-anonymous verified users only)
   useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreSynced) {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreReady) {
       return;
     }
 
@@ -3268,6 +3401,7 @@ export default function App() {
         hasHydratedCloudChatRef.current = true;
         for (const rm of remoteMsgs) {
           syncedChatTextByIdRef.current.set(rm.id, rm.text.trim());
+          cloudChatIdsRef.current.add(rm.id);
         }
         setChatMessages((prev) => {
           const remoteById = new Map(remoteMsgs.map((m) => [m.id, m]));
@@ -3305,7 +3439,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreSynced]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
 
   // Debounced cloud sync of finalized chat messages to users/{uid}/chatMessages
   useEffect(() => {
@@ -3313,7 +3447,7 @@ export default function App() {
       !firebaseUser?.uid ||
       firebaseUser.isAnonymous ||
       !firebaseUser.emailVerified ||
-      !firestoreSynced ||
+      !firestoreReady ||
       !hasHydratedCloudChatRef.current
     ) {
       return;
@@ -3333,14 +3467,18 @@ export default function App() {
         const alreadySynced = syncedChatTextByIdRef.current.get(msg.id);
         if (alreadySynced === cleanText) continue;
         syncedChatTextByIdRef.current.set(msg.id, cleanText);
-        void upsertChatMessageRecord(uid, msg).catch(() => {
-          syncedChatTextByIdRef.current.delete(msg.id);
-        });
+        void upsertChatMessageRecord(uid, msg, cloudChatIdsRef.current.has(msg.id))
+          .then(() => {
+            cloudChatIdsRef.current.add(msg.id);
+          })
+          .catch(() => {
+            syncedChatTextByIdRef.current.delete(msg.id);
+          });
       }
     }, 1_400);
 
     return () => window.clearTimeout(timerId);
-  }, [chatMessages, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]);
+  }, [chatMessages, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreReady]);
 
   // Persist local cache & push changes IMMEDIATELY to Firebase Firestore across devices (zero debounce lag)
   useEffect(() => {
@@ -3359,11 +3497,6 @@ export default function App() {
       return;
     }
 
-    if (skipNextRemotePushRef.current) {
-      skipNextRemotePushRef.current = false;
-      return;
-    }
-
     if (!hasHydratedRemoteRef.current) {
       return;
     }
@@ -3371,8 +3504,7 @@ export default function App() {
     const todayEntry = hydrationHistory[hydrationHistory.length - 1];
     if (!todayEntry) return;
 
-    localWriteLockUntilRef.current = Date.now() + 3500;
-    void saveUserRhythmState(firebaseUser.uid, {
+    const payload: SyncedRhythmPayload = {
       hydrationDateKey: getDateIsoInTimeZone(activeTimeZone),
       cupsLogged: todayEntry.cupsLogged,
       targetCups: todayEntry.targetCups,
@@ -3392,7 +3524,20 @@ export default function App() {
         capsuleSize: capsulePrefs.size,
         cloudApiUrl: getSavedCloudApiUrl() || undefined,
       }),
-    })
+    };
+
+    const localFields = serializeRhythmFields(sanitizeRhythmPayload(payload));
+    const serverFields = lastServerFieldsRef.current;
+    const changedKeys: Array<keyof SyncedRhythmPayload> = [];
+    for (const group of RHYTHM_FIELD_GROUPS) {
+      if (group.some((key) => localFields[key] !== serverFields[key])) {
+        changedKeys.push(...group);
+      }
+    }
+    if (changedKeys.length === 0) return;
+
+    localWriteLockUntilRef.current = Date.now() + 3500;
+    void saveUserRhythmState(firebaseUser.uid, payload, changedKeys)
       .then(() => setFirestoreSynced(true))
       .catch(() => setFirestoreSynced(false));
   }, [
@@ -3426,7 +3571,7 @@ export default function App() {
         capsuleOrientation: 'horizontal',
         capsuleSize: 'md',
       };
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         localWriteLockUntilRef.current = Date.now() + 3500;
         void saveUserUiPrefs(firebaseUser.uid, clean).catch(() => {});
       }
@@ -3481,6 +3626,19 @@ export default function App() {
     },
     [selectedLogoId, syncUiPrefsCloud]
   );
+
+  // Right-click menu on the Windows desktop capsule (DesktopCapsuleForm.cs).
+  useEffect(() => {
+    const onCapsulePrefs = (ev: Event) => {
+      const d = (ev as CustomEvent<{ orientation?: string; size?: string }>).detail || {};
+      handleUpdateCapsulePrefs({
+        orientation: d.orientation === 'vertical' ? 'vertical' : 'horizontal',
+        size: d.size === 'sm' || d.size === 'lg' ? d.size : 'md',
+      });
+    };
+    window.addEventListener('dayrhythm:capsule-prefs', onCapsulePrefs);
+    return () => window.removeEventListener('dayrhythm:capsule-prefs', onCapsulePrefs);
+  }, [handleUpdateCapsulePrefs]);
 
   const handleSelectBrandLogo = useCallback(
     (id: string) => {
@@ -3647,7 +3805,7 @@ export default function App() {
         source: input.source ?? 'user',
       });
       setMemories((prev) => [item, ...prev]);
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertMemoryRecord(firebaseUser.uid, item).catch(() => {});
       }
       showToast('🧠 تم حفظ القاعدة في ذاكرة Gemini الدائمة (Firestore) ✓');
@@ -3658,7 +3816,7 @@ export default function App() {
   const handleDeleteMemory = useCallback(
     (id: string) => {
       setMemories((prev) => prev.filter((m) => m.id !== id));
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void deleteMemoryRecord(firebaseUser.uid, id).catch(() => {});
       }
       showToast('تم حذف القاعدة من ذاكرة Gemini الدائمة');
@@ -3678,7 +3836,7 @@ export default function App() {
         ruleText: trimmed,
       });
       setMemories((prev) => prev.map((m) => (m.id === id ? updatedItem : m)));
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertMemoryRecord(firebaseUser.uid, updatedItem).catch(() => {});
       }
       showToast('✏️ تم حفظ تعديل القاعدة في ذاكرة Gemini الدائمة ✓');
@@ -3697,7 +3855,7 @@ export default function App() {
           ? preserved
           : [WELCOME_MESSAGE, ...preserved];
       });
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void clearUserChatMessages(firebaseUser.uid, targetMode).catch(() => {});
       }
     },
@@ -3717,7 +3875,7 @@ export default function App() {
             );
             if (target) {
               next = next.filter((m) => m.id !== target.id);
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void deleteMemoryRecord(firebaseUser.uid, target.id).catch(() => {});
               }
             }
@@ -3730,7 +3888,7 @@ export default function App() {
                 ruleText: act.ruleText,
               });
               next[targetIdx] = updated;
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertMemoryRecord(firebaseUser.uid, updated).catch(() => {});
               }
             }
@@ -3746,7 +3904,7 @@ export default function App() {
                 source: 'gemini',
               });
               next = [created, ...next];
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertMemoryRecord(firebaseUser.uid, created).catch(() => {});
               }
             }
@@ -4172,6 +4330,7 @@ export default function App() {
     hasHydratedRemoteRef.current = false;
     hasHydratedCloudChatRef.current = false;
     syncedChatTextByIdRef.current.clear();
+    cloudChatIdsRef.current.clear();
     lastGmailAutoScanMsRef.current = 0;
     gpsFirstAttemptedRef.current = false;
     setLocationResolutionState('idle');
@@ -5028,7 +5187,9 @@ export default function App() {
         });
         return { googleSynced: false, results: [], queued: true };
       };
-      const resolved = options?.isUndoRestore ? actions : resolveCalendarActionTargets(actions, calendarEvents);
+      const resolved = options?.isUndoRestore
+        ? actions
+        : resolveCalendarActionTargets(resolveRelativeCalendarStarts(actions, activeTimeZone), calendarEvents);
       if (navigator.onLine === false) return queueNow(resolved);
       try {
         return await executeCalendarActionsNow(resolved, { ...options, alreadyResolved: true });
@@ -5208,7 +5369,7 @@ export default function App() {
             ? act.loggedDates.filter((d) => d !== todayIso)
             : [...act.loggedDates, todayIso].slice(-30);
           const updated: CreativeActivityItem = { ...act, loggedDates: nextDates };
-          if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+          if (firebaseUser?.uid && firebaseUser.emailVerified) {
             void upsertCreativeActivityRecord(firebaseUser.uid, updated).catch(() => {});
           }
           showToast(
@@ -5676,6 +5837,7 @@ export default function App() {
           privacyEmoji: emojiOnly,
           displayTitle: cleanTitle,
           sourceLabel: 'تقويم Google',
+          description: block.description,
         });
         sendSystemNotification(emojiOnly, `${cleanTitle} · ${time12}`, key);
       }
@@ -5700,6 +5862,7 @@ export default function App() {
           sourceLabel: tk.taskListTitle ? `مهام · ${tk.taskListTitle}` : 'مهام Google',
           taskId: tk.id,
           taskListId: tk.taskListId,
+          description: tk.notes,
         });
         sendSystemNotification('☑️ مهمة الآن', `${cleanTitle} · ${time12}`, key);
       }
@@ -6297,7 +6460,7 @@ export default function App() {
 
       setMedications((prev) => prev.map((m) => (m.id === id ? updated : m)));
 
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
       }
 
@@ -6358,7 +6521,7 @@ export default function App() {
                 }
               : {}),
           };
-          if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+          if (firebaseUser?.uid && firebaseUser.emailVerified) {
             void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
           }
           return updated;
@@ -6389,7 +6552,7 @@ export default function App() {
 
       setMedications((prev) => prev.map((m) => (m.id === id ? updated : m)));
 
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
       }
       showToast(`💊 تم تحديث مخزون «${target.name}» إلى ${clampedDoses} جرعة متبقية ✓`);
@@ -6444,7 +6607,7 @@ export default function App() {
             : 3,
       });
       setMedications((prev) => [...prev, med]);
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertMedicationRecord(firebaseUser.uid, med).catch(() => {});
       }
       showToast(`💊 تمت إضافة «${med.name}» إلى قائمة العلاجات والمكملات`);
@@ -6456,7 +6619,7 @@ export default function App() {
   const handleDeleteMedication = useCallback(
     (id: string) => {
       setMedications((prev) => prev.filter((m) => m.id !== id));
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void deleteMedicationRecord(firebaseUser.uid, id).catch(() => {});
       }
       showToast('تم حذف العلاج من القائمة اليومية');
@@ -6500,7 +6663,7 @@ export default function App() {
                 : undefined);
             if (target) {
               next = next.filter((m) => m.id !== target.id);
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void deleteMedicationRecord(firebaseUser.uid, target.id).catch(() => {});
               }
               results.push({ name: target.name, operation: 'remove', status: 'removed', id: target.id });
@@ -6536,7 +6699,7 @@ export default function App() {
                 remainingDoses: nextRem,
               };
               next = next.map((m) => (m.id === target.id ? updated : m));
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
               }
               results.push({ name: target.name, operation: 'mark_taken', status: 'taken', id: target.id });
@@ -6570,7 +6733,7 @@ export default function App() {
                     : target.refillAlertDays,
               });
               next = next.map((m) => (m.id === target.id ? updated : m));
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
               }
               results.push({ name: updated.name, operation: 'update', status: 'updated', id: updated.id });
@@ -6601,7 +6764,7 @@ export default function App() {
                     : existing.refillAlertDays,
               });
               next = next.map((m) => (m.id === existing.id ? updated : m));
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
               }
               results.push({ name: updated.name, operation: 'update', status: 'updated', id: updated.id });
@@ -6634,7 +6797,7 @@ export default function App() {
                   typeof act.refillAlertDays === 'number' ? act.refillAlertDays : 3,
               });
               next = [...next, created];
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertMedicationRecord(firebaseUser.uid, created).catch(() => {});
               }
               results.push({ name: created.name, operation: 'add', status: 'added', id: created.id });
@@ -6677,7 +6840,7 @@ export default function App() {
         expiresOnDate: input.expiresOnDate ?? '',
       });
       setCreativeActivities((prev) => [...prev, act]);
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertCreativeActivityRecord(firebaseUser.uid, act).catch(() => {});
       }
       showToast(`${act.emoji} تمت إضافة «${act.name}» وسيُوضع تلقائياً في أوقاتك الفاضية ✓`);
@@ -6689,7 +6852,7 @@ export default function App() {
   const handleDeleteCreativeActivity = useCallback(
     (id: string) => {
       setCreativeActivities((prev) => prev.filter((a) => a.id !== id));
-      if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void deleteCreativeActivityRecord(firebaseUser.uid, id).catch(() => {});
       }
       showToast('تم حذف النشاط الإبداعي');
@@ -6722,7 +6885,7 @@ export default function App() {
             scheduledTime24: placement.suggestedSlot!.time24,
             calendarEventId: createdId || a.calendarEventId,
           };
-          if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+          if (firebaseUser?.uid && firebaseUser.emailVerified) {
             void upsertCreativeActivityRecord(firebaseUser.uid, updated).catch(() => {});
           }
           return updated;
@@ -6759,7 +6922,7 @@ export default function App() {
             );
             if (target) {
               next = next.filter((a) => a.id !== target.id);
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void deleteCreativeActivityRecord(firebaseUser.uid, target.id).catch(() => {});
               }
               results.push({ name: target.name, operation: 'remove', status: 'removed', id: target.id });
@@ -6776,7 +6939,7 @@ export default function App() {
                 : [...target.loggedDates, todayIso].slice(-30);
               const updated: CreativeActivityItem = { ...target, loggedDates: nextDates };
               next = next.map((a) => (a.id === target.id ? updated : a));
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertCreativeActivityRecord(firebaseUser.uid, updated).catch(() => {});
               }
               results.push({ name: target.name, operation: 'log_session', status: 'logged', id: target.id });
@@ -6805,7 +6968,7 @@ export default function App() {
                 expiresOnDate: act.expiresOnDate ?? existing.expiresOnDate,
               });
               next = next.map((a) => (a.id === existing.id ? updated : a));
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertCreativeActivityRecord(firebaseUser.uid, updated).catch(() => {});
               }
               results.push({ name: updated.name, operation: 'update', status: 'updated', id: updated.id });
@@ -6831,7 +6994,7 @@ export default function App() {
                 expiresOnDate: act.expiresOnDate ?? '',
               });
               next = [...next, created];
-              if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+              if (firebaseUser?.uid && firebaseUser.emailVerified) {
                 void upsertCreativeActivityRecord(firebaseUser.uid, created).catch(() => {});
               }
               results.push({ name: created.name, operation: 'add', status: 'added', id: created.id });
@@ -7046,7 +7209,7 @@ export default function App() {
           // ignore storage errors
         }
 
-        if (firebaseUser?.uid && firebaseUser.emailVerified && firestoreSynced) {
+        if (firebaseUser?.uid && firebaseUser.emailVerified) {
           const uid = firebaseUser.uid;
           const todayEntry = nextHydration[nextHydration.length - 1];
           await saveUserRhythmState(uid, {
@@ -7751,7 +7914,11 @@ export default function App() {
 
     const nowMs = Date.now();
     const nowMinInTz = getNowMinutesInTimeZone(activeTimeZone, new Date(nowMs));
-    const msForMinuteToday = (targetMin: number) => nowMs + (targetMin - nowMinInTz) * 60_000;
+    // Anchor on the start of the current minute. `nowMs + (target - nowMin) * 60s` kept the
+    // current seconds: scheduling at 10:04:45 made a 10:10 reminder ring at 10:10:45, so the phone
+    // rang a random 0–59 s after the PC (which fires on the minute).
+    const minuteStartMs = nowMs - (nowMs % 60_000);
+    const msForMinuteToday = (targetMin: number) => minuteStartMs + (targetMin - nowMinInTz) * 60_000;
     const todayW = getWeekdayInTimeZone(activeTimeZone);
 
     const snoozeMinutes =
@@ -7844,11 +8011,12 @@ export default function App() {
       if (triggerAtMs > nowMs + 15_000) {
         const emoji = (block.emojiPair || '📅').trim();
         const titleText = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
+        const desc = cleanCalendarText(block.description || '').slice(0, 220);
         alarms.push({
           id: `event_${todayCairoIso}_${block.id}_${block.startMin}`,
           kind: 'event',
           title: `${emoji} ${titleText}`,
-          body: `تقويم Google · ${formatMinutes12h(block.startMin, 'ar')}`,
+          body: `${desc ? `${desc}\n` : ''}تقويم Google · ${formatMinutes12h(block.startMin, 'ar')}`,
           triggerAtMs,
           snoozeMinutes,
         });
@@ -7863,11 +8031,12 @@ export default function App() {
       const triggerAtMs = msForMinuteToday(info.startMin);
       if (triggerAtMs > nowMs + 15_000) {
         const titleText = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
+        const notes = cleanCalendarText(tk.notes || '').slice(0, 220);
         alarms.push({
           id: `task_${todayCairoIso}_${tk.id}_${info.startMin}`,
           kind: 'task',
           title: `☑️ ${titleText}`,
-          body: `مهام Google · ${formatMinutes12h(info.startMin, 'ar')}`,
+          body: `${notes ? `${notes}\n` : ''}مهام Google · ${formatMinutes12h(info.startMin, 'ar')}`,
           triggerAtMs,
           snoozeMinutes,
         });
@@ -7953,8 +8122,6 @@ ${lifeConstitution}
         language={language}
         onToggleLanguage={() => setLanguage((l) => (l === 'ar' ? 'en' : 'ar'))}
         brandLogoSrc={activeBrandLogo?.src ?? null}
-        onCheckAppUpdates={handleCheckAppUpdates}
-        isCheckingUpdates={isCheckingUpdates}
         sunMode={sunMode}
         onToggleSunMode={() => setSunMode((v) => !v)}
       />

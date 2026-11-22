@@ -570,10 +570,16 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     ? "أخذت الجرعة"
                     : "تم";
 
+        String shownBody = body != null && !body.isEmpty() ? body : "حان وقت مهمتك الآن";
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(smallIconForKind(kind))
                 .setContentTitle(title != null && !title.isEmpty() ? title : "تنبيه إيقاع اليوم")
-                .setContentText(body != null && !body.isEmpty() ? body : "حان وقت مهمتك الآن")
+                .setContentText(shownBody)
+                // The body now carries the event's description on its first line; BigText keeps it
+                // readable in the heads-up banner instead of cutting it to one line.
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(shownBody))
+                // Gone by itself after two minutes, same as the PC alert, instead of staying up.
+                .setTimeoutAfter(120_000L)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)

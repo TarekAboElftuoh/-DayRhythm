@@ -81,18 +81,34 @@ namespace DayRhythm
             s.IsZoomControlEnabled = false;
             _web.CoreWebView2.SetVirtualHostNameToFolderMapping(AlertHost, wwwDir, CoreWebView2HostResourceAccessKind.Allow);
             _web.CoreWebView2.WebMessageReceived += OnWebMessage;
-            _web.CoreWebView2.NavigationCompleted += (_, __) =>
-            {
-                try
-                {
-                    _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "alert-state", alert = _payload }));
-                }
-                catch
-                {
-                    // ignore
-                }
-            };
+            // NavigationCompleted fires before the page's React code has attached its message
+            // listener, so the alert data posted there was usually dropped and the screen showed
+            // the empty default (🔔 with no title). The page now asks for it with "alert-ready";
+            // this post stays only as a backup.
+            _web.CoreWebView2.NavigationCompleted += (_, __) => PostAlertState();
             _web.CoreWebView2.Navigate(AlertUrl + "?v=" + DateTime.UtcNow.Ticks);
+
+            int seconds = _payload.durationSeconds > 0 ? Math.Min(_payload.durationSeconds, 120) : 120;
+            var autoClose = new Timer { Interval = seconds * 1000 };
+            autoClose.Tick += (_, __) =>
+            {
+                autoClose.Stop();
+                autoClose.Dispose();
+                if (!IsDisposed) Close();
+            };
+            autoClose.Start();
+        }
+
+        private void PostAlertState()
+        {
+            try
+            {
+                _web?.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "alert-state", alert = _payload }));
+            }
+            catch
+            {
+                // ignore
+            }
         }
 
         private void OnWebMessage(object sender, CoreWebView2WebMessageReceivedEventArgs args)
@@ -107,6 +123,12 @@ namespace DayRhythm
             }
             catch
             {
+                return;
+            }
+
+            if (type == "alert-ready")
+            {
+                PostAlertState();
                 return;
             }
 

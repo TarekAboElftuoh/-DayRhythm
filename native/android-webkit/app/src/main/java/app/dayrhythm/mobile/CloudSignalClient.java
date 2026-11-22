@@ -149,7 +149,7 @@ public final class CloudSignalClient {
     public static synchronized void watchForRemoteDismiss(Context context, long firedAtMs) {
         final Context app = context.getApplicationContext();
         stopWatching();
-        final long deadline = firedAtMs + 5 * 60_000L;
+        final long deadline = firedAtMs + 2 * 60_000L;
         watchFuture = EXEC.scheduleWithFixedDelay(() -> {
             if (System.currentTimeMillis() > deadline) {
                 stopWatching();
@@ -192,7 +192,7 @@ public final class CloudSignalClient {
                 }
             } catch (Exception ignored) {
             }
-        }, 2, 3, TimeUnit.SECONDS);
+        }, 1, 2, TimeUnit.SECONDS);
     }
 
     public static synchronized void stopWatching() {

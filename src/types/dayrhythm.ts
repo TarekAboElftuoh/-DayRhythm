@@ -116,6 +116,8 @@ export interface CalendarActionProposal {
   title: string;
   dateIso?: string;
   startTime24?: string;
+  /** Relative start ("in 5 minutes"): the app turns it into dateIso/startTime24 from its own clock. */
+  startInMinutes?: number;
   durationMinutes?: number;
   description?: string;
   recurrenceRule?: 'DAILY' | 'WEEKLY';

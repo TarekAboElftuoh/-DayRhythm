@@ -14,6 +14,7 @@ namespace DayRhythm
         public string id { get; set; } = "";
         public string emoji { get; set; } = "🔔";
         public string title { get; set; } = "";
+        public string description { get; set; } = "";
         public string sourceLabel { get; set; } = "تنبيه إيقاع اليوم";
         public string time12h { get; set; } = "";
         public string category { get; set; } = "general";

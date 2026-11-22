@@ -9,6 +9,7 @@ import React, { useEffect, useState } from 'react';
 interface AlertPayload {
   emoji: string;
   title: string;
+  description: string;
   sourceLabel: string;
   time12h: string;
   isHydration: boolean;
@@ -21,6 +22,7 @@ interface AlertPayload {
 const EMPTY: AlertPayload = {
   emoji: '🔔',
   title: '',
+  description: '',
   sourceLabel: 'إيقاع اليوم',
   time12h: '',
   isHydration: false,
@@ -62,6 +64,8 @@ export const SecondaryScreenAlert: React.FC = () => {
       if (d?.type === 'alert-state' && d.alert) setAlert((prev) => ({ ...prev, ...d.alert }));
     };
     b.addEventListener('message', onMsg);
+    // The host's own post can land before this listener exists; ask for the data now that it does.
+    post({ type: 'alert-ready' });
     return () => b.removeEventListener('message', onMsg);
   }, []);
 
@@ -99,6 +103,9 @@ export const SecondaryScreenAlert: React.FC = () => {
           {alert.time12h ? ` · ${alert.time12h}` : ''}
         </div>
         <h1 className="mt-3 text-5xl font-bold leading-tight text-white">{alert.title || 'تنبيه إيقاع اليوم'}</h1>
+        {alert.description && (
+          <p className="mx-auto mt-4 max-w-2xl text-2xl leading-relaxed text-zinc-300">{alert.description}</p>
+        )}
         <div className="mt-4 text-lg text-zinc-400">
           بدأ من <span className="font-digits">{elapsedText}</span>
         </div>

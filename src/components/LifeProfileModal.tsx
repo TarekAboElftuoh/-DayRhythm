@@ -1266,6 +1266,15 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
 
         {/* Footer */}
         <div className="pt-3 border-t border-white/10 flex items-center justify-end gap-2">
+          {onCheckAppUpdates && (
+            <button
+              type="button"
+              onClick={onCheckAppUpdates}
+              className="me-auto px-3 py-2 rounded-xl border border-white/10 text-xs text-zinc-400 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 cursor-pointer"
+            >
+              فحص التحديثات
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}
