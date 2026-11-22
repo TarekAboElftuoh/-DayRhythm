@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
@@ -10,6 +11,26 @@ namespace DayRhythm
         [STAThread]
         private static void Main(string[] args)
         {
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                try
+                {
+                    string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log");
+                    File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] UnhandledException: {e.ExceptionObject}\n");
+                }
+                catch { }
+            };
+            Application.ThreadException += (s, e) =>
+            {
+                try
+                {
+                    string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log");
+                    File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] ThreadException: {e.Exception}\n");
+                }
+                catch { }
+            };
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+
             using (Mutex singleInstance = new Mutex(true, @"Global\DayRhythm_Windows_SingleInstance", out bool createdNew))
             {
                 if (!createdNew)
