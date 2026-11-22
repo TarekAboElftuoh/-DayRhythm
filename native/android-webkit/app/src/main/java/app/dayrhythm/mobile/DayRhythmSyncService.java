@@ -7,7 +7,10 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
+import android.content.BroadcastReceiver;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.BatteryManager;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.net.ConnectivityManager;
@@ -231,6 +234,66 @@ public class DayRhythmSyncService extends Service {
                 .build();
 
         registerNetworkRecoveryCallback();
+        registerChargeLimitWatcher();
+    }
+
+    // ── Charge-limit alert (works with the app closed) ─────────────────────────────
+    // Keeping a Li-ion battery at 100% on the charger shortens its life, so ring once per
+    // charging session when the level reaches the user's limit (default 90%).
+    public static final String PREFS_CHARGE = "dayrhythm_charge_limit_prefs";
+    public static final String KEY_CHARGE_LIMIT = "charge_limit_pct";
+    public static final String KEY_CHARGE_ALERT_ENABLED = "charge_alert_enabled";
+    private BroadcastReceiver chargeLimitReceiver;
+    private boolean chargeAlertFiredThisSession = false;
+
+    /** Called from the web app (JS bridge) whenever the limit or the on/off switch changes. */
+    public static void saveChargeLimitSettings(Context context, int limitPct, boolean enabled) {
+        int safe = Math.max(60, Math.min(100, limitPct));
+        context.getSharedPreferences(PREFS_CHARGE, MODE_PRIVATE).edit()
+                .putInt(KEY_CHARGE_LIMIT, safe)
+                .putBoolean(KEY_CHARGE_ALERT_ENABLED, enabled)
+                .apply();
+    }
+
+    private void registerChargeLimitWatcher() {
+        chargeLimitReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                        || status == BatteryManager.BATTERY_STATUS_FULL;
+                if (level < 0 || scale <= 0) return;
+                int pct = Math.round(level * 100f / scale);
+
+                SharedPreferences sp = getSharedPreferences(PREFS_CHARGE, MODE_PRIVATE);
+                int limit = sp.getInt(KEY_CHARGE_LIMIT, 90);
+                boolean enabled = sp.getBoolean(KEY_CHARGE_ALERT_ENABLED, true);
+
+                if (!charging || pct < limit - 2) {
+                    chargeAlertFiredThisSession = false; // unplugged or dropped: re-arm for next charge
+                    return;
+                }
+                if (enabled && pct >= limit && !chargeAlertFiredThisSession) {
+                    chargeAlertFiredThisSession = true;
+                    ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                            DayRhythmSyncService.this,
+                            "🔋 الشحن وصل " + pct + "%",
+                            "افصل الشاحن دلوقتي علشان تحافظ على عمر البطارية",
+                            "charge",
+                            false,
+                            0
+                    );
+                }
+            }
+        };
+        try {
+            // ACTION_BATTERY_CHANGED is a protected system broadcast: a runtime receiver is required.
+            registerReceiver(chargeLimitReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        } catch (Exception ignored) {
+        }
     }
 
     @Override
@@ -287,6 +350,10 @@ public class DayRhythmSyncService extends Service {
         handler.removeCallbacks(liveCountdownTickRunnable);
         cancelLiveAlertCapsule();
         unregisterNetworkRecoveryCallback();
+        try {
+            if (chargeLimitReceiver != null) unregisterReceiver(chargeLimitReceiver);
+        } catch (Exception ignored) {
+        }
         clearWsTimers();
         teardownActiveWebSocket("service_stopped");
         super.onDestroy();

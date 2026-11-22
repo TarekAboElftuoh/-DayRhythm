@@ -347,59 +347,8 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
             <span className="font-semibold text-zinc-200">{QUIET_MODE_LABELS[quietMode].ar}</span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <button
-              type="button"
-              onClick={onTriggerRing}
-              className="flex-1 min-h-[40px] rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/12 px-3 py-2 text-xs font-bold text-[#7FFFD4] hover:bg-[#7FFFD4]/20 transition-colors cursor-pointer"
-            >
-              اختبار تنبيه متزامن على الجهازين
-            </button>
-
-            {alarmRinging && (
-              <button
-                type="button"
-                onClick={onDismissTwoWay}
-                className="min-h-[40px] rounded-xl bg-[#4ADE80] text-black px-4 py-2 text-xs font-bold hover:bg-emerald-300 transition-colors flex items-center gap-1.5 cursor-pointer"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>إيقاف على الجهازين</span>
-              </button>
-            )}
-          </div>
         </section>
 
-        {/* Card 4: Unified Location Synced from Phone GPS */}
-        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-3">
-          <div>
-            <h2 className="text-sm font-bold text-white flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-[#7FFFD4]" />
-              <span>الموقع الموحّد من GPS الهاتف</span>
-            </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              يعتمد الكمبيوتر تلقائياً على موقع هاتفك لحساب مواقيت الصلاة والطقس بدقة بدون الحاجة لـ GPS في الكمبيوتر
-            </p>
-          </div>
-
-          <div className="rounded-xl border border-white/[0.07] bg-black/40 px-4 py-3.5 space-y-1.5">
-            <div className="text-sm font-bold text-white">
-              {activeLocation?.nameAr || 'جاري المزامنة من الهاتف...'}
-            </div>
-            {activeLocation && (
-              <div className="font-digits text-xs text-zinc-400 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                <span>
-                  {activeLocation.lat.toFixed(4)}, {activeLocation.lng.toFixed(4)}
-                </span>
-                <span aria-hidden="true">·</span>
-                <span>{activeLocation.timeZone || 'Africa/Cairo'}</span>
-              </div>
-            )}
-          </div>
-
-          <p className="text-[11px] text-zinc-500 leading-relaxed">
-            عندما تنتقل لأي مدينة بهاتفك، يتحدّث موقع الكمبيوتر ومواقيت الصلاة والطقس تلقائياً خلال ثوانٍ.
-          </p>
-        </section>
       </div>
     </div>
   );

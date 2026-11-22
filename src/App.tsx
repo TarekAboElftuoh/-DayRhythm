@@ -11,6 +11,7 @@ import {
   ActiveTab,
   AppLanguage,
   BatteryGuardState,
+  AppSettingsPatch,
   CalendarActionProposal,
   CalendarExecutionResult,
   CalendarTombstone,
@@ -2295,6 +2296,20 @@ export default function App() {
     }
   }, [refreshWorkspace, showToast]);
 
+  // Keep the Android service's charge-limit alert in sync with the app setting.
+  useEffect(() => {
+    try {
+      (window as Window & { DayRhythmNative?: { setChargeLimit?: (l: number, e: boolean) => void } })
+        .DayRhythmNative?.setChargeLimit?.(phoneChargeLimitPct, smartChargeAlertEnabled);
+    } catch {
+      // older APK without this bridge method
+    }
+  }, [phoneChargeLimitPct, smartChargeAlertEnabled]);
+
+  // The phone itself doesn't show its charge % (that's for following it from the PC);
+  // it still gets the charge-limit alert.
+  const isPhoneClient = useMemo(() => detectIsMobileDeviceClient(), []);
+
   // ── ☀️ Sunlight mode (per device; the night theme stays the default) ───────────────
   const [sunMode, setSunMode] = useState<boolean>(() => {
     try {
@@ -2942,7 +2957,7 @@ export default function App() {
         skipNextRemotePushRef.current = true;
         setQuietMode(remote.quietMode);
         setAdhanOverrideSilent(remote.adhanOverrideSilent);
-        setSurfaceTheme(remote.surfaceTheme);
+        setSurfaceTheme('amoled'); // Obsidian removed: night = AMOLED, day = sunlight mode (top-bar button)
         setDeviceSettings(remote.deviceSettings);
         setLifeProfile(remote.lifeProfile);
         if (remote.uiPrefs) {
@@ -5433,8 +5448,21 @@ export default function App() {
       setActiveTab('assistant');
       setAutoStartVoice(true);
       showToast('🎙️ اختصار سريع: فتح شات Gemini بالصوت');
+    } else if (action === 'chat') {
+      setActiveTab('assistant');
     }
   }, [showToast]);
+
+  // Home-screen widget / native shortcuts while the app is already open.
+  useEffect(() => {
+    const onOpenAssistant = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ voice?: boolean }>).detail || {};
+      setActiveTab('assistant');
+      if (detail.voice) setAutoStartVoice(true);
+    };
+    window.addEventListener('dayrhythm:open-assistant', onOpenAssistant);
+    return () => window.removeEventListener('dayrhythm:open-assistant', onOpenAssistant);
+  }, []);
 
   // Active Water Cup & Multi-Dose Medication Reminder Engine (fires every 5s/30s tick, respects Fasting & Silence Sanctuaries)
   useEffect(() => {
@@ -5816,7 +5844,7 @@ export default function App() {
     setPhoneChargeAlertDismissed(true);
     setPersistentAlert((prev) => (prev?.id.startsWith('charge_') ? null : prev));
     emitCrossDeviceSync('alarm_dismiss', 'charge_dismiss');
-    showToast('🔕 تم إيقاف التنبيه الذكي لاكتمال الشحن على أجهزتك ✓');
+    showToast('🔕 تم إسكات تنبيه الشحن على كل أجهزتك ✓ (هينبّه تاني في الشحنة الجاية)');
   }, [emitCrossDeviceSync, showToast, stopNativeAlerts]);
 
   const handleToggleSmartChargeKeepUntilUnplugged = useCallback(() => {
@@ -5857,6 +5885,71 @@ export default function App() {
     });
   }, [showToast]);
 
+  // Settings changed from the Gemini chat (propose_app_settings). Each field is optional.
+  const handleApplyAppSettings = useCallback(
+    (patch: AppSettingsPatch) => {
+      const persist = (key: string, value: string) => {
+        try {
+          localStorage.setItem(key, value);
+        } catch {
+          // ignore storage errors
+        }
+      };
+      if (typeof patch.phoneChargeLimitPct === 'number') handleUpdatePhoneChargeLimit(patch.phoneChargeLimitPct);
+      if (typeof patch.chargeAlertEnabled === 'boolean') {
+        setSmartChargeAlertEnabled(patch.chargeAlertEnabled);
+        persist('dayrhythm_smart_charge_alert_enabled', String(patch.chargeAlertEnabled));
+        if (!patch.chargeAlertEnabled) {
+          stopSmartChargeCompleteAlert();
+          setSmartChargeAudioActive(false);
+        }
+      }
+      if (typeof patch.chargeAlertKeepUntilUnplugged === 'boolean') {
+        setSmartChargeKeepUntilUnplugged(patch.chargeAlertKeepUntilUnplugged);
+        persist(SMART_CHARGE_KEEP_KEY, String(patch.chargeAlertKeepUntilUnplugged));
+      }
+      if (typeof patch.waterRemindersEnabled === 'boolean') setWaterRemindersEnabled(patch.waterRemindersEnabled);
+      if (patch.quietMode) {
+        handleSetQuietMode(patch.quietMode, patch.quietMode === 'normal' ? 0 : Math.max(0, patch.quietModeMinutes ?? 0));
+      }
+      if (typeof patch.adhanSoundInSilent === 'boolean') setAdhanOverrideSilent(patch.adhanSoundInSilent);
+      if (typeof patch.sunMode === 'boolean') setSunMode(patch.sunMode);
+      if (patch.language === 'ar' || patch.language === 'en') setLanguage(patch.language);
+      if (patch.capsuleOrientation || patch.capsuleSize) {
+        handleUpdateCapsulePrefs({
+          orientation: patch.capsuleOrientation ?? capsulePrefs.orientation,
+          size: patch.capsuleSize ?? capsulePrefs.size,
+        });
+      }
+      const devicePatch: Partial<OnePlusDeviceSettings> = {};
+      if (typeof patch.liveAlertsEnabled === 'boolean') devicePatch.liveAlertsEnabled = patch.liveAlertsEnabled;
+      if (patch.liveAlertsLeadMinutes) devicePatch.liveAlertsLeadMinutes = patch.liveAlertsLeadMinutes;
+      if (typeof patch.persistentCountdownNotif === 'boolean') {
+        devicePatch.persistentCountdownNotif = patch.persistentCountdownNotif;
+      }
+      if (Object.keys(devicePatch).length > 0) handleUpdateDeviceSettings(devicePatch);
+      if (patch.soundRepeats) {
+        for (const [category, value] of Object.entries(patch.soundRepeats)) {
+          if (value === undefined) continue;
+          const setting: SoundRepeatSetting =
+            value === 'continuous' ? 'continuous' : (Math.max(1, Math.min(10, Math.round(Number(value)))) as SoundRepeatSetting);
+          handleUpdateSoundRepeat(category as TaskSoundCategory, setting);
+        }
+      }
+      showToast('⚙️ تم تطبيق الإعدادات من Gemini ✓');
+    },
+    [
+      capsulePrefs.orientation,
+      capsulePrefs.size,
+      handleSetQuietMode,
+      handleUpdateCapsulePrefs,
+      handleUpdateDeviceSettings,
+      handleUpdatePhoneChargeLimit,
+      handleUpdateSoundRepeat,
+      showToast,
+    ]
+  );
+
   const handleTestSmartChargeAlert = useCallback(() => {
     if (smartChargeAudioActive) {
       handleStopSmartChargeAlert();
@@ -5873,10 +5966,11 @@ export default function App() {
     };
   }, []);
 
-  // Desktop Real-time Smart Charge Complete Alert when Phone reaches configured charge limit (default 90%)
+  // Charge-limit alert (default 90%) on BOTH the PC and the phone, so the phone gets unplugged
+  // before 100% (keeping a Li-ion battery at 100% on the charger shortens its life).
   useEffect(() => {
     if (!phoneBattery) return;
-    const isDesktopClient = !detectIsMobileDeviceClient();
+    const isPhoneClient = detectIsMobileDeviceClient();
 
     if (!phoneBattery.charging || phoneBattery.levelPct < phoneBattery.chargeLimitPct - 2) {
       if (phoneChargeNotifiedCycleRef.current || smartChargeAudioActive) {
@@ -5890,7 +5984,6 @@ export default function App() {
     }
 
     if (
-      isDesktopClient &&
       smartChargeAlertEnabled &&
       phoneBattery.charging &&
       phoneBattery.levelPct >= phoneBattery.chargeLimitPct &&
@@ -5943,6 +6036,9 @@ export default function App() {
           // ignore notification errors
         }
       }
+
+      // Phone (APK): the Android background service rings its own notification at the limit
+      // (also when the app is closed), so nothing extra is triggered from here.
 
       // Windows Secondary Monitor Toast (zero focus-steal on Screen 1!)
       try {
@@ -7764,7 +7860,7 @@ ${lifeConstitution}
         </div>
       )}
 
-      <main className="pb-24 md:pb-8">
+      <main className={activeTab === 'assistant' ? 'md:pb-8' : 'pb-24 md:pb-8'}>
         {authUser && !needsAuth && (workspaceTokenExpired || (!permanentLinkActive && isPermanentLinkAvailable() && !permanentLinkHintDismissed)) && (
           <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-3">
             <div
@@ -7906,7 +8002,7 @@ ${lifeConstitution}
             periodicRituals={periodicRituals}
             onCompletePeriodicRitual={handleCompletePeriodicRitual}
             batteryGuard={batteryGuard}
-            phoneBattery={phoneBattery}
+            phoneBattery={isPhoneClient ? null : phoneBattery}
             phoneChargeLimitPct={phoneChargeLimitPct}
             onUpdatePhoneChargeLimit={handleUpdatePhoneChargeLimit}
             phoneChargeAlertDismissed={phoneChargeAlertDismissed}
@@ -7979,7 +8075,7 @@ ${lifeConstitution}
             activeLocation={activeLocation}
             onRefreshGps={handleDetectGpsLocation}
             gpsSyncing={isDetectingGps}
-            phoneBattery={phoneBattery}
+            phoneBattery={isPhoneClient ? null : phoneBattery}
             upcomingPreview={{
               emoji: capsuleTimerState.emoji,
               title: capsuleTimerState.title,
@@ -8064,6 +8160,7 @@ ${lifeConstitution}
             onExecuteMedicationActions={handleExecuteMedicationActions}
             onExecuteCreativeActions={handleExecuteCreativeActions}
             onApplyProfileUpdates={handleUpdateLifeProfile}
+            onApplyAppSettings={handleApplyAppSettings}
             onExecuteMemoryActions={handleExecuteMemoryActions}
             onOpenLifeProfile={() => setIsLifeProfileModalOpen(true)}
             initialPrompt={pendingAssistantPrompt}
@@ -8096,7 +8193,7 @@ ${lifeConstitution}
         calendarTrack={capsuleTimerState.calendarTrack}
         taskTrack={capsuleTimerState.taskTrack}
         upcomingQueue={capsuleTimerState.upcomingQueue}
-        phoneBattery={phoneBattery}
+        phoneBattery={isPhoneClient ? null : phoneBattery}
         capsulePrefs={capsulePrefs}
         onChangeCapsulePrefs={handleUpdateCapsulePrefs}
         onQuickLogWater={handleLogWaterCup}

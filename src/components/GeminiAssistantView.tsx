@@ -38,6 +38,7 @@ import {
   GeoLocation,
   GoogleCalendarEventItem,
   GoogleTaskItem,
+  AppSettingsPatch,
   LifeProfile,
   MedicationActionProposal,
   MedicationExecutionResult,
@@ -114,6 +115,8 @@ interface GeminiAssistantViewProps {
     linkedCalendarIds?: Record<string, string>
   ) => Promise<CreativeExecutionResult[]>;
   onApplyProfileUpdates: (patch: Partial<LifeProfile>) => void;
+  /** Applies app settings Gemini proposed (charge limit, silent mode, theme, language, …). */
+  onApplyAppSettings?: (patch: AppSettingsPatch) => void;
   onExecuteMemoryActions: (memoryActions: MemoryActionProposal[]) => void;
   onOpenLifeProfile: () => void;
   initialPrompt?: string | null;
@@ -321,6 +324,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   onExecuteMedicationActions,
   onExecuteCreativeActions,
   onApplyProfileUpdates,
+  onApplyAppSettings,
   onExecuteMemoryActions,
   onOpenLifeProfile,
   initialPrompt,
@@ -658,6 +662,18 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       return;
     }
 
+    // Android APK: the WebView has no working Web Speech API, so use the phone's own
+    // speech recognizer; the text comes back through the 'dayrhythm:voice-result' event.
+    const nativeVoice = (window as Window & {
+      DayRhythmNative?: { startVoiceInput?: (lang: string) => void };
+    }).DayRhythmNative;
+    if (nativeVoice?.startVoiceInput) {
+      voiceBaseInputRef.current = input.trim();
+      setVoiceNote(language === 'ar' ? 'تكلّم دلوقتي…' : 'Listening…');
+      nativeVoice.startVoiceInput(language === 'ar' ? 'ar-EG' : 'en-US');
+      return;
+    }
+
     type SpeechRecognitionCtor = new () => {
       lang: string;
       interimResults: boolean;
@@ -805,7 +821,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     medicationActions: MedicationActionProposal[] = [],
     creativeActions: CreativeActivityActionProposal[] = [],
     profileUpdates?: Partial<LifeProfile>,
-    memoryActions: MemoryActionProposal[] = []
+    memoryActions: MemoryActionProposal[] = [],
+    appSettings?: AppSettingsPatch
   ) => {
     setExecutingProposalId(msgId);
     try {
@@ -813,6 +830,12 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       const summaryParts: string[] = [];
       const linkedCalendarIds: Record<string, string> = {};
       let queuedOffline = false;
+
+      if (appSettings && Object.keys(appSettings).length > 0) {
+        const { autoExecuteChat, ...rest } = appSettings;
+        if (typeof autoExecuteChat === 'boolean') setAutoExecute(autoExecuteChat);
+        if (Object.keys(rest).length > 0) onApplyAppSettings?.(rest);
+      }
 
       if (profileUpdates && Object.keys(profileUpdates).length > 0) {
         onApplyProfileUpdates(profileUpdates);
@@ -985,6 +1008,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         (proposal.medicationActions?.length ?? 0) +
         (proposal.creativeActions?.length ?? 0) +
         (proposal.profileUpdates ? 1 : 0) +
+        (proposal.appSettings ? 1 : 0) +
         (proposal.memoryActions?.length ?? 0);
       if (totalItems === 0) return;
       // Never auto-execute destructive medication removal silently — always require explicit user confirmation
@@ -1001,7 +1025,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           proposal.medicationActions ?? [],
           proposal.creativeActions ?? [],
           proposal.profileUpdates,
-          proposal.memoryActions ?? []
+          proposal.memoryActions ?? [],
+          proposal.appSettings
         );
       }, 0);
     };
@@ -1694,6 +1719,25 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     }
   };
 
+  // Native (Android) voice result: send it right away, hands-free.
+  useEffect(() => {
+    const onVoice = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ text?: string; error?: string }>).detail || {};
+      setVoiceNote('');
+      if (detail.text && detail.text.trim()) {
+        const combined = [voiceBaseInputRef.current, detail.text.trim()].filter(Boolean).join(' ');
+        voiceBaseInputRef.current = '';
+        setMode('chat');
+        void sendMessageRef.current(combined, 'chat');
+      } else if (detail.error) {
+        setVoiceNote(detail.error);
+        window.setTimeout(() => setVoiceNote(''), 3500);
+      }
+    };
+    window.addEventListener('dayrhythm:voice-result', onVoice);
+    return () => window.removeEventListener('dayrhythm:voice-result', onVoice);
+  }, []);
+
   // Send messages that were written while offline, once the connection is back (or on next launch).
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
@@ -2059,9 +2103,9 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   );
 
   return (
-    <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-3 sm:py-5 space-y-4">
+    <div className="mx-auto max-w-[1380px] px-3 sm:px-6 py-3 sm:py-5 space-y-4 max-lg:flex max-lg:flex-col max-lg:h-[calc(100dvh-57px-63px-env(safe-area-inset-bottom))] max-lg:space-y-0 max-lg:gap-2 max-lg:py-2 max-lg:px-2">
       {/* Compact Header: Title + Real Live Gemini Status + Memories Link + Mode Switch */}
-      <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-3.5 border-b border-white/10">
+      <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-3.5 border-b border-white/10 max-lg:gap-2 max-lg:pb-2 max-lg:shrink-0">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h1 className="text-base sm:text-lg font-bold text-white whitespace-nowrap">
@@ -2092,7 +2136,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           </div>
 
           {/* Unboxed Quiet Metadata: Direct Memories + Constitution Binding */}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-400">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-400 max-lg:hidden">
             <span>مرتبط مباشرة بالدستور الشخصي</span>
             <span aria-hidden="true">·</span>
             <span className="text-zinc-200 font-medium font-mono-tabular">
@@ -2104,8 +2148,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         </div>
 
         {/* Controls: Segmented Mode Switch + Quick Actions */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex-1 sm:flex-none grid grid-cols-3 sm:flex items-center p-1 rounded-xl bg-white/[0.04] border border-white/10">
+        <div className="flex flex-wrap items-center gap-2 max-sm:flex-nowrap max-sm:gap-1.5">
+          <div className="flex-1 sm:flex-none grid grid-cols-3 sm:flex items-center p-1 rounded-xl bg-white/[0.04] border border-white/10 min-w-0">
             {(
               [
                 { id: 'chat', label: 'شات', Icon: MessageSquare },
@@ -2117,13 +2161,13 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                 key={id}
                 type="button"
                 onClick={() => setMode(id)}
-                className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
+                className={`min-h-[36px] px-3 max-sm:px-1 py-1.5 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap min-w-0 ${
                   mode === id
                     ? 'bg-[#7FFFD4] text-black font-bold'
                     : 'text-zinc-400 hover:text-white'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <Icon className="w-3.5 h-3.5 shrink-0 max-sm:hidden" />
                 <span>{label}</span>
               </button>
             ))}
@@ -2138,24 +2182,26 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                   ? 'التنفيذ الفوري مفعّل: أوامر التقويم والمهام والعلاجات والوزن تُنفَّذ فوراً بدون خطوة تأكيد إضافية'
                   : 'التأكيد اليدوي مفعّل: يعرض زر تأكيد قبل كل تعديل'
               }
-              className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
+              aria-label={autoExecute ? 'التنفيذ الفوري مفعّل' : 'التأكيد اليدوي مفعّل'}
+              className={`min-h-[40px] px-3 max-sm:px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
                 autoExecute
                   ? 'border-[#7FFFD4]/60 bg-[#7FFFD4]/15 text-[#7FFFD4]'
                   : 'border-white/10 text-zinc-400 hover:text-white'
               }`}
             >
               <Zap className="w-3.5 h-3.5" />
-              <span>{autoExecute ? 'تنفيذ فوري' : 'تأكيد يدوي'}</span>
+              <span className="max-sm:hidden">{autoExecute ? 'تنفيذ فوري' : 'تأكيد يدوي'}</span>
             </button>
           )}
 
           <button
             type="button"
             onClick={() => setMobilePanelOpen((v) => !v)}
-            className="lg:hidden min-h-[40px] px-3 py-1.5 rounded-xl border border-white/10 text-xs text-zinc-200 hover:border-[#7FFFD4]/50 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+            aria-label="الذاكرة والتقويم"
+            className="lg:hidden min-h-[40px] px-3 max-sm:px-2.5 py-1.5 rounded-xl border border-white/10 text-xs text-zinc-200 hover:border-[#7FFFD4]/50 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
           >
             <PanelLeftOpen className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            <span>الذاكرة والتقويم</span>
+            <span className="max-sm:hidden">الذاكرة والتقويم</span>
           </button>
 
           <button
@@ -2165,7 +2211,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               setKeySaveMessage(null);
               setShowApiKeyModal(true);
             }}
-            className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
+            aria-label="مفتاح Gemini"
+            className={`min-h-[40px] px-3 max-sm:px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors ${
               isCustomGeminiApiKeySet()
                 ? 'border-[#7FFFD4]/60 bg-[#7FFFD4]/15 text-[#7FFFD4]'
                 : 'border-white/10 text-zinc-300 hover:border-white/25 hover:text-white'
@@ -2173,13 +2220,14 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             title="إعدادات مفتاح Google Gemini API وحفظه في localStorage"
           >
             <Key className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            <span>مفتاح Gemini</span>
+            <span className="max-sm:hidden">مفتاح Gemini</span>
           </button>
 
           <button
             type="button"
             onClick={() => onResetChat(mode)}
-            className="min-h-[40px] px-3 py-1.5 rounded-xl border border-white/10 text-xs text-zinc-300 hover:border-white/25 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+            aria-label="محادثة جديدة"
+            className="min-h-[40px] px-3 max-sm:px-2.5 py-1.5 rounded-xl border border-white/10 text-xs text-zinc-300 hover:border-white/25 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
             title={
               mode === 'chat'
                 ? 'بدء محادثة شات جديدة (دون مسح نتائج الخرائط أو البحث)'
@@ -2189,7 +2237,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             }
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>
+            <span className="max-sm:hidden">
               {mode === 'chat'
                 ? 'محادثة جديدة'
                 : mode === 'maps'
@@ -2331,15 +2379,15 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
       {/* Mobile Collapsible Memories / Calendar / Tasks Drawer */}
       {mobilePanelOpen && (
-        <section className="lg:hidden rounded-2xl border border-white/10 bg-[#0B0E14] p-4">
+        <section className="lg:hidden rounded-2xl border border-white/10 bg-[#0B0E14] p-4 max-lg:max-h-[45%] max-lg:overflow-y-auto max-lg:shrink-0">
           {renderSidebarContent()}
         </section>
       )}
 
       {/* Main Split Layout: Fast Streaming Chat (8 cols) + Live Memories & Google Data Sidebar (4 cols) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch max-lg:flex max-lg:flex-col max-lg:flex-1 max-lg:min-h-0">
         {/* Chat Column */}
-        <section className="lg:col-span-8 flex flex-col rounded-2xl border border-white/10 bg-[#07090D] h-[calc(100dvh-235px)] min-h-[430px] lg:h-[calc(100dvh-185px)] max-h-[780px] overflow-hidden min-w-0">
+        <section className="lg:col-span-8 flex flex-col rounded-2xl border border-white/10 bg-[#07090D] h-[calc(100dvh-235px)] min-h-[430px] lg:h-[calc(100dvh-185px)] max-h-[780px] overflow-hidden min-w-0 max-lg:h-auto max-lg:max-h-none max-lg:min-h-0 max-lg:flex-1 max-lg:rounded-xl">
           {mode === 'maps' && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-[#0B0E14] px-4 py-2 text-xs">
               <div className="flex items-center gap-2 text-zinc-300 min-w-0">
@@ -2360,7 +2408,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           <div
             ref={scrollContainerRef}
             onScroll={handleThreadScroll}
-            className="flex-1 overflow-y-auto px-3.5 sm:px-5 py-4 space-y-4"
+            className="flex-1 overflow-y-auto px-3.5 sm:px-5 py-4 space-y-4 max-sm:px-2.5 max-sm:py-3 max-sm:space-y-3"
           >
             {visibleMessages.length === 0 && (
               <div className="rounded-2xl border border-white/10 bg-[#0D1118] px-4 py-4 text-xs text-zinc-300 space-y-1.5 leading-relaxed">
@@ -2720,7 +2768,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                                   m.pendingProposal!.medicationActions ?? [],
                                   m.pendingProposal!.creativeActions ?? [],
                                   m.pendingProposal!.profileUpdates,
-                                  m.pendingProposal!.memoryActions ?? []
+                                  m.pendingProposal!.memoryActions ?? [],
+                                  m.pendingProposal!.appSettings
                                 )
                               }
                               className="flex-1 min-h-[40px] py-2 px-4 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-[#66eec2] cursor-pointer disabled:opacity-50"
@@ -2817,7 +2866,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
           {/* Quick Prompt Suggestions (only when thread is fresh or idle) */}
           {!loading && (
-            <div className="px-3.5 sm:px-4 py-2 border-t border-white/10 flex items-center gap-2 overflow-x-auto bg-[#090C12]">
+            <div className={`px-3.5 sm:px-4 py-2 border-t border-white/10 flex items-center gap-2 overflow-x-auto bg-[#090C12] ${visibleMessages.length > 2 ? 'max-sm:hidden' : ''}`}>
               {SUGGESTED_PROMPTS[mode].map((prompt, idx) => (
                 <button
                   key={idx}
@@ -2898,7 +2947,9 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                     ? 'ابحث عن أقرب مسجد أو مكان...'
                     : mode === 'search'
                       ? 'ابحث مباشرة على الويب...'
-                      : 'اكتب أمرك لـ Gemini (Enter للإرسال، Shift+Enter لسطر جديد)...'
+                      : typeof window !== 'undefined' && window.innerWidth < 640
+                        ? 'اكتب لـ Gemini…'
+                        : 'اكتب أمرك لـ Gemini (Enter للإرسال، Shift+Enter لسطر جديد)...'
               }
               className="flex-1 min-h-[44px] max-h-[140px] resize-none rounded-xl border border-white/10 bg-black px-3.5 py-2.5 text-sm sm:text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4] leading-relaxed"
             />
@@ -2911,16 +2962,17 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                 className="min-h-[44px] px-4 rounded-xl border border-rose-400/50 bg-rose-500/15 text-rose-200 text-xs font-bold hover:bg-rose-500/25 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
-                <span>إيقاف</span>
+                <span className="max-sm:hidden">إيقاف</span>
               </button>
             ) : (
               <button
                 type="submit"
                 disabled={!input.trim()}
-                className="min-h-[44px] px-4 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                aria-label="إرسال"
+                className="min-h-[44px] px-4 max-sm:px-3.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
               >
-                <Send className="w-3.5 h-3.5" />
-                <span>إرسال</span>
+                <Send className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                <span className="max-sm:hidden">إرسال</span>
               </button>
             )}
           </form>

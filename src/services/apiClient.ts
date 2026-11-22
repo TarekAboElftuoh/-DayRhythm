@@ -401,6 +401,10 @@ export function sanitizePersistedChats(
             memoryActions: Array.isArray(obj.pendingProposal.memoryActions)
               ? obj.pendingProposal.memoryActions
               : undefined,
+            appSettings:
+              obj.pendingProposal.appSettings && typeof obj.pendingProposal.appSettings === 'object'
+                ? obj.pendingProposal.appSettings
+                : undefined,
             status:
               obj.pendingProposal.status === 'confirmed' ||
               obj.pendingProposal.status === 'cancelled'

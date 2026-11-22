@@ -23,6 +23,7 @@ android {
 
         resValue 'string', 'app_name', 'إيقاع اليوم'
         resValue 'string', 'file_provider_authority', 'app.dayrhythm.mobile.fileprovider'
+        resValue 'string', 'widget_gemini_description', 'اكتب أو كلّم Gemini من الشاشة الرئيسية'
     }
 
     buildFeatures {

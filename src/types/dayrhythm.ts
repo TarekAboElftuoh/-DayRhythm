@@ -492,6 +492,7 @@ export interface PersistedChatMessage {
     creativeActions?: CreativeActivityActionProposal[];
     profileUpdates?: Partial<LifeProfile>;
     memoryActions?: MemoryActionProposal[];
+    appSettings?: AppSettingsPatch;
     status: 'pending' | 'confirmed' | 'cancelled';
   };
   error?: boolean;
@@ -591,4 +592,30 @@ export interface PeriodicRitualStatus {
   timeLabelAr: string;
   daysSinceLast: number;
   lastCompletedIso: string;
+}
+
+/**
+ * App settings Gemini can change from the chat (everything outside the life profile).
+ * Every field is optional; only the ones present are applied.
+ */
+export interface AppSettingsPatch {
+  phoneChargeLimitPct?: number; // 60..100
+  chargeAlertEnabled?: boolean;
+  chargeAlertKeepUntilUnplugged?: boolean;
+  waterRemindersEnabled?: boolean;
+  quietMode?: 'normal' | 'mute_audio' | 'vibrate_only' | 'silent_all';
+  quietModeMinutes?: number; // 0 = until turned off
+  adhanSoundInSilent?: boolean;
+  sunMode?: boolean;
+  language?: 'ar' | 'en';
+  capsuleOrientation?: 'horizontal' | 'vertical';
+  capsuleSize?: 'sm' | 'md' | 'lg';
+  liveAlertsEnabled?: boolean;
+  liveAlertsLeadMinutes?: 5 | 10 | 15 | 20 | 30;
+  persistentCountdownNotif?: boolean;
+  autoExecuteChat?: boolean;
+  soundRepeats?: Partial<Record<
+    'prayer' | 'water' | 'medication' | 'focus_work' | 'walk_health' | 'sleep_suhoor' | 'meeting_event' | 'general',
+    number | 'continuous'
+  >>;
 }

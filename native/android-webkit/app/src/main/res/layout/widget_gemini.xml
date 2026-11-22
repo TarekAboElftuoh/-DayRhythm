@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gemini quick widget: same look as the app (AMOLED card, aqua accent). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_gemini_bg"
+    android:gravity="center_vertical"
+    android:layoutDirection="rtl"
+    android:orientation="horizontal"
+    android:padding="8dp">
+
+    <TextView
+        android:id="@+id/widget_gemini_input"
+        android:layout_width="0dp"
+        android:layout_height="44dp"
+        android:layout_weight="1"
+        android:background="@drawable/widget_gemini_input_bg"
+        android:ellipsize="end"
+        android:gravity="center_vertical|start"
+        android:maxLines="1"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:text="✨  اكتب لـ Gemini…"
+        android:textColor="#A1A1AA"
+        android:textSize="14sp" />
+
+    <ImageView
+        android:id="@+id/widget_gemini_mic"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/widget_gemini_mic_bg"
+        android:contentDescription="تكلّم مع Gemini"
+        android:padding="11dp"
+        android:src="@drawable/ic_widget_mic" />
+</LinearLayout>
