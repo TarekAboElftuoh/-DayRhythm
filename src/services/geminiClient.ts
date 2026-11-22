@@ -387,6 +387,10 @@ export const DAYRHYTHM_SYSTEM_INSTRUCTION = `
    - لو الطلب بعد مدة نسبية («بعد 5 دقايق») حط startInMinutes = عدد الدقايق بالظبط ومتحسبش الوقت بنفسك ومتكتبش dateIso ولا startTime24 — التطبيق بيحسبهم من ساعته.
    - العنوان = الحاجة المطلوبة نفسها بصيغة تنبيه مختصرة، مش جملة الطلب ولا الوقت: «فكرني أتصل بمحمد بعد 5 دقايق» ← title: "⏰ اتصل بمحمد". ولو مفيش حاجة محددة («نبهني بعد 5 دقايق») ← title: "⏰ تنبيه". متكتبش المدة أو الوقت جوه العنوان.
    - المدة الافتراضية للتنبيه 15 دقيقة.
+12. منع كتابة الكود أو JSON نهائياً في نص الرسالة (إلزامي وقاطع):
+    - ممنوع منعاً باتاً كتابة أي كود برمجي أو كتل JSON أو علامات كود JSON أو أقواس مجعدة {} أو استدعاء الدوال كنص في ردك الموجه للمستخدم (مثل propose_calendar_actions أو propose_medication_actions أو أي بنية كود).
+    - استدعاء الأدوات يتم حصرياً وبشكل غير مرئي عبر خاصية Function Calling البرمجية في واجهة Gemini API.
+    - رسالتك الموجهة للمستخدم يجب أن تكون نصاً عربياً بشرياً بسيطاً وودوداً ومختصراً يوضح ما تم إعداده فقط دون أي أكواد برمجية، فالتطبيق سيعرض كروت الإجراءات التفاعلية وأزرار الموافقة تلقائياً للمستخدم بشكل مرئي أنيق.
 أجب بلغة عربية واضحة، عملية، ودودة، ومختصرة.
 `.trim();
 
@@ -845,6 +849,133 @@ export function extractPendingProposalFromFunctionCalls(fnCalls?: GeminiFunction
   };
 }
 
+/**
+ * Strips raw internal function-call JSON code blocks (e.g. كود JSON { "propose_...": ... } ```)
+ * from user-facing text, and recovers any function calls if Gemini outputted tool-calls as text
+ * instead of invoking native Function Calling.
+ */
+export function sanitizeGeminiOutputText(
+  rawText: string,
+  existingFnCalls: GeminiFunctionCall[] = []
+): { cleanText: string; recoveredFnCalls: GeminiFunctionCall[] } {
+  if (!rawText) return { cleanText: '', recoveredFnCalls: existingFnCalls };
+
+  const recoveredFnCalls = [...existingFnCalls];
+  const toolKeys = [
+    'propose_calendar_actions',
+    'propose_task_actions',
+    'propose_medication_actions',
+    'propose_creative_actions',
+    'propose_profile_updates',
+    'propose_memory_actions',
+    'propose_app_settings',
+  ];
+
+  // Match code blocks كود JSON ... ``` or ``` ... ```
+  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+
+  const cleaned = rawText.replace(codeBlockRegex, (match, inner: string) => {
+    const trimmed = (inner || '').trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+      return match;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      let isToolJson = false;
+
+      for (const key of toolKeys) {
+        if (key in parsed) {
+          isToolJson = true;
+          if (!recoveredFnCalls.some((f) => f.name === key)) {
+            const val = parsed[key];
+            if (key === 'propose_calendar_actions') {
+              const actions = Array.isArray(val)
+                ? val
+                : Array.isArray((val as Record<string, unknown>)?.actions)
+                  ? (val as Record<string, unknown>).actions
+                  : [];
+              recoveredFnCalls.push({
+                name: key,
+                args: { actions, summaryAr: (parsed.summaryAr as string) || undefined },
+              });
+            } else if (key === 'propose_medication_actions') {
+              const medicationActions = Array.isArray(val)
+                ? val
+                : Array.isArray((val as Record<string, unknown>)?.medicationActions)
+                  ? (val as Record<string, unknown>).medicationActions
+                  : [];
+              recoveredFnCalls.push({
+                name: key,
+                args: { medicationActions, summaryAr: (parsed.summaryAr as string) || undefined },
+              });
+            } else if (key === 'propose_task_actions') {
+              const taskActions = Array.isArray(val)
+                ? val
+                : Array.isArray((val as Record<string, unknown>)?.taskActions)
+                  ? (val as Record<string, unknown>).taskActions
+                  : [];
+              recoveredFnCalls.push({
+                name: key,
+                args: { taskActions, summaryAr: (parsed.summaryAr as string) || undefined },
+              });
+            } else if (key === 'propose_creative_actions') {
+              const creativeActions = Array.isArray(val)
+                ? val
+                : Array.isArray((val as Record<string, unknown>)?.creativeActions)
+                  ? (val as Record<string, unknown>).creativeActions
+                  : [];
+              recoveredFnCalls.push({
+                name: key,
+                args: { creativeActions, summaryAr: (parsed.summaryAr as string) || undefined },
+              });
+            } else if (key === 'propose_memory_actions') {
+              const memoryActions = Array.isArray(val)
+                ? val
+                : Array.isArray((val as Record<string, unknown>)?.memoryActions)
+                  ? (val as Record<string, unknown>).memoryActions
+                  : [];
+              recoveredFnCalls.push({
+                name: key,
+                args: { memoryActions, summaryAr: (parsed.summaryAr as string) || undefined },
+              });
+            } else if (typeof val === 'object' && val !== null) {
+              recoveredFnCalls.push({ name: key, args: val as Record<string, unknown> });
+            }
+          }
+        }
+      }
+
+      if (typeof parsed.name === 'string' && toolKeys.includes(parsed.name)) {
+        isToolJson = true;
+        if (!recoveredFnCalls.some((f) => f.name === parsed.name)) {
+          recoveredFnCalls.push({
+            name: parsed.name,
+            args: (parsed.args as Record<string, unknown>) || {},
+          });
+        }
+      }
+
+      if (isToolJson) {
+        return ''; // Completely remove raw JSON tool call from human chat text
+      }
+    } catch {
+      // not valid JSON
+    }
+    return match;
+  });
+
+  return { cleanText: cleaned.trim(), recoveredFnCalls };
+}
+
+/**
+ * Public helper to sanitize raw chat message body for display in the UI.
+ * Strips any leaked JSON tool dumps so users never see raw code blocks.
+ */
+export function cleanDisplayMessageText(rawText?: string | null): string {
+  if (!rawText) return '';
+  return sanitizeGeminiOutputText(rawText).cleanText;
+}
+
 export function formatFriendlyGeminiErrorAr(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err ?? '');
   if (raw.includes('GEMINI_API_KEY') || raw.includes('API_KEY_INVALID') || raw.includes('API key not valid')) {
@@ -1158,9 +1289,10 @@ export async function apiStreamGeminiChatClient(
     throw new Error(formatFriendlyGeminiErrorAr(lastErr));
   }
 
-  const pendingProposal = extractPendingProposalFromFunctionCalls(collectedFnCalls);
+  const sanitized = sanitizeGeminiOutputText(fullText, collectedFnCalls);
+  const pendingProposal = extractPendingProposalFromFunctionCalls(sanitized.recoveredFnCalls);
   const finalText =
-    fullText.trim() ||
+    sanitized.cleanText ||
     pendingProposal?.summaryAr ||
     'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
 
@@ -1210,7 +1342,8 @@ async function fetchGeminiChatNonStream(
         if (p.functionCall) fnCalls.push(p.functionCall);
       }
       if (text || fnCalls.length > 0) {
-        return { text, fnCalls };
+        const sanitized = sanitizeGeminiOutputText(text, fnCalls);
+        return { text: sanitized.cleanText, fnCalls: sanitized.recoveredFnCalls };
       }
     } catch {
       continue;

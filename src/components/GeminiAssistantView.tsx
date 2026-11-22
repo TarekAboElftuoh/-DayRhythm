@@ -76,6 +76,9 @@ import {
   resetGeminiApiKey,
   isCustomGeminiApiKeySet,
   DEFAULT_GEMINI_API_KEY,
+  cleanDisplayMessageText,
+  sanitizeGeminiOutputText,
+  extractPendingProposalFromFunctionCalls,
 } from '../services/geminiClient';
 
 type AssistantMode = 'chat' | 'maps' | 'search';
@@ -920,16 +923,24 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         ? '\n\n⏳ مفيش إنترنت — التعديل محفوظ وهيتنفذ في Google لوحده أول ما النت يرجع.'
         : '';
       onChangeMessages((prev) =>
-        prev.map((m): PersistedChatMessage =>
-          m.id === msgId && m.pendingProposal
-            ? {
-                ...m,
-                text: queuedNote ? `${m.text}${queuedNote}` : m.text,
-                pendingProposal: { ...m.pendingProposal, status: 'confirmed' as const },
-                executionLinks: links.length > 0 ? links : m.executionLinks,
-              }
-            : m
-        )
+        prev.map((m): PersistedChatMessage => {
+          if (m.id !== msgId) return m;
+          const prop =
+            m.pendingProposal ||
+            (m.role === 'model' && m.text.includes('propose_')
+              ? extractPendingProposalFromFunctionCalls(
+                  sanitizeGeminiOutputText(m.text).recoveredFnCalls
+                )
+              : undefined);
+          return {
+            ...m,
+            text: queuedNote
+              ? `${cleanDisplayMessageText(m.text)}${queuedNote}`
+              : cleanDisplayMessageText(m.text),
+            pendingProposal: prop ? { ...prop, status: 'confirmed' as const } : m.pendingProposal,
+            executionLinks: links.length > 0 ? links : m.executionLinks,
+          };
+        })
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'فشل تنفيذ التعديل.';
@@ -944,14 +955,21 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
   const handleCancelProposal = (msgId: string) => {
     onChangeMessages((prev) =>
-      prev.map((m): PersistedChatMessage =>
-        m.id === msgId && m.pendingProposal
-          ? {
-              ...m,
-              pendingProposal: { ...m.pendingProposal, status: 'cancelled' as const },
-            }
-          : m
-      )
+      prev.map((m): PersistedChatMessage => {
+        if (m.id !== msgId) return m;
+        const prop =
+          m.pendingProposal ||
+          (m.role === 'model' && m.text.includes('propose_')
+            ? extractPendingProposalFromFunctionCalls(
+                sanitizeGeminiOutputText(m.text).recoveredFnCalls
+              )
+            : undefined);
+        return {
+          ...m,
+          text: cleanDisplayMessageText(m.text),
+          pendingProposal: prop ? { ...prop, status: 'cancelled' as const } : m.pendingProposal,
+        };
+      })
     );
   };
 
@@ -2466,6 +2484,13 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
             {visibleMessages.map((m) => {
               const isStreamingThis = streamingMsgId === m.id;
+              const displayProposal =
+                m.pendingProposal ||
+                (!isStreamingThis && m.role === 'model' && m.text.includes('propose_')
+                  ? extractPendingProposalFromFunctionCalls(
+                      sanitizeGeminiOutputText(m.text).recoveredFnCalls
+                    )
+                  : undefined);
               return (
                 <div
                   key={m.id}
@@ -2503,7 +2528,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
                     {/* Message Body */}
                     <div className="whitespace-pre-wrap break-words">
-                      {m.text}
+                      {isStreamingThis ? m.text : cleanDisplayMessageText(m.text)}
                       {isStreamingThis && (
                         <span
                           className="inline-block w-1.5 h-3.5 align-middle mr-1 bg-[#7FFFD4] animate-pulse"
@@ -2583,59 +2608,59 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                     )}
 
                     {/* Explicit User Confirmation Block for Calendar / Tasks / Meds / Memories / Profile */}
-                    {m.pendingProposal && (
+                    {displayProposal && (
                       <div className="mt-3 pt-3 border-t border-[#7FFFD4]/30 space-y-2.5">
                         <div className="flex items-center justify-between gap-2 text-xs">
                           <span className="font-bold text-[#7FFFD4]">
                             تأكيد التعديلات (
-                            {m.pendingProposal.actions.length +
-                              (m.pendingProposal.taskActions?.length ?? 0) +
-                              (m.pendingProposal.medicationActions?.length ?? 0) +
-                              (m.pendingProposal.creativeActions?.length ?? 0) +
-                              (m.pendingProposal.profileUpdates ? 1 : 0) +
-                              (m.pendingProposal.memoryActions?.length ?? 0)}
+                            {displayProposal.actions.length +
+                              (displayProposal.taskActions?.length ?? 0) +
+                              (displayProposal.medicationActions?.length ?? 0) +
+                              (displayProposal.creativeActions?.length ?? 0) +
+                              (displayProposal.profileUpdates ? 1 : 0) +
+                              (displayProposal.memoryActions?.length ?? 0)}
                             )
                           </span>
                           <span className="text-[11px] text-zinc-400">
-                            {m.pendingProposal.status === 'confirmed'
+                            {displayProposal.status === 'confirmed'
                               ? 'تم التنفيذ ✓'
-                              : m.pendingProposal.status === 'cancelled'
+                              : displayProposal.status === 'cancelled'
                                 ? 'تم الإلغاء'
                                 : 'بانتظار موافقتك'}
                           </span>
                         </div>
 
-                        <p className="text-xs text-zinc-300">{m.pendingProposal.summaryAr}</p>
+                        <p className="text-xs text-zinc-300">{displayProposal.summaryAr}</p>
 
-                        {m.pendingProposal.profileUpdates && (
+                        {displayProposal.profileUpdates && (
                           <div className="pt-2 border-t border-white/10 text-[11px] space-y-1">
                             <div className="font-semibold text-[#7FFFD4]">
                               تحديث الدستور الشخصي الدائم:
                             </div>
                             <div className="text-zinc-200 flex flex-wrap gap-x-3 gap-y-1 font-mono-tabular">
-                              {m.pendingProposal.profileUpdates.weightKg !== undefined && (
-                                <span>الوزن: {m.pendingProposal.profileUpdates.weightKg} كجم</span>
+                              {displayProposal.profileUpdates.weightKg !== undefined && (
+                                <span>الوزن: {displayProposal.profileUpdates.weightKg} كجم</span>
                               )}
-                              {m.pendingProposal.profileUpdates.heightCm !== undefined && (
-                                <span>الطول: {m.pendingProposal.profileUpdates.heightCm} سم</span>
+                              {displayProposal.profileUpdates.heightCm !== undefined && (
+                                <span>الطول: {displayProposal.profileUpdates.heightCm} سم</span>
                               )}
-                              {m.pendingProposal.profileUpdates.cupSizeMl !== undefined && (
-                                <span>الكوب: {m.pendingProposal.profileUpdates.cupSizeMl} مل</span>
+                              {displayProposal.profileUpdates.cupSizeMl !== undefined && (
+                                <span>الكوب: {displayProposal.profileUpdates.cupSizeMl} مل</span>
                               )}
-                              {m.pendingProposal.profileUpdates.workEnabled !== undefined && (
+                              {displayProposal.profileUpdates.workEnabled !== undefined && (
                                 <span>
                                   الشغل:{' '}
-                                  {m.pendingProposal.profileUpdates.workEnabled
-                                    ? `${formatTime24To12h(m.pendingProposal.profileUpdates.workStart24, language)} – ${formatTime24To12h(m.pendingProposal.profileUpdates.workEnd24, language)}`
+                                  {displayProposal.profileUpdates.workEnabled
+                                    ? `${formatTime24To12h(displayProposal.profileUpdates.workStart24, language)} – ${formatTime24To12h(displayProposal.profileUpdates.workEnd24, language)}`
                                     : 'تفرغ للكورسات'}
                                 </span>
                               )}
-                              {m.pendingProposal.profileUpdates.currentCityName && (
-                                <span>الموقع: {m.pendingProposal.profileUpdates.currentCityName}</span>
+                              {displayProposal.profileUpdates.currentCityName && (
+                                <span>الموقع: {displayProposal.profileUpdates.currentCityName}</span>
                               )}
-                              {m.pendingProposal.profileUpdates.sleepTargetMinutes !== undefined && (
+                              {displayProposal.profileUpdates.sleepTargetMinutes !== undefined && (
                                 <span>
-                                  هدف النوم: {m.pendingProposal.profileUpdates.sleepTargetMinutes} د
+                                  هدف النوم: {displayProposal.profileUpdates.sleepTargetMinutes} د
                                 </span>
                               )}
                             </div>
@@ -2643,16 +2668,16 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                         )}
 
                         {needsAuth &&
-                          m.pendingProposal.status === 'pending' &&
-                          m.pendingProposal.actions.length > 0 && (
+                          displayProposal.status === 'pending' &&
+                          displayProposal.actions.length > 0 && (
                             <p className="text-[11px] text-amber-300">
                               ملاحظة: لتعديل Google Calendar الفعلي، سجّل الدخول بحساب Google أولاً.
                             </p>
                           )}
 
-                        {m.pendingProposal.actions.length > 0 && (
+                        {displayProposal.actions.length > 0 && (
                           <ul className="divide-y divide-white/10 text-xs">
-                            {m.pendingProposal.actions.map((act, idx) => (
+                            {displayProposal.actions.map((act, idx) => (
                               <li
                                 key={`cal-${idx}`}
                                 className="py-1.5 flex items-center justify-between gap-2"
@@ -2670,10 +2695,10 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                           </ul>
                         )}
 
-                        {m.pendingProposal.medicationActions &&
-                          m.pendingProposal.medicationActions.length > 0 && (
+                        {displayProposal.medicationActions &&
+                          displayProposal.medicationActions.length > 0 && (
                             <ul className="divide-y divide-white/10 text-xs">
-                              {m.pendingProposal.medicationActions.map((mAct, idx) => {
+                              {displayProposal.medicationActions.map((mAct, idx) => {
                                 const doseTimes =
                                   mAct.times24 && mAct.times24.length > 0
                                     ? mAct.times24
@@ -2723,10 +2748,10 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                             </ul>
                           )}
 
-                        {m.pendingProposal.creativeActions &&
-                          m.pendingProposal.creativeActions.length > 0 && (
+                        {displayProposal.creativeActions &&
+                          displayProposal.creativeActions.length > 0 && (
                             <ul className="divide-y divide-white/10 text-xs">
-                              {m.pendingProposal.creativeActions.map((cAct, idx) => (
+                              {displayProposal.creativeActions.map((cAct, idx) => (
                                 <li
                                   key={`cr-${idx}`}
                                   className="py-1.5 flex items-center justify-between gap-2"
@@ -2744,10 +2769,10 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                             </ul>
                           )}
 
-                        {m.pendingProposal.taskActions &&
-                          m.pendingProposal.taskActions.length > 0 && (
+                        {displayProposal.taskActions &&
+                          displayProposal.taskActions.length > 0 && (
                             <ul className="divide-y divide-white/10 text-xs">
-                              {m.pendingProposal.taskActions.map((tAct, idx) => (
+                              {displayProposal.taskActions.map((tAct, idx) => (
                                 <li
                                   key={`task-${idx}`}
                                   className="py-1.5 flex items-center justify-between gap-2"
@@ -2769,10 +2794,10 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                             </ul>
                           )}
 
-                        {m.pendingProposal.memoryActions &&
-                          m.pendingProposal.memoryActions.length > 0 && (
+                        {displayProposal.memoryActions &&
+                          displayProposal.memoryActions.length > 0 && (
                             <ul className="divide-y divide-white/10 text-xs">
-                              {m.pendingProposal.memoryActions.map((memAct, idx) => (
+                              {displayProposal.memoryActions.map((memAct, idx) => (
                                 <li key={`mem-${idx}`} className="py-1.5 space-y-0.5">
                                   <div className="flex items-center justify-between gap-2 text-[11px]">
                                     <span className="font-semibold text-purple-300">
@@ -2790,7 +2815,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                             </ul>
                           )}
 
-                        {m.pendingProposal.status === 'pending' && (
+                        {displayProposal.status === 'pending' && (
                           <div className="flex items-center gap-2 pt-1">
                             <button
                               type="button"
@@ -2798,13 +2823,13 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                               onClick={() =>
                                 handleConfirmProposal(
                                   m.id,
-                                  m.pendingProposal!.actions,
-                                  m.pendingProposal!.taskActions ?? [],
-                                  m.pendingProposal!.medicationActions ?? [],
-                                  m.pendingProposal!.creativeActions ?? [],
-                                  m.pendingProposal!.profileUpdates,
-                                  m.pendingProposal!.memoryActions ?? [],
-                                  m.pendingProposal!.appSettings
+                                  displayProposal!.actions,
+                                  displayProposal!.taskActions ?? [],
+                                  displayProposal!.medicationActions ?? [],
+                                  displayProposal!.creativeActions ?? [],
+                                  displayProposal!.profileUpdates,
+                                  displayProposal!.memoryActions ?? [],
+                                  displayProposal!.appSettings
                                 )
                               }
                               className="flex-1 min-h-[40px] py-2 px-4 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-[#66eec2] cursor-pointer disabled:opacity-50"

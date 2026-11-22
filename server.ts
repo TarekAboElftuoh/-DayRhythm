@@ -237,6 +237,10 @@ const DAYRHYTHM_SYSTEM_INSTRUCTION = `
 9. قواعد الخصوصية (إلزامية): لا تكتب أبداً نصاً صريحاً لتنظيف الأسنان — استخدم 🦷 أو 🪥 فقط، و🌱 فقط للالتزام اليومي دون وصف نصي صريح. عناوين أحداث التقويم: إيموجي واحد أو اثنان في البداية فقط ثم نص قصير، بدون أي إيموجي مكرر.
 10. الإيجاز: ممنوع تكرار نفس الإيموجي في نفس السطر، وممنوع تكرار نفس المعلومة أو نفس الحدث مرتين؛ جملتين إلى أربع جمل كحد أقصى.
 11. التنبيهات والتذكيرات من الشات (إلزامي): أي «نبهني / فكرني / ذكرني» لازم يتحول لحدث عبر propose_calendar_actions (create) — ممنوع ترد «تم» من غير الأداة. للطلب النسبي («بعد 5 دقايق») حط startInMinutes بعدد الدقايق ومتحسبش الوقت بنفسك. العنوان = الحاجة نفسها: "⏰ اتصل بمحمد" (أو "⏰ تنبيه") من غير وقت أو مدة جوه العنوان، والمدة الافتراضية 15 دقيقة.
+12. منع كتابة الكود أو JSON نهائياً في نص الرسالة (إلزامي وقاطع):
+    - ممنوع منعاً باتاً كتابة أي كود برمجي أو كتل JSON أو علامات كود JSON أو أقواس مجعدة {} أو استدعاء الدوال كنص في ردك الموجه للمستخدم (مثل propose_calendar_actions أو propose_medication_actions أو أي بنية كود).
+    - استدعاء الأدوات يتم حصرياً وبشكل غير مرئي عبر خاصية Function Calling البرمجية في واجهة Gemini API.
+    - رسالتك الموجهة للمستخدم يجب أن تكون نصاً عربياً بشرياً بسيطاً وودوداً ومختصراً يوضح ما تم إعداده فقط دون أي أكواد برمجية، فالتطبيق سيعرض كروت الإجراءات التفاعلية وأزرار الموافقة تلقائياً للمستخدم بشكل مرئي أنيق.
 أجب بلغة عربية واضحة، عملية، ودودة، ومختصرة.
 `.trim();
 
@@ -1819,6 +1823,118 @@ async function startServer() {
     );
   }
 
+  function sanitizeGeminiOutputText(
+    rawText: string,
+    existingFnCalls: FunctionCall[] = []
+  ): { cleanText: string; recoveredFnCalls: FunctionCall[] } {
+    if (!rawText) return { cleanText: '', recoveredFnCalls: existingFnCalls };
+
+    const recoveredFnCalls = [...existingFnCalls];
+    const toolKeys = [
+      'propose_calendar_actions',
+      'propose_task_actions',
+      'propose_medication_actions',
+      'propose_creative_actions',
+      'propose_profile_updates',
+      'propose_memory_actions',
+      'propose_app_settings',
+    ];
+
+    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+
+    const cleaned = rawText.replace(codeBlockRegex, (match, inner) => {
+      const trimmed = (inner || '').trim();
+      if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+        return match;
+      }
+      try {
+        const parsed = JSON.parse(trimmed);
+        let isToolJson = false;
+
+        for (const key of toolKeys) {
+          if (key in parsed) {
+            isToolJson = true;
+            if (!recoveredFnCalls.some((f) => f.name === key)) {
+              const val = parsed[key];
+              if (key === 'propose_calendar_actions') {
+                const actions = Array.isArray(val)
+                  ? val
+                  : Array.isArray(val?.actions)
+                    ? val.actions
+                    : [];
+                recoveredFnCalls.push({
+                  name: key,
+                  args: { actions, summaryAr: parsed.summaryAr || undefined },
+                });
+              } else if (key === 'propose_medication_actions') {
+                const medicationActions = Array.isArray(val)
+                  ? val
+                  : Array.isArray(val?.medicationActions)
+                    ? val.medicationActions
+                    : [];
+                recoveredFnCalls.push({
+                  name: key,
+                  args: { medicationActions, summaryAr: parsed.summaryAr || undefined },
+                });
+              } else if (key === 'propose_task_actions') {
+                const taskActions = Array.isArray(val)
+                  ? val
+                  : Array.isArray(val?.taskActions)
+                    ? val.taskActions
+                    : [];
+                recoveredFnCalls.push({
+                  name: key,
+                  args: { taskActions, summaryAr: parsed.summaryAr || undefined },
+                });
+              } else if (key === 'propose_creative_actions') {
+                const creativeActions = Array.isArray(val)
+                  ? val
+                  : Array.isArray(val?.creativeActions)
+                    ? val.creativeActions
+                    : [];
+                recoveredFnCalls.push({
+                  name: key,
+                  args: { creativeActions, summaryAr: parsed.summaryAr || undefined },
+                });
+              } else if (key === 'propose_memory_actions') {
+                const memoryActions = Array.isArray(val)
+                  ? val
+                  : Array.isArray(val?.memoryActions)
+                    ? val.memoryActions
+                    : [];
+                recoveredFnCalls.push({
+                  name: key,
+                  args: { memoryActions, summaryAr: parsed.summaryAr || undefined },
+                });
+              } else if (typeof val === 'object' && val !== null) {
+                recoveredFnCalls.push({ name: key, args: val });
+              }
+            }
+          }
+        }
+
+        if (typeof parsed.name === 'string' && toolKeys.includes(parsed.name)) {
+          isToolJson = true;
+          if (!recoveredFnCalls.some((f) => f.name === parsed.name)) {
+            recoveredFnCalls.push({
+              name: parsed.name,
+              args: parsed.args || {},
+            });
+          }
+        }
+
+        if (isToolJson) {
+          return '';
+        }
+      } catch {
+        // ignore invalid json
+      }
+      return match;
+    });
+
+    return { cleanText: cleaned.trim(), recoveredFnCalls };
+  }
+
   function extractPendingProposalFromFunctionCalls(fnCalls?: FunctionCall[]) {
     if (!fnCalls || fnCalls.length === 0) return undefined;
     const calCall = fnCalls.find((f) => f.name === 'propose_calendar_actions');
@@ -2207,9 +2323,10 @@ async function startServer() {
       throw lastStreamErr ?? new Error('تعذر الاتصال بـ Gemini حالياً.');
     }
 
-    const pendingProposal = extractPendingProposalFromFunctionCalls(collectedFnCalls);
+    const sanitized = sanitizeGeminiOutputText(fullText, collectedFnCalls);
+    const pendingProposal = extractPendingProposalFromFunctionCalls(sanitized.recoveredFnCalls);
     const finalText =
-      fullText.trim() ||
+      sanitized.cleanText ||
       pendingProposal?.summaryAr ||
       'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
 
@@ -2343,14 +2460,15 @@ async function startServer() {
         throw lastErr ?? new Error('تعذر الاتصال بـ Gemini حالياً.');
       }
 
-      const pendingProposal = extractPendingProposalFromFunctionCalls(response.functionCalls);
+      const sanitized = sanitizeGeminiOutputText(response.text ?? '', response.functionCalls ?? []);
+      const pendingProposal = extractPendingProposalFromFunctionCalls(sanitized.recoveredFnCalls);
       const latencyMs = Math.max(1, Date.now() - startedAt);
       markGeminiProbeOnline(activeModel, latencyMs);
 
       if (pendingProposal) {
         res.json({
           text:
-            response.text ||
+            sanitized.cleanText ||
             pendingProposal.summaryAr ||
             'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.',
           pendingProposal,
@@ -2362,7 +2480,7 @@ async function startServer() {
         return;
       }
 
-      const finalText = (response.text ?? '').trim();
+      const finalText = sanitized.cleanText;
       if (finalText) {
         chatResponseCache.set(cacheKey, {
           text: finalText,
