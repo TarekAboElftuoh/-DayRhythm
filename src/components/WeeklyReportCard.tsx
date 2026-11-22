@@ -75,7 +75,7 @@ export const WeeklyReportCard: React.FC<WeeklyReportCardProps> = ({
           <CalendarCheck className="w-4 h-4 text-[#7FFFD4]" />
           <span>آخر 7 أيام</span>
         </h2>
-        <div className="flex items-center gap-1" aria-label="أيام تحقيق هدف المية">
+        <div className="flex items-center gap-1" aria-label="أيام تحقيق هدف الترطيب">
           {report.days.map((d) => {
             const ratio = d.targetCups > 0 ? d.cupsLogged / d.targetCups : 0;
             return (
@@ -91,7 +91,7 @@ export const WeeklyReportCard: React.FC<WeeklyReportCardProps> = ({
         </div>
       </div>
       <div className="grid grid-cols-4 gap-1.5">
-        {stat('💧 المية', `${report.waterPct}%`, report.waterPct >= 90)}
+        {stat('💧 الترطيب', `${report.waterPct}%`, report.waterPct >= 90)}
         {stat('🎯 أيام الهدف', `${report.waterDaysHit}/7`, report.waterDaysHit >= 6)}
         {stat('💊 العلاجات', report.medsPct === null ? '—' : `${report.medsPct}%`, (report.medsPct ?? 0) >= 90)}
         {stat(

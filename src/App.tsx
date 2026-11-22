@@ -2579,6 +2579,21 @@ export default function App() {
     [fetchCalendarEvents, fetchGoogleTasks, refreshWorkspace, showToast, stopNativeAlerts, triggerTaskAlert]
   );
 
+  // The long-lived listeners below (WebSocket + Firestore) must NOT re-subscribe whenever these
+  // callbacks change identity. They used to: every Firestore snapshot replaced lifeProfile →
+  // triggerTaskAlert/handleIncomingRemoteSync changed → the Firestore listener re-subscribed →
+  // a fresh (stale) snapshot arrived → loop. That reset just-tapped water cups and spammed
+  // WebSocket reconnects. The listeners now call the latest version through refs.
+  const handleIncomingRemoteSyncRef = useRef(handleIncomingRemoteSync);
+  handleIncomingRemoteSyncRef.current = handleIncomingRemoteSync;
+  const refreshWorkspaceRef = useRef(refreshWorkspace);
+  refreshWorkspaceRef.current = refreshWorkspace;
+  const callRemoteSync = useCallback(
+    (payload: Parameters<typeof handleIncomingRemoteSync>[0]) => handleIncomingRemoteSyncRef.current(payload),
+    []
+  );
+  const callRefreshWorkspace = useCallback(() => refreshWorkspaceRef.current(), []);
+
   // Instant Cross-Device WebSocket Sync Hub (/ws/sync) + Auto-Recovery (Dead-Socket Teardown + Exponential Backoff + Wake/Online Recovery)
   useEffect(() => {
     const uid = firebaseUser?.uid;
@@ -2593,6 +2608,10 @@ export default function App() {
     let heartbeatTimer: number | null = null;
     let pongTimeoutTimer: number | null = null;
     let backoffAttempt = 0;
+    // A host with no sync server (static build, plain preview) never accepts the socket:
+    // stop retrying after a few failures instead of reconnecting forever.
+    let everConnected = false;
+    let failedWithoutConnect = 0;
     let hadPreviousDisconnect = false;
     let lastVisibleAtMs = Date.now();
 
@@ -2636,6 +2655,10 @@ export default function App() {
     const scheduleReconnect = () => {
       if (closedByCleanup) return;
       if (reconnectTimer !== null) return;
+      if (!everConnected) {
+        failedWithoutConnect += 1;
+        if (failedWithoutConnect >= 5) return;
+      }
       const baseMs = Math.min(30_000, 1000 * Math.pow(2, backoffAttempt));
       const jitterMs = Math.floor(Math.random() * Math.min(1500, baseMs * 0.3));
       const delayMs = Math.min(30_000, baseMs + jitterMs);
@@ -2679,6 +2702,7 @@ export default function App() {
             connectWatchdogTimer = null;
           }
           backoffAttempt = 0;
+          everConnected = true;
           setWsConnected(true);
           ws.send(
             JSON.stringify({
@@ -2690,7 +2714,7 @@ export default function App() {
 
           if (hadPreviousDisconnect) {
             hadPreviousDisconnect = false;
-            void refreshWorkspace();
+            void callRefreshWorkspace();
             triggerFirestoreRecovery(false);
           }
 
@@ -2773,7 +2797,7 @@ export default function App() {
               return;
             }
             if (msg.type === 'sync') {
-              handleIncomingRemoteSync(msg);
+              callRemoteSync(msg);
             }
           } catch {
             // ignore malformed message
@@ -2811,7 +2835,7 @@ export default function App() {
         bc = new BroadcastChannel('dayrhythm_sync');
         bc.onmessage = (ev) => {
           if (ev.data?.type === 'sync') {
-            handleIncomingRemoteSync(ev.data);
+            callRemoteSync(ev.data);
           }
         };
       } catch {
@@ -2823,11 +2847,11 @@ export default function App() {
       if (closedByCleanup) return;
       backoffAttempt = 0;
       const sock = wsRef.current;
-      if (!sock || sock.readyState !== WebSocket.OPEN) {
+      if ((everConnected || failedWithoutConnect < 5) && (!sock || sock.readyState !== WebSocket.OPEN)) {
         connectWs();
       }
       triggerFirestoreRecovery(forceFirestoreReset);
-      void refreshWorkspace();
+      void callRefreshWorkspace();
     };
 
     const handleOnline = () => {
@@ -2844,7 +2868,7 @@ export default function App() {
         if (typeof detail === 'string') {
           const parsed = JSON.parse(detail);
           if (parsed && typeof parsed === 'object') {
-            handleIncomingRemoteSync(parsed);
+            callRemoteSync(parsed);
           }
         }
       } catch {
@@ -2879,7 +2903,7 @@ export default function App() {
       window.removeEventListener('dayrhythm:ws-sync', handleNativeWsSync);
       document.removeEventListener('visibilitychange', handleResumeSync);
     };
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified, handleIncomingRemoteSync, refreshWorkspace]);
+  }, [firebaseUser?.uid, firebaseUser?.emailVerified, callRemoteSync, callRefreshWorkspace]);
 
   // Real-time Firebase Firestore listener (strictly verified non-anonymous user; auto-bootstraps new accounts immediately!)
   useEffect(() => {
@@ -2896,7 +2920,7 @@ export default function App() {
         setFirestoreSynced(true);
 
         if (remote.syncSignal) {
-          handleIncomingRemoteSync(remote.syncSignal);
+          callRemoteSync(remote.syncSignal);
         }
 
         if (remote.phoneBattery) {
@@ -3029,7 +3053,7 @@ export default function App() {
     );
 
     return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, handleIncomingRemoteSync]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, callRemoteSync]);
 
   // Immediate real-time Firestore subscription for Medications (non-anonymous verified users only)
   useEffect(() => {
