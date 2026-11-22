@@ -8327,7 +8327,7 @@ ${lifeConstitution}
             periodicRituals={periodicRituals}
             onCompletePeriodicRitual={handleCompletePeriodicRitual}
             batteryGuard={batteryGuard}
-            phoneBattery={isPhoneClient ? null : phoneBattery}
+            phoneBattery={phoneBattery}
             phoneChargeLimitPct={phoneChargeLimitPct}
             onUpdatePhoneChargeLimit={handleUpdatePhoneChargeLimit}
             phoneChargeAlertDismissed={phoneChargeAlertDismissed}
@@ -8398,7 +8398,7 @@ ${lifeConstitution}
             activeLocation={activeLocation}
             onRefreshGps={handleDetectGpsLocation}
             gpsSyncing={isDetectingGps}
-            phoneBattery={isPhoneClient ? null : phoneBattery}
+            phoneBattery={phoneBattery}
             upcomingPreview={{
               emoji: capsuleTimerState.emoji,
               title: capsuleTimerState.title,
@@ -8516,7 +8516,7 @@ ${lifeConstitution}
         calendarTrack={capsuleTimerState.calendarTrack}
         taskTrack={capsuleTimerState.taskTrack}
         upcomingQueue={capsuleTimerState.upcomingQueue}
-        phoneBattery={isPhoneClient ? null : phoneBattery}
+        phoneBattery={phoneBattery}
         capsulePrefs={capsulePrefs}
         onChangeCapsulePrefs={handleUpdateCapsulePrefs}
         onQuickLogWater={handleLogWaterCup}

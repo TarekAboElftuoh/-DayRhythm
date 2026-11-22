@@ -1189,7 +1189,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </>
             )}
 
-            {calendarConnected && phoneBattery && (
+            {phoneBattery && (
               <>
                 <span className="text-zinc-700" aria-hidden="true">·</span>
                 <button
@@ -1363,9 +1363,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </header>
 
-      {/* Live Phone Charging Status Strip (Visible on Desktop whenever OnePlus/Android phone is plugged in) */}
-      {calendarConnected && phoneBattery?.charging && (
-        <div className="hidden md:flex items-center justify-between gap-4 rounded-xl border border-[#7FFFD4]/25 bg-[#0A0F16]/90 px-4 py-2.5 text-xs">
+      {/* Live Phone Charging Status Strip (Visible whenever OnePlus/Android phone is plugged in) */}
+      {phoneBattery?.charging && phoneBattery.levelPct < phoneBattery.chargeLimitPct && (
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-[#7FFFD4]/25 bg-[#0A0F16]/90 px-4 py-2.5 text-xs">
           <div className="flex items-center gap-3 min-w-0">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#7FFFD4]/30 bg-[#7FFFD4]/10 text-[#7FFFD4] shrink-0">
               <BatteryCharging className="w-4 h-4" />
@@ -1474,39 +1474,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       )}
-
-      {phoneBattery &&
-        phoneBattery.charging &&
-        phoneBattery.levelPct < phoneBattery.chargeLimitPct &&
-        Date.now() - phoneBattery.updatedAtMs < 3 * 60_000 &&
-        (() => {
-          const level = phoneBattery.levelPct;
-          const limit = phoneBattery.chargeLimitPct;
-          const etaFull = phoneBattery.chargeTimeRemainingMin ?? -1;
-          // Android reports time to 100%; scale it down to the charge limit.
-          const etaToLimit =
-            etaFull > 0 && level < 100 ? Math.max(1, Math.round((etaFull * (limit - level)) / (100 - level))) : -1;
-          return (
-            <div className="rounded-xl border border-[#7FFFD4]/30 bg-[#7FFFD4]/[0.06] px-4 py-2.5 text-xs flex flex-wrap items-center gap-x-4 gap-y-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <BatteryCharging className="w-4 h-4 text-[#7FFFD4] shrink-0 animate-pulse" />
-                <span className="font-medium text-white">
-                  {phoneBattery.deviceLabel || 'الهاتف'} بيشحن ·{' '}
-                  <span className="font-mono-tabular text-[#7FFFD4]">{level}%</span>
-                </span>
-              </div>
-              <div className="flex-1 min-w-[120px] h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                <div
-                  className="h-full rounded-full bg-[#7FFFD4] transition-all"
-                  style={{ width: `${Math.min(100, Math.round((level / limit) * 100))}%` }}
-                />
-              </div>
-              <span className="text-zinc-400 shrink-0">
-                {etaToLimit > 0 ? `فاضل ~${etaToLimit} د للوصول لـ ${limit}%` : `الهدف ${limit}%`}
-              </span>
-            </div>
-          );
-        })()}
 
       {(smartChargeAudioActive ||
         (phoneBattery &&

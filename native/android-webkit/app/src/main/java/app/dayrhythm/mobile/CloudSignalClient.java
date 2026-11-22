@@ -148,6 +148,112 @@ public final class CloudSignalClient {
         });
     }
 
+    private static volatile String lastSentBatteryKey = null;
+    private static volatile long lastBatteryCommitMs = 0L;
+
+    /**
+     * Publishes mobile battery telemetry to Firestore users/{uid}.phoneBattery via REST commit.
+     * Keeps PC capsule and dashboard in sync live even when the phone app is closed and screen off.
+     */
+    public static void publishBatteryTelemetry(Context context, int level, boolean charging, int etaMinutes, int limit) {
+        final Context app = context.getApplicationContext();
+        final long now = System.currentTimeMillis();
+        final String dedupeKey = level + ":" + (charging ? "1" : "0") + ":" + limit + ":" + (etaMinutes > 0 ? etaMinutes : 0);
+        if (dedupeKey.equals(lastSentBatteryKey) && now - lastBatteryCommitMs < 45_000L) {
+            return;
+        }
+
+        EXEC.execute(() -> {
+            try {
+                JSONObject auth = readAuth(app);
+                if (auth == null) return;
+                String token = getIdToken(app, auth);
+
+                JSONObject batFields = new JSONObject()
+                        .put("levelPct", new JSONObject().put("integerValue", String.valueOf(Math.max(0, Math.min(100, level)))))
+                        .put("charging", new JSONObject().put("booleanValue", charging))
+                        .put("chargeLimitPct", new JSONObject().put("integerValue", String.valueOf(Math.max(60, Math.min(100, limit)))))
+                        .put("deviceLabel", new JSONObject().put("stringValue", "OnePlus 12R"))
+                        .put("updatedAtMs", new JSONObject().put("integerValue", String.valueOf(now)));
+                if (etaMinutes >= 0) {
+                    batFields.put("chargeTimeRemainingMin", new JSONObject().put("integerValue", String.valueOf(etaMinutes)));
+                }
+
+                JSONObject write = new JSONObject()
+                        .put("update", new JSONObject()
+                                .put("name", docName(auth))
+                                .put("fields", new JSONObject().put("phoneBattery",
+                                        new JSONObject().put("mapValue", new JSONObject().put("fields", batFields)))))
+                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("phoneBattery")))
+                        .put("updateTransforms", new JSONArray().put(new JSONObject()
+                                .put("fieldPath", "updatedAt")
+                                .put("setToServerValue", "REQUEST_TIME")));
+                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write));
+
+                Request req = new Request.Builder()
+                        .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
+                                + "/databases/" + auth.getString("databaseId") + "/documents:commit")
+                        .header("Authorization", "Bearer " + token)
+                        .post(RequestBody.create(body.toString(), JSON))
+                        .build();
+                try (Response res = HTTP.newCall(req).execute()) {
+                    if (res.isSuccessful()) {
+                        lastSentBatteryKey = dedupeKey;
+                        lastBatteryCommitMs = now;
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    /**
+     * Phone battery reached limit (e.g. 90%) or alarm triggered locally → tell the PC to alert immediately.
+     */
+    public static void sendAlarmTrigger(Context context, String title, String body, String kind, int snoozeMinutes) {
+        final Context app = context.getApplicationContext();
+        EXEC.execute(() -> {
+            try {
+                JSONObject auth = readAuth(app);
+                if (auth == null) return;
+                String token = getIdToken(app, auth);
+                long now = System.currentTimeMillis();
+
+                String actionVal = (kind != null && !kind.isEmpty()) ? kind : "charge";
+                if (actionVal.length() > 48) actionVal = actionVal.substring(0, 48);
+
+                JSONObject sigFields = new JSONObject()
+                        .put("opId", new JSONObject().put("stringValue", "nat_trig_" + Long.toString(now, 36)))
+                        .put("clientId", new JSONObject().put("stringValue", CLIENT_ID))
+                        .put("scope", new JSONObject().put("stringValue", "alarm_trigger"))
+                        .put("action", new JSONObject().put("stringValue", actionVal))
+                        .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)));
+
+                JSONObject write = new JSONObject()
+                        .put("update", new JSONObject()
+                                .put("name", docName(auth))
+                                .put("fields", new JSONObject().put("syncSignal",
+                                        new JSONObject().put("mapValue", new JSONObject().put("fields", sigFields)))))
+                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("syncSignal")))
+                        .put("updateTransforms", new JSONArray().put(new JSONObject()
+                                .put("fieldPath", "updatedAt")
+                                .put("setToServerValue", "REQUEST_TIME")));
+                JSONObject reqBody = new JSONObject().put("writes", new JSONArray().put(write));
+
+                Request req = new Request.Builder()
+                        .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
+                                + "/databases/" + auth.getString("databaseId") + "/documents:commit")
+                        .header("Authorization", "Bearer " + token)
+                        .post(RequestBody.create(reqBody.toString(), JSON))
+                        .build();
+                try (Response ignored = HTTP.newCall(req).execute()) {
+                    // best effort
+                }
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
     /** Alert started on the phone → stop it here as soon as another device dismisses it. */
     public static synchronized void watchForRemoteDismiss(Context context, long firedAtMs) {
         final Context app = context.getApplicationContext();

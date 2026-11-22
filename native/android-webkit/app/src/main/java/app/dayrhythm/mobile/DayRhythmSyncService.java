@@ -224,6 +224,9 @@ public class DayRhythmSyncService extends Service {
             } catch (Exception ignored) {
             }
         }
+        if (svc != null) {
+            CloudSignalClient.sendAlarmTrigger(svc, title, body, kind, snoozeMinutes);
+        }
     }
 
     private void startForegroundCompat(Notification notif) {
@@ -304,6 +307,14 @@ public class DayRhythmSyncService extends Service {
                 .putInt(KEY_CHARGE_LIMIT, safe)
                 .putBoolean(KEY_CHARGE_ALERT_ENABLED, enabled)
                 .apply();
+        DayRhythmSyncService svc = instance;
+        if (svc != null && svc.chargeLimitReceiver != null) {
+            try {
+                Intent sticky = svc.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                if (sticky != null) svc.chargeLimitReceiver.onReceive(svc, sticky);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private void registerChargeLimitWatcher() {
@@ -401,7 +412,10 @@ public class DayRhythmSyncService extends Service {
             filter.addAction(Intent.ACTION_BATTERY_CHANGED);
             filter.addAction(Intent.ACTION_POWER_CONNECTED);
             filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
-            registerReceiver(chargeLimitReceiver, filter);
+            Intent sticky = registerReceiver(chargeLimitReceiver, filter);
+            if (sticky != null && chargeLimitReceiver != null) {
+                chargeLimitReceiver.onReceive(this, sticky);
+            }
         } catch (Exception ignored) {
         }
     }
@@ -426,7 +440,10 @@ public class DayRhythmSyncService extends Service {
                 }
             }
 
-            // 2. Broadcast internal intent for local web view
+            // 2. Publish to Firestore REST so PC gets live telemetry even with app closed & screen off
+            CloudSignalClient.publishBatteryTelemetry(this, level, charging, etaMinutes, limit);
+
+            // 3. Broadcast internal intent for local web view
             Intent syncIntent = new Intent(ACTION_WS_SYNC_MESSAGE);
             syncIntent.setPackage(getPackageName());
             syncIntent.putExtra(EXTRA_WS_PAYLOAD, packet.toString());

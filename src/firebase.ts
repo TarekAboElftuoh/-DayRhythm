@@ -65,13 +65,17 @@ const configuredDbId =
  */
 export function getNativeCloudAuthPayload(): string | null {
   const user = auth.currentUser;
-  if (!user || user.isAnonymous || !user.emailVerified || !user.refreshToken) return null;
+  if (!user || user.isAnonymous) return null;
+  const refreshToken =
+    user.refreshToken ||
+    (user as unknown as { stsTokenManager?: { refreshToken?: string } }).stsTokenManager?.refreshToken;
+  if (!refreshToken) return null;
   return JSON.stringify({
     apiKey: firebaseConfig.apiKey,
     projectId: firebaseConfig.projectId,
     databaseId: configuredDbId,
     uid: user.uid,
-    refreshToken: user.refreshToken,
+    refreshToken,
   });
 }
 
