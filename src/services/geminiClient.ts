@@ -8,7 +8,14 @@ import {
   TaskActionProposal,
 } from '../types/dayrhythm';
 
-export const DEFAULT_GEMINI_API_KEY = 'AQ.Ab8RN6KYU8hmrsLsq5-BkhWfEqE7ZGbFf2L-Ey77b5a6LgK9Mw';
+/**
+ * Build-time default key. Never hard-code a key here: this repository is public.
+ * Set it as the GitHub Actions secret `GEMINI_API_KEY` (the workflow passes it as
+ * VITE_GEMINI_API_KEY), or paste a key in the app's «مفتاح Gemini» settings (stored only on the device).
+ */
+export const DEFAULT_GEMINI_API_KEY: string = (
+  (import.meta.env?.VITE_GEMINI_API_KEY as string | undefined) || ''
+).trim();
 export const GEMINI_API_KEY_STORAGE_KEY = 'dayrhythm_gemini_api_key_v1';
 
 export function getGeminiApiKey(): string {
@@ -19,8 +26,6 @@ export function getGeminiApiKey(): string {
   } catch {
     // ignore storage access errors
   }
-  const envKey = (import.meta.env?.VITE_GEMINI_API_KEY as string | undefined)?.trim();
-  if (envKey) return envKey;
   return DEFAULT_GEMINI_API_KEY;
 }
 

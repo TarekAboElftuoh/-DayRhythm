@@ -40,6 +40,26 @@ export function isStandaloneVirtualHost(): boolean {
   return host.endsWith('.web.app') || host.endsWith('.firebaseapp.com');
 }
 
+/**
+ * Thrown when a same-origin `/api/*` endpoint does not exist.
+ *
+ * The Android APK, the Windows EXE and the hosted PWA are all static bundles: the asset loaders
+ * answer unknown paths with `index.html` (HTTP 200) or a 404 page. Treating that HTML as a
+ * successful empty JSON reply made Gemini-confirmed calendar/task edits report "done" while
+ * nothing was sent to Google. Callers catch this and use the direct Google REST APIs instead.
+ */
+export class BackendUnavailableError extends Error {
+  constructor(path: string) {
+    super(`لا يوجد خادم وسيط لـ ${path} — سيتم الاتصال بـ Google مباشرة.`);
+    this.name = 'BackendUnavailableError';
+  }
+}
+
+/** True only when a dev backend (server.ts) can actually answer `/api/*` requests. */
+export function hasSameOriginBackend(): boolean {
+  return !isStandaloneVirtualHost();
+}
+
 export function isNonApiShareUrl(rawUrl: string): boolean {
   const lower = rawUrl.trim().toLowerCase();
   return (
@@ -128,8 +148,49 @@ export async function apiFetchJson<T = Record<string, unknown>>(
     });
   }
 
-  // Same-origin fallback for any other custom static / web endpoints
+  if (normalizedPath.startsWith('/api/maps') || normalizedPath.startsWith('/api/search')) {
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as { query: string; lat?: number; lng?: number })
+      : { query: '' };
+    const run = normalizedPath.startsWith('/api/maps')
+      ? apiStreamGeminiMapsClient
+      : apiStreamGeminiSearchClient;
+    return new Promise((resolve, reject) => {
+      let resultText = '';
+      run(body, {
+        signal: init?.signal ?? undefined,
+        onDelta: (text) => {
+          resultText += text;
+        },
+        onDone: (payload) => {
+          resolve({
+            ok: true,
+            status: 200,
+            data: {
+              text: payload.text || resultText,
+              places: payload.places,
+              sources: payload.sources,
+              latencyMs: payload.latencyMs,
+              memoriesAppliedCount: payload.memoriesAppliedCount,
+              model: payload.model,
+              cached: payload.cached,
+            } as unknown as T,
+          });
+        },
+      }).catch(reject);
+    });
+  }
+
+  // Same-origin dev backend (server.ts). Static builds have none, so fail loudly instead of
+  // pretending an HTML fallback page was a successful empty JSON response.
+  if (!hasSameOriginBackend()) {
+    throw new BackendUnavailableError(normalizedPath);
+  }
   const res = await fetch(normalizedPath, init);
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new BackendUnavailableError(normalizedPath);
+  }
   const data = (await res.json().catch(() => ({}))) as T;
   return {
     ok: res.ok,
