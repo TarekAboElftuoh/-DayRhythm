@@ -1704,7 +1704,7 @@ async function startServer() {
     const merged: Array<{ role: 'user' | 'model'; text: string }> = [];
     for (const item of rawHistory) {
       if (!item || (item.role !== 'user' && item.role !== 'model')) continue;
-      const text = typeof item.text === 'string' ? item.text.trim() : '';
+      const text = typeof item.text === 'string' ? sanitizeGeminiOutputText(item.text).cleanText.trim() : '';
       if (!text) continue;
       if (merged.length === 0 && item.role !== 'user') {
         continue;
@@ -1840,99 +1840,174 @@ async function startServer() {
       'propose_app_settings',
     ];
 
-    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
-
-    const cleaned = rawText.replace(codeBlockRegex, (match, inner) => {
-      const trimmed = (inner || '').trim();
-      if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-        return match;
+    function tryRecoverTool(toolName: string, argsObj: Record<string, unknown> | unknown[]) {
+      if (!recoveredFnCalls.some((f) => f.name === toolName)) {
+        if (toolName === 'propose_calendar_actions') {
+          const rawActions = (argsObj as Record<string, unknown>)?.actions ?? argsObj;
+          const actions = Array.isArray(rawActions) ? rawActions : [];
+          recoveredFnCalls.push({
+            name: toolName,
+            args: {
+              actions,
+              summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+            },
+          });
+        } else if (toolName === 'propose_medication_actions') {
+          const rawMeds = (argsObj as Record<string, unknown>)?.medicationActions ?? argsObj;
+          const medicationActions = Array.isArray(rawMeds) ? rawMeds : [];
+          recoveredFnCalls.push({
+            name: toolName,
+            args: {
+              medicationActions,
+              summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+            },
+          });
+        } else if (toolName === 'propose_task_actions') {
+          const rawTasks = (argsObj as Record<string, unknown>)?.taskActions ?? argsObj;
+          const taskActions = Array.isArray(rawTasks) ? rawTasks : [];
+          recoveredFnCalls.push({
+            name: toolName,
+            args: {
+              taskActions,
+              summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+            },
+          });
+        } else if (toolName === 'propose_creative_actions') {
+          const rawCreative = (argsObj as Record<string, unknown>)?.creativeActions ?? argsObj;
+          const creativeActions = Array.isArray(rawCreative) ? rawCreative : [];
+          recoveredFnCalls.push({
+            name: toolName,
+            args: {
+              creativeActions,
+              summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+            },
+          });
+        } else if (toolName === 'propose_memory_actions') {
+          const rawMem = (argsObj as Record<string, unknown>)?.memoryActions ?? argsObj;
+          const memoryActions = Array.isArray(rawMem) ? rawMem : [];
+          recoveredFnCalls.push({
+            name: toolName,
+            args: {
+              memoryActions,
+              summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+            },
+          });
+        } else if (typeof argsObj === 'object' && argsObj !== null && !Array.isArray(argsObj)) {
+          recoveredFnCalls.push({ name: toolName, args: argsObj as Record<string, unknown> });
+        }
       }
-      try {
-        const parsed = JSON.parse(trimmed);
-        let isToolJson = false;
+    }
 
-        for (const key of toolKeys) {
-          if (key in parsed) {
-            isToolJson = true;
-            if (!recoveredFnCalls.some((f) => f.name === key)) {
-              const val = parsed[key];
-              if (key === 'propose_calendar_actions') {
-                const actions = Array.isArray(val)
-                  ? val
-                  : Array.isArray(val?.actions)
-                    ? val.actions
-                    : [];
-                recoveredFnCalls.push({
-                  name: key,
-                  args: { actions, summaryAr: parsed.summaryAr || undefined },
-                });
-              } else if (key === 'propose_medication_actions') {
-                const medicationActions = Array.isArray(val)
-                  ? val
-                  : Array.isArray(val?.medicationActions)
-                    ? val.medicationActions
-                    : [];
-                recoveredFnCalls.push({
-                  name: key,
-                  args: { medicationActions, summaryAr: parsed.summaryAr || undefined },
-                });
-              } else if (key === 'propose_task_actions') {
-                const taskActions = Array.isArray(val)
-                  ? val
-                  : Array.isArray(val?.taskActions)
-                    ? val.taskActions
-                    : [];
-                recoveredFnCalls.push({
-                  name: key,
-                  args: { taskActions, summaryAr: parsed.summaryAr || undefined },
-                });
-              } else if (key === 'propose_creative_actions') {
-                const creativeActions = Array.isArray(val)
-                  ? val
-                  : Array.isArray(val?.creativeActions)
-                    ? val.creativeActions
-                    : [];
-                recoveredFnCalls.push({
-                  name: key,
-                  args: { creativeActions, summaryAr: parsed.summaryAr || undefined },
-                });
-              } else if (key === 'propose_memory_actions') {
-                const memoryActions = Array.isArray(val)
-                  ? val
-                  : Array.isArray(val?.memoryActions)
-                    ? val.memoryActions
-                    : [];
-                recoveredFnCalls.push({
-                  name: key,
-                  args: { memoryActions, summaryAr: parsed.summaryAr || undefined },
-                });
-              } else if (typeof val === 'object' && val !== null) {
-                recoveredFnCalls.push({ name: key, args: val });
-              }
+    function parsePythonOrJsonCall(codeStr: string): boolean {
+      const trimmed = (codeStr || '').trim();
+      if (!trimmed) return false;
+
+      // 1. JSON format
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+          const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+          let handled = false;
+          for (const key of toolKeys) {
+            if (key in parsed) {
+              handled = true;
+              tryRecoverTool(key, (parsed[key] as Record<string, unknown>) || parsed);
             }
           }
+          if (typeof parsed.name === 'string' && toolKeys.includes(parsed.name)) {
+            handled = true;
+            tryRecoverTool(parsed.name, (parsed.args as Record<string, unknown>) || {});
+          }
+          if (handled) return true;
+        } catch {
+          // ignore
         }
+      }
 
-        if (typeof parsed.name === 'string' && toolKeys.includes(parsed.name)) {
-          isToolJson = true;
-          if (!recoveredFnCalls.some((f) => f.name === parsed.name)) {
-            recoveredFnCalls.push({
-              name: parsed.name,
-              args: parsed.args || {},
-            });
+      // 2. Python call format
+      const pyMatch = trimmed.match(/(propose_[a-z_]+)\s*\(([\s\S]*)\)/i);
+      if (pyMatch && toolKeys.includes(pyMatch[1])) {
+        const toolName = pyMatch[1];
+        const innerArgs = pyMatch[2].trim();
+        const argsObj: Record<string, unknown> = {};
+
+        const kwargRegex = /([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([\s\S]*?)(?=(?:,\s*[a-zA-Z_][a-zA-Z0-9_]*\s*=|$))/g;
+        let kwMatch: RegExpExecArray | null;
+        let foundKw = false;
+        while ((kwMatch = kwargRegex.exec(innerArgs)) !== null) {
+          foundKw = true;
+          const key = kwMatch[1];
+          let valStr = kwMatch[2].trim();
+          if (valStr.endsWith(',')) valStr = valStr.slice(0, -1).trim();
+
+          const jsonStr = valStr
+            .replace(/'/g, '"')
+            .replace(/\bTrue\b/g, 'true')
+            .replace(/\bFalse\b/g, 'false')
+            .replace(/\bNone\b/g, 'null');
+
+          try {
+            argsObj[key] = JSON.parse(jsonStr);
+          } catch {
+            argsObj[key] = valStr;
           }
         }
 
-        if (isToolJson) {
-          return '';
+        if (!foundKw && (innerArgs.startsWith('{') || innerArgs.startsWith('['))) {
+          try {
+            const jsonStr = innerArgs
+              .replace(/'/g, '"')
+              .replace(/\bTrue\b/g, 'true')
+              .replace(/\bFalse\b/g, 'false')
+              .replace(/\bNone\b/g, 'null');
+            const parsed = JSON.parse(jsonStr);
+            if (Array.isArray(parsed)) {
+              argsObj.actions = parsed;
+            } else {
+              Object.assign(argsObj, parsed);
+            }
+          } catch {
+            // ignore
+          }
         }
-      } catch {
-        // ignore invalid json
+
+        tryRecoverTool(toolName, argsObj);
+        return true;
+      }
+
+      // Check if the snippet contains tool keys
+      for (const key of toolKeys) {
+        if (trimmed.includes(key)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    // 1. Strip all closed markdown code blocks that are tool calls
+    const codeBlockRegex = /```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)\s*```/gi;
+    let cleaned = rawText.replace(codeBlockRegex, (match, inner: string) => {
+      if (parsePythonOrJsonCall(inner)) {
+        return '';
       }
       return match;
     });
 
-    return { cleanText: cleaned.trim(), recoveredFnCalls };
+    // 2. Strip unclosed code blocks if they contain propose_
+    cleaned = cleaned.replace(/```(?:[a-zA-Z0-9_-]+)?\s*(?:propose_[\s\S]*?)$/gi, '');
+
+    // 3. Strip bare tool calls outside code blocks
+    const bareCallRegex = /(?:propose_[a-z_]+)\s*\([\s\S]*?\)(?:;)?/gi;
+    cleaned = cleaned.replace(bareCallRegex, (match) => {
+      if (parsePythonOrJsonCall(match)) {
+        return '';
+      }
+      return match;
+    });
+
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+    return { cleanText: cleaned, recoveredFnCalls };
   }
 
   function extractPendingProposalFromFunctionCalls(fnCalls?: FunctionCall[]) {

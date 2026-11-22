@@ -2528,7 +2528,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
                     {/* Message Body */}
                     <div className="whitespace-pre-wrap break-words">
-                      {isStreamingThis ? m.text : cleanDisplayMessageText(m.text)}
+                      {cleanDisplayMessageText(m.text)}
                       {isStreamingThis && (
                         <span
                           className="inline-block w-1.5 h-3.5 align-middle mr-1 bg-[#7FFFD4] animate-pulse"

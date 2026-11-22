@@ -760,7 +760,7 @@ export function normalizeGeminiHistory(
   const merged: Array<{ role: 'user' | 'model'; text: string }> = [];
   for (const item of rawHistory) {
     if (!item || (item.role !== 'user' && item.role !== 'model')) continue;
-    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    const text = typeof item.text === 'string' ? cleanDisplayMessageText(item.text).trim() : '';
     if (!text) continue;
     if (merged.length === 0 && item.role !== 'user') {
       continue;
@@ -871,106 +871,177 @@ export function sanitizeGeminiOutputText(
     'propose_app_settings',
   ];
 
-  // Match code blocks كود JSON ... ``` or ``` ... ```
-  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
-
-  const cleaned = rawText.replace(codeBlockRegex, (match, inner: string) => {
-    const trimmed = (inner || '').trim();
-    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-      return match;
+  function tryRecoverTool(toolName: string, argsObj: Record<string, unknown> | unknown[]) {
+    if (!recoveredFnCalls.some((f) => f.name === toolName)) {
+      if (toolName === 'propose_calendar_actions') {
+        const rawActions = (argsObj as Record<string, unknown>)?.actions ?? argsObj;
+        const actions = Array.isArray(rawActions) ? rawActions : [];
+        recoveredFnCalls.push({
+          name: toolName,
+          args: {
+            actions,
+            summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+          },
+        });
+      } else if (toolName === 'propose_medication_actions') {
+        const rawMeds = (argsObj as Record<string, unknown>)?.medicationActions ?? argsObj;
+        const medicationActions = Array.isArray(rawMeds) ? rawMeds : [];
+        recoveredFnCalls.push({
+          name: toolName,
+          args: {
+            medicationActions,
+            summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+          },
+        });
+      } else if (toolName === 'propose_task_actions') {
+        const rawTasks = (argsObj as Record<string, unknown>)?.taskActions ?? argsObj;
+        const taskActions = Array.isArray(rawTasks) ? rawTasks : [];
+        recoveredFnCalls.push({
+          name: toolName,
+          args: {
+            taskActions,
+            summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+          },
+        });
+      } else if (toolName === 'propose_creative_actions') {
+        const rawCreative = (argsObj as Record<string, unknown>)?.creativeActions ?? argsObj;
+        const creativeActions = Array.isArray(rawCreative) ? rawCreative : [];
+        recoveredFnCalls.push({
+          name: toolName,
+          args: {
+            creativeActions,
+            summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+          },
+        });
+      } else if (toolName === 'propose_memory_actions') {
+        const rawMem = (argsObj as Record<string, unknown>)?.memoryActions ?? argsObj;
+        const memoryActions = Array.isArray(rawMem) ? rawMem : [];
+        recoveredFnCalls.push({
+          name: toolName,
+          args: {
+            memoryActions,
+            summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+          },
+        });
+      } else if (typeof argsObj === 'object' && argsObj !== null && !Array.isArray(argsObj)) {
+        recoveredFnCalls.push({ name: toolName, args: argsObj as Record<string, unknown> });
+      }
     }
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      let isToolJson = false;
+  }
 
-      for (const key of toolKeys) {
-        if (key in parsed) {
-          isToolJson = true;
-          if (!recoveredFnCalls.some((f) => f.name === key)) {
-            const val = parsed[key];
-            if (key === 'propose_calendar_actions') {
-              const actions = Array.isArray(val)
-                ? val
-                : Array.isArray((val as Record<string, unknown>)?.actions)
-                  ? (val as Record<string, unknown>).actions
-                  : [];
-              recoveredFnCalls.push({
-                name: key,
-                args: { actions, summaryAr: (parsed.summaryAr as string) || undefined },
-              });
-            } else if (key === 'propose_medication_actions') {
-              const medicationActions = Array.isArray(val)
-                ? val
-                : Array.isArray((val as Record<string, unknown>)?.medicationActions)
-                  ? (val as Record<string, unknown>).medicationActions
-                  : [];
-              recoveredFnCalls.push({
-                name: key,
-                args: { medicationActions, summaryAr: (parsed.summaryAr as string) || undefined },
-              });
-            } else if (key === 'propose_task_actions') {
-              const taskActions = Array.isArray(val)
-                ? val
-                : Array.isArray((val as Record<string, unknown>)?.taskActions)
-                  ? (val as Record<string, unknown>).taskActions
-                  : [];
-              recoveredFnCalls.push({
-                name: key,
-                args: { taskActions, summaryAr: (parsed.summaryAr as string) || undefined },
-              });
-            } else if (key === 'propose_creative_actions') {
-              const creativeActions = Array.isArray(val)
-                ? val
-                : Array.isArray((val as Record<string, unknown>)?.creativeActions)
-                  ? (val as Record<string, unknown>).creativeActions
-                  : [];
-              recoveredFnCalls.push({
-                name: key,
-                args: { creativeActions, summaryAr: (parsed.summaryAr as string) || undefined },
-              });
-            } else if (key === 'propose_memory_actions') {
-              const memoryActions = Array.isArray(val)
-                ? val
-                : Array.isArray((val as Record<string, unknown>)?.memoryActions)
-                  ? (val as Record<string, unknown>).memoryActions
-                  : [];
-              recoveredFnCalls.push({
-                name: key,
-                args: { memoryActions, summaryAr: (parsed.summaryAr as string) || undefined },
-              });
-            } else if (typeof val === 'object' && val !== null) {
-              recoveredFnCalls.push({ name: key, args: val as Record<string, unknown> });
-            }
+  function parsePythonOrJsonCall(codeStr: string): boolean {
+    const trimmed = (codeStr || '').trim();
+    if (!trimmed) return false;
+
+    // 1. JSON format: { "propose_...": ... } or { "name": "propose_...", "args": ... }
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        let handled = false;
+        for (const key of toolKeys) {
+          if (key in parsed) {
+            handled = true;
+            tryRecoverTool(key, (parsed[key] as Record<string, unknown>) || parsed);
           }
         }
+        if (typeof parsed.name === 'string' && toolKeys.includes(parsed.name)) {
+          handled = true;
+          tryRecoverTool(parsed.name, (parsed.args as Record<string, unknown>) || {});
+        }
+        if (handled) return true;
+      } catch {
+        // ignore
       }
+    }
 
-      if (typeof parsed.name === 'string' && toolKeys.includes(parsed.name)) {
-        isToolJson = true;
-        if (!recoveredFnCalls.some((f) => f.name === parsed.name)) {
-          recoveredFnCalls.push({
-            name: parsed.name,
-            args: (parsed.args as Record<string, unknown>) || {},
-          });
+    // 2. Python call format: propose_calendar_actions(...)
+    const pyMatch = trimmed.match(/(propose_[a-z_]+)\s*\(([\s\S]*)\)/i);
+    if (pyMatch && toolKeys.includes(pyMatch[1])) {
+      const toolName = pyMatch[1];
+      const innerArgs = pyMatch[2].trim();
+      const argsObj: Record<string, unknown> = {};
+
+      const kwargRegex = /([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([\s\S]*?)(?=(?:,\s*[a-zA-Z_][a-zA-Z0-9_]*\s*=|$))/g;
+      let kwMatch: RegExpExecArray | null;
+      let foundKw = false;
+      while ((kwMatch = kwargRegex.exec(innerArgs)) !== null) {
+        foundKw = true;
+        const key = kwMatch[1];
+        let valStr = kwMatch[2].trim();
+        if (valStr.endsWith(',')) valStr = valStr.slice(0, -1).trim();
+
+        const jsonStr = valStr
+          .replace(/'/g, '"')
+          .replace(/\bTrue\b/g, 'true')
+          .replace(/\bFalse\b/g, 'false')
+          .replace(/\bNone\b/g, 'null');
+
+        try {
+          argsObj[key] = JSON.parse(jsonStr);
+        } catch {
+          argsObj[key] = valStr;
         }
       }
 
-      if (isToolJson) {
-        return ''; // Completely remove raw JSON tool call from human chat text
+      if (!foundKw && (innerArgs.startsWith('{') || innerArgs.startsWith('['))) {
+        try {
+          const jsonStr = innerArgs
+            .replace(/'/g, '"')
+            .replace(/\bTrue\b/g, 'true')
+            .replace(/\bFalse\b/g, 'false')
+            .replace(/\bNone\b/g, 'null');
+          const parsed = JSON.parse(jsonStr);
+          if (Array.isArray(parsed)) {
+            argsObj.actions = parsed;
+          } else {
+            Object.assign(argsObj, parsed);
+          }
+        } catch {
+          // ignore
+        }
       }
-    } catch {
-      // not valid JSON
+
+      tryRecoverTool(toolName, argsObj);
+      return true;
+    }
+
+    // Check if the snippet contains tool keys
+    for (const key of toolKeys) {
+      if (trimmed.includes(key)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // 1. Strip all closed markdown code blocks that are tool calls or contain propose_
+  const codeBlockRegex = /```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)\s*```/gi;
+  let cleaned = rawText.replace(codeBlockRegex, (match, inner: string) => {
+    if (parsePythonOrJsonCall(inner)) {
+      return '';
     }
     return match;
   });
 
-  return { cleanText: cleaned.trim(), recoveredFnCalls };
+  // 2. Strip unclosed code blocks if they contain propose_ (e.g. while streaming)
+  cleaned = cleaned.replace(/```(?:[a-zA-Z0-9_-]+)?\s*(?:propose_[\s\S]*?)$/gi, '');
+
+  // 3. Strip bare tool calls outside code blocks (e.g. propose_calendar_actions(...))
+  const bareCallRegex = /(?:propose_[a-z_]+)\s*\([\s\S]*?\)(?:;)?/gi;
+  cleaned = cleaned.replace(bareCallRegex, (match) => {
+    if (parsePythonOrJsonCall(match)) {
+      return '';
+    }
+    return match;
+  });
+
+  // Remove residual double/triple empty lines
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+  return { cleanText: cleaned, recoveredFnCalls };
 }
 
-/**
- * Public helper to sanitize raw chat message body for display in the UI.
- * Strips any leaked JSON tool dumps so users never see raw code blocks.
- */
 export function cleanDisplayMessageText(rawText?: string | null): string {
   if (!rawText) return '';
   return sanitizeGeminiOutputText(rawText).cleanText;
