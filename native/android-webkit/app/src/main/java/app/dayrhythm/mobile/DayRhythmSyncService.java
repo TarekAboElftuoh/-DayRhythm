@@ -283,14 +283,19 @@ public class DayRhythmSyncService extends Service {
         CloudSignalClient.startBackgroundSyncSignalWatcher(this);
     }
 
-    // ── Charge-limit alert (works with the app closed) ─────────────────────────────
+    // ── Charge-limit alert & Live Battery LAN Sync (works with the app closed) ─────
     // Keeping a Li-ion battery at 100% on the charger shortens its life, so ring once per
     // charging session when the level reaches the user's limit (default 90%).
+    // Instantly silences the alarm on both phone and PC when the charger is unplugged!
     public static final String PREFS_CHARGE = "dayrhythm_charge_limit_prefs";
     public static final String KEY_CHARGE_LIMIT = "charge_limit_pct";
     public static final String KEY_CHARGE_ALERT_ENABLED = "charge_alert_enabled";
     private BroadcastReceiver chargeLimitReceiver;
     private boolean chargeAlertFiredThisSession = false;
+    private long chargeSessionStartMs = 0L;
+    private int chargeSessionStartLevel = -1;
+    private int lastBroadcastBatteryLevel = -1;
+    private boolean lastBroadcastCharging = false;
 
     /** Called from the web app (JS bridge) whenever the limit or the on/off switch changes. */
     public static void saveChargeLimitSettings(Context context, int limitPct, boolean enabled) {
@@ -309,35 +314,123 @@ public class DayRhythmSyncService extends Service {
                 int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
                 int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
                 int status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
-                boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
-                        || status == BatteryManager.BATTERY_STATUS_FULL;
+                int plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
                 if (level < 0 || scale <= 0) return;
                 int pct = Math.round(level * 100f / scale);
+
+                String action = intent.getAction();
+                boolean charging = plugged != 0 && (status == BatteryManager.BATTERY_STATUS_CHARGING
+                        || status == BatteryManager.BATTERY_STATUS_FULL);
+                if (Intent.ACTION_POWER_DISCONNECTED.equals(action)) {
+                    charging = false;
+                } else if (Intent.ACTION_POWER_CONNECTED.equals(action)) {
+                    charging = true;
+                }
 
                 SharedPreferences sp = getSharedPreferences(PREFS_CHARGE, MODE_PRIVATE);
                 int limit = sp.getInt(KEY_CHARGE_LIMIT, 90);
                 boolean enabled = sp.getBoolean(KEY_CHARGE_ALERT_ENABLED, true);
+                long nowMs = System.currentTimeMillis();
 
-                if (!charging || pct < limit - 2) {
-                    chargeAlertFiredThisSession = false; // unplugged or dropped: re-arm for next charge
+                // 1. When disconnected / unplugged:
+                if (!charging) {
+                    chargeSessionStartMs = 0L;
+                    chargeSessionStartLevel = -1;
+                    if (chargeAlertFiredThisSession) {
+                        chargeAlertFiredThisSession = false; // re-arm for next charge
+                        // Instantly silence phone and close lockscreen alarm card!
+                        ReminderAlarmReceiver.cancelAllActiveAlarms(DayRhythmSyncService.this);
+                        // Instantly notify PC to silence smart charge alert and close popup!
+                        CloudSignalClient.sendAlarmDismiss(DayRhythmSyncService.this, "unplugged");
+                    }
+                    if (lastBroadcastCharging || lastBroadcastBatteryLevel != pct) {
+                        lastBroadcastCharging = false;
+                        lastBroadcastBatteryLevel = pct;
+                        broadcastBatteryTelemetry(pct, false, 0, limit);
+                    }
                     return;
                 }
+
+                // 2. When charging: calculate charging speed & ETA to limit
+                if (chargeSessionStartMs == 0L || chargeSessionStartLevel < 0 || pct < chargeSessionStartLevel) {
+                    chargeSessionStartMs = nowMs;
+                    chargeSessionStartLevel = pct;
+                }
+
+                int etaMinutes = -1;
+                if (pct < limit) {
+                    double rate = 3.5; // default estimate for OnePlus 12R SuperVOOC (%/min)
+                    long elapsedMs = nowMs - chargeSessionStartMs;
+                    int deltaPct = pct - chargeSessionStartLevel;
+                    if (deltaPct >= 2 && elapsedMs >= 30_000L) {
+                        double observed = (double) deltaPct / (elapsedMs / 60_000.0);
+                        if (observed >= 0.5 && observed <= 15.0) {
+                            rate = observed;
+                        }
+                    }
+                    etaMinutes = Math.max(1, Math.min(240, (int) Math.ceil((limit - pct) / rate)));
+                }
+
+                // 3. Broadcast live battery telemetry to PC over LAN / WebSocket
+                if (pct != lastBroadcastBatteryLevel || !lastBroadcastCharging) {
+                    lastBroadcastBatteryLevel = pct;
+                    lastBroadcastCharging = true;
+                    broadcastBatteryTelemetry(pct, true, etaMinutes, limit);
+                }
+
+                // 4. Trigger alert when reaching limit (default 90%)
                 if (enabled && pct >= limit && !chargeAlertFiredThisSession) {
                     chargeAlertFiredThisSession = true;
+                    // Trigger continuous alarm with vibration on phone
                     ReminderAlarmReceiver.triggerImmediateNativeAlarm(
                             DayRhythmSyncService.this,
                             "🔋 الشحن وصل " + pct + "%",
                             "افصل الشاحن دلوقتي علشان تحافظ على عمر البطارية",
                             "charge",
-                            false,
+                            true,
                             0
                     );
+                    // Broadcast trigger to PC so desktop card pops up simultaneously
+                    broadcastAlarmTrigger("🔋 الشحن وصل " + pct + "%", "افصل الشاحن دلوقتي لحماية البطارية", "charge", 0);
+                    broadcastBatteryTelemetry(pct, true, 0, limit);
                 }
             }
         };
         try {
-            // ACTION_BATTERY_CHANGED is a protected system broadcast: a runtime receiver is required.
-            registerReceiver(chargeLimitReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(Intent.ACTION_BATTERY_CHANGED);
+            filter.addAction(Intent.ACTION_POWER_CONNECTED);
+            filter.addAction(Intent.ACTION_POWER_DISCONNECTED);
+            registerReceiver(chargeLimitReceiver, filter);
+        } catch (Exception ignored) {
+        }
+    }
+
+    public void broadcastBatteryTelemetry(int level, boolean charging, int etaMinutes, int limit) {
+        try {
+            JSONObject packet = new JSONObject();
+            packet.put("type", "battery");
+            packet.put("levelPct", level);
+            packet.put("charging", charging);
+            packet.put("chargeLimitPct", limit);
+            packet.put("chargeTimeRemainingMin", etaMinutes);
+            packet.put("deviceLabel", "OnePlus 12R");
+            packet.put("updatedAtMs", System.currentTimeMillis());
+
+            // 1. Send over active WebSocket if connected (instant LAN sync to PC)
+            WebSocket ws = activeWebSocket;
+            if (ws != null) {
+                try {
+                    ws.send(packet.toString());
+                } catch (Exception ignored) {
+                }
+            }
+
+            // 2. Broadcast internal intent for local web view
+            Intent syncIntent = new Intent(ACTION_WS_SYNC_MESSAGE);
+            syncIntent.setPackage(getPackageName());
+            syncIntent.putExtra(EXTRA_WS_PAYLOAD, packet.toString());
+            sendBroadcast(syncIntent);
         } catch (Exception ignored) {
         }
     }
@@ -532,6 +625,11 @@ public class DayRhythmSyncService extends Service {
                     handler.removeCallbacks(heartbeatPingRunnable);
                     handler.postDelayed(heartbeatPingRunnable, PING_INTERVAL_MS);
                     if (recoveredFromDrop) broadcastNetworkRecovered();
+                    SharedPreferences sp = getSharedPreferences(PREFS_CHARGE, MODE_PRIVATE);
+                    int limit = sp.getInt(KEY_CHARGE_LIMIT, 90);
+                    if (lastBroadcastBatteryLevel >= 0) {
+                        broadcastBatteryTelemetry(lastBroadcastBatteryLevel, lastBroadcastCharging, -1, limit);
+                    }
                 });
             }
 

@@ -132,10 +132,11 @@ public class AlarmActivity extends Activity {
 
         boolean isMed = "medication".equals(kind);
         boolean isWater = "water".equals(kind);
-        int accentColor = isMed ? 0xFFFB7185 : 0xFF7FFFD4; // Rose for meds, Aqua for others
+        boolean isCharge = "charge".equals(kind);
+        int accentColor = isMed ? 0xFFFB7185 : isCharge ? 0xFF4ADE80 : 0xFF7FFFD4; // Rose for meds, Emerald for battery, Aqua for others
 
         // Extract emoji and clean title
-        String emoji = isWater ? "💧" : isMed ? "💊" : "prayer".equals(kind) ? "🕌" : "general".equals(kind) ? "🔔" : "📅";
+        String emoji = isWater ? "💧" : isMed ? "💊" : isCharge ? "🔋" : "prayer".equals(kind) ? "🕌" : "general".equals(kind) ? "🔔" : "📅";
         String cleanTitle = title == null ? "" : title.trim();
         if (!cleanTitle.isEmpty()) {
             int cp = cleanTitle.codePointAt(0);
@@ -148,20 +149,22 @@ public class AlarmActivity extends Activity {
             }
         }
         if (cleanTitle.isEmpty()) {
-            cleanTitle = isWater ? "موعد شرب كوب ماء" : isMed ? "موعد تناول العلاج" : "تنبيه إيقاع اليوم";
+            cleanTitle = isWater ? "موعد شرب كوب ماء" : isMed ? "موعد تناول العلاج" : isCharge ? "وصل شحن البطارية للحد المحدد" : "تنبيه إيقاع اليوم";
         }
 
         String sourceLabel = isWater
                 ? "ترطيب يومي"
                 : isMed
                     ? "العلاجات والأدوية"
-                    : "prayer".equals(kind)
-                        ? "مواقيت الصلاة"
-                        : "calendar".equals(kind) || "event".equals(kind)
-                            ? "تقويم Google"
-                            : "task".equals(kind)
-                                ? "مهام اليوم"
-                                : "إيقاع اليوم";
+                    : isCharge
+                        ? "حماية البطارية الذكية"
+                        : "prayer".equals(kind)
+                            ? "مواقيت الصلاة"
+                            : "calendar".equals(kind) || "event".equals(kind)
+                                ? "تقويم Google"
+                                : "task".equals(kind)
+                                    ? "مهام اليوم"
+                                    : "إيقاع اليوم";
 
         String timeNow12h = new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date());
 
@@ -295,7 +298,7 @@ public class AlarmActivity extends Activity {
         card.addView(elapsedView, elapsedLp);
 
         // 6. Big Primary Action Button
-        String primaryLabel = isWater ? "شربت كوب ماء" : isMed ? "أخذت الجرعة" : "تم";
+        String primaryLabel = isWater ? "شربت كوب ماء" : isMed ? "أخذت الجرعة" : isCharge ? "فصلت الشاحن" : "تم";
         TextView primaryBtn = new TextView(this);
         primaryBtn.setText(primaryLabel);
         primaryBtn.setGravity(Gravity.CENTER);
