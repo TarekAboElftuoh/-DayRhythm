@@ -95,6 +95,21 @@ public class GitHubUpdater {
         return baseVer;
     }
 
+    public static boolean hasNewerOtaVersion(Context context) {
+        if (context == null) return false;
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(MainActivity.PREFS_NAME, Context.MODE_PRIVATE);
+            String otaVer = prefs.getString(KEY_OTA_VERSION, "");
+            String baseVer = BuildConfig.VERSION_NAME;
+            if (otaVer != null && !otaVer.trim().isEmpty() && isVersionNewer(otaVer, baseVer)) {
+                File otaRoot = getOtaWwwDir(context);
+                return new File(otaRoot, "index.html").exists();
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
     public static UpdateInfo checkLatestRelease() {
         return checkLatestRelease(null);
     }

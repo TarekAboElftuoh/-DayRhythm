@@ -211,6 +211,7 @@ public class MainActivity extends Activity {
             registerReceiver(nativeEventsReceiver, filter);
         }
 
+        purgeStaleOtaIfApkUpdated();
         buildWebViewUi();
 
         handleIncomingUpdateIntent(getIntent());
@@ -281,12 +282,27 @@ public class MainActivity extends Activity {
                 .build();
     }
 
+    private void purgeStaleOtaIfApkUpdated() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            String otaVer = prefs.getString(GitHubUpdater.KEY_OTA_VERSION, "");
+            String baseVer = BuildConfig.VERSION_NAME;
+            if (otaVer != null && !otaVer.trim().isEmpty() && !GitHubUpdater.isVersionNewer(otaVer, baseVer)) {
+                prefs.edit().remove(GitHubUpdater.KEY_OTA_VERSION).remove(GitHubUpdater.KEY_OTA_ACTIVE_DIR).apply();
+                GitHubUpdater.cleanupOldOtaReleases(this);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     private InputStream tryOpenOtaOrAsset(String relativePath) {
         try {
-            File otaRoot = GitHubUpdater.getOtaWwwDir(this);
-            File otaFile = new File(otaRoot, relativePath);
-            if (otaFile.exists() && otaFile.isFile()) {
-                return new FileInputStream(otaFile);
+            if (GitHubUpdater.hasNewerOtaVersion(this)) {
+                File otaRoot = GitHubUpdater.getOtaWwwDir(this);
+                File otaFile = new File(otaRoot, relativePath);
+                if (otaFile.exists() && otaFile.isFile()) {
+                    return new FileInputStream(otaFile);
+                }
             }
         } catch (Exception ignored) {
         }

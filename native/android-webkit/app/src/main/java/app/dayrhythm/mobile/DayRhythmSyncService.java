@@ -49,6 +49,7 @@ public class DayRhythmSyncService extends Service {
     public static final String ACTION_UPDATE_AVAILABLE = "app.dayrhythm.mobile.UPDATE_AVAILABLE";
     public static final String ACTION_NETWORK_RECOVERED = "app.dayrhythm.mobile.NETWORK_RECOVERED";
     public static final String ACTION_UPDATE_LIVE_STATUS = "app.dayrhythm.mobile.UPDATE_LIVE_STATUS";
+    public static final String ACTION_REFRESH_NOTIF = "app.dayrhythm.mobile.REFRESH_NOTIF";
     public static final String EXTRA_WS_PAYLOAD = "ws_payload";
     public static final String EXTRA_UPDATE_TAG = "update_tag";
     public static final String EXTRA_UPDATE_URL = "update_url";
@@ -62,7 +63,8 @@ public class DayRhythmSyncService extends Service {
     public static final String EXTRA_PERSISTENT_NOTIF_ENABLED = "persistent_notif_enabled";
 
     private static final String PREFS_LIVE = "dayrhythm_live_state_prefs";
-    private static final int NOTIF_KEEPALIVE_ID = 1001;
+    public static final int NOTIF_UNIFIED_ID = 1001;
+    private static final int NOTIF_KEEPALIVE_ID = NOTIF_UNIFIED_ID;
     private static final int NOTIF_LIVE_ALERT_ID = 1002;
     private static final long BASE_BACKOFF_MS = 1500L;
     private static final long MAX_BACKOFF_MS = 45000L;
@@ -174,6 +176,20 @@ public class DayRhythmSyncService extends Service {
         intent.putExtra(EXTRA_LIVE_LEAD_MINUTES, leadMinutes);
         intent.putExtra(EXTRA_PERSISTENT_NOTIF_ENABLED, persistentNotifEnabled);
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent);
+            } else {
+                context.startService(intent);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void refreshServiceNotification(Context context) {
+        if (context == null) return;
+        try {
+            Intent intent = new Intent(context, DayRhythmSyncService.class);
+            intent.setAction(ACTION_REFRESH_NOTIF);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent);
             } else {
@@ -299,6 +315,11 @@ public class DayRhythmSyncService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_REFRESH_NOTIF.equals(intent.getAction())) {
+            startForegroundCompat(buildPersistentNotification());
+            return START_STICKY;
+        }
+
         if (intent != null && ACTION_UPDATE_LIVE_STATUS.equals(intent.getAction())) {
             liveEmoji = intent.getStringExtra(EXTRA_LIVE_EMOJI);
             if (liveEmoji == null || liveEmoji.trim().isEmpty()) liveEmoji = "📅";

@@ -35,10 +35,7 @@ import org.json.JSONObject;
  * - Supports configurable Snooze (5/10/15m, default 5) and clean single "تم" action.
  */
 public class ReminderAlarmReceiver extends BroadcastReceiver {
-    // v3: the v2 channel was created with the SYSTEM ALARM ringtone as its sound, and Android never
-    // lets a channel's sound change afterwards — so every reminder rang the phone's alarm tone on
-    // top of anything the app played. v3 is silent; the app plays its own per-category sounds.
-    public static final String CHANNEL_ID = "dayrhythm_reminders_v3";
+    public static final String CHANNEL_ID = DayRhythmSyncService.CHANNEL_LIVE_ALERTS;
     private static final String LEGACY_CHANNEL_ID = "dayrhythm_exact_alarms_v2";
     public static final String ACTION_FIRE_ALARM = "app.dayrhythm.mobile.ACTION_FIRE_ALARM";
     public static final String ACTION_MARK_DONE = "app.dayrhythm.mobile.ACTION_MARK_DONE";
@@ -137,6 +134,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
         try {
             nm.deleteNotificationChannel(LEGACY_CHANNEL_ID);
+            nm.deleteNotificationChannel("dayrhythm_keepalive_v2");
+            nm.deleteNotificationChannel("dayrhythm_reminders_v3");
         } catch (Exception ignored) {
         }
 
@@ -695,8 +694,10 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 .addAction(0, "تأجيل " + snoozeMin + " د", snoozePi);
 
         try {
-            nm.notify(notifId, builder.build());
-            trackActiveNotifId(context, notifId);
+            // Update the single unified notification (ID 1001) so there are NEVER duplicate notifications!
+            nm.notify(DayRhythmSyncService.NOTIF_UNIFIED_ID, builder.build());
+            nm.cancel(1002);
+            trackActiveNotifId(context, DayRhythmSyncService.NOTIF_UNIFIED_ID);
         } catch (SecurityException ignored) {
         }
     }
@@ -730,24 +731,21 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         if (context == null) return;
         closeAlarmUi(context);
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
-        String csv = prefs.getString(KEY_ACTIVE_NOTIF_IDS, "");
-        if (nm != null && csv != null && !csv.isEmpty()) {
-            for (String token : csv.split(",")) {
-                try {
-                    nm.cancel(Integer.parseInt(token.trim()));
-                } catch (Exception ignored) {
-                }
-            }
+        if (nm != null) {
+            nm.cancel(1002);
         }
-        prefs.edit().putString(KEY_ACTIVE_NOTIF_IDS, "").apply();
+        DayRhythmSyncService.refreshServiceNotification(context);
     }
 
     private static void cancelNotification(Context context, int notifId) {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null) {
-            nm.cancel(notifId);
+            nm.cancel(1002);
+            if (notifId != DayRhythmSyncService.NOTIF_UNIFIED_ID) {
+                nm.cancel(notifId);
+            }
         }
+        DayRhythmSyncService.refreshServiceNotification(context);
     }
 
     private static void enqueuePendingQuickAction(
