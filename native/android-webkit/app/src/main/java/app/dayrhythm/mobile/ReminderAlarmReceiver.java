@@ -10,8 +10,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
+import android.media.ToneGenerator;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -58,8 +60,79 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
     private static final Object AUDIO_LOCK = new Object();
     private static Ringtone activeRingtone = null;
+    private static ToneGenerator activeToneGenerator = null;
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Runnable autoStopRingtoneRunnable = ReminderAlarmReceiver::stopRinging;
+
+    // BUG THIS FIXES: every native alarm — prayer, water, medication, calendar event, task —
+    // used to play the phone's SYSTEM "alarm clock" ringtone, so the user couldn't tell by sound
+    // alone whether it was a reminder they'd set themselves or just a linked calendar event, and
+    // it felt exactly like a regular wake-up alarm going off. Each category now pulses its own
+    // short, distinct tone (same idea as the web app's per-category sounds in audioEngine.ts) on
+    // the ALARM stream via ToneGenerator — no audio assets to bundle, still loud/insistent, but
+    // now actually tells the categories apart by ear.
+    private static Runnable pulseRunnable = null;
+
+    private static int toneForKind(String kind) {
+        if (kind == null) return ToneGenerator.TONE_PROP_PROMPT;
+        switch (kind) {
+            case "prayer":
+                return ToneGenerator.TONE_SUP_PIP; // soft, dignified double-pip
+            case "water":
+                return ToneGenerator.TONE_PROP_BEEP; // single light beep
+            case "medication":
+                return ToneGenerator.TONE_PROP_BEEP2; // quicker, slightly more urgent beep
+            case "event":
+            case "calendar":
+                return ToneGenerator.TONE_SUP_CONFIRM; // two-tone chime
+            case "task":
+                return ToneGenerator.TONE_PROP_ACK; // short ack chirp
+            case "charge":
+                return ToneGenerator.TONE_SUP_PIP;
+            default:
+                return ToneGenerator.TONE_PROP_PROMPT; // general / meeting / misc
+        }
+    }
+
+    // The status bar shrinks setSmallIcon to a plain monochrome silhouette, so a full-color
+    // launcher icon reads as the same indistinct blob for every category — prayer, water, task
+    // and medication all looked identical at a glance. Each category now gets its own simple
+    // shape (crescent, droplet, cross, calendar, check, bolt) so they're tellable apart by sight
+    // the same way per-category tones already made them tellable apart by ear.
+    private static int smallIconForKind(String kind) {
+        if (kind == null) return R.drawable.ic_notif_default;
+        switch (kind) {
+            case "prayer":
+                return R.drawable.ic_notif_prayer;
+            case "water":
+                return R.drawable.ic_notif_water;
+            case "medication":
+                return R.drawable.ic_notif_medication;
+            case "event":
+            case "calendar":
+                return R.drawable.ic_notif_calendar;
+            case "task":
+                return R.drawable.ic_notif_task;
+            case "charge":
+                return R.drawable.ic_notif_charge;
+            default:
+                return R.drawable.ic_notif_default;
+        }
+    }
+
+    private static int pulsePeriodMsForKind(String kind) {
+        if (kind == null) return 2200;
+        switch (kind) {
+            case "medication":
+                return 1300; // most urgent: don't miss a dose
+            case "water":
+                return 2600;
+            case "charge":
+                return 3200; // least urgent: just unplug when convenient
+            default:
+                return 2000;
+        }
+    }
 
     private static int sanitizeSnoozeMinutes(int raw) {
         if (raw == 5 || raw == 10 || raw == 15) return raw;
@@ -97,30 +170,38 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         nm.createNotificationChannel(ch);
     }
 
+    /** Back-compat overload: no category known, falls back to the generic prompt tone. */
     public static void playNativeAlarmSound(Context context, boolean continuous) {
+        playNativeAlarmSound(context, continuous, null);
+    }
+
+    public static void playNativeAlarmSound(Context context, boolean continuous, String kind) {
         if (context == null) return;
+        stopRinging();
+
         try {
-            stopRinging();
-            Uri uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
-            if (uri == null) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
-            Ringtone rt = RingtoneManager.getRingtone(context.getApplicationContext(), uri);
-            if (rt != null) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    rt.setAudioAttributes(new AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ALARM)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build());
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    rt.setLooping(continuous);
-                }
-                synchronized (AUDIO_LOCK) {
-                    activeRingtone = rt;
-                }
-                rt.play();
-                mainHandler.removeCallbacks(autoStopRingtoneRunnable);
-                mainHandler.postDelayed(autoStopRingtoneRunnable, continuous ? 45_000L : 8_000L);
+            final ToneGenerator tg = new ToneGenerator(AudioManager.STREAM_ALARM, 95);
+            final int toneType = toneForKind(kind);
+            final int periodMs = pulsePeriodMsForKind(kind);
+            synchronized (AUDIO_LOCK) {
+                activeToneGenerator = tg;
             }
+            pulseRunnable = new Runnable() {
+                @Override
+                public void run() {
+                    synchronized (AUDIO_LOCK) {
+                        if (activeToneGenerator != tg) return; // stopped/replaced meanwhile
+                    }
+                    try {
+                        tg.startTone(toneType, 260);
+                    } catch (Exception ignored) {
+                    }
+                    mainHandler.postDelayed(this, periodMs);
+                }
+            };
+            mainHandler.post(pulseRunnable);
+            mainHandler.removeCallbacks(autoStopRingtoneRunnable);
+            mainHandler.postDelayed(autoStopRingtoneRunnable, continuous ? 45_000L : 8_000L);
         } catch (Exception ignored) {
         }
 
@@ -140,6 +221,10 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
     public static void stopRinging() {
         mainHandler.removeCallbacks(autoStopRingtoneRunnable);
+        if (pulseRunnable != null) {
+            mainHandler.removeCallbacks(pulseRunnable);
+            pulseRunnable = null;
+        }
         synchronized (AUDIO_LOCK) {
             if (activeRingtone != null) {
                 try {
@@ -147,6 +232,13 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 } catch (Exception ignored) {
                 }
                 activeRingtone = null;
+            }
+            if (activeToneGenerator != null) {
+                try {
+                    activeToneGenerator.release();
+                } catch (Exception ignored) {
+                }
+                activeToneGenerator = null;
             }
         }
     }
@@ -161,7 +253,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     ) {
         if (context == null) return;
         int notifId = 7100 + Math.abs((title != null ? title : "alarm").hashCode() % 1000);
-        playNativeAlarmSound(context, continuous);
+        playNativeAlarmSound(context, continuous, kind);
         showInteractiveNotification(
                 context,
                 notifId,
@@ -249,7 +341,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             try {
                 // Ring until answered (45 s cap); water reminders stay short.
                 boolean isContinuous = !"water".equals(kind);
-                playNativeAlarmSound(context, isContinuous);
+                playNativeAlarmSound(context, isContinuous, kind);
                 showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
                 // If the PC (or another device) stops this alert, stop it here too.
                 CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
@@ -479,7 +571,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     : "تم";
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(smallIconForKind(kind))
                 .setContentTitle(title != null && !title.isEmpty() ? title : "تنبيه إيقاع اليوم")
                 .setContentText(body != null && !body.isEmpty() ? body : "حان وقت مهمتك الآن")
                 .setPriority(NotificationCompat.PRIORITY_MAX)
