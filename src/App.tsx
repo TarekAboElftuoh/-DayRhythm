@@ -2539,6 +2539,54 @@ export default function App() {
     sunMode,
   ]);
 
+  // Reactive cross-device sync for Creative Activities & Hobbies
+  const lastSyncedCreativeSigRef = useRef<string>('');
+  useEffect(() => {
+    if (!hasHydratedRemoteRef.current) return;
+    const sig = JSON.stringify(creativeActivities);
+    if (sig === lastSyncedCreativeSigRef.current) return;
+    lastSyncedCreativeSigRef.current = sig;
+    void pushToTasksVaultRef.current({ creativeActivities });
+  }, [creativeActivities]);
+
+  // Reactive cross-device sync for Gemini Long-term Memories
+  const lastSyncedMemoriesSigRef = useRef<string>('');
+  useEffect(() => {
+    if (!hasHydratedRemoteRef.current) return;
+    const sig = JSON.stringify(memories);
+    if (sig === lastSyncedMemoriesSigRef.current) return;
+    lastSyncedMemoriesSigRef.current = sig;
+    void pushToTasksVaultRef.current({ memories });
+  }, [memories]);
+
+  // Reactive cross-device sync for Daily Streaks & Commitments
+  const lastSyncedStreaksSigRef = useRef<string>('');
+  useEffect(() => {
+    if (!hasHydratedRemoteRef.current) return;
+    const sig = `${streaks.dailyCommitmentDays}:${streaks.dailyCommitmentDoneToday}:${streaks.waterTargetDays}:${streaks.waterTargetDoneToday}`;
+    if (sig === lastSyncedStreaksSigRef.current) return;
+    lastSyncedStreaksSigRef.current = sig;
+    void pushToTasksVaultRef.current({
+      dailyCommitmentDays: streaks.dailyCommitmentDays,
+      dailyCommitmentDoneToday: streaks.dailyCommitmentDoneToday,
+      waterTargetDays: streaks.waterTargetDays,
+      waterTargetDoneToday: streaks.waterTargetDoneToday,
+    });
+  }, [streaks]);
+
+  // Reactive cross-device sync for Quiet Mode & Adhan Silent Override
+  const lastSyncedQuietSigRef = useRef<string>('');
+  useEffect(() => {
+    if (!hasHydratedRemoteRef.current) return;
+    const sig = `${quietMode}:${adhanOverrideSilent}`;
+    if (sig === lastSyncedQuietSigRef.current) return;
+    lastSyncedQuietSigRef.current = sig;
+    void pushToTasksVaultRef.current({
+      quietMode,
+      adhanOverrideSilent,
+    });
+  }, [quietMode, adhanOverrideSilent]);
+
   // ── Permanent Google link ────────────────────────────────────────────────────────────
   const [permanentLinkActive, setPermanentLinkActive] = useState<boolean>(() => hasPermanentLink());
   const [isStartingPermanentLink, setIsStartingPermanentLink] = useState(false);
@@ -3368,6 +3416,7 @@ export default function App() {
     }
     if (remote.quietMode) setQuietMode(remote.quietMode);
     if (typeof remote.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(remote.adhanOverrideSilent);
+    lastSyncedQuietSigRef.current = `${remote.quietMode || quietMode}:${remote.adhanOverrideSilent ?? adhanOverrideSilent}`;
     setSurfaceTheme('amoled');
     if (remote.deviceSettings) {
       const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
@@ -3402,6 +3451,7 @@ export default function App() {
     }
     if (Array.isArray(remote.memories) && remote.memories.length > 0) {
       const cleanMems = remote.memories.map((m) => sanitizeMemoryItem(m));
+      lastSyncedMemoriesSigRef.current = JSON.stringify(cleanMems);
       setMemories(cleanMems);
       try {
         localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(cleanMems));
@@ -3411,6 +3461,7 @@ export default function App() {
     }
     if (Array.isArray(remote.creativeActivities) && remote.creativeActivities.length > 0) {
       const cleanCreatives = remote.creativeActivities.map((c) => sanitizeCreativeActivityItem(c));
+      lastSyncedCreativeSigRef.current = JSON.stringify(cleanCreatives);
       setCreativeActivities(cleanCreatives);
       try {
         localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(cleanCreatives));
@@ -3452,6 +3503,7 @@ export default function App() {
     }
 
     if (typeof remote.dailyCommitmentDays === 'number') {
+      lastSyncedStreaksSigRef.current = `${remote.dailyCommitmentDays}:${Boolean(remote.dailyCommitmentDoneToday)}:${remote.waterTargetDays ?? 0}:${Boolean(remote.waterTargetDoneToday)}`;
       setStreaks({
         dailyCommitmentDays: remote.dailyCommitmentDays,
         dailyCommitmentDoneToday: Boolean(remote.dailyCommitmentDoneToday),
