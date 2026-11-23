@@ -1609,8 +1609,25 @@ export default function App() {
         DEFAULT_SOUND_REPEATS[category] ??
         1;
 
+      const androidNative = (
+        window as Window & {
+          DayRhythmNative?: {
+            triggerNativeAlarm?: (
+              title: string,
+              body: string,
+              kind: string,
+              continuous: boolean,
+              snoozeMinutes: number
+            ) => void;
+          };
+        }
+      ).DayRhythmNative;
+      const isAndroidNative = Boolean(androidNative);
+
       if (!options?.bypassSanctuary && activeSanctuary.type !== 'none') {
-        playTaskSignature(category, { sanctuary: activeSanctuary, repeatCount: 1 });
+        if (!isAndroidNative) {
+          playTaskSignature(category, { sanctuary: activeSanctuary, repeatCount: 1 });
+        }
         const reasonAr =
           activeSanctuary.type === 'prayer'
             ? 'وقت الصلاة'
@@ -1630,10 +1647,18 @@ export default function App() {
         return;
       }
 
-      const playRes = playTaskSignature(category, {
-        bypassSanctuary: true,
-        repeatCount,
-      });
+      // If running inside Android Native APK, ALL audio is routed strictly to the native
+      // Android Alarm Stream (STREAM_ALARM / AudioAttributes.USAGE_ALARM) via triggerNativeAlarm.
+      // Web Audio (AudioContext) in Chromium WebView outputs strictly to STREAM_MUSIC (Media volume),
+      // which creates dual-channel playback and gets muted when the user silences Media volume.
+      const isContinuous = repeatCount === 'continuous';
+      let playRes = { playedAudio: false, vibrated: false, isContinuous };
+      if (!isAndroidNative) {
+        playRes = playTaskSignature(category, {
+          bypassSanctuary: true,
+          repeatCount,
+        });
+      }
       const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
       const alertId = `alert_${Date.now().toString(36)}`;
       const defaultSnooze =
@@ -1644,25 +1669,12 @@ export default function App() {
         window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
       ).chrome?.webview;
       const isNativeWin = Boolean(wv?.postMessage);
-      const androidNative = (
-        window as Window & {
-          DayRhythmNative?: {
-            triggerNativeAlarm?: (
-              title: string,
-              body: string,
-              kind: string,
-              continuous: boolean,
-              snoozeMinutes: number
-            ) => void;
-          };
-        }
-      ).DayRhythmNative;
 
       setActiveAudioAlert({
         id: alertId,
         title: privacyBadge,
         category,
-        isContinuous: playRes.isContinuous,
+        isContinuous: Boolean(playRes.isContinuous || isContinuous),
       });
 
       // Avoid showing TWO duplicate alerts on Windows EXE (native SecondaryMonitorToastForm handles PC alert cleanly!)
@@ -1676,7 +1688,7 @@ export default function App() {
           category,
           createdAtMs: Date.now(),
           durationMs,
-          isContinuous: playRes.isContinuous,
+          isContinuous: Boolean(playRes.isContinuous || isContinuous),
           isHydration: category === 'water',
           medicationId: options?.medicationId,
           medicationDoseTime24: options?.medicationDoseTime24,
@@ -1685,7 +1697,7 @@ export default function App() {
         });
       }
 
-      // On Android APK: also fire native OS alarm sound + vibration + heads-up notification so OnePlus 12R rings loudly even if WebView audio is suspended
+      // On Android APK: fire native OS alarm sound strictly on STREAM_ALARM + vibration + heads-up notification so OnePlus 12R rings loudly even if Media volume is muted
       try {
         androidNative?.triggerNativeAlarm?.(
           `${privacyBadge} ${visibleTitle}`,
@@ -1693,7 +1705,7 @@ export default function App() {
             ? `${visibleDescription}\n${visibleSource} · ${nowTime12}`
             : `${visibleSource} · ${nowTime12}`,
           category,
-          Boolean(playRes.isContinuous),
+          Boolean(playRes.isContinuous || isContinuous),
           defaultSnooze
         );
       } catch {
@@ -7025,13 +7037,18 @@ export default function App() {
       phoneChargeNotifiedCycleRef.current = true;
       setPhoneChargeAlertDismissed(false);
 
-      const audioResult = startSmartChargeCompleteAlert({
-        sanctuary: activeSanctuary,
-        keepRingingUntilUnplugged: smartChargeKeepUntilUnplugged,
-        onAutoStop: () => setSmartChargeAudioActive(false),
-      });
-      if (audioResult.playedAudio) {
-        setSmartChargeAudioActive(true);
+      const isAndroidNative = Boolean(
+        (window as Window & { DayRhythmNative?: unknown }).DayRhythmNative
+      );
+      if (!isAndroidNative) {
+        const audioResult = startSmartChargeCompleteAlert({
+          sanctuary: activeSanctuary,
+          keepRingingUntilUnplugged: smartChargeKeepUntilUnplugged,
+          onAutoStop: () => setSmartChargeAudioActive(false),
+        });
+        if (audioResult.playedAudio) {
+          setSmartChargeAudioActive(true);
+        }
       }
 
       const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');

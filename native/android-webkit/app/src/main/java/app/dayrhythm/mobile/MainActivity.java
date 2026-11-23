@@ -185,6 +185,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setVolumeControlStream(android.media.AudioManager.STREAM_ALARM);
 
         // 1. Clean stale OTA folders & configure official AndroidX WebViewAssetLoader
         GitHubUpdater.cleanupOldOtaReleases(this);

@@ -77,6 +77,7 @@ public class AlarmActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        setVolumeControlStream(android.media.AudioManager.STREAM_ALARM);
 
         // Turn on screen and show over lock screen (unconditionally on OnePlus OxygenOS / Android)
         getWindow().addFlags(

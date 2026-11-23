@@ -9,7 +9,9 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.AssetFileDescriptor;
 import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
 import android.media.AudioManager;
 import android.media.Ringtone;
 import android.media.RingtoneManager;
@@ -64,8 +66,66 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     private static Ringtone activeRingtone = null;
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final Runnable autoStopRingtoneRunnable = ReminderAlarmReceiver::stopRinging;
+    private static AudioFocusRequest activeFocusRequest = null;
+    private static final AudioManager.OnAudioFocusChangeListener focusChangeListener = focusChange -> {
+        // Alarm audio takes priority; if transient loss occurs, alarm stream handles focus
+    };
     private static final java.util.Map<String, Long> RECENT_FIRED_KEYS = new java.util.concurrent.ConcurrentHashMap<>();
     private static volatile Context lastAppContext = null;
+
+    private static void requestAlarmAudioFocus(Context context) {
+        if (context == null) return;
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return;
+
+            AudioAttributes alarmAttrs = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
+                    .build();
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (activeFocusRequest == null) {
+                    AudioFocusRequest.Builder reqBuilder =
+                            new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                                    .setAudioAttributes(alarmAttrs)
+                                    .setAcceptsDelayedFocusGain(false)
+                                    .setWillPauseWhenDucked(false)
+                                    .setOnAudioFocusChangeListener(focusChangeListener, mainHandler);
+                    activeFocusRequest = reqBuilder.build();
+                }
+                am.requestAudioFocus(activeFocusRequest);
+            } else {
+                //noinspection deprecation
+                am.requestAudioFocus(
+                        focusChangeListener,
+                        AudioManager.STREAM_ALARM,
+                        AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE
+                );
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void abandonAlarmAudioFocus(Context context) {
+        if (context == null) return;
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (am == null) return;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (activeFocusRequest != null) {
+                    am.abandonAudioFocusRequest(activeFocusRequest);
+                    activeFocusRequest = null;
+                }
+            } else {
+                //noinspection deprecation
+                am.abandonAudioFocus(focusChangeListener);
+            }
+        } catch (Exception ignored) {
+        }
+    }
 
     private static boolean isRecentlyFired(String key) {
         if (key == null || key.isEmpty()) return false;
@@ -186,8 +246,12 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         stopRinging();
 
         try {
+            // Request alarm audio focus so Android switches volume control to STREAM_ALARM,
+            // ducks any other media, and guarantees audibility even if Media volume is 0.
+            requestAlarmAudioFocus(lastAppContext);
+
             // The app's own sound for this category — the exact signature the web app plays
-            // (rendered from audioEngine.ts into res/raw), not a system tone or alarm ringtone.
+            // (rendered from audioEngine.ts into res/raw), strictly routed to STREAM_ALARM.
             final int soundRes = soundResForKind(context, kind);
             final int periodMs = pulsePeriodMsForKind(kind);
             final Context app = context.getApplicationContext();
@@ -239,6 +303,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             }
         }
         if (lastAppContext != null) {
+            abandonAlarmAudioFocus(lastAppContext);
             try {
                 Vibrator vib = (Vibrator) lastAppContext.getSystemService(Context.VIBRATOR_SERVICE);
                 if (vib != null) vib.cancel();
@@ -275,19 +340,64 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     }
 
     private static void playSoundOnce(Context app, int soundRes) {
+        if (app == null) return;
         try {
-            MediaPlayer mp = MediaPlayer.create(
-                    app,
-                    soundRes,
-                    new AudioAttributes.Builder()
-                            // Alarm usage so it is still heard when the ringer is on silent (the
-                            // app's own meeting / prayer quiet modes decide that, not the slider).
-                            .setUsage(AudioAttributes.USAGE_ALARM)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build(),
-                    0
-            );
-            if (mp == null) return;
+            AudioAttributes alarmAttrs = new AudioAttributes.Builder()
+                    // Alarm usage so it is still heard when the media/ringer is on silent (the
+                    // app's own meeting / prayer quiet modes decide that, not the volume sliders).
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
+                    .build();
+
+            AssetFileDescriptor afd = null;
+            try {
+                afd = app.getResources().openRawResourceFd(soundRes);
+            } catch (Exception ignored) {
+            }
+
+            MediaPlayer mp;
+            if (afd != null) {
+                mp = new MediaPlayer();
+                mp.setAudioAttributes(alarmAttrs);
+                // Strict stream binding so Android/OxygenOS routes to Alarm volume, never Media
+                //noinspection deprecation
+                mp.setAudioStreamType(AudioManager.STREAM_ALARM);
+                mp.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+                afd.close();
+                mp.prepare();
+            } else {
+                // Fallback to MediaPlayer.create if afd cannot be loaded directly
+                mp = MediaPlayer.create(app, soundRes, alarmAttrs, 0);
+                if (mp != null) {
+                    //noinspection deprecation
+                    mp.setAudioStreamType(AudioManager.STREAM_ALARM);
+                }
+            }
+
+            if (mp == null) {
+                // Fallback to system alarm ringtone on the alarm stream
+                Uri alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+                if (alarmUri == null) {
+                    alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+                }
+                if (alarmUri != null) {
+                    Ringtone r = RingtoneManager.getRingtone(app, alarmUri);
+                    if (r != null) {
+                        r.setAudioAttributes(alarmAttrs);
+                        //noinspection deprecation
+                        r.setStreamType(AudioManager.STREAM_ALARM);
+                        r.play();
+                        synchronized (AUDIO_LOCK) {
+                            activeRingtone = r;
+                        }
+                    }
+                }
+                return;
+            }
+
+            mp.setVolume(1.0f, 1.0f);
+
             synchronized (AUDIO_LOCK) {
                 if (activePlayer != null) {
                     try {
