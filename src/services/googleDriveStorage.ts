@@ -9,6 +9,7 @@ import {
   UiPrefs,
 } from '../types/dayrhythm';
 import { OnePlusDeviceSettings } from '../firebase';
+import { refreshGoogleCalendarTokenSilently } from './googleCalendarAuth';
 
 export const GDRIVE_BACKUP_FILENAME = 'dayrhythm_account_sync.json';
 const GDRIVE_FILE_ID_CACHE_KEY = 'dayrhythm_gdrive_appdata_file_id_v1';
@@ -89,6 +90,18 @@ export async function getOrFindAppDataFileId(token: string): Promise<string | nu
     );
 
     if (res.status === 401) {
+      const freshToken = await refreshGoogleCalendarTokenSilently();
+      if (freshToken && freshToken !== token) {
+        return getOrFindAppDataFileId(freshToken);
+      }
+      return null;
+    }
+
+    if (res.status === 403) {
+      console.warn('[GoogleDriveStorage] Scope drive.appdata is missing (HTTP 403). Re-authorization required.');
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-scope-missing'));
+      }
       return null;
     }
 
@@ -156,7 +169,20 @@ export async function loadFromGoogleDriveAppData(
         }
       );
 
-      if (searchRes.status === 401) return null;
+      if (searchRes.status === 401) {
+        const freshToken = await refreshGoogleCalendarTokenSilently();
+        if (freshToken && freshToken !== token) {
+          return loadFromGoogleDriveAppData(freshToken);
+        }
+        return null;
+      }
+      if (searchRes.status === 403) {
+        console.warn('[GoogleDriveStorage] Scope drive.appdata is missing on search (HTTP 403).');
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-scope-missing'));
+        }
+        return null;
+      }
       if (!searchRes.ok) return null;
 
       const searchJson = (await searchRes.json()) as { files?: Array<{ id: string; name: string }> };
@@ -182,7 +208,13 @@ export async function loadFromGoogleDriveAppData(
       return null;
     }
 
-    if (downloadRes.status === 401) return null;
+    if (downloadRes.status === 401) {
+      const freshToken = await refreshGoogleCalendarTokenSilently();
+      if (freshToken && freshToken !== token) {
+        return loadFromGoogleDriveAppData(freshToken);
+      }
+      return null;
+    }
     if (!downloadRes.ok) {
       console.warn('[GoogleDriveStorage] Failed to download backup media:', downloadRes.status);
       return null;
@@ -251,7 +283,21 @@ export async function saveToGoogleDriveAppData(
       );
     }
 
-    if (patchRes.status === 401) return false;
+    if (patchRes.status === 401) {
+      const freshToken = await refreshGoogleCalendarTokenSilently();
+      if (freshToken && freshToken !== token) {
+        return saveToGoogleDriveAppData(freshToken, backup);
+      }
+      return false;
+    }
+
+    if (patchRes.status === 403) {
+      console.warn('[GoogleDriveStorage] Scope drive.appdata is missing on patch (HTTP 403).');
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-scope-missing'));
+      }
+      return false;
+    }
 
     if (!patchRes.ok) {
       console.warn('[GoogleDriveStorage] Failed to patch appData file:', patchRes.status);

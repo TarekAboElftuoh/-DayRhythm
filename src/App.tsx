@@ -60,6 +60,7 @@ import {
 } from './types/dayrhythm';
 import {
   getCalendarAccessToken,
+  getOrRefreshCalendarAccessToken,
   initCalendarAuth,
   markCalendarTokenExpired,
   isCalendarTokenExpiringSoon,
@@ -301,7 +302,6 @@ const WELCOME_MESSAGE: PersistedChatMessage = {
 };
 
 function loadSavedChats(): PersistedChatMessage[] {
-  if (!hasActiveSignedInSession()) return [WELCOME_MESSAGE];
   try {
     const raw = localStorage.getItem(CHAT_STORAGE_KEY);
     if (raw) {
@@ -319,7 +319,6 @@ function loadSavedChats(): PersistedChatMessage[] {
 }
 
 function loadSavedMedications(): MedicationItem[] {
-  if (!hasActiveSignedInSession()) return DEFAULT_MEDICATIONS;
   try {
     const raw = localStorage.getItem(MEDS_STORAGE_KEY);
     if (raw) {
@@ -335,7 +334,6 @@ function loadSavedMedications(): MedicationItem[] {
 }
 
 function loadSavedCreativeActivities(): CreativeActivityItem[] {
-  if (!hasActiveSignedInSession()) return DEFAULT_CREATIVE_ACTIVITIES;
   try {
     const raw = localStorage.getItem(CREATIVE_STORAGE_KEY);
     if (raw) {
@@ -351,7 +349,6 @@ function loadSavedCreativeActivities(): CreativeActivityItem[] {
 }
 
 function loadSavedMemories(): MemoryItem[] {
-  if (!hasActiveSignedInSession()) return DEFAULT_MEMORIES;
   try {
     const raw = localStorage.getItem(MEMORIES_STORAGE_KEY);
     if (raw) {
@@ -367,7 +364,6 @@ function loadSavedMemories(): MemoryItem[] {
 }
 
 function loadSavedSilentNotifications(): SilentNotificationItem[] {
-  if (!hasActiveSignedInSession()) return [];
   try {
     const raw = localStorage.getItem(SILENT_NOTIFS_STORAGE_KEY);
     if (raw) {
@@ -784,7 +780,7 @@ export default function App() {
 
   const [syncTier, setSyncTier] = useState<SyncTierMode>('google_calendar_api');
   const [periodicRituals, setPeriodicRituals] = useState<PeriodicRitualStatus[]>(() =>
-    hasActiveSignedInSession() ? INITIAL_PERIODIC_RITUALS : []
+    INITIAL_PERIODIC_RITUALS
   );
   const [changelog, setChangelog] = useState<SharedChangelogEntry[]>(INITIAL_CHANGELOG);
 
@@ -804,12 +800,12 @@ export default function App() {
   const [firestoreReady, setFirestoreReady] = useState(false);
   const [firestoreSynced, setFirestoreSynced] = useState(false);
   const [googleDriveSynced, setGoogleDriveSynced] = useState(false);
+  const [isSyncingGoogleDrive, setIsSyncingGoogleDrive] = useState(false);
   const hasHydratedGoogleDriveRef = useRef(false);
   const isSavingGoogleDriveRef = useRef(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const [deviceSettings, setDeviceSettings] = useState<OnePlusDeviceSettings>(() => {
-    if (!hasActiveSignedInSession()) return DEFAULT_DEVICE_SETTINGS;
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -825,7 +821,6 @@ export default function App() {
   });
 
   const [lifeProfile, setLifeProfile] = useState<LifeProfile>(() => {
-    if (!hasActiveSignedInSession()) return DEFAULT_LIFE_PROFILE;
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -1190,7 +1185,6 @@ export default function App() {
 
   const [hydrationHistory, setHydrationHistory] = useState<HydrationDayLog[]>(() => {
     const initialTz = lifeProfile.currentTimeZone || 'Africa/Cairo';
-    if (!hasActiveSignedInSession()) return buildInitialHydrationHistory(targetCups, initialTz);
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -2533,6 +2527,185 @@ export default function App() {
     }
   });
 
+  const hydrateGoogleDriveOnce = useCallback(
+    async (customToken?: string): Promise<boolean> => {
+      let token = customToken || (await getOrRefreshCalendarAccessToken());
+      if (!token) {
+        hasHydratedGoogleDriveRef.current = true;
+        return false;
+      }
+
+      setIsSyncingGoogleDrive(true);
+      try {
+        const backup = await loadFromGoogleDriveAppData(token);
+        if (backup) {
+          if (backup.lifeProfile) {
+            const cleanProfile = sanitizeLifeProfile(backup.lifeProfile);
+            setLifeProfile(cleanProfile);
+            try {
+              const raw = localStorage.getItem(STORAGE_KEY);
+              const parsed = raw ? JSON.parse(raw) : {};
+              localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          if (Array.isArray(backup.medications)) {
+            const cleanMeds = backup.medications.map((m) => sanitizeMedicationItem(m));
+            setMedications(cleanMeds);
+            try {
+              localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(cleanMeds));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          if (Array.isArray(backup.hydrationHistory) && backup.hydrationHistory.length === 7) {
+            setHydrationHistory(backup.hydrationHistory);
+            try {
+              const raw = localStorage.getItem(STORAGE_KEY);
+              const parsed = raw ? JSON.parse(raw) : {};
+              localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, hydrationHistory: backup.hydrationHistory }));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          if (Array.isArray(backup.creativeActivities)) {
+            const cleanCreative = backup.creativeActivities.map((a) => sanitizeCreativeActivityItem(a));
+            setCreativeActivities(cleanCreative);
+            try {
+              localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(cleanCreative));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          if (Array.isArray(backup.memories)) {
+            const cleanMemories = backup.memories.map((m) => sanitizeMemoryItem(m));
+            setMemories(cleanMemories);
+            try {
+              localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(cleanMemories));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          if (backup.deviceSettings) {
+            const cleanDev = sanitizeDeviceSettings(backup.deviceSettings);
+            setDeviceSettings(cleanDev);
+            try {
+              const raw = localStorage.getItem(STORAGE_KEY);
+              const parsed = raw ? JSON.parse(raw) : {};
+              localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          if (backup.capsulePrefs) {
+            setCapsulePrefs(backup.capsulePrefs);
+            try {
+              window.localStorage.setItem(CAPSULE_PREFS_STORAGE_KEY, JSON.stringify(backup.capsulePrefs));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          if (backup.selectedLogoId) {
+            setSelectedLogoId(backup.selectedLogoId);
+            try {
+              window.localStorage.setItem(SELECTED_LOGO_STORAGE_KEY, backup.selectedLogoId);
+            } catch {
+              // ignore storage errors
+            }
+          }
+          if (backup.quietMode) setQuietMode(backup.quietMode);
+          if (typeof backup.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(backup.adhanOverrideSilent);
+          if (Array.isArray(backup.chatMessages) && backup.chatMessages.length > 0) {
+            setChatMessages(backup.chatMessages);
+            try {
+              localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(backup.chatMessages.slice(-100)));
+            } catch {
+              // ignore storage errors
+            }
+          }
+          setGoogleDriveSynced(true);
+          showToast('✓ تمت استعادة إعدادات ودستور حساب Google بالكامل');
+        }
+        hasHydratedGoogleDriveRef.current = true;
+        return true;
+      } catch (err) {
+        console.warn('Failed hydrating Google Drive appData:', err);
+        hasHydratedGoogleDriveRef.current = true;
+        return false;
+      } finally {
+        setIsSyncingGoogleDrive(false);
+      }
+    },
+    [showToast]
+  );
+
+  const pushFullCloudBackupImmediately = useCallback(
+    async (
+      customToken?: string,
+      overrides?: Partial<FullDayRhythmCloudBackup>
+    ): Promise<boolean> => {
+      let token = customToken || (await getOrRefreshCalendarAccessToken());
+      if (!token) return false;
+
+      const backup: FullDayRhythmCloudBackup = {
+        version: 1,
+        updatedAtIso: new Date().toISOString(),
+        updatedAtMs: Date.now(),
+        lifeProfile: overrides?.lifeProfile ?? lifeProfile,
+        medications: overrides?.medications ?? medications,
+        hydrationHistory: overrides?.hydrationHistory ?? hydrationHistory,
+        creativeActivities: overrides?.creativeActivities ?? creativeActivities,
+        memories: overrides?.memories ?? memories,
+        deviceSettings: overrides?.deviceSettings ?? deviceSettings,
+        quietMode: overrides?.quietMode ?? quietMode,
+        adhanOverrideSilent: overrides?.adhanOverrideSilent ?? adhanOverrideSilent,
+        waterRemindersEnabled: overrides?.waterRemindersEnabled ?? waterRemindersEnabled,
+        phoneChargeLimitPct: overrides?.phoneChargeLimitPct ?? phoneChargeLimitPct,
+        smartChargeAlertEnabled: overrides?.smartChargeAlertEnabled ?? smartChargeAlertEnabled,
+        smartChargeKeepUntilUnplugged: overrides?.smartChargeKeepUntilUnplugged ?? smartChargeKeepUntilUnplugged,
+        capsulePrefs: overrides?.capsulePrefs ?? capsulePrefs,
+        selectedLogoId: overrides?.selectedLogoId ?? selectedLogoId,
+        chatMessages: (overrides?.chatMessages ?? chatMessages).slice(-50),
+      };
+
+      setIsSyncingGoogleDrive(true);
+      try {
+        const ok = await saveToGoogleDriveAppData(token, backup);
+        if (ok) {
+          setGoogleDriveSynced(true);
+          hasHydratedGoogleDriveRef.current = true;
+          showToast('✓ تم حفظ ومزامنة جميع الإعدادات والدستور مع حساب Google بنجاح');
+          return true;
+        }
+        return false;
+      } catch (err) {
+        console.warn('Failed pushing immediate backup to Google Drive:', err);
+        return false;
+      } finally {
+        setIsSyncingGoogleDrive(false);
+      }
+    },
+    [
+      lifeProfile,
+      medications,
+      hydrationHistory,
+      creativeActivities,
+      memories,
+      deviceSettings,
+      quietMode,
+      adhanOverrideSilent,
+      waterRemindersEnabled,
+      phoneChargeLimitPct,
+      smartChargeAlertEnabled,
+      smartChargeKeepUntilUnplugged,
+      capsulePrefs,
+      selectedLogoId,
+      chatMessages,
+      showToast,
+    ]
+  );
+
   const handleStartPermanentLink = useCallback(async () => {
     if (!authUser) return;
     setIsStartingPermanentLink(true);
@@ -2556,10 +2729,11 @@ export default function App() {
       setPermanentLinkActive(true);
       setWorkspaceTokenExpired(false);
       showToast('🔗 تم الربط الدائم مع Google — مش هتحتاج تجدد الربط تاني على الجهاز ده ✓');
+      void hydrateGoogleDriveOnce();
     } else if (result.error) {
       showToast(result.error);
     }
-  }, [showToast]);
+  }, [showToast, hydrateGoogleDriveOnce]);
 
   // Silent renewal: when the token is missing/expired, or 5 minutes before it expires.
   useEffect(() => {
@@ -2574,6 +2748,9 @@ export default function App() {
         setWorkspaceTokenExpired(false);
         setGmailNeedsReauth(false);
         if (force) void refreshWorkspace(token);
+        if (!hasHydratedGoogleDriveRef.current) {
+          void hydrateGoogleDriveOnce(token);
+        }
       } else {
         setPermanentLinkActive(hasPermanentLink(authUser.uid));
       }
@@ -2687,30 +2864,16 @@ export default function App() {
           void refreshWorkspace(token, { forceGmail: true });
         }
         if (token) {
-          void loadFromGoogleDriveAppData(token)
-            .then((backup) => {
-              if (backup) {
-                if (backup.lifeProfile) setLifeProfile(backup.lifeProfile);
-                if (Array.isArray(backup.medications)) setMedications(backup.medications);
-                if (backup.hydrationHistory) setHydrationHistory(backup.hydrationHistory);
-                if (Array.isArray(backup.creativeActivities)) setCreativeActivities(backup.creativeActivities);
-                if (Array.isArray(backup.memories)) setMemories(backup.memories);
-                if (backup.deviceSettings) setDeviceSettings(backup.deviceSettings);
-                if (backup.capsulePrefs) setCapsulePrefs(backup.capsulePrefs);
-                if (backup.selectedLogoId) setSelectedLogoId(backup.selectedLogoId);
-                if (backup.quietMode) setQuietMode(backup.quietMode);
-                if (typeof backup.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(backup.adhanOverrideSilent);
-                if (Array.isArray(backup.chatMessages) && backup.chatMessages.length > 0) {
-                  setChatMessages(backup.chatMessages);
-                }
-                setGoogleDriveSynced(true);
-                showToast('✓ تمت استعادة إعدادات ودستور حساب Google بالكامل');
-              }
+          void hydrateGoogleDriveOnce(token);
+        } else {
+          void getOrRefreshCalendarAccessToken().then((freshToken) => {
+            if (freshToken) {
+              setWorkspaceTokenExpired(false);
+              void hydrateGoogleDriveOnce(freshToken);
+            } else {
               hasHydratedGoogleDriveRef.current = true;
-            })
-            .catch(() => {
-              hasHydratedGoogleDriveRef.current = true;
-            });
+            }
+          });
         }
       },
       () => {
@@ -3371,13 +3534,12 @@ export default function App() {
   }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
 
   useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
     try {
       localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(medications));
     } catch {
       // ignore storage errors
     }
-  }, [medications, firebaseUser?.uid, firebaseUser?.isAnonymous]);
+  }, [medications]);
 
   // Immediate real-time Firestore subscription for Creative Activities (non-anonymous verified users only)
   useEffect(() => {
@@ -3402,13 +3564,12 @@ export default function App() {
   }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
 
   useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
     try {
       localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(creativeActivities));
     } catch {
       // ignore storage errors
     }
-  }, [creativeActivities, firebaseUser?.uid, firebaseUser?.isAnonymous]);
+  }, [creativeActivities]);
 
   useEffect(() => {
     try {
@@ -3473,13 +3634,12 @@ export default function App() {
   }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
 
   useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous) return;
     try {
       localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(memories));
     } catch {
       // ignore storage errors
     }
-  }, [memories, firebaseUser?.uid, firebaseUser?.isAnonymous]);
+  }, [memories]);
 
   // Immediate real-time Firestore cloud vault for Gemini conversation archive (non-anonymous verified users only)
   useEffect(() => {
@@ -3576,10 +3736,11 @@ export default function App() {
   // Continuous Auto-Save to Google Drive appDataFolder (Single Account Source of Truth)
   useEffect(() => {
     if (!hasHydratedGoogleDriveRef.current) return;
-    const token = getCalendarAccessToken();
-    if (!token) return;
 
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
+      const token = await getOrRefreshCalendarAccessToken();
+      if (!token) return;
+
       const backup: FullDayRhythmCloudBackup = {
         version: 1,
         updatedAtIso: new Date().toISOString(),
@@ -3603,13 +3764,12 @@ export default function App() {
 
       if (isSavingGoogleDriveRef.current) return;
       isSavingGoogleDriveRef.current = true;
-      void saveToGoogleDriveAppData(token, backup)
-        .then((ok) => {
-          if (ok) setGoogleDriveSynced(true);
-        })
-        .finally(() => {
-          isSavingGoogleDriveRef.current = false;
-        });
+      try {
+        const ok = await saveToGoogleDriveAppData(token, backup);
+        if (ok) setGoogleDriveSynced(true);
+      } finally {
+        isSavingGoogleDriveRef.current = false;
+      }
     }, 2500);
 
     return () => window.clearTimeout(timer);
@@ -3633,15 +3793,13 @@ export default function App() {
 
   // Persist local cache & push changes IMMEDIATELY to Firebase Firestore across devices (zero debounce lag)
   useEffect(() => {
-    if (firebaseUser?.uid || authUser) {
-      try {
-        localStorage.setItem(
-          STORAGE_KEY,
-          JSON.stringify({ hydrationHistory, deviceSettings, lifeProfile })
-        );
-      } catch {
-        // ignore quota errors
-      }
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ hydrationHistory, deviceSettings, lifeProfile })
+      );
+    } catch {
+      // ignore quota errors
     }
 
     if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreReady) {
@@ -3831,19 +3989,55 @@ export default function App() {
 
   const handleUpdateLifeProfile = useCallback(
     (patch: Partial<LifeProfile>) => {
-      updateLifeProfileLocal((prev) => sanitizeLifeProfile({ ...prev, ...patch }));
+      let nextProfile: LifeProfile | null = null;
+      updateLifeProfileLocal((prev) => {
+        nextProfile = sanitizeLifeProfile({ ...prev, ...patch });
+        try {
+          const currentRaw = localStorage.getItem(STORAGE_KEY);
+          const current = currentRaw ? JSON.parse(currentRaw) : {};
+          localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({ ...current, lifeProfile: nextProfile })
+          );
+        } catch {
+          // ignore storage quota
+        }
+        return nextProfile;
+      });
       showToast('تم حفظ وتحديث «الدستور الشخصي» ومزامنته سحابياً ✓');
+      if (nextProfile) {
+        void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
+      } else {
+        void pushFullCloudBackupImmediately();
+      }
     },
-    [showToast]
+    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately]
   );
 
   const handleQuickUpdateWeight = useCallback(
     (nextWeightKg: number) => {
       const clamped = Math.max(35, Math.min(220, Math.round(nextWeightKg * 2) / 2));
-      updateLifeProfileLocal((prev) => sanitizeLifeProfile({ ...prev, weightKg: clamped }));
+      let nextProfile: LifeProfile | null = null;
+      updateLifeProfileLocal((prev) => {
+        nextProfile = sanitizeLifeProfile({ ...prev, weightKg: clamped });
+        try {
+          const currentRaw = localStorage.getItem(STORAGE_KEY);
+          const current = currentRaw ? JSON.parse(currentRaw) : {};
+          localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({ ...current, lifeProfile: nextProfile })
+          );
+        } catch {
+          // ignore storage quota
+        }
+        return nextProfile;
+      });
       showToast(`⚖️ تم تحديث الوزن إلى ${clamped} كجم وإعادة حساب الماء تلقائياً`);
+      if (nextProfile) {
+        void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
+      }
     },
-    [showToast]
+    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately]
   );
 
   const handleToggleLowEnergyToday = useCallback(() => {
@@ -8792,6 +8986,11 @@ ${lifeConstitution}
           isDefault: activeBrandLogo.id === DEFAULT_LOGO_ID,
         }}
         onOpenLogoPicker={() => setIsLogoPickerOpen(true)}
+        capsulePrefs={capsulePrefs}
+        onChangeCapsulePrefs={handleUpdateCapsulePrefs}
+        googleDriveSynced={googleDriveSynced}
+        onSyncGoogleDriveNow={pushFullCloudBackupImmediately}
+        isSyncingGoogleDrive={isSyncingGoogleDrive}
         onExportBackupJson={handleExportBackupJson}
         onImportBackupJson={handleImportBackupJson}
       />

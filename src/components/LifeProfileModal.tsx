@@ -25,6 +25,8 @@ import {
   Monitor,
   Rows2,
   Columns2,
+  Cloud,
+  RefreshCw,
 } from 'lucide-react';
 import { MemoryItemCard } from './MemoryItemCard';
 import { AndroidPermissionsCard } from './AndroidPermissionsCard';
@@ -109,6 +111,9 @@ interface LifeProfileModalProps {
   onOpenLogoPicker?: () => void;
   capsulePrefs?: CapsulePrefs;
   onChangeCapsulePrefs?: (next: CapsulePrefs) => void;
+  googleDriveSynced?: boolean;
+  onSyncGoogleDriveNow?: () => Promise<boolean>;
+  isSyncingGoogleDrive?: boolean;
   onExportBackupJson?: () => void;
   onImportBackupJson?: (rawText: string) => Promise<{
     ok: boolean;
@@ -155,6 +160,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   onOpenLogoPicker,
   capsulePrefs,
   onChangeCapsulePrefs,
+  googleDriveSynced = false,
+  onSyncGoogleDriveNow,
+  isSyncingGoogleDrive = false,
   onExportBackupJson,
   onImportBackupJson,
 }) => {
@@ -166,6 +174,8 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     tone: 'ok' | 'error';
     text: string;
   } | null>(null);
+  const [driveSyncNotice, setDriveSyncNotice] = useState<string | null>(null);
+  const [isSyncingDriveLocal, setIsSyncingDriveLocal] = useState(false);
   const [pendingRestoreFile, setPendingRestoreFile] = useState<{
     fileName: string;
     rawText: string;
@@ -288,9 +298,17 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     });
   };
 
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault();
-    onSaveProfile({ ...draft, sleepStrategy: 'night_only_strict' });
+  const handleSave = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    onSaveProfile({ ...draft, sleepStrategy: draft.sleepStrategy || 'night_only_strict' });
+    onClose();
+  };
+
+  const handleClose = () => {
+    // If the user modified any setting without explicitly clicking save, auto-save so nothing is lost!
+    if (JSON.stringify(draft) !== JSON.stringify(profile)) {
+      onSaveProfile({ ...draft, sleepStrategy: draft.sleepStrategy || 'night_only_strict' });
+    }
     onClose();
   };
 
@@ -381,7 +399,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-white cursor-pointer"
             aria-label="إغلاق"
           >
@@ -1118,6 +1136,61 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             </div>
           )}
 
+          {/* Google Account Cloud Sync (Drive AppData) */}
+          <div className="pt-3 border-t border-white/10 space-y-2.5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="font-semibold text-white flex items-center gap-1.5">
+                  <Cloud className="w-4 h-4 text-[#7FFFD4]" />
+                  <span>مزامنة الحساب السحابية (Google Drive AppData)</span>
+                  {googleDriveSynced && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold">
+                      ✓ متزامن
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-zinc-400 mt-0.5">
+                  تخزين سحابي مجاني ومشفّر ومحمي في حسابك Google لحفظ الدستور، العلاجات، ذاكرة Gemini، وإعدادات الكبسولة دون فقدانها أبداً.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {calendarConnected && onSyncGoogleDriveNow ? (
+                  <button
+                    type="button"
+                    disabled={isSyncingGoogleDrive || isSyncingDriveLocal}
+                    onClick={async () => {
+                      setIsSyncingDriveLocal(true);
+                      setDriveSyncNotice(null);
+                      try {
+                        const ok = await onSyncGoogleDriveNow();
+                        if (ok) {
+                          setDriveSyncNotice('✓ تم حفظ ومزامنة جميع الإعدادات والدستور مع حسابك على Google Drive بنجاح');
+                        } else {
+                          setDriveSyncNotice('⚠️ تعذر رفع النسخة السحابية الآن — تأكد من الاتصال وجدد ربط Google إذا تطلب الأمر.');
+                        }
+                      } finally {
+                        setIsSyncingDriveLocal(false);
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-lg border border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4] text-xs font-bold hover:bg-[#7FFFD4]/25 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGoogleDrive || isSyncingDriveLocal ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingGoogleDrive || isSyncingDriveLocal ? 'جارٍ المزامنة...' : 'مزامنة الحساب الآن'}</span>
+                  </button>
+                ) : (
+                  <span className="text-[11px] text-zinc-500">
+                    {calendarConnected ? 'المزامنة التلقائية قيد العمل' : 'سجّل الدخول بـ Google لتفعيل المزامنة'}
+                  </span>
+                )}
+              </div>
+            </div>
+            {driveSyncNotice && (
+              <div className="text-[11px] text-[#7FFFD4] bg-[#7FFFD4]/10 border border-[#7FFFD4]/20 rounded-lg px-3 py-2">
+                {driveSyncNotice}
+              </div>
+            )}
+          </div>
+
           {/* One-Click Full Local Backup Export & Restore (JSON, Zero Secrets) */}
           {(onExportBackupJson || onImportBackupJson) && (
             <div className="pt-3 border-t border-white/10 space-y-2.5 text-xs">
@@ -1373,7 +1446,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           )}
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="px-4 py-2 rounded-xl border border-white/15 text-xs text-zinc-300 hover:text-white cursor-pointer"
           >
             إلغاء

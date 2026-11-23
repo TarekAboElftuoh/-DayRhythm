@@ -358,6 +358,16 @@ export function getCalendarAccessToken(): string | null {
   return cachedAccessToken;
 }
 
+export async function getOrRefreshCalendarAccessToken(): Promise<string | null> {
+  const existing = getCalendarAccessToken();
+  if (existing) return existing;
+  try {
+    return await refreshGoogleCalendarTokenSilently();
+  } catch {
+    return null;
+  }
+}
+
 export async function signOutGoogleCalendar(): Promise<void> {
   clearStoredAccessToken();
   clearPermanentLink();
