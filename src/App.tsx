@@ -93,6 +93,11 @@ import {
   saveToGoogleDriveAppData,
 } from './services/googleDriveStorage';
 import {
+  pushRhythmStateToTasks,
+  pullRhythmStateFromTasks,
+  type TasksVaultPayload,
+} from './services/googleTasksVault';
+import {
   DEFAULT_CREATIVE_ACTIVITIES,
   DEFAULT_DEVICE_SETTINGS,
   DEFAULT_MEDICATIONS,
@@ -3319,21 +3324,133 @@ export default function App() {
     };
   }, [firebaseUser?.uid, firebaseUser?.emailVerified, callRemoteSync, callRefreshWorkspace]);
 
-  // Real-time Firebase Firestore listener (strictly verified non-anonymous user; auto-bootstraps new accounts immediately!)
-  useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified) {
-      return;
+  const applyRemote = useCallback((remote: SyncedRhythmPayload & { medications?: MedicationItem[] }) => {
+    if (remote.appSettings) {
+      const a = remote.appSettings;
+      setPhoneChargeLimitPct(a.phoneChargeLimitPct);
+      setSmartChargeAlertEnabled(a.smartChargeAlertEnabled);
+      setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
+      setWaterRemindersEnabled(a.waterRemindersEnabled);
+      setSunMode(a.sunMode);
+      try {
+        localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
+        localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
+        localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
+      } catch {
+        // ignore storage errors
+      }
+    }
+    if (remote.quietMode) setQuietMode(remote.quietMode);
+    if (typeof remote.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(remote.adhanOverrideSilent);
+    setSurfaceTheme('amoled');
+    if (remote.deviceSettings) {
+      const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
+      setDeviceSettings(cleanDev);
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
+      } catch {
+        // ignore
+      }
+    }
+    if (remote.lifeProfile) {
+      const cleanProfile = sanitizeLifeProfile(remote.lifeProfile);
+      setLifeProfile(cleanProfile);
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+      } catch {
+        // ignore
+      }
+    }
+    if (Array.isArray(remote.medications) && remote.medications.length > 0) {
+      const cleanMeds = remote.medications.map((m) => sanitizeMedicationItem(m));
+      setMedications(cleanMeds);
+      try {
+        localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(cleanMeds));
+      } catch {
+        // ignore
+      }
+    }
+    if (remote.uiPrefs) {
+      const cleanUi = sanitizeUiPrefs(remote.uiPrefs);
+      if (cleanUi) {
+        setSelectedLogoId(cleanUi.selectedLogoId);
+        setCapsulePrefs({
+          orientation: cleanUi.capsuleOrientation,
+          size: cleanUi.capsuleSize,
+        });
+        if (cleanUi.cloudApiUrl) {
+          syncSavedCloudApiUrlFromRemote(cleanUi.cloudApiUrl);
+          try {
+            window.dispatchEvent(
+              new CustomEvent('dayrhythm:cloud-api-updated', { detail: { url: cleanUi.cloudApiUrl } })
+            );
+          } catch {
+            // ignore event errors
+          }
+        }
+        try {
+          window.localStorage.setItem(SELECTED_LOGO_STORAGE_KEY, cleanUi.selectedLogoId);
+          window.localStorage.setItem(
+            CAPSULE_PREFS_STORAGE_KEY,
+            JSON.stringify({
+              orientation: cleanUi.capsuleOrientation,
+              size: cleanUi.capsuleSize,
+            })
+          );
+        } catch {
+          // ignore storage errors
+        }
+      }
     }
 
-    const uid = firebaseUser.uid;
+    if (typeof remote.dailyCommitmentDays === 'number') {
+      setStreaks({
+        dailyCommitmentDays: remote.dailyCommitmentDays,
+        dailyCommitmentDoneToday: Boolean(remote.dailyCommitmentDoneToday),
+        waterTargetDays: remote.waterTargetDays ?? 0,
+        waterTargetDoneToday: Boolean(remote.waterTargetDoneToday),
+      });
+    }
 
-    // A snapshot arriving during our own write-lock may predate our in-flight edit, so applying
-    // it right away would revert the click. Keep the newest one and apply it once the lock ends
-    // (by then Firestore's snapshot already includes our own write).
-    const applyOrDefer = (remote: SyncedRhythmPayload) => {
+    if (remote.lifeProfile && typeof remote.cupsLogged === 'number') {
+      const remoteTz = remote.lifeProfile.currentTimeZone || 'Africa/Cairo';
+      const labels = getLast7DayLabels(remoteTz);
+      const todayIso = getDateIsoInTimeZone(remoteTz);
+      const isSameDay = remote.hydrationDateKey === todayIso;
+      const baseCounts = isSameDay
+        ? (remote.hydrationWeeklyCounts || [0, 0, 0, 0, 0, 0, 0])
+        : [...(remote.hydrationWeeklyCounts || [0, 0, 0, 0, 0, 0, 0]).slice(1), 0];
+
+      setHydrationHistory(
+        labels.map((labelAr, idx) => {
+          const isToday = idx === 6;
+          const t = remote.targetCups || 13;
+          const c = isToday
+            ? isSameDay
+              ? remote.cupsLogged
+              : 0
+            : baseCounts[idx] ?? 0;
+          return {
+            dateKey: isToday ? todayIso : `day-${idx}`,
+            labelAr,
+            cupsLogged: Math.min(t, c),
+            targetCups: t,
+            slots: Array.from({ length: t }, (_, sIdx) => sIdx < c),
+          };
+        })
+      );
+    }
+  }, []);
+
+  const applyOrDefer = useCallback(
+    (remote: SyncedRhythmPayload & { medications?: MedicationItem[] }) => {
       const waitMs = localWriteLockUntilRef.current - Date.now();
       if (waitMs > 0) {
-        pendingRemoteRef.current = remote;
+        pendingRemoteRef.current = remote as SyncedRhythmPayload;
         if (pendingRemoteTimerRef.current !== null) {
           window.clearTimeout(pendingRemoteTimerRef.current);
         }
@@ -3346,96 +3463,114 @@ export default function App() {
         return;
       }
       applyRemote(remote);
+    },
+    [applyRemote]
+  );
+
+  const lastAppliedTasksSyncMsRef = useRef<number>(0);
+  const isPullingTasksVaultRef = useRef<boolean>(false);
+
+  const pushToTasksVaultImmediately = useCallback(
+    async (patch?: Partial<TasksVaultPayload>) => {
+      const token = await getOrRefreshCalendarAccessToken();
+      if (!token) return;
+
+      const todayEntry = hydrationHistory[hydrationHistory.length - 1];
+      const remoteTz = (patch?.lifeProfile || lifeProfile).currentTimeZone || 'Africa/Cairo';
+      const todayIso = getDateIsoInTimeZone(remoteTz);
+
+      const payload: TasksVaultPayload = {
+        updatedAtMs: Date.now(),
+        originClientId: clientIdRef.current,
+        hydrationDateKey: todayIso,
+        cupsLogged: patch?.cupsLogged ?? todayEntry?.cupsLogged ?? 0,
+        targetCups: patch?.targetCups ?? todayEntry?.targetCups ?? 13,
+        hydrationWeeklyCounts: patch?.hydrationWeeklyCounts ?? hydrationHistory.map((d) => d.cupsLogged),
+        dailyCommitmentDays: patch?.dailyCommitmentDays ?? streaks.dailyCommitmentDays,
+        dailyCommitmentDoneToday: patch?.dailyCommitmentDoneToday ?? streaks.dailyCommitmentDoneToday,
+        waterTargetDays: patch?.waterTargetDays ?? streaks.waterTargetDays,
+        waterTargetDoneToday: patch?.waterTargetDoneToday ?? streaks.waterTargetDoneToday,
+        quietMode: patch?.quietMode ?? quietMode,
+        adhanOverrideSilent: patch?.adhanOverrideSilent ?? adhanOverrideSilent,
+        surfaceTheme,
+        deviceSettings: patch?.deviceSettings ?? deviceSettings,
+        lifeProfile: patch?.lifeProfile ?? lifeProfile,
+        medications: patch?.medications ?? medications,
+        uiPrefs: sanitizeUiPrefs({
+          selectedLogoId,
+          capsuleOrientation: capsulePrefs.orientation,
+          capsuleSize: capsulePrefs.size,
+        }),
+      };
+
+      lastAppliedTasksSyncMsRef.current = payload.updatedAtMs;
+      void pushRhythmStateToTasks(token, payload);
+    },
+    [
+      hydrationHistory,
+      lifeProfile,
+      streaks,
+      quietMode,
+      adhanOverrideSilent,
+      surfaceTheme,
+      deviceSettings,
+      medications,
+      selectedLogoId,
+      capsulePrefs,
+    ]
+  );
+
+  const pullFromTasksVault = useCallback(async () => {
+    if (isPullingTasksVaultRef.current) return;
+    const token = getCalendarAccessToken();
+    if (!token) return;
+
+    isPullingTasksVaultRef.current = true;
+    try {
+      const remote = await pullRhythmStateFromTasks(token);
+      if (!remote) return;
+      if (remote.originClientId === clientIdRef.current) return;
+      if (remote.updatedAtMs <= lastAppliedTasksSyncMsRef.current) return;
+
+      lastAppliedTasksSyncMsRef.current = remote.updatedAtMs;
+      applyOrDefer(remote as SyncedRhythmPayload & { medications?: MedicationItem[] });
+    } catch (err) {
+      console.warn('[TasksVault] pull error:', err);
+    } finally {
+      isPullingTasksVaultRef.current = false;
+    }
+  }, [applyOrDefer]);
+
+  // Real-time automatic polling & focus resume for Google Tasks Cloud Sync (sub-second cross-device sync)
+  useEffect(() => {
+    const checkSync = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine !== false) {
+        void pullFromTasksVault();
+      }
     };
 
-    const applyRemote = (remote: SyncedRhythmPayload) => {
-        if (remote.appSettings) {
-          const a = remote.appSettings;
-          setPhoneChargeLimitPct(a.phoneChargeLimitPct);
-          setSmartChargeAlertEnabled(a.smartChargeAlertEnabled);
-          setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
-          setWaterRemindersEnabled(a.waterRemindersEnabled);
-          setSunMode(a.sunMode);
-          try {
-            localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
-            localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
-            localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
-          } catch {
-            // ignore storage errors
-          }
-        }
-        setQuietMode(remote.quietMode);
-        setAdhanOverrideSilent(remote.adhanOverrideSilent);
-        setSurfaceTheme('amoled'); // Obsidian removed: night = AMOLED, day = sunlight mode (top-bar button)
-        setDeviceSettings(remote.deviceSettings);
-        setLifeProfile(remote.lifeProfile);
-        if (remote.uiPrefs) {
-          const cleanUi = sanitizeUiPrefs(remote.uiPrefs);
-          if (cleanUi) {
-            setSelectedLogoId(cleanUi.selectedLogoId);
-            setCapsulePrefs({
-              orientation: cleanUi.capsuleOrientation,
-              size: cleanUi.capsuleSize,
-            });
-            if (cleanUi.cloudApiUrl) {
-              syncSavedCloudApiUrlFromRemote(cleanUi.cloudApiUrl);
-              try {
-                window.dispatchEvent(
-                  new CustomEvent('dayrhythm:cloud-api-updated', { detail: { url: cleanUi.cloudApiUrl } })
-                );
-              } catch {
-                // ignore event errors
-              }
-            }
-            try {
-              window.localStorage.setItem(SELECTED_LOGO_STORAGE_KEY, cleanUi.selectedLogoId);
-              window.localStorage.setItem(
-                CAPSULE_PREFS_STORAGE_KEY,
-                JSON.stringify({
-                  orientation: cleanUi.capsuleOrientation,
-                  size: cleanUi.capsuleSize,
-                })
-              );
-            } catch {
-              // ignore storage errors
-            }
-          }
-        }
+    checkSync();
+    const intervalId = window.setInterval(checkSync, 4000);
 
-        setStreaks({
-          dailyCommitmentDays: remote.dailyCommitmentDays,
-          dailyCommitmentDoneToday: remote.dailyCommitmentDoneToday,
-          waterTargetDays: remote.waterTargetDays,
-          waterTargetDoneToday: remote.waterTargetDoneToday,
-        });
+    window.addEventListener('visibilitychange', checkSync);
+    window.addEventListener('focus', checkSync);
+    window.addEventListener('online', checkSync);
 
-        const remoteTz = remote.lifeProfile.currentTimeZone || 'Africa/Cairo';
-        const labels = getLast7DayLabels(remoteTz);
-        const todayIso = getDateIsoInTimeZone(remoteTz);
-        const isSameDay = remote.hydrationDateKey === todayIso;
-        const baseCounts = isSameDay
-          ? remote.hydrationWeeklyCounts
-          : [...remote.hydrationWeeklyCounts.slice(1), 0];
-
-        setHydrationHistory(
-          labels.map((labelAr, idx) => {
-            const isToday = idx === 6;
-            const t = remote.targetCups;
-            const c = isToday
-              ? isSameDay
-                ? remote.cupsLogged
-                : 0
-              : baseCounts[idx] ?? 0;
-            return {
-              dateKey: isToday ? todayIso : `day-${idx}`,
-              labelAr,
-              cupsLogged: Math.min(t, c),
-              targetCups: t,
-              slots: Array.from({ length: t }, (_, sIdx) => sIdx < c),
-            };
-          })
-        );
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('visibilitychange', checkSync);
+      window.removeEventListener('focus', checkSync);
+      window.removeEventListener('online', checkSync);
     };
+  }, [pullFromTasksVault]);
+
+  // Real-time Firebase Firestore listener (strictly verified non-anonymous user; auto-bootstraps new accounts immediately!)
+  useEffect(() => {
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified) {
+      return;
+    }
+
+    const uid = firebaseUser.uid;
 
     const unsubscribe = subscribeUserRhythmState(
       uid,
@@ -3447,69 +3582,14 @@ export default function App() {
             !prev || remote.phoneBattery!.updatedAtMs >= prev.updatedAtMs ? remote.phoneBattery! : prev
           );
         }
-        // Cloud paused (daily quota spent): this snapshot is Firestore rolling back our rejected
-        // write, so applying it would erase what was just logged. Local state stays the truth.
-        if (Date.now() < getCloudQuotaPausedUntil()) return;
-        setFirestoreSynced(true);
-        lastServerFieldsRef.current = serializeRhythmFields(remote);
-        lastServerAppSettingsRef.current = remote.appSettings ? JSON.stringify(remote.appSettings) : '';
-
-        if (remote.syncSignal) {
-          callRemoteSync(remote.syncSignal);
-        }
-
         applyOrDefer(remote);
       },
-      () => {
-        // Brand-new account: immediately create clean root users/{uid} document so all subcollections sync right away!
-        hasHydratedRemoteRef.current = true;
-        setFirestoreReady(true);
-        const browserTz =
-          typeof Intl !== 'undefined'
-            ? Intl.DateTimeFormat().resolvedOptions().timeZone || 'Africa/Cairo'
-            : 'Africa/Cairo';
-        const cleanProfile = sanitizeLifeProfile({
-          ...DEFAULT_LIFE_PROFILE,
-          currentTimeZone: browserTz,
-        });
-        const todayHydration = hydrationHistory[hydrationHistory.length - 1];
-        void saveUserRhythmState(uid, {
-          hydrationDateKey: getDateIsoInTimeZone(browserTz),
-          cupsLogged: todayHydration?.cupsLogged ?? 0,
-          targetCups: todayHydration?.targetCups ?? 10,
-          hydrationWeeklyCounts: hydrationHistory.map((d) => d.cupsLogged) ?? [0, 0, 0, 0, 0, 0, 0],
-          dailyCommitmentDays: streaks.dailyCommitmentDays ?? 0,
-          dailyCommitmentDoneToday: streaks.dailyCommitmentDoneToday ?? false,
-          waterTargetDays: streaks.waterTargetDays ?? 0,
-          waterTargetDoneToday: streaks.waterTargetDoneToday ?? false,
-          quietMode: quietMode ?? 'normal',
-          adhanOverrideSilent: adhanOverrideSilent ?? true,
-          surfaceTheme: 'amoled',
-          deviceSettings: deviceSettings ?? DEFAULT_DEVICE_SETTINGS,
-          lifeProfile: lifeProfile ?? cleanProfile,
-          uiPrefs: sanitizeUiPrefs({
-            selectedLogoId,
-            capsuleOrientation: capsulePrefs.orientation,
-            capsuleSize: capsulePrefs.size,
-          }),
-        })
-          .then(() => setFirestoreSynced(true))
-          .catch(() => setFirestoreSynced(false));
-      },
-      () => {
-        setFirestoreSynced(false);
-      }
+      () => {},
+      () => {}
     );
 
-    return () => {
-      unsubscribe();
-      if (pendingRemoteTimerRef.current !== null) {
-        window.clearTimeout(pendingRemoteTimerRef.current);
-        pendingRemoteTimerRef.current = null;
-      }
-      pendingRemoteRef.current = null;
-    };
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, callRemoteSync]);
+    return () => unsubscribe();
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, applyOrDefer]);
 
   // Immediate real-time Firestore subscription for Medications (non-anonymous verified users only)
   useEffect(() => {
@@ -4007,11 +4087,13 @@ export default function App() {
       showToast('تم حفظ وتحديث «الدستور الشخصي» ومزامنته سحابياً ✓');
       if (nextProfile) {
         void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
+        void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
       } else {
         void pushFullCloudBackupImmediately();
+        void pushToTasksVaultImmediately();
       }
     },
-    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately]
+    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
   );
 
   const handleQuickUpdateWeight = useCallback(
@@ -4035,9 +4117,10 @@ export default function App() {
       showToast(`⚖️ تم تحديث الوزن إلى ${clamped} كجم وإعادة حساب الماء تلقائياً`);
       if (nextProfile) {
         void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
+        void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
       }
     },
-    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately]
+    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
   );
 
   const handleToggleLowEnergyToday = useCallback(() => {
@@ -5993,22 +6076,26 @@ export default function App() {
       if (nextIdx === -1) return today;
       const nextSlots = [...today.slots];
       nextSlots[nextIdx] = true;
+      const nextLogged = nextSlots.filter(Boolean).length;
+      void pushToTasksVaultImmediately({ cupsLogged: nextLogged });
       return {
         ...today,
         slots: nextSlots,
-        cupsLogged: nextSlots.filter(Boolean).length,
+        cupsLogged: nextLogged,
       };
     });
-  }, [updateTodayHydration]);
+  }, [updateTodayHydration, pushToTasksVaultImmediately]);
 
   const handleToggleWaterSlot = (index: number) => {
     updateTodayHydration((today) => {
       const nextSlots = [...today.slots];
       nextSlots[index] = !nextSlots[index];
+      const nextLogged = nextSlots.filter(Boolean).length;
+      void pushToTasksVaultImmediately({ cupsLogged: nextLogged });
       return {
         ...today,
         slots: nextSlots,
-        cupsLogged: nextSlots.filter(Boolean).length,
+        cupsLogged: nextLogged,
       };
     });
   };
@@ -6884,7 +6971,11 @@ export default function App() {
         }
       }
 
-      setMedications((prev) => prev.map((m) => (m.id === id ? updated : m)));
+      setMedications((prev) => {
+        const next = prev.map((m) => (m.id === id ? updated : m));
+        void pushToTasksVaultImmediately({ medications: next });
+        return next;
+      });
 
       if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
@@ -6901,7 +6992,7 @@ export default function App() {
       }
       triggerHapticWaveform('water_cup');
     },
-    [activeTimeZone, medications, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [activeTimeZone, medications, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast, pushToTasksVaultImmediately]
   );
 
   const handleToggleMedicationDate = useCallback(
