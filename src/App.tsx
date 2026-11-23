@@ -1350,6 +1350,39 @@ export default function App() {
   });
   const [capsulePrefs, setCapsulePrefs] = useState<CapsulePrefs>(loadSavedCapsulePrefs);
 
+  const surfaceThemeRef = useRef(surfaceTheme);
+  surfaceThemeRef.current = surfaceTheme;
+  const quietModeRef = useRef(quietMode);
+  quietModeRef.current = quietMode;
+  const adhanOverrideSilentRef = useRef(adhanOverrideSilent);
+  adhanOverrideSilentRef.current = adhanOverrideSilent;
+  const deviceSettingsRef = useRef(deviceSettings);
+  deviceSettingsRef.current = deviceSettings;
+  const medicationsRef = useRef(medications);
+  medicationsRef.current = medications;
+  const creativeActivitiesRef = useRef(creativeActivities);
+  creativeActivitiesRef.current = creativeActivities;
+  const memoriesRef = useRef(memories);
+  memoriesRef.current = memories;
+  const selectedLogoIdRef = useRef(selectedLogoId);
+  selectedLogoIdRef.current = selectedLogoId;
+  const capsulePrefsRef = useRef(capsulePrefs);
+  capsulePrefsRef.current = capsulePrefs;
+  const completedOverridesRef = useRef(completedOverrides);
+  completedOverridesRef.current = completedOverrides;
+  const fastingOverrideRef = useRef(fastingOverride);
+  fastingOverrideRef.current = fastingOverride;
+  const isFridayModeRef = useRef(isFridayMode);
+  isFridayModeRef.current = isFridayMode;
+  const includeBiweeklyPcCleanupRef = useRef(includeBiweeklyPcCleanup);
+  includeBiweeklyPcCleanupRef.current = includeBiweeklyPcCleanup;
+  const travelStateRef = useRef(travelState);
+  travelStateRef.current = travelState;
+  const pomodoroRef = useRef(pomodoro);
+  pomodoroRef.current = pomodoro;
+  const periodicRitualsRef = useRef(periodicRituals);
+  periodicRitualsRef.current = periodicRituals;
+
   const activeBrandLogo = useMemo(() => getLogoConceptById(selectedLogoId), [selectedLogoId]);
 
   useEffect(() => {
@@ -3579,16 +3612,27 @@ export default function App() {
         }
       }
     }
-    if (remote.quietMode && remote.quietMode !== quietMode) setQuietMode(remote.quietMode);
-    if (typeof remote.adhanOverrideSilent === 'boolean' && remote.adhanOverrideSilent !== adhanOverrideSilent) {
+    const targetQuiet = remote.quietMode || quietModeRef.current;
+    const targetAdhan = typeof remote.adhanOverrideSilent === 'boolean' ? remote.adhanOverrideSilent : adhanOverrideSilentRef.current;
+    lastSyncedQuietSigRef.current = `${targetQuiet}:${targetAdhan}`;
+
+    if (remote.quietMode && remote.quietMode !== quietModeRef.current) {
+      quietModeRef.current = remote.quietMode;
+      setQuietMode(remote.quietMode);
+    }
+    if (typeof remote.adhanOverrideSilent === 'boolean' && remote.adhanOverrideSilent !== adhanOverrideSilentRef.current) {
+      adhanOverrideSilentRef.current = remote.adhanOverrideSilent;
       setAdhanOverrideSilent(remote.adhanOverrideSilent);
     }
-    lastSyncedQuietSigRef.current = `${remote.quietMode || quietMode}:${remote.adhanOverrideSilent ?? adhanOverrideSilent}`;
-    if (remote.surfaceTheme && remote.surfaceTheme !== surfaceTheme) setSurfaceTheme(remote.surfaceTheme);
+    if (remote.surfaceTheme && remote.surfaceTheme !== surfaceThemeRef.current) {
+      surfaceThemeRef.current = remote.surfaceTheme;
+      setSurfaceTheme(remote.surfaceTheme);
+    }
     if (remote.deviceSettings) {
       const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
-      const isDiff = JSON.stringify(cleanDev) !== JSON.stringify(deviceSettings);
+      const isDiff = JSON.stringify(cleanDev) !== JSON.stringify(deviceSettingsRef.current);
       if (isDiff) {
+        deviceSettingsRef.current = cleanDev;
         setDeviceSettings(cleanDev);
         try {
           const raw = localStorage.getItem(STORAGE_KEY);
@@ -3617,7 +3661,8 @@ export default function App() {
     if (Array.isArray(remote.medications)) {
       const cleanMeds = remote.medications.map((m) => sanitizeMedicationItem(m));
       const sig = JSON.stringify(cleanMeds);
-      if (sig !== JSON.stringify(medications)) {
+      if (sig !== JSON.stringify(medicationsRef.current)) {
+        medicationsRef.current = cleanMeds;
         setMedications(cleanMeds);
         try {
           localStorage.setItem(MEDS_STORAGE_KEY, sig);
@@ -3629,8 +3674,9 @@ export default function App() {
     if (Array.isArray(remote.memories)) {
       const cleanMems = remote.memories.map((m) => sanitizeMemoryItem(m));
       const sig = JSON.stringify(cleanMems);
-      if (sig !== lastSyncedMemoriesSigRef.current) {
+      if (sig !== JSON.stringify(memoriesRef.current)) {
         lastSyncedMemoriesSigRef.current = sig;
+        memoriesRef.current = cleanMems;
         setMemories(cleanMems);
         try {
           localStorage.setItem(MEMORIES_STORAGE_KEY, sig);
@@ -3642,8 +3688,9 @@ export default function App() {
     if (Array.isArray(remote.creativeActivities)) {
       const cleanCreatives = remote.creativeActivities.map((c) => sanitizeCreativeActivityItem(c));
       const sig = JSON.stringify(cleanCreatives);
-      if (sig !== lastSyncedCreativeSigRef.current) {
+      if (sig !== JSON.stringify(creativeActivitiesRef.current)) {
         lastSyncedCreativeSigRef.current = sig;
+        creativeActivitiesRef.current = cleanCreatives;
         setCreativeActivities(cleanCreatives);
         try {
           localStorage.setItem(CREATIVE_STORAGE_KEY, sig);
@@ -3655,14 +3702,16 @@ export default function App() {
     if (remote.uiPrefs) {
       const cleanUi = sanitizeUiPrefs(remote.uiPrefs);
       if (cleanUi) {
-        if (cleanUi.selectedLogoId && cleanUi.selectedLogoId !== selectedLogoId) {
+        if (cleanUi.selectedLogoId && cleanUi.selectedLogoId !== selectedLogoIdRef.current) {
+          selectedLogoIdRef.current = cleanUi.selectedLogoId;
           setSelectedLogoId(cleanUi.selectedLogoId);
         }
-        if (cleanUi.capsuleOrientation !== capsulePrefs.orientation || cleanUi.capsuleSize !== capsulePrefs.size) {
-          setCapsulePrefs({
+        if (cleanUi.capsuleOrientation !== capsulePrefsRef.current.orientation || cleanUi.capsuleSize !== capsulePrefsRef.current.size) {
+          capsulePrefsRef.current = {
             orientation: cleanUi.capsuleOrientation,
             size: cleanUi.capsuleSize,
-          });
+          };
+          setCapsulePrefs(capsulePrefsRef.current);
         }
         if (cleanUi.cloudApiUrl) {
           syncSavedCloudApiUrlFromRemote(cleanUi.cloudApiUrl);
@@ -3756,25 +3805,46 @@ export default function App() {
     }
 
     if (remote.completedOverrides) {
-      setCompletedOverrides(remote.completedOverrides);
+      if (JSON.stringify(remote.completedOverrides) !== JSON.stringify(completedOverridesRef.current)) {
+        completedOverridesRef.current = remote.completedOverrides;
+        setCompletedOverrides(remote.completedOverrides);
+      }
     }
     if (remote.fastingOverride) {
-      setFastingOverride(remote.fastingOverride);
+      if (remote.fastingOverride !== fastingOverrideRef.current) {
+        fastingOverrideRef.current = remote.fastingOverride;
+        setFastingOverride(remote.fastingOverride);
+      }
     }
     if (typeof remote.isFridayMode === 'boolean') {
-      setIsFridayMode(remote.isFridayMode);
+      if (remote.isFridayMode !== isFridayModeRef.current) {
+        isFridayModeRef.current = remote.isFridayMode;
+        setIsFridayMode(remote.isFridayMode);
+      }
     }
     if (typeof remote.includeBiweeklyPcCleanup === 'boolean') {
-      setIncludeBiweeklyPcCleanup(remote.includeBiweeklyPcCleanup);
+      if (remote.includeBiweeklyPcCleanup !== includeBiweeklyPcCleanupRef.current) {
+        includeBiweeklyPcCleanupRef.current = remote.includeBiweeklyPcCleanup;
+        setIncludeBiweeklyPcCleanup(remote.includeBiweeklyPcCleanup);
+      }
     }
     if (remote.travelState) {
-      setTravelState(remote.travelState);
+      if (JSON.stringify(remote.travelState) !== JSON.stringify(travelStateRef.current)) {
+        travelStateRef.current = remote.travelState;
+        setTravelState(remote.travelState);
+      }
     }
     if (remote.pomodoro) {
-      setPomodoro(remote.pomodoro);
+      if (JSON.stringify(remote.pomodoro) !== JSON.stringify(pomodoroRef.current)) {
+        pomodoroRef.current = remote.pomodoro;
+        setPomodoro(remote.pomodoro);
+      }
     }
     if (Array.isArray(remote.periodicRituals)) {
-      setPeriodicRituals(remote.periodicRituals);
+      if (JSON.stringify(remote.periodicRituals) !== JSON.stringify(periodicRitualsRef.current)) {
+        periodicRitualsRef.current = remote.periodicRituals;
+        setPeriodicRituals(remote.periodicRituals);
+      }
     }
 
     try {
