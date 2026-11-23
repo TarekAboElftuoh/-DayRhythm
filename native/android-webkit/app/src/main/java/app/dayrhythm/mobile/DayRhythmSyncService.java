@@ -21,12 +21,16 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.view.View;
+import android.widget.RemoteViews;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 
 import org.json.JSONObject;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.HttpURLConnection;
@@ -39,6 +43,8 @@ import java.util.Enumeration;
 import java.util.Locale;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -107,6 +113,69 @@ public class DayRhythmSyncService extends Service {
 
     private final Runnable wsReconnectRunnable = this::connectBackgroundWebSocket;
 
+    private static final Pattern LEAD_TAG_PATTERN = Pattern.compile(
+            "(?:^|\\s)(?:#|\\[)(\\d{1,5})\\s*(ثانية|ث|دقيقة|دقائق|د|ساعة|س|s|m|h)\\]?",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    public static Long parseLeadTagSeconds(String text) {
+        if (text == null || text.trim().isEmpty()) return null;
+        Matcher matcher = LEAD_TAG_PATTERN.matcher(text);
+        if (!matcher.find()) return null;
+        try {
+            long value = Long.parseLong(matcher.group(1));
+            String unit = matcher.group(2).toLowerCase(Locale.ROOT);
+            if (unit.startsWith("s") || unit.startsWith("ث")) {
+                return value;
+            } else if (unit.startsWith("h") || unit.startsWith("س")) {
+                return value * 3600L;
+            } else {
+                return value * 60L;
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public static String formatChipText(String emoji, long remainingMs) {
+        String safeEmoji = (emoji != null && !emoji.trim().isEmpty()) ? emoji.trim() : "📅";
+        String label;
+        if (remainingMs <= 0L) {
+            label = "الآن";
+        } else if (remainingMs < 60_000L) {
+            long secs = Math.max(1L, Math.min(59L, (remainingMs + 500L) / 1000L));
+            label = secs + "ث";
+        } else if (remainingMs < 3_600_000L) {
+            long mins = (remainingMs + 59_999L) / 60_000L;
+            label = mins + "د";
+        } else {
+            long hrs = remainingMs / 3_600_000L;
+            long remMins = (remainingMs % 3_600_000L) / 60_000L;
+            if (remMins > 0) {
+                label = hrs + "س" + remMins + "د";
+            } else {
+                label = hrs + "س";
+            }
+        }
+        return safeEmoji + " " + label;
+    }
+
+    private long getEffectiveLeadWindowMs() {
+        Long tagSeconds = parseLeadTagSeconds(liveTitle);
+        if (tagSeconds == null) {
+            tagSeconds = parseLeadTagSeconds(liveStatusLabel);
+        }
+        if (tagSeconds != null && tagSeconds > 0) {
+            return tagSeconds * 1000L;
+        }
+        return Math.max(1, liveAlertsLeadMinutes) * 60_000L;
+    }
+
+    private String cleanDisplayTitle(String title) {
+        if (title == null) return "";
+        return LEAD_TAG_PATTERN.matcher(title).replaceAll("").trim();
+    }
+
     private final Runnable liveCountdownTickRunnable = new Runnable() {
         @Override
         public void run() {
@@ -130,13 +199,36 @@ public class DayRhythmSyncService extends Service {
             }
 
             if (liveTargetEpochMs > 0L) {
-                long remainingMs = liveTargetEpochMs - System.currentTimeMillis();
-                long leadMs = Math.max(1, liveAlertsLeadMinutes) * 60_000L;
-                if (remainingMs > 0 && remainingMs <= leadMs && liveAlertsEnabled) {
-                    handler.postDelayed(this, 1000L);
-                } else if (remainingMs > leadMs && liveAlertsEnabled) {
-                    long waitMs = Math.min(remainingMs - leadMs + 100L, 15_000L);
-                    handler.postDelayed(this, Math.max(1000L, waitMs));
+                long now = System.currentTimeMillis();
+                long remainingMs = liveTargetEpochMs - now;
+                long leadMs = getEffectiveLeadWindowMs();
+
+                if (remainingMs > leadMs && liveAlertsEnabled) {
+                    // Outside lead window: sleep until the exact moment we enter the lead window
+                    long waitToLead = remainingMs - leadMs + 50L;
+                    long maxWait = lastBroadcastCharging ? 10_000L : 300_000L;
+                    handler.postDelayed(this, Math.max(1000L, Math.min(waitToLead, maxWait)));
+                } else if (remainingMs > 60_000L && remainingMs <= leadMs && liveAlertsEnabled) {
+                    // Inside lead window (> 60s):
+                    // SystemUI Chronometer renders seconds live with 0% CPU.
+                    // We wake on minute boundary to refresh the shortCriticalText chip (e.g. 8د -> 7د),
+                    // or when transitioning into the final 60 seconds.
+                    long timeToNextMin = (remainingMs % 60_000L);
+                    if (timeToNextMin <= 200L) timeToNextMin = 60_000L;
+                    long timeToSixtySec = remainingMs - 60_000L + 50L;
+                    long nextWake = Math.min(timeToNextMin, timeToSixtySec);
+                    if (lastBroadcastCharging) nextWake = Math.min(nextWake, 10_000L);
+                    handler.postDelayed(this, Math.max(1000L, nextWake));
+                } else if (remainingMs > 0L && remainingMs <= 60_000L && liveAlertsEnabled) {
+                    // Final 60 seconds:
+                    // SystemUI Chronometer displays live seconds continuously.
+                    // We tick every 5 seconds for shortCriticalText chip accuracy and schedule exact arrival at 0s!
+                    long nextWake = Math.min(5000L, remainingMs + 50L);
+                    if (lastBroadcastCharging) nextWake = Math.min(nextWake, 10_000L);
+                    handler.postDelayed(this, Math.max(500L, nextWake));
+                } else if (remainingMs <= 0L && remainingMs > -60_000L) {
+                    // Just reached 0: Show "الآن", then dismiss pill after 15 seconds
+                    handler.postDelayed(this, 15_000L);
                 } else if (lastBroadcastCharging) {
                     handler.postDelayed(this, 10_000L);
                 }
@@ -862,6 +954,36 @@ public class DayRhythmSyncService extends Service {
         }
     }
 
+    private void applyProgressStyleCompat(NotificationCompat.Builder builder, int progressPermille, int categoryColor) {
+        // Standard fallback progress for all Android versions
+        builder.setProgress(1000, progressPermille, false);
+
+        // Android 15 (API 35) & Android 16 (API 36) / OxygenOS 14+ ProgressStyle support via reflection
+        try {
+            Class<?> progressStyleClass = Class.forName("android.app.Notification$ProgressStyle");
+            Object styleInstance = progressStyleClass.getConstructor().newInstance();
+
+            Method setStyledByProgress = progressStyleClass.getMethod("setStyledByProgress", boolean.class);
+            setStyledByProgress.invoke(styleInstance, true);
+
+            Method setProgress = progressStyleClass.getMethod("setProgress", int.class);
+            setProgress.invoke(styleInstance, progressPermille);
+
+            try {
+                Class<?> segmentClass = Class.forName("android.app.Notification$ProgressStyle$Segment");
+                Constructor<?> segmentCtor = segmentClass.getConstructor(int.class);
+                Object segment = segmentCtor.newInstance(1000);
+                Method setColor = segmentClass.getMethod("setColor", int.class);
+                setColor.invoke(segment, categoryColor);
+
+                Method addSegment = progressStyleClass.getMethod("addProgressSegment", segmentClass);
+                addSegment.invoke(styleInstance, segment);
+            } catch (Throwable ignored) {
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     private Notification buildPersistentNotification() {
         Intent openIntent = new Intent(this, MainActivity.class);
         openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -873,7 +995,10 @@ public class DayRhythmSyncService extends Service {
         );
 
         long nowMs = System.currentTimeMillis();
-        boolean hasUpcoming = persistentCountdownEnabled && liveTargetEpochMs > nowMs + 1000L;
+        long remainingMs = liveTargetEpochMs - nowMs;
+        long leadWindowMs = getEffectiveLeadWindowMs();
+        boolean inLeadWindow = liveAlertsEnabled && liveTargetEpochMs > 0L && remainingMs > 0L && remainingMs <= leadWindowMs;
+        boolean hasUpcomingLater = persistentCountdownEnabled && liveTargetEpochMs > nowMs + 1000L;
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_LIVE_ALERTS)
                 .setSmallIcon(R.mipmap.ic_launcher)
@@ -884,31 +1009,75 @@ public class DayRhythmSyncService extends Service {
                 .setContentIntent(pi);
 
         Bundle liveExtras = new Bundle();
-        if (hasUpcoming) {
-            long remainingMs = liveTargetEpochMs - nowMs;
-            long totalSec = Math.max(0L, (remainingMs + 500L) / 1000L);
-            long mins = totalSec / 60L;
-            long secs = totalSec % 60L;
-            String mmss = String.format(Locale.US, "%02d:%02d", mins, secs);
-            String compactPill = liveEmoji + " " + mmss;
+        if (inLeadWindow) {
+            // ── Inside Lead Window: Live Alerts / Dynamic Island Punch Hole Pill active ──
+            String compactPill = formatChipText(liveEmoji, remainingMs);
+            int categoryColor = (remainingMs <= 60_000L) ? 0xFFFF6B6B : (remainingMs <= 300_000L ? 0xFFFFB020 : 0xFF7FFFD4);
+            int progressPermille = (int) Math.max(0, Math.min(1000, ((leadWindowMs - remainingMs) * 1000) / leadWindowMs));
 
+            // OnePlus 12R & Android 16 Promoted Ongoing notification keys
             liveExtras.putBoolean("android.requestPromotedOngoing", true);
             liveExtras.putBoolean("oplus.live_alert.enable", true);
             liveExtras.putString("android.shortCriticalText", compactPill);
 
+            try {
+                Method setShortTextMethod = builder.getClass().getMethod("setShortCriticalText", CharSequence.class);
+                setShortTextMethod.invoke(builder, compactPill);
+            } catch (Throwable ignored) {
+            }
+
+            // ⏱️ Native Zero-Battery RemoteViews Chronometer (System UI / GPU renders seconds)
+            RemoteViews customViews = new RemoteViews(getPackageName(), R.layout.notif_countdown);
+            long chronoBase = SystemClock.elapsedRealtime() + remainingMs;
+            String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
+            String cleanTitle = cleanDisplayTitle(rawTitle);
+            String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
+
+            customViews.setTextViewText(R.id.notifNextTitle, displayTitle);
+            customViews.setViewVisibility(R.id.notifChronometer, View.VISIBLE);
+            customViews.setChronometerCountDown(R.id.notifChronometer, true);
+            customViews.setChronometer(R.id.notifChronometer, chronoBase, "⏳ %s", true);
+
             builder.setContentTitle(compactPill)
-                    .setContentText(liveTitle.isEmpty() ? liveStatusLabel : liveTitle)
+                    .setContentText(displayTitle)
                     .setSubText(liveStatusLabel)
                     .setShowWhen(true)
                     .setWhen(liveTargetEpochMs)
                     .setUsesChronometer(true)
                     .setChronometerCountDown(true)
-                    .setColor(totalSec <= 60 ? 0xFFFF6B6B : 0xFF7FFFD4)
+                    .setColor(categoryColor)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_EVENT)
+                    .setCustomContentView(customViews)
+                    .setCustomBigContentView(customViews)
+                    .setStyle(new NotificationCompat.DecoratedCustomViewStyle())
+                    .addExtras(liveExtras);
+
+            applyProgressStyleCompat(builder, progressPermille, categoryColor);
+        } else if (hasUpcomingLater) {
+            // ── Outside Lead Window but has upcoming event: clean status, pill not active ──
+            String timeUntil = formatChipText(liveEmoji, remainingMs);
+            String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
+            String cleanTitle = cleanDisplayTitle(rawTitle);
+            String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
+
+            liveExtras.putBoolean("oplus.live_alert.enable", false);
+            liveExtras.putBoolean("android.requestPromotedOngoing", false);
+
+            builder.setContentTitle(displayTitle)
+                    .setContentText("الموعد القادم (" + timeUntil + ") • " + liveStatusLabel)
+                    .setShowWhen(true)
+                    .setWhen(liveTargetEpochMs)
+                    .setUsesChronometer(false)
+                    .setColor(0xFF7FFFD4)
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                     .setCategory(NotificationCompat.CATEGORY_EVENT)
                     .addExtras(liveExtras);
         } else {
+            // ── Idle / Sync Status: Clean background ongoing notification ──
             liveExtras.putBoolean("oplus.live_alert.enable", false);
+            liveExtras.putBoolean("android.requestPromotedOngoing", false);
+
             builder.setContentTitle("إيقاع اليوم | DayRhythm")
                     .setContentText(syncSubtitle)
                     .setShowWhen(false)
