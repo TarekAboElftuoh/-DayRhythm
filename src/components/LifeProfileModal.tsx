@@ -170,6 +170,11 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   onImportBackupJson,
 }) => {
   const [draft, setDraft] = useState<LifeProfile>(profile);
+  const isDirtyRef = React.useRef(false);
+  const updateDraft = (updater: (prev: LifeProfile) => LifeProfile) => {
+    isDirtyRef.current = true;
+    setDraft(updater);
+  };
   const [unlockHeight, setUnlockHeight] = useState(false);
   const [newMemoryCategory, setNewMemoryCategory] = useState<MemoryCategory>('priority');
   const [newMemoryText, setNewMemoryText] = useState('');
@@ -272,11 +277,18 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     }
   };
 
+  const prevIsOpenRef = React.useRef(isOpen);
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !prevIsOpenRef.current) {
+      // Modal just opened: initialize draft and clear dirty status
       setDraft(profile);
+      isDirtyRef.current = false;
       setUnlockHeight(false);
+    } else if (isOpen && !isDirtyRef.current) {
+      // Modal open and not modified by user: keep in sync with external live updates
+      setDraft(profile);
     }
+    prevIsOpenRef.current = isOpen;
   }, [isOpen, profile]);
 
   const previewPlan = useMemo(() => {
@@ -291,7 +303,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   if (!isOpen) return null;
 
   const toggleFastingDay = (dayId: number) => {
-    setDraft((prev) => {
+    updateDraft((prev) => {
       const exists = prev.fastingDays.includes(dayId);
       return {
         ...prev,
@@ -304,13 +316,15 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
 
   const handleSave = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    isDirtyRef.current = false;
     onSaveProfile({ ...draft, sleepStrategy: draft.sleepStrategy || 'night_only_strict' });
     onClose();
   };
 
   const handleClose = () => {
     // If the user modified any setting without explicitly clicking save, auto-save so nothing is lost!
-    if (JSON.stringify(draft) !== JSON.stringify(profile)) {
+    if (isDirtyRef.current) {
+      isDirtyRef.current = false;
       onSaveProfile({ ...draft, sleepStrategy: draft.sleepStrategy || 'night_only_strict' });
     }
     onClose();
@@ -436,7 +450,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={0.5}
                 value={draft.weightKg}
                 onChange={(e) =>
-                  setDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 69 }))
+                  updateDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 69 }))
                 }
                 className="w-full rounded-lg border border-[#7FFFD4]/45 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
@@ -462,7 +476,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 disabled={!unlockHeight}
                 value={draft.heightCm}
                 onChange={(e) =>
-                  setDraft((p) => ({ ...p, heightCm: Number(e.target.value) || 175 }))
+                  updateDraft((p) => ({ ...p, heightCm: Number(e.target.value) || 175 }))
                 }
                 className={`w-full rounded-lg border px-3 py-2 font-mono-tabular focus:outline-none ${
                   unlockHeight
@@ -481,7 +495,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={1}
                 value={draft.cupSizeMl}
                 onChange={(e) =>
-                  setDraft((p) => ({ ...p, cupSizeMl: Number(e.target.value) || 177 }))
+                  updateDraft((p) => ({ ...p, cupSizeMl: Number(e.target.value) || 177 }))
                 }
                 className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
@@ -493,7 +507,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 <button
                   key={presetMl}
                   type="button"
-                  onClick={() => setDraft((p) => ({ ...p, cupSizeMl: presetMl }))}
+                  onClick={() => updateDraft((p) => ({ ...p, cupSizeMl: presetMl }))}
                   className={`px-2.5 py-1 rounded-lg border font-mono-tabular cursor-pointer ${
                     draft.cupSizeMl === presetMl
                       ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
@@ -556,7 +570,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   step={5}
                   value={draft.suhoorLeadMinutes}
                   onChange={(e) =>
-                    setDraft((p) => ({
+                    updateDraft((p) => ({
                       ...p,
                       suhoorLeadMinutes: Number(e.target.value) || 50,
                     }))
@@ -567,7 +581,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   <button
                     key={mins}
                     type="button"
-                    onClick={() => setDraft((p) => ({ ...p, suhoorLeadMinutes: mins }))}
+                    onClick={() => updateDraft((p) => ({ ...p, suhoorLeadMinutes: mins }))}
                     className={`flex-1 py-2 rounded-lg border font-mono-tabular cursor-pointer ${
                       draft.suhoorLeadMinutes === mins
                         ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
@@ -590,7 +604,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   step={15}
                   value={draft.sleepTargetMinutes}
                   onChange={(e) =>
-                    setDraft((p) => ({
+                    updateDraft((p) => ({
                       ...p,
                       sleepTargetMinutes: Number(e.target.value) || 450,
                     }))
@@ -605,7 +619,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   <button
                     key={opt.min}
                     type="button"
-                    onClick={() => setDraft((p) => ({ ...p, sleepTargetMinutes: opt.min }))}
+                    onClick={() => updateDraft((p) => ({ ...p, sleepTargetMinutes: opt.min }))}
                     className={`flex-1 py-2 rounded-lg border font-mono-tabular cursor-pointer ${
                       draft.sleepTargetMinutes === opt.min
                         ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
@@ -645,7 +659,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={1}
                 value={draft.adhanLeadMinutes}
                 onChange={(e) =>
-                  setDraft((p) => ({ ...p, adhanLeadMinutes: Number(e.target.value) || 0 }))
+                  updateDraft((p) => ({ ...p, adhanLeadMinutes: Number(e.target.value) || 0 }))
                 }
                 className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
@@ -659,7 +673,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={5}
                 value={draft.prayerSilenceMinutes}
                 onChange={(e) =>
-                  setDraft((p) => ({
+                  updateDraft((p) => ({
                     ...p,
                     prayerSilenceMinutes: Number(e.target.value) || 20,
                   }))
@@ -676,7 +690,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={5}
                 value={draft.fajrSilenceMinutes}
                 onChange={(e) =>
-                  setDraft((p) => ({
+                  updateDraft((p) => ({
                     ...p,
                     fajrSilenceMinutes: Number(e.target.value) || 30,
                   }))
@@ -726,7 +740,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   key={loc.id}
                   type="button"
                   onClick={() =>
-                    setDraft((p) => ({
+                    updateDraft((p) => ({
                       ...p,
                       currentCityName: loc.nameAr,
                       currentTimeZone: loc.timeZone ?? 'Africa/Cairo',
@@ -753,7 +767,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             <input
               type="checkbox"
               checked={draft.autoLocationSync}
-              onChange={(e) => setDraft((p) => ({ ...p, autoLocationSync: e.target.checked }))}
+              onChange={(e) => updateDraft((p) => ({ ...p, autoLocationSync: e.target.checked }))}
               className="w-4 h-4 accent-[#7FFFD4]"
             />
           </label>
@@ -930,7 +944,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   <button
                     key={mins}
                     type="button"
-                    onClick={() => setDraft((p) => ({ ...p, defaultSnoozeMinutes: mins }))}
+                    onClick={() => updateDraft((p) => ({ ...p, defaultSnoozeMinutes: mins }))}
                     className={`py-2 rounded-xl border font-mono-tabular text-xs font-bold cursor-pointer transition-colors ${
                       active
                         ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'

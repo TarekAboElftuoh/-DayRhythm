@@ -845,6 +845,8 @@ export default function App() {
     }
     return DEFAULT_LIFE_PROFILE;
   });
+  const lifeProfileRef = useRef<LifeProfile>(lifeProfile);
+  lifeProfileRef.current = lifeProfile;
 
   const [fastingOverride, setFastingOverride] = useState<'auto' | 'fasting' | 'normal'>('auto');
   const [isLifeProfileModalOpen, setIsLifeProfileModalOpen] = useState(false);
@@ -920,13 +922,23 @@ export default function App() {
   // and others did not, which is why clicking them could appear to silently "undo itself".
   const updateLifeProfileLocal = useCallback(
     (updater: Parameters<typeof setLifeProfile>[0]) => {
-      if (isLoadingSettingsRef.current) return;
       localWriteLockUntilRef.current = Date.now() + 5000;
-      setLifeProfile((prev) => {
-        const next = typeof updater === 'function' ? updater(prev) : updater;
-        void pushToTasksVaultRef.current({ lifeProfile: next });
-        return next;
-      });
+      const prev = lifeProfileRef.current;
+      const next = sanitizeLifeProfile(typeof updater === 'function' ? updater(prev) : updater);
+      lifeProfileRef.current = next;
+      setLifeProfile(next);
+      try {
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        const current = currentRaw ? JSON.parse(currentRaw) : {};
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ...current, lifeProfile: next })
+        );
+      } catch {
+        // ignore storage errors
+      }
+      void pushToTasksVaultRef.current({ lifeProfile: next });
+      return next;
     },
     []
   );
@@ -951,7 +963,26 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<PersistedChatMessage[]>(loadSavedChats);
 
   // Toggles for Prayer Anchors overlay & Explicit Offline Demo fallback (false by default!)
-  const [includePrayerAnchors, setIncludePrayerAnchors] = useState<boolean>(true);
+  const [includePrayerAnchors, setIncludePrayerAnchors] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('dayrhythm_include_prayer_anchors');
+      if (saved !== null) return saved === 'true';
+    } catch {
+      // ignore
+    }
+    return true;
+  });
+  const handleToggleIncludePrayerAnchors = useCallback(() => {
+    setIncludePrayerAnchors((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('dayrhythm_include_prayer_anchors', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
   const [useOfflineDemo, setUseOfflineDemo] = useState<boolean>(false);
   const [completedOverrides, setCompletedOverrides] = useState<Record<string, boolean>>({});
   const [reflowedBlocksOverride, setReflowedBlocksOverride] = useState<ScheduleBlock[] | null>(null);
@@ -1266,6 +1297,15 @@ export default function App() {
     }
     return true;
   });
+
+  // ── ☀️ Sunlight mode (per device; the night theme stays the default) ───────────────
+  const [sunMode, setSunMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('dayrhythm_sun_mode_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | 'unsupported'
   >(() =>
@@ -1361,8 +1401,17 @@ export default function App() {
         return updated;
       });
       showToast(`🔋 تم ضبط حد تنبيه شحن الموبايل على ${clamped}%`);
+      void pushToTasksVaultRef.current({
+        appSettings: {
+          phoneChargeLimitPct: clamped,
+          smartChargeAlertEnabled,
+          smartChargeKeepUntilUnplugged,
+          waterRemindersEnabled,
+          sunMode,
+        },
+      });
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, showToast, smartChargeAlertEnabled, smartChargeKeepUntilUnplugged, waterRemindersEnabled, sunMode]
   );
 
   const appendChangelog = useCallback(
@@ -2579,14 +2628,6 @@ export default function App() {
   // it still gets the charge-limit alert.
   const isPhoneClient = useMemo(() => detectIsMobileDeviceClient(), []);
 
-  // ── ☀️ Sunlight mode (per device; the night theme stays the default) ───────────────
-  const [sunMode, setSunMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('dayrhythm_sun_mode_v1') === '1';
-    } catch {
-      return false;
-    }
-  });
   useEffect(() => {
     document.documentElement.classList.toggle('theme-sun', sunMode);
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', sunMode ? '#eef1f4' : '#000000');
@@ -3448,27 +3489,6 @@ export default function App() {
       triggerImmediateAutoRecovery(true);
     };
 
-    const handleNativeWsSync = (ev: Event) => {
-      try {
-        const detail = (ev as CustomEvent<string>).detail;
-        if (typeof detail === 'string') {
-          const parsed = JSON.parse(detail);
-          if (parsed && typeof parsed === 'object') {
-            if (parsed.clientId === clientIdRef.current) return;
-            if (parsed.type === 'settings_update' && parsed.settings) {
-              applyRemoteRef.current(parsed.settings);
-            } else if (parsed.settings) {
-              applyRemoteRef.current(parsed.settings);
-            } else {
-              callRemoteSync(parsed);
-            }
-          }
-        }
-      } catch {
-        // ignore malformed native WS payload
-      }
-    };
-
     const handleResumeSync = () => {
       if (document.visibilityState === 'visible') {
         const sleptMs = Date.now() - lastVisibleAtMs;
@@ -3482,7 +3502,6 @@ export default function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('focus', handleResumeSync);
     window.addEventListener('dayrhythm:network-recovered', handleNativeNetworkRecovered);
-    window.addEventListener('dayrhythm:ws-sync', handleNativeWsSync);
     document.addEventListener('visibilitychange', handleResumeSync);
 
     return () => {
@@ -3493,7 +3512,6 @@ export default function App() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('focus', handleResumeSync);
       window.removeEventListener('dayrhythm:network-recovered', handleNativeNetworkRecovered);
-      window.removeEventListener('dayrhythm:ws-sync', handleNativeWsSync);
       document.removeEventListener('visibilitychange', handleResumeSync);
     };
   }, [firebaseUser?.uid, firebaseUser?.emailVerified, callRemoteSync, callRefreshWorkspace]);
@@ -3769,32 +3787,98 @@ export default function App() {
 
   const lastAppliedTasksSyncMsRef = useRef<number>(0);
 
+  // Dedicated Top-Level LAN & Cross-Tab Reactivity Listener
+  // Independent of Firebase auth or network connection:
+  // Receives instant messages over local Wi-Fi / LAN WebSocket (Windows port 48721, Android WebKit bridge)
+  // and multi-tab BroadcastChannel and storage events.
+  useEffect(() => {
+    const handleNativeWsSync = (ev: Event) => {
+      try {
+        const detail = (ev as CustomEvent<string>).detail;
+        if (typeof detail === 'string') {
+          const parsed = JSON.parse(detail);
+          if (parsed && typeof parsed === 'object') {
+            if (parsed.clientId === clientIdRef.current) return;
+            if (parsed.type === 'settings_update' && parsed.settings) {
+              applyRemoteRef.current(parsed.settings);
+            } else if (parsed.settings) {
+              applyRemoteRef.current(parsed.settings);
+            } else {
+              callRemoteSync(parsed);
+            }
+          }
+        }
+      } catch {
+        // ignore malformed native WS payload
+      }
+    };
+
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel('dayrhythm_sync');
+        bc.onmessage = (event) => {
+          const data = event.data;
+          if (data && typeof data === 'object') {
+            if (data.clientId === clientIdRef.current) return;
+            if (data.type === 'settings_update' && data.settings) {
+              applyRemoteRef.current(data.settings);
+            } else if (data.settings) {
+              applyRemoteRef.current(data.settings);
+            } else {
+              callRemoteSync(data);
+            }
+          }
+        };
+      } catch {
+        // BroadcastChannel unsupported or blocked
+      }
+    }
+
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (parsed && typeof parsed === 'object') {
+            if (parsed.lifeProfile) {
+              applyRemoteRef.current({ lifeProfile: parsed.lifeProfile } as any);
+            }
+            if (parsed.deviceSettings) {
+              applyRemoteRef.current({ deviceSettings: parsed.deviceSettings } as any);
+            }
+          }
+        } catch {
+          // ignore parse error
+        }
+      }
+    };
+
+    window.addEventListener('dayrhythm:ws-sync', handleNativeWsSync);
+    window.addEventListener('storage', handleStorageEvent);
+
+    return () => {
+      window.removeEventListener('dayrhythm:ws-sync', handleNativeWsSync);
+      window.removeEventListener('storage', handleStorageEvent);
+      bc?.close();
+    };
+  }, [callRemoteSync]);
+
   // Requirement 1 & Finding 4: Pure granular patch saving with strict unhydrated write lock
   const saveCloudUserSettingsImmediately = useCallback(
     async (patch?: Partial<UserSettingsPayload>) => {
-      // NEVER allow any writes while settings are loading or if remote has not successfully hydrated
-      if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
-        console.warn('[CloudSync] Write queued: settings are currently unhydrated or loading from cloud.');
-        if (patch) {
-          pendingPatchesBeforeHydrationRef.current.push(patch);
-        }
-        return;
-      }
-
-      const uid = firebaseUser?.uid;
-      if (!uid || firebaseUser?.isAnonymous) return;
-
-      // If a specific patch is provided, write ONLY that patch to preserve multi-device concurrency!
+      // 1. Prepare granular or full payload
       let payload: Partial<UserSettingsPayload>;
       if (patch && Object.keys(patch).length > 0) {
         payload = {
           ...patch,
           originClientId: clientIdRef.current,
+          updatedAtMs: Date.now(),
         };
       } else {
         // Full rhythm snapshot only when explicitly called without patch
         const todayEntry = hydrationHistory[hydrationHistory.length - 1];
-        const remoteTz = lifeProfile.currentTimeZone || 'Africa/Cairo';
+        const currentProfile = lifeProfileRef.current || lifeProfile;
+        const remoteTz = currentProfile.currentTimeZone || 'Africa/Cairo';
         const todayIso = getDateIsoInTimeZone(remoteTz);
         payload = {
           hydrationDateKey: todayIso,
@@ -3809,7 +3893,7 @@ export default function App() {
           adhanOverrideSilent,
           surfaceTheme,
           deviceSettings,
-          lifeProfile,
+          lifeProfile: currentProfile,
           medications,
           creativeActivities,
           memories,
@@ -3834,14 +3918,37 @@ export default function App() {
             capsuleSize: capsulePrefs.size,
             cloudApiUrl: getSavedCloudApiUrl() || undefined,
           }),
+          updatedAtMs: Date.now(),
         };
       }
 
-      // Protocol 1 & 2: Broadcast immediately over LAN (< 50ms) to update PC and Mobile in real-time
+      // 2. Protocol 1 & 2: Broadcast immediately over LAN (< 50ms) & Cross-Tab BroadcastChannel
       dispatchLanBroadcast({
         type: 'settings_update',
         settings: payload,
       });
+
+      if (typeof BroadcastChannel !== 'undefined') {
+        try {
+          const bc = new BroadcastChannel('dayrhythm_sync');
+          bc.postMessage({ type: 'settings_update', settings: payload });
+          bc.close();
+        } catch {
+          // ignore
+        }
+      }
+
+      // 3. Cloud (Firestore) persistence guard:
+      if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
+        console.warn('[CloudSync] Write queued: settings are currently unhydrated or loading from cloud.');
+        if (patch) {
+          pendingPatchesBeforeHydrationRef.current.push(patch);
+        }
+        return;
+      }
+
+      const uid = firebaseUser?.uid;
+      if (!uid || firebaseUser?.isAnonymous) return;
 
       try {
         const ok = await saveCloudUserSettings(uid, payload);
@@ -4018,7 +4125,7 @@ export default function App() {
         }
 
         // B) Real-time settings & rhythm live sync from other devices
-        if ((!remote.originClientId || remote.originClientId !== clientIdRef.current) && remote.updatedAtMs) {
+        if (!remote.originClientId || remote.originClientId !== clientIdRef.current) {
           applyOrDefer(remote as SyncedRhythmPayload & {
             medications?: MedicationItem[];
             creativeActivities?: CreativeActivityItem[];
@@ -4042,6 +4149,7 @@ export default function App() {
     if (!uid || firebaseUser?.isAnonymous) {
       setIsLoadingSettings(false);
       isLoadingSettingsRef.current = false;
+      hasHydratedRemoteRef.current = true;
       return;
     }
 
@@ -4486,58 +4594,49 @@ export default function App() {
 
   const handleUpdateLifeProfile = useCallback(
     (patch: Partial<LifeProfile>) => {
-      let nextProfile: LifeProfile | null = null;
-      updateLifeProfileLocal((prev) => {
-        nextProfile = sanitizeLifeProfile({ ...prev, ...patch });
-        try {
-          const currentRaw = localStorage.getItem(STORAGE_KEY);
-          const current = currentRaw ? JSON.parse(currentRaw) : {};
-          localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify({ ...current, lifeProfile: nextProfile })
-          );
-        } catch {
-          // ignore storage quota
-        }
-        return nextProfile;
-      });
-      showToast('تم حفظ وتحديث «الدستور الشخصي» ومزامنته سحابياً ✓');
-      if (nextProfile) {
-        void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
-        void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
-      } else {
-        void pushFullCloudBackupImmediately();
-        void pushToTasksVaultImmediately();
+      localWriteLockUntilRef.current = Date.now() + 5000;
+      const nextProfile = sanitizeLifeProfile({ ...lifeProfileRef.current, ...patch });
+      lifeProfileRef.current = nextProfile;
+      setLifeProfile(nextProfile);
+      try {
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        const current = currentRaw ? JSON.parse(currentRaw) : {};
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ...current, lifeProfile: nextProfile })
+        );
+      } catch {
+        // ignore storage quota
       }
+      showToast('تم حفظ وتحديث «الدستور الشخصي» ومزامنته سحابياً ✓');
+      void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
+      void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
     },
-    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
+    [showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
   );
 
   const handleQuickUpdateWeight = useCallback(
     (nextWeightKg: number) => {
       const clamped = Math.max(35, Math.min(220, Math.round(nextWeightKg * 2) / 2));
-      let nextProfile: LifeProfile | null = null;
-      updateLifeProfileLocal((prev) => {
-        nextProfile = sanitizeLifeProfile({ ...prev, weightKg: clamped });
-        try {
-          const currentRaw = localStorage.getItem(STORAGE_KEY);
-          const current = currentRaw ? JSON.parse(currentRaw) : {};
-          localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify({ ...current, lifeProfile: nextProfile })
-          );
-        } catch {
-          // ignore storage quota
-        }
-        return nextProfile;
-      });
-      showToast(`⚖️ تم تحديث الوزن إلى ${clamped} كجم وإعادة حساب الماء تلقائياً`);
-      if (nextProfile) {
-        void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
-        void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
+      localWriteLockUntilRef.current = Date.now() + 5000;
+      const nextProfile = sanitizeLifeProfile({ ...lifeProfileRef.current, weightKg: clamped });
+      lifeProfileRef.current = nextProfile;
+      setLifeProfile(nextProfile);
+      try {
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        const current = currentRaw ? JSON.parse(currentRaw) : {};
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ...current, lifeProfile: nextProfile })
+        );
+      } catch {
+        // ignore storage quota
       }
+      showToast(`⚖️ تم تحديث الوزن إلى ${clamped} كجم وإعادة حساب الماء تلقائياً`);
+      void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
+      void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
     },
-    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
+    [showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
   );
 
   const handleToggleLowEnergyToday = useCallback(() => {
@@ -7160,9 +7259,18 @@ export default function App() {
           ? '🔌 سيستمر منبّه الشحن بالرنين حتى فصل الموبايل من الشاحن (أو إيقافه يدوياً)'
           : '⏱️ سيتوقف منبّه الشحن تلقائياً بعد دقيقتين إذا لم يتم إيقافه'
       );
+      void pushToTasksVaultImmediately({
+        appSettings: {
+          phoneChargeLimitPct,
+          smartChargeAlertEnabled,
+          smartChargeKeepUntilUnplugged: next,
+          waterRemindersEnabled,
+          sunMode,
+        },
+      });
       return next;
     });
-  }, [showToast]);
+  }, [showToast, pushToTasksVaultImmediately, phoneChargeLimitPct, smartChargeAlertEnabled, waterRemindersEnabled, sunMode]);
 
   const handleToggleSmartChargeAlertEnabled = useCallback(() => {
     setSmartChargeAlertEnabled((prev) => {
@@ -7181,9 +7289,18 @@ export default function App() {
           ? `🔋 تم تفعيل التنبيه الذكي عند اكتمال الشحن (${phoneChargeLimitRef.current}%)`
           : '🔕 تم إيقاف التنبيه الصوتي التلقائي لاكتمال الشحن'
       );
+      void pushToTasksVaultImmediately({
+        appSettings: {
+          phoneChargeLimitPct,
+          smartChargeAlertEnabled: next,
+          smartChargeKeepUntilUnplugged,
+          waterRemindersEnabled,
+          sunMode,
+        },
+      });
       return next;
     });
-  }, [showToast]);
+  }, [showToast, pushToTasksVaultImmediately, phoneChargeLimitPct, smartChargeKeepUntilUnplugged, waterRemindersEnabled, sunMode]);
 
   // Settings changed from the Gemini chat (propose_app_settings). Each field is optional.
   const handleApplyAppSettings = useCallback(
@@ -9363,7 +9480,7 @@ ${lifeConstitution}
             prayers={prayers}
             blocks={liveBlocks}
             includePrayerAnchors={includePrayerAnchors}
-            onToggleIncludePrayerAnchors={() => setIncludePrayerAnchors((v) => !v)}
+            onToggleIncludePrayerAnchors={handleToggleIncludePrayerAnchors}
             useOfflineDemo={useOfflineDemo}
             onToggleOfflineDemo={() => setUseOfflineDemo((v) => !v)}
             onToggleComplete={handleToggleComplete}
@@ -9682,11 +9799,11 @@ ${lifeConstitution}
         onDetectGpsLocation={handleDetectGpsLocation}
         isDetectingGps={isDetectingGps}
         includePrayerAnchors={includePrayerAnchors}
-        onToggleIncludePrayerAnchors={() => setIncludePrayerAnchors((v) => !v)}
+        onToggleIncludePrayerAnchors={handleToggleIncludePrayerAnchors}
         isFridayMode={isFridayMode}
-        onToggleFridayMode={setIsFridayMode}
+        onToggleFridayMode={handleToggleFridayMode}
         includeBiweeklyPcCleanup={includeBiweeklyPcCleanup}
-        onToggleBiweeklyPcCleanup={setIncludeBiweeklyPcCleanup}
+        onToggleBiweeklyPcCleanup={handleToggleBiweeklyPcCleanup}
         calendarConnected={!needsAuth}
         onGoogleSignOut={handleGoogleSignOut}
         quietMode={quietMode}
