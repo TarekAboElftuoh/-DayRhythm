@@ -24,6 +24,7 @@ import {
   EyeOff,
 } from 'lucide-react';
 import { MemoryItemCard } from './MemoryItemCard';
+import { AndroidPermissionsCard } from './AndroidPermissionsCard';
 import {
   getGeminiApiKey,
   setGeminiApiKey,
@@ -1263,6 +1264,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             </button>
           </div>
         </section>
+
+        {/* 8. Android Permissions Matrix (Android 12 – 16) */}
+        <AndroidPermissionsCard />
 
         {/* Footer */}
         <div className="pt-3 border-t border-white/10 flex items-center justify-end gap-2">

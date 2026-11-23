@@ -10,10 +10,16 @@ coverage/
 # .NET build output
 native/windows-dotnet/bin/
 native/windows-dotnet/obj/
-native/android-webkit/local.properties
-native/android-webkit/local.properties
-native/android-webkit/app/src/main/res/mipmap-xxxhdpi/
-native/android-webkit/app/src/main/res/mipmap-xhdpi/
-native/android-webkit/.gradle/
-native/android-webkit/app/build/
-native/android-webkit/build/
+native/windows-dotnet/publish-out/
+
+# Android build outputs & local properties
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/capacitor-cordova-android-plugins/build/
+
+# Packaged releases
+release/
+release-win/
+dist-server/

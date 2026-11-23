@@ -1,0 +1,9 @@
+{
+  "appId": "com.dayrhythm.app",
+  "appName": "DayRhythm",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  }
+}
