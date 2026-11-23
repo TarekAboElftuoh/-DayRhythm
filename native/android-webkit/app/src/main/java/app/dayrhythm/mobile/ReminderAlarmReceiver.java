@@ -53,8 +53,9 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     public static final String EXTRA_DOSE_TIME = "dose_time";
     public static final String EXTRA_SNOOZE_MIN = "snooze_min";
 
-    private static final String PREFS_ALARMS = "dayrhythm_exact_alarms_prefs";
-    private static final String KEY_SCHEDULED_IDS = "scheduled_request_codes";
+    public static final String PREFS_ALARMS = "dayrhythm_exact_alarms_prefs";
+    public static final String KEY_SCHEDULED_IDS = "scheduled_request_codes";
+    public static final String KEY_CACHED_SCHEDULE = "cached_schedule_json";
     private static final String KEY_ACTIVE_NOTIF_IDS = "active_notif_ids";
     private static final String KEY_PENDING_ACTIONS = "pending_quick_actions_json";
     private static final long[] VIBRATION_PATTERN = new long[]{0, 420, 220, 420, 220, 520};
@@ -383,6 +384,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             cancelNotification(context, notifId);
             closeAlarmUi(context);
             CloudSignalClient.sendAlarmDismiss(context, "native_dismiss");
+            DayRhythmSyncService.advanceScheduleIfExpired(context);
             return;
         }
 
@@ -421,6 +423,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             Intent notifyIntent = new Intent(ACTION_PENDING_QUEUE_UPDATED);
             notifyIntent.setPackage(context.getPackageName());
             context.sendBroadcast(notifyIntent);
+            DayRhythmSyncService.advanceScheduleIfExpired(context);
             return;
         }
 
@@ -453,6 +456,9 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
                 // If the PC (or another device) stops this alert, stop it here too.
                 CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
+
+                // Immediately advance the background Live Alerts countdown to the next scheduled event
+                DayRhythmSyncService.advanceScheduleIfExpired(context);
             } catch (Exception ignored) {
             }
         }
@@ -575,7 +581,11 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             }
         } catch (Exception ignored) {
         }
-        prefs.edit().putString(KEY_SCHEDULED_IDS, newIds.toString()).apply();
+        prefs.edit()
+                .putString(KEY_SCHEDULED_IDS, newIds.toString())
+                .putString(KEY_CACHED_SCHEDULE, jsonArrayStr)
+                .apply();
+        DayRhythmSyncService.onScheduleUpdated(context);
     }
 
     public static void scheduleSingleExactAlarm(
