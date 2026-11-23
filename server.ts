@@ -219,6 +219,7 @@ const DAYRHYTHM_SYSTEM_INSTRUCTION = `
    - قبل اقتراح حجز أي حدث جديد أو ميعاد علاج/مكمل، افحص تلقائياً: (أ) أوقات الصلوات الخمس + فترة الصمت، (ب) نافذة النوم الليلي، (ج) ساعات الصيام (الفجر–المغرب في أيام الصيام)، (د) أحداث Google Calendar المسجلة فعلياً.
    - إذا وجدت أي تعارض مع النوم أو الصلاة أو الصيام أو حدث آخر، حذّر المستخدم بلطف ووضوح واشرح سبب التعارض واقترح عليه أنسب وقت فاضي متوافق مع شروطه للنقاش قبل التنفيذ.
    - بمجرد أن يتفق معك المستخدم على ميعاد مناسب، اقترح العملية فوراً عبر الأدوات (propose_calendar_actions وغيرها) ليضغط «تأكيد التنفيذ» فيُحجز الموعد مباشرة في Google Calendar.
+   - التعديل والحذف على كل الأيام القادمة (Recurring Events): إذا طلب المستخدم تطبيق تعديل أو حذف لحدث متكرر على كل الأيام القادمة (مثل "امسح الفطور لكل الأيام الجاية" أو "غيّر ميعاد الجيم يومياً للأيام القادمة")، استخدم applyToAllDays: true في propose_calendar_actions ليتم تعديل أو حذف السلسلة المتكررة بالكامل في Google Calendar وليس فقط يوم واحد. وعند إضافة حدث متكرر جديد استخدم recurrenceRule: 'DAILY' أو 'WEEKLY' مع byDays.
 4. مستشار علمي عام وذكي لكل العلاجات والمكملات مع الحجز التلقائي في التقويم:
    - ينطبق هذا الأسلوب على أي دواء أو فيتامين أو مكمل يذكره المستخدم (مثل فيتامين د، ماغنيسيوم، أوميجا 3، زنك، حديد، كرياتين، أو أي علاج شخصي يضيفه في حسابه).
    - إذا ذكر المستخدم مكملًا أو علاجاً أو سألك عن توافق ميعاده: قيّم التوقيت علمياً (الامتصاص مع وجبة دهنية/ماء، المنبهات قبل النوم، التعارض مع القهوة/الكالسيوم/الصيام) وجدولياً (بعيداً عن الصلاة والنوم والأحداث المزدحمة). لو فيه تعارض لا تثبّت أعمى بل ناقشه واقترح البديل الأصح أولاً.
@@ -335,6 +336,11 @@ const proposeCalendarActionsDeclaration: FunctionDeclaration = {
               items: { type: Type.STRING },
               description:
                 'أيام التكرار الأسبوعي عند recurrenceRule="WEEKLY": SU, MO, TU, WE, TH, FR, SA (مثال: أيام الجيم ["SU","TU","TH"]).',
+            },
+            applyToAllDays: {
+              type: Type.BOOLEAN,
+              description:
+                'عيّنها true إذا طلب المستخدم تعديل أو حذف أو تطبيق هذا التغيير على كل الأيام القادمة للسلسلة المتكررة (وليس لهذا اليوم فقط).',
             },
           },
           required: ['operation', 'title'],
@@ -703,6 +709,7 @@ export interface CalendarActionProposal {
   description?: string;
   recurrenceRule?: 'DAILY' | 'WEEKLY';
   byDays?: string[];
+  applyToAllDays?: boolean;
 }
 
 export interface TaskActionProposal {
@@ -1079,6 +1086,9 @@ async function startServer() {
         );
 
         let targetEventId = isLikelyGoogleEventId(act.eventId) ? act.eventId : undefined;
+        if (act.applyToAllDays && targetEventId && targetEventId.includes('_')) {
+          targetEventId = targetEventId.split('_')[0];
+        }
 
         if ((op === 'delete' || op === 'update' || op === 'shift') && !targetEventId && act.title) {
           const searchRes = await cal.events.list({
@@ -1091,7 +1101,11 @@ async function startServer() {
           });
           const match = searchRes.data.items?.find((item) => item.id);
           if (match?.id) {
-            targetEventId = match.id;
+            targetEventId = (act.applyToAllDays && match.recurringEventId)
+              ? match.recurringEventId
+              : (act.applyToAllDays && match.id.includes('_'))
+                ? match.id.split('_')[0]
+                : match.id;
           }
         }
 

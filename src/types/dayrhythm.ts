@@ -122,6 +122,8 @@ export interface CalendarActionProposal {
   description?: string;
   recurrenceRule?: 'DAILY' | 'WEEKLY';
   byDays?: string[]; // e.g., ['SU', 'TU', 'TH'] for WEEKLY recurrence
+  /** Apply change/deletion across all upcoming days of a recurring series (targets master recurring event) */
+  applyToAllDays?: boolean;
 }
 
 export interface CalendarExecutionResult {

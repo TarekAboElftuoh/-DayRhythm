@@ -466,7 +466,13 @@ function resolveCalendarActionTargets(
     }
     const byId = act.eventId ? knownEvents.find((e) => e.id === act.eventId) : undefined;
     if (byId) {
-      return { ...act, calendarId: byId.calendarId || act.calendarId };
+      const finalId =
+        act.applyToAllDays && byId.recurringEventId
+          ? byId.recurringEventId
+          : act.applyToAllDays && byId.id.includes('_')
+            ? byId.id.split('_')[0]
+            : byId.id;
+      return { ...act, eventId: finalId, calendarId: byId.calendarId || act.calendarId };
     }
     const title = norm(act.title);
     let candidates = knownEvents.filter((e) => norm(e.summary) === title);
@@ -475,7 +481,14 @@ function resolveCalendarActionTargets(
       if (sameDay.length > 0) candidates = sameDay;
     }
     if (candidates.length === 1) {
-      return { ...act, eventId: candidates[0].id, calendarId: candidates[0].calendarId || act.calendarId };
+      const target = candidates[0];
+      const finalId =
+        act.applyToAllDays && target.recurringEventId
+          ? target.recurringEventId
+          : act.applyToAllDays && target.id.includes('_')
+            ? target.id.split('_')[0]
+            : target.id;
+      return { ...act, eventId: finalId, calendarId: target.calendarId || act.calendarId };
     }
     throw new Error(
       candidates.length === 0
@@ -4885,6 +4898,19 @@ export default function App() {
               const startDt = `${act.dateIso}T${act.startTime24}:00${tzOffsetStr}`;
               const startMs = new Date(startDt).getTime();
               const endDt = new Date(startMs + (act.durationMinutes || 30) * 60_000).toISOString();
+              const validByDays = Array.isArray(act.byDays)
+                ? act.byDays.filter((d) => ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].includes(d))
+                : [];
+              const recurrence =
+                act.recurrenceRule === 'DAILY'
+                  ? ['RRULE:FREQ=DAILY']
+                  : act.recurrenceRule === 'WEEKLY'
+                    ? [
+                        validByDays.length > 0
+                          ? `RRULE:FREQ=WEEKLY;BYDAY=${validByDays.join(',')}`
+                          : 'RRULE:FREQ=WEEKLY',
+                      ]
+                    : undefined;
               const r = await fetch(
                 `https://www.googleapis.com/calendar/v3/calendars/${calId}/events`,
                 {
@@ -4898,6 +4924,7 @@ export default function App() {
                     description: act.description || '',
                     start: { dateTime: startDt, timeZone: activeTimeZone },
                     end: { dateTime: endDt, timeZone: activeTimeZone },
+                    ...(recurrence ? { recurrence } : {}),
                   }),
                 }
               );
