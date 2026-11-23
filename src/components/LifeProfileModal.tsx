@@ -27,6 +27,7 @@ import {
   Columns2,
 } from 'lucide-react';
 import { MemoryItemCard } from './MemoryItemCard';
+import { AndroidPermissionsCard } from './AndroidPermissionsCard';
 import type { CapsulePrefs } from './FloatingPiPCapsule';
 import { isMobileDevice } from '../services/platform';
 import {
@@ -1355,6 +1356,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
 
+
+        {/* Android Native Permissions Matrix (Shown ONLY on Android Native APK) */}
+        <AndroidPermissionsCard />
 
         {/* Footer */}
         <div className="pt-3 border-t border-white/10 flex items-center justify-end gap-2">

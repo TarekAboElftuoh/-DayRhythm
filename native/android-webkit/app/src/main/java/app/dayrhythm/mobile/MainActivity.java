@@ -3,8 +3,10 @@ package app.dayrhythm.mobile;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlarmManager;
 import android.app.Dialog;
 import android.app.DownloadManager;
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -426,6 +428,28 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) {
+            webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:permissions-changed'));",
+                    null
+            );
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (webView != null) {
+            webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:permissions-changed'));",
+                    null
+            );
+        }
+    }
+
     private void requestEssentialPermissions() {
         java.util.List<String> needed = new java.util.ArrayList<>();
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -671,6 +695,148 @@ public class MainActivity extends Activity {
             @JavascriptInterface
             public String consumePendingNativeActions() {
                 return ReminderAlarmReceiver.consumePendingQuickActionsJson(MainActivity.this);
+            }
+
+            @JavascriptInterface
+            public String getPermissionsStatusJson() {
+                try {
+                    JSONObject obj = new JSONObject();
+
+                    // 1. Notifications (Android 13+ / SDK 33)
+                    boolean notif = true;
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        notif = ContextCompat.checkSelfPermission(
+                                MainActivity.this,
+                                Manifest.permission.POST_NOTIFICATIONS
+                        ) == PackageManager.PERMISSION_GRANTED;
+                    }
+                    obj.put("notifications", notif);
+
+                    // 2. Exact Alarm (Android 12+ / SDK 31)
+                    boolean exact = true;
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+                        exact = (am != null && am.canScheduleExactAlarms());
+                    }
+                    obj.put("exactAlarm", exact);
+
+                    // 3. Battery Optimizations (Unrestricted)
+                    boolean battery = false;
+                    try {
+                        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                        battery = (pm != null && pm.isIgnoringBatteryOptimizations(getPackageName()));
+                    } catch (Exception ignored) {
+                        battery = true;
+                    }
+                    obj.put("batteryOptimization", battery);
+
+                    // 4. Full Screen Intent (Android 14+ / SDK 34)
+                    boolean fsi = true;
+                    if (Build.VERSION.SDK_INT >= 34) {
+                        NotificationManager nm =
+                                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                        fsi = (nm != null && nm.canUseFullScreenIntent());
+                    }
+                    obj.put("fullScreenIntent", fsi);
+
+                    // 5. DND / Notification Policy Access
+                    boolean dnd = false;
+                    try {
+                        NotificationManager nm =
+                                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                        dnd = (nm != null && nm.isNotificationPolicyAccessGranted());
+                    } catch (Exception ignored) {
+                        dnd = false;
+                    }
+                    obj.put("dndPolicy", dnd);
+
+                    // 6. Location
+                    boolean loc = ContextCompat.checkSelfPermission(
+                            MainActivity.this,
+                            Manifest.permission.ACCESS_FINE_LOCATION
+                    ) == PackageManager.PERMISSION_GRANTED;
+                    obj.put("location", loc);
+
+                    return obj.toString();
+                } catch (Exception e) {
+                    return "{}";
+                }
+            }
+
+            @JavascriptInterface
+            public void requestEssentialPermissions() {
+                runOnUiThread(() -> MainActivity.this.requestEssentialPermissions());
+            }
+
+            @JavascriptInterface
+            public void openExactAlarmSettings() {
+                runOnUiThread(() -> {
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        try {
+                            Intent intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+                            intent.setData(Uri.parse("package:" + getPackageName()));
+                            startActivity(intent);
+                        } catch (Exception e) {
+                            openAppSystemSettings();
+                        }
+                    } else {
+                        openAppSystemSettings();
+                    }
+                });
+            }
+
+            @JavascriptInterface
+            public void openBatteryOptimizationSettings() {
+                runOnUiThread(() -> {
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                        intent.setData(Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                    } catch (Exception e) {
+                        openAppSystemSettings();
+                    }
+                });
+            }
+
+            @JavascriptInterface
+            public void openFullScreenIntentSettings() {
+                runOnUiThread(() -> {
+                    if (Build.VERSION.SDK_INT >= 34) {
+                        try {
+                            Intent intent = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
+                            intent.setData(Uri.parse("package:" + getPackageName()));
+                            startActivity(intent);
+                        } catch (Exception e) {
+                            openAppSystemSettings();
+                        }
+                    } else {
+                        openAppSystemSettings();
+                    }
+                });
+            }
+
+            @JavascriptInterface
+            public void openDndSettings() {
+                runOnUiThread(() -> {
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS);
+                        startActivity(intent);
+                    } catch (Exception e) {
+                        openAppSystemSettings();
+                    }
+                });
+            }
+
+            @JavascriptInterface
+            public void openAppSystemSettings() {
+                runOnUiThread(() -> {
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        intent.setData(Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                    } catch (Exception ignored) {
+                    }
+                });
             }
         }, "DayRhythmNative");
 
