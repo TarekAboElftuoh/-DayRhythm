@@ -185,6 +185,35 @@ const SUGGESTED_PROMPTS: Record<AssistantMode, string[]> = {
   ],
 };
 
+interface QuickActionChip {
+  label: string;
+  emoji: string;
+  prompt: string;
+}
+
+const QUICK_ACTION_CHIPS: QuickActionChip[] = [
+  {
+    label: 'أنا مرهق — رتّب يومي',
+    emoji: '🛌',
+    prompt: 'أنا مرهق وطاقتي قليلة، نظّم باقي يومي بهدوء وخفف المهام غير الضرورية',
+  },
+  {
+    label: 'جدولة المكملات',
+    emoji: '💊',
+    prompt: 'افحص مواعيد المكملات والعلاجات الحالية وجدولها في التقويم بدون تعارض مع الصيام والصلوات',
+  },
+  {
+    label: 'فحص التعارضات',
+    emoji: '🕌',
+    prompt: 'افحص جدول اليوم بالكامل وتأكد من عدم وجود تعارض مع الصلوات والنوم',
+  },
+  {
+    label: 'قيلولة تعويضية',
+    emoji: '⏱️',
+    prompt: 'احجز لي قيلولة تعويضية لمدة 25 دقيقة بعيداً عن أوقات الصلاة',
+  },
+];
+
 const MEMORY_CATEGORIES: MemoryCategory[] = [
   'priority',
   'sleep',
@@ -1132,12 +1161,13 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           longTermChatContext,
           memories: serializedMemories,
           // Only events that haven't ended yet (the list starts yesterday; slicing first dropped today).
+          // Limited to upcoming 35 events to maintain lean context and avoid 429 quota exhaustion.
           calendarEvents: calendarEvents
             .filter((e) => {
               const endMs = new Date(e.end || e.start).getTime();
               return Number.isNaN(endMs) || endMs >= Date.now();
             })
-            .slice(0, 120)
+            .slice(0, 35)
             .map((e) => ({
             id: e.id,
             calendarId: e.calendarId,
@@ -2907,19 +2937,31 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             <div ref={threadEndRef} />
           </div>
 
-          {/* Quick Prompt Suggestions (only when thread is fresh or idle) */}
+          {/* Quick Action Chips & Suggestions */}
           {!loading && (
-            <div className={`px-3.5 sm:px-4 py-2 border-t border-white/10 flex items-center gap-2 overflow-x-auto bg-[#090C12] ${visibleMessages.length > 2 ? 'max-sm:hidden' : ''}`}>
-              {SUGGESTED_PROMPTS[mode].map((prompt, idx) => (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => void sendMessage(prompt)}
-                  className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.02] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/50 hover:text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors"
-                >
-                  {prompt}
-                </button>
-              ))}
+            <div className="px-3 sm:px-4 py-2 border-t border-white/10 flex items-center gap-1.5 overflow-x-auto bg-[#090C12] no-scrollbar">
+              {mode === 'chat'
+                ? QUICK_ACTION_CHIPS.map((chip, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => void sendMessage(chip.prompt)}
+                      className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/60 hover:bg-[#7FFFD4]/10 hover:text-[#7FFFD4] whitespace-nowrap shrink-0 cursor-pointer transition-all flex items-center gap-1"
+                    >
+                      <span>{chip.emoji}</span>
+                      <span>{chip.label}</span>
+                    </button>
+                  ))
+                : SUGGESTED_PROMPTS[mode].map((prompt, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => void sendMessage(prompt)}
+                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.02] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/50 hover:text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
             </div>
           )}
 

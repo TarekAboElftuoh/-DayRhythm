@@ -245,6 +245,29 @@ const DAYRHYTHM_SYSTEM_INSTRUCTION = `
     - ممنوع منعاً باتاً كتابة أي كود برمجي أو كتل JSON أو علامات كود JSON أو أقواس مجعدة {} أو استدعاء الدوال كنص في ردك الموجه للمستخدم (مثل propose_calendar_actions أو propose_medication_actions أو أي بنية كود).
     - استدعاء الأدوات يتم حصرياً وبشكل غير مرئي عبر خاصية Function Calling البرمجية في واجهة Gemini API.
     - رسالتك الموجهة للمستخدم يجب أن تكون نصاً عربياً بشرياً بسيطاً وودوداً ومختصراً يوضح ما تم إعداده فقط دون أي أكواد برمجية، فالتطبيق سيعرض كروت الإجراءات التفاعلية وأزرار الموافقة تلقائياً للمستخدم بشكل مرئي أنيق.
+13. الأساس العلمي للإيقاع الحيوي والمكملات (Chronobiology & Health):
+    - الكورتيزول والتركيز الصباحي: ذروة اليقظة بعد الشروق — وجّه جلسات العمل والمذاكرة العميقة في الصباح الباكر.
+    - الميلاتونين والنوم الليلي: يبدأ إفرازه قبل النوم بساعتين؛ احمِ نافذة الاسترخاء المسائية وتجنب المهام المجهدة قبل النوم.
+    - المكملات الذائبة في الدهون (فيتامين د3، أوميجا 3، زيت بذور اليقطين): تؤخذ دائماً مع وجبة دهنية (في أيام الصيام: مع السحور وزيت الزيتون).
+    - المعادن المهدئة (ماغنيسيوم جلايسينات): تؤخذ مساءً قبل النوم بـ 30-60 دقيقة لتحسين جودة النوم العميق.
+    - في أيام الصيام: رحّل المكملات الصباحية للسحور، واحذف وجبات النهار، واجعل الإفطار عند الغروب.
+
+=== أمثلة توضيحية للاستجابة المثالية (Few-Shot Examples) ===
+مثال 1 (تنبيه نسبي):
+- المستخدم: "فكرني بعد 20 دقيقة أكلم الصيدلية"
+- استدعاء الأداة (Function Calling في الخلفية): propose_calendar_actions(summaryAr: "تنبيه بعد 20 دقيقة: أكلم الصيدلية", actions: [{ operation: "create", title: "⏰ أكلم الصيدلية", startInMinutes: 20, durationMinutes: 15 }])
+- ردك للمستخدم: "تم تجهيز التنبيه للاتصال بالصيدلية بعد 20 دقيقة — اضغط تأكيد ليُحجز في تقويمك فوراً."
+
+مثال 2 (إرهاق وأرق أو استيقاظ متأخر):
+- المستخدم: "نمت وحش وتعبان وعاوز أريح شوية"
+- استدعاء الأداة (Function Calling في الخلفية): propose_calendar_actions(summaryAr: "قيلولة تعويضية لمدة 25 دقيقة", actions: [{ operation: "create", title: "🛌 قيلولة تعويضية", startInMinutes: 5, durationMinutes: 25 }])
+- ردك للمستخدم: "سلامتك؛ علمياً القيلولة السريعة (20-25 دقيقة) تعيد تركيزك الذهني دون الدخول في خمول النوم العميق. فرّغت لك موعداً الآن بعيداً عن أوقات الصلاة، اضغط تأكيد للجدولة."
+
+مثال 3 (تعديل مكملات وأحداث في الصيام):
+- المستخدم: "بكره صيام، انقل المكملات وما تفطرنيش"
+- استدعاء الأداة (Function Calling في الخلفية): propose_calendar_actions(summaryAr: "إلغاء الفطور وترحيل المكمل للسحور", actions: [{ operation: "delete", eventId: "breakfast_id" }, { operation: "update", eventId: "med_id", updatedStartTime24: "03:55" }])
+- ردك للمستخدم: "تم تجهيز تعديل الصيام: حذفنا وجبة الفطور، ورحّلنا المكملات إلى موعد السحور (03:55 ص) لضمان أفضل امتصاص مع وجبة السحور. اضغط تأكيد للتطبيق."
+
 أجب بلغة عربية واضحة، عملية، ودودة، ومختصرة.
 `.trim();
 
@@ -1818,13 +1841,9 @@ async function startServer() {
     return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
   }
 
-  // Smart Intent Tool-Gating: skip 6 heavy JSON FunctionDeclaration schemas on pure Q&A turns for ~2-3x faster TTFT!
-  function shouldAttachChatTools(message: string): boolean {
-    const text = (message || '').trim();
-    if (!text) return false;
-    return /(أضف|اضف|أضيف|اضيف|ضف|ضيف|احجز|حجز|حط|سجّل|سجل|عدّل|عدل|تعديل|غيّر|غير|تغيير|احذف|حذف|شيل|امسح|الغ|ألغ|رحّل|رحل|انقل|أجّل|اجل|رتّب|رتب|احفظ|حفظ|تذكر|افتكر|تثبيت|ثبّت|جدول|ميعاد|موعد|مهمة|مهام|تاسك|دواء|علاج|فيتامين|مكمل|جرعة|وزن|طول|كوب|صيام|صايم|سحور|نمت|نوم|أرق|ارق|قيلولة|تعبان|مرهق|سفر|مسافر|مدينة|هواية|نشاط|مشروع|صمت|رنين|رنة|add|create|book|schedule|update|edit|delete|remove|move|shift|save|remember|task|event|med|supplement|sleep|weight|fast|travel|done|complete)/i.test(
-      text
-    );
+  // Tools are attached universally so Gemini executes Function Calling reliably instead of printing raw code
+  function shouldAttachChatTools(_message?: string): boolean {
+    return true;
   }
 
   // Dedicated function-calling tools for Chat (NO forced googleSearch grounding on every chat turn,
@@ -1842,9 +1861,13 @@ async function startServer() {
     },
   ];
 
-  // Primary ultra-fast model (gemini-3.1-flash-lite uses MINIMAL thinking for ~1s responses)
-  // with automatic failover to gemini-4-hydrogen (LOW thinking)
-  const GEMINI_CHAT_MODEL_CHAIN = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const;
+  // Primary frontier fast model (gemini-3.5-flash with calibrated LOW thinking for deep reasoning and circadian precision)
+  // with fallback to gemini-4-hydrogen (pro-grade reasoning) and gemini-3.1-flash-lite (economy fallback)
+  const GEMINI_CHAT_MODEL_CHAIN = [
+    'gemini-3.5-flash',
+    'gemini-4-hydrogen',
+    'gemini-3.1-flash-lite',
+  ] as const;
 
   function isRetryableGeminiError(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err ?? '');
