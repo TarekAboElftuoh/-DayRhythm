@@ -988,6 +988,17 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
   };
 }
 
+export function isFirestoreTimestamp(val: unknown): val is Timestamp {
+  return (
+    val instanceof Timestamp ||
+    (typeof val === 'object' &&
+      val !== null &&
+      (typeof (val as { toMillis?: unknown }).toMillis === 'function' ||
+        (typeof (val as { seconds?: unknown }).seconds === 'number' &&
+          typeof (val as { nanoseconds?: unknown }).nanoseconds === 'number')))
+  );
+}
+
 const knownCreatedAtByUid = new Map<string, Timestamp>();
 
 export function subscribeUserRhythmState(
@@ -1010,8 +1021,8 @@ export function subscribeUserRhythmState(
             return;
           }
           const data = snap.data();
-          if (data.createdAt instanceof Timestamp) {
-            knownCreatedAtByUid.set(uid, data.createdAt);
+          if (isFirestoreTimestamp(data.createdAt)) {
+            knownCreatedAtByUid.set(uid, data.createdAt as Timestamp);
           }
           onRemoteState(
             sanitizeRhythmPayload({
@@ -1131,16 +1142,6 @@ const ALLOWED_USER_DOC_KEYS = new Set([
 
 const pendingUserSaves = new Map<string, Promise<void>>();
 
-function isFirestoreTimestamp(val: unknown): val is Timestamp {
-  return (
-    val instanceof Timestamp ||
-    (typeof val === 'object' &&
-      val !== null &&
-      typeof (val as { toMillis?: unknown }).toMillis === 'function' &&
-      typeof (val as { seconds?: unknown }).seconds === 'number')
-  );
-}
-
 export async function saveUserRhythmState(
   uid: string,
   payload: SyncedRhythmPayload,
@@ -1207,14 +1208,16 @@ export async function saveUserRhythmState(
           updatedAt: serverTimestamp(),
         };
 
-        // Only repair missing/non-Timestamp legacy createdAt when verified directly from server (never from cache where pending serverTimestamp() reads as null)
+        // NEVER overwrite createdAt if the document already has one on server
         if (
           !fromCache &&
           existingData &&
-          !isFirestoreTimestamp(existingData.createdAt) &&
+          (!('createdAt' in existingData) || existingData.createdAt === null || existingData.createdAt === undefined) &&
           !knownCreatedAtByUid.has(uid)
         ) {
           updatePatch.createdAt = serverTimestamp();
+        } else {
+          delete updatePatch.createdAt;
         }
 
         // Clean up any malformed optional maps or legacy unknown keys so hasOnly() always passes
@@ -1293,6 +1296,191 @@ export async function saveUserRhythmState(
   const next = prev.catch(() => {}).then(() => attemptAtomicSave(false));
   pendingUserSaves.set(uid, next);
   return next;
+}
+
+/**
+ * Direct real-time hydration updater — writes immediately to Firestore (matching upsertMedicationRecord pattern).
+ * Completely eliminates debounce delay, ensures cross-device consistency, and prevents local state reversion.
+ */
+export async function saveHydrationRecord(
+  uid: string,
+  data: {
+    hydrationDateKey: string;
+    cupsLogged: number;
+    targetCups: number;
+    hydrationWeeklyCounts: number[];
+    waterTargetDays?: number;
+    waterTargetDoneToday?: boolean;
+  }
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid || auth.currentUser.isAnonymous) return;
+  const docRef = doc(db, 'users', uid);
+  const safeDateKey = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(data.hydrationDateKey)
+    ? data.hydrationDateKey
+    : new Date().toISOString().slice(0, 10);
+  const rawWeekly = Array.isArray(data.hydrationWeeklyCounts) ? data.hydrationWeeklyCounts : [];
+  const safeWeekly = Array.from({ length: 7 }, (_, i) => clampInt(rawWeekly[i], 0, 40, 0));
+
+  const patch: Record<string, unknown> = {
+    uid,
+    hydrationDateKey: safeDateKey,
+    cupsLogged: clampInt(data.cupsLogged, 0, 40, 0),
+    targetCups: clampInt(data.targetCups, 1, 40, 13),
+    hydrationWeeklyCounts: safeWeekly,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (typeof data.waterTargetDays === 'number') {
+    patch.waterTargetDays = clampInt(data.waterTargetDays, 0, 10000, 0);
+  }
+  if (typeof data.waterTargetDoneToday === 'boolean') {
+    patch.waterTargetDoneToday = Boolean(data.waterTargetDoneToday);
+  }
+
+  await withFirestoreWriteRetry(
+    async () => {
+      try {
+        await updateDoc(docRef, patch);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.toLowerCase().includes('not-found') || msg.toLowerCase().includes('no document to update')) {
+          const snap = await getDoc(docRef);
+          if (!snap.exists()) {
+            await setDoc(docRef, {
+              ...patch,
+              dailyCommitmentDays: 0,
+              dailyCommitmentDoneToday: false,
+              waterTargetDays: data.waterTargetDays ?? 0,
+              waterTargetDoneToday: data.waterTargetDoneToday ?? false,
+              quietMode: 'normal',
+              adhanOverrideSilent: true,
+              surfaceTheme: 'amoled',
+              deviceSettings: DEFAULT_DEVICE_SETTINGS,
+              lifeProfile: DEFAULT_LIFE_PROFILE,
+              createdAt: serverTimestamp(),
+            });
+            return;
+          }
+        }
+        throw err;
+      }
+    },
+    OperationType.WRITE,
+    `users/${uid}`
+  );
+}
+
+/**
+ * Direct real-time streak updater — writes immediately to Firestore.
+ */
+export async function saveStreaksRecord(
+  uid: string,
+  streaks: {
+    dailyCommitmentDays: number;
+    dailyCommitmentDoneToday: boolean;
+    waterTargetDays?: number;
+    waterTargetDoneToday?: boolean;
+  }
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid || auth.currentUser.isAnonymous) return;
+  const docRef = doc(db, 'users', uid);
+  const patch: Record<string, unknown> = {
+    uid,
+    dailyCommitmentDays: clampInt(streaks.dailyCommitmentDays, 0, 10000, 0),
+    dailyCommitmentDoneToday: Boolean(streaks.dailyCommitmentDoneToday),
+    updatedAt: serverTimestamp(),
+  };
+  if (typeof streaks.waterTargetDays === 'number') {
+    patch.waterTargetDays = clampInt(streaks.waterTargetDays, 0, 10000, 0);
+  }
+  if (typeof streaks.waterTargetDoneToday === 'boolean') {
+    patch.waterTargetDoneToday = Boolean(streaks.waterTargetDoneToday);
+  }
+  await withFirestoreWriteRetry(
+    async () => {
+      await updateDoc(docRef, patch);
+    },
+    OperationType.WRITE,
+    `users/${uid}`
+  );
+}
+
+/**
+ * Direct real-time quiet mode updater — writes immediately to Firestore.
+ */
+export async function saveQuietModeRecord(
+  uid: string,
+  settings: {
+    quietMode: QuietModeType;
+    adhanOverrideSilent?: boolean;
+  }
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid || auth.currentUser.isAnonymous) return;
+  const docRef = doc(db, 'users', uid);
+  const safeQuiet: QuietModeType = VALID_QUIET_MODES.includes(settings.quietMode)
+    ? settings.quietMode
+    : 'normal';
+  const patch: Record<string, unknown> = {
+    uid,
+    quietMode: safeQuiet,
+    updatedAt: serverTimestamp(),
+  };
+  if (typeof settings.adhanOverrideSilent === 'boolean') {
+    patch.adhanOverrideSilent = settings.adhanOverrideSilent;
+  }
+  await withFirestoreWriteRetry(
+    async () => {
+      await updateDoc(docRef, patch);
+    },
+    OperationType.WRITE,
+    `users/${uid}`
+  );
+}
+
+/**
+ * Direct real-time LifeProfile updater — writes immediately to Firestore.
+ */
+export async function saveLifeProfileRecord(
+  uid: string,
+  profile: Partial<LifeProfile>
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid || auth.currentUser.isAnonymous) return;
+  const docRef = doc(db, 'users', uid);
+  const clean = sanitizeLifeProfile(profile);
+  await withFirestoreWriteRetry(
+    async () => {
+      await updateDoc(docRef, {
+        uid,
+        lifeProfile: clean,
+        updatedAt: serverTimestamp(),
+      });
+    },
+    OperationType.WRITE,
+    `users/${uid}`
+  );
+}
+
+/**
+ * Direct real-time device settings updater — writes immediately to Firestore.
+ */
+export async function saveDeviceSettingsRecord(
+  uid: string,
+  settings: Partial<OnePlusDeviceSettings>
+): Promise<void> {
+  if (!auth.currentUser || auth.currentUser.uid !== uid || auth.currentUser.isAnonymous) return;
+  const docRef = doc(db, 'users', uid);
+  const clean = sanitizeDeviceSettings(settings);
+  await withFirestoreWriteRetry(
+    async () => {
+      await updateDoc(docRef, {
+        uid,
+        deviceSettings: clean,
+        updatedAt: serverTimestamp(),
+      });
+    },
+    OperationType.WRITE,
+    `users/${uid}`
+  );
 }
 
 export function subscribeMedications(

@@ -124,6 +124,11 @@ import {
   sanitizeSoundRepeats,
   sanitizeUiPrefs,
   saveUserRhythmState,
+  saveHydrationRecord,
+  saveStreaksRecord,
+  saveQuietModeRecord,
+  saveLifeProfileRecord,
+  saveDeviceSettingsRecord,
   saveUserAppSettings,
   getCloudQuotaPausedUntil,
   type AppSyncSettings,
@@ -900,10 +905,18 @@ export default function App() {
   // and others did not, which is why clicking them could appear to silently "undo itself".
   const updateLifeProfileLocal = useCallback(
     (updater: Parameters<typeof setLifeProfile>[0]) => {
-      localWriteLockUntilRef.current = Date.now() + 4500;
-      setLifeProfile(updater);
+      localWriteLockUntilRef.current = Date.now() + 5000;
+      setLifeProfile((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        void pushToTasksVaultRef.current({ lifeProfile: next });
+        const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
+        if (firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle)) {
+          void saveLifeProfileRecord(firebaseUser.uid, next).catch(() => {});
+        }
+        return next;
+      });
     },
-    []
+    [firebaseUser]
   );
 
   const [calendarList, setCalendarList] = useState<GoogleCalendarInfo[]>([]);
@@ -1814,6 +1827,7 @@ export default function App() {
 
   const handleSetQuietMode = useCallback(
     (mode: QuietModeType, durationMinutes: number) => {
+      localWriteLockUntilRef.current = Date.now() + 5000;
       setQuietMode(mode);
       if (mode === 'normal') {
         setQuietRemainingSec(0);
@@ -1827,8 +1841,21 @@ export default function App() {
         showToast(`🔕 تفعيل وضع الهدوء (${mode}) لمدة ${durationMinutes} دقيقة`);
       }
       appendChangelog('Web/PC', `ضبط وضع الهدوء إلى ${mode}`, `Set quiet mode to ${mode}`);
+
+      void pushToTasksVaultRef.current({
+        quietMode: mode,
+        adhanOverrideSilent,
+      });
+
+      const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle)) {
+        void saveQuietModeRecord(firebaseUser.uid, {
+          quietMode: mode,
+          adhanOverrideSilent,
+        }).catch(() => {});
+      }
     },
-    [appendChangelog, showToast]
+    [appendChangelog, showToast, adhanOverrideSilent, firebaseUser]
   );
 
   const handleCycleQuietMode = useCallback(() => {
@@ -3565,11 +3592,14 @@ export default function App() {
 
     if (typeof remote.dailyCommitmentDays === 'number') {
       lastSyncedStreaksSigRef.current = `${remote.dailyCommitmentDays}:${Boolean(remote.dailyCommitmentDoneToday)}:${remote.waterTargetDays ?? 0}:${Boolean(remote.waterTargetDoneToday)}`;
-      setStreaks({
-        dailyCommitmentDays: remote.dailyCommitmentDays,
-        dailyCommitmentDoneToday: Boolean(remote.dailyCommitmentDoneToday),
-        waterTargetDays: remote.waterTargetDays ?? 0,
-        waterTargetDoneToday: Boolean(remote.waterTargetDoneToday),
+      setStreaks((prev) => {
+        if (Date.now() < localWriteLockUntilRef.current) return prev;
+        return {
+          dailyCommitmentDays: remote.dailyCommitmentDays!,
+          dailyCommitmentDoneToday: Boolean(remote.dailyCommitmentDoneToday),
+          waterTargetDays: remote.waterTargetDays ?? 0,
+          waterTargetDoneToday: Boolean(remote.waterTargetDoneToday),
+        };
       });
     }
 
@@ -3582,15 +3612,24 @@ export default function App() {
         ? (remote.hydrationWeeklyCounts || [0, 0, 0, 0, 0, 0, 0])
         : [...(remote.hydrationWeeklyCounts || [0, 0, 0, 0, 0, 0, 0]).slice(1), 0];
 
-      setHydrationHistory(
-        labels.map((labelAr, idx) => {
+      setHydrationHistory((prev) => {
+        const prevToday = prev.length > 0 ? prev[prev.length - 1] : null;
+        return labels.map((labelAr, idx) => {
           const isToday = idx === 6;
           const t = remote.targetCups || 13;
-          const c = isToday
+          let c = isToday
             ? isSameDay
-              ? remote.cupsLogged
+              ? remote.cupsLogged!
               : 0
             : baseCounts[idx] ?? 0;
+
+          // Guard: if local write lock is active OR local state has higher cupsLogged for today, never downgrade
+          if (isToday && isSameDay && prevToday && prevToday.dateKey === todayIso) {
+            if (Date.now() < localWriteLockUntilRef.current || prevToday.cupsLogged > c) {
+              c = Math.max(c, prevToday.cupsLogged);
+            }
+          }
+
           return {
             dateKey: isToday ? todayIso : `day-${idx}`,
             labelAr,
@@ -3598,8 +3637,8 @@ export default function App() {
             targetCups: t,
             slots: Array.from({ length: t }, (_, sIdx) => sIdx < c),
           };
-        })
-      );
+        });
+      });
     }
   }, []);
 
@@ -3780,6 +3819,7 @@ export default function App() {
       },
       () => {
         hasHydratedRemoteRef.current = true;
+        setFirestoreReady(true);
       },
       () => {}
     );
@@ -4278,13 +4318,18 @@ export default function App() {
 
   const handleUpdateDeviceSettings = useCallback(
     (patch: Partial<OnePlusDeviceSettings>) => {
+      localWriteLockUntilRef.current = Date.now() + 5000;
       setDeviceSettings((prev) => {
         const next = sanitizeDeviceSettings({ ...prev, ...patch });
         void pushToTasksVaultImmediately({ deviceSettings: next });
+        const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
+        if (firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle)) {
+          void saveDeviceSettingsRecord(firebaseUser.uid, next).catch(() => {});
+        }
         return next;
       });
     },
-    [pushToTasksVaultImmediately]
+    [firebaseUser, pushToTasksVaultImmediately]
   );
 
   const handleUpdateLifeProfile = useCallback(
@@ -6259,36 +6304,95 @@ export default function App() {
   // stood BEFORE this click — wiping out the cup you just logged. Same class of bug as the
   // lifeProfile toggles above; arming the lock here is the actual fix (every previous attempt only
   // patched symptoms around this).
-  const updateTodayHydration = useCallback((updater: (today: HydrationDayLog) => HydrationDayLog) => {
-    localWriteLockUntilRef.current = Date.now() + 4500;
-    setHydrationHistory((prev) => {
-      if (prev.length === 0) return prev;
-      const next = [...prev];
-      const updated = updater(next[next.length - 1]);
-      next[next.length - 1] = updated;
+  const updateTodayHydration = useCallback(
+    (
+      updater: (today: HydrationDayLog) => HydrationDayLog,
+      dismissSignal?: { scope: 'alarm_dismiss'; action: string }
+    ) => {
+      localWriteLockUntilRef.current = Date.now() + 6000;
+      const todayIso = getDateIsoInTimeZone(activeTimeZone);
+      const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
+      const isAuthed = Boolean(firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle));
 
-      const reachedTarget = updated.cupsLogged >= updated.targetCups;
-      setStreaks((s) => {
-        if (reachedTarget && !s.waterTargetDoneToday) {
-          return {
-            ...s,
-            waterTargetDoneToday: true,
-            waterTargetDays: s.waterTargetDays + 1,
-          };
+      setHydrationHistory((prev) => {
+        if (prev.length === 0) return prev;
+        const next = [...prev];
+        const updated = updater(next[next.length - 1]);
+        next[next.length - 1] = updated;
+
+        const reachedTarget = updated.cupsLogged >= updated.targetCups;
+        let nextTargetDone = streaks.waterTargetDoneToday;
+        let nextTargetDays = streaks.waterTargetDays;
+
+        if (reachedTarget && !streaks.waterTargetDoneToday) {
+          nextTargetDone = true;
+          nextTargetDays = streaks.waterTargetDays + 1;
+        } else if (!reachedTarget && streaks.waterTargetDoneToday) {
+          nextTargetDone = false;
+          nextTargetDays = Math.max(0, streaks.waterTargetDays - 1);
         }
-        if (!reachedTarget && s.waterTargetDoneToday) {
-          return {
-            ...s,
-            waterTargetDoneToday: false,
-            waterTargetDays: Math.max(0, s.waterTargetDays - 1),
-          };
+
+        setStreaks((s) => ({
+          ...s,
+          waterTargetDoneToday: nextTargetDone,
+          waterTargetDays: nextTargetDays,
+        }));
+
+        const nextWeekly = next.map((d) => d.cupsLogged);
+
+        try {
+          localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({ hydrationHistory: next, deviceSettings, lifeProfile })
+          );
+        } catch {
+          // ignore storage quota
         }
-        return s;
+
+        // 1) Push to Google Tasks Cloud Vault immediately
+        void pushToTasksVaultImmediately({
+          hydrationDateKey: todayIso,
+          cupsLogged: updated.cupsLogged,
+          targetCups: updated.targetCups,
+          hydrationWeeklyCounts: nextWeekly,
+          waterTargetDays: nextTargetDays,
+          waterTargetDoneToday: nextTargetDone,
+          ...(dismissSignal
+            ? {
+                lastDismissSignal: {
+                  timestampMs: Date.now(),
+                  scope: dismissSignal.scope,
+                  action: dismissSignal.action,
+                  clientId: clientIdRef.current,
+                },
+              }
+            : {}),
+        });
+
+        // 2) Write DIRECTLY to Firebase Firestore (matching medication pattern)
+        if (isAuthed && firebaseUser?.uid) {
+          void saveHydrationRecord(firebaseUser.uid, {
+            hydrationDateKey: todayIso,
+            cupsLogged: updated.cupsLogged,
+            targetCups: updated.targetCups,
+            hydrationWeeklyCounts: nextWeekly,
+            waterTargetDays: nextTargetDays,
+            waterTargetDoneToday: nextTargetDone,
+          }).catch(() => {});
+        }
+
+        return next;
       });
-
-      return next;
-    });
-  }, []);
+    },
+    [
+      activeTimeZone,
+      firebaseUser,
+      streaks,
+      deviceSettings,
+      lifeProfile,
+      pushToTasksVaultImmediately,
+    ]
+  );
 
   const handleLogWaterCup = useCallback(() => {
     stopContinuousAlert();
@@ -6304,24 +6408,14 @@ export default function App() {
       const nextSlots = [...today.slots];
       nextSlots[nextIdx] = true;
       const nextLogged = nextSlots.filter(Boolean).length;
-      void pushToTasksVaultImmediately({
-        cupsLogged: nextLogged,
-        lastDismissSignal: {
-          timestampMs: Date.now(),
-          scope: 'alarm_dismiss',
-          action: 'water_confirmed',
-          clientId: clientIdRef.current,
-        },
-      });
       return {
         ...today,
         slots: nextSlots,
         cupsLogged: nextLogged,
       };
-    });
+    }, { scope: 'alarm_dismiss', action: 'water_confirmed' });
   }, [
     updateTodayHydration,
-    pushToTasksVaultImmediately,
     stopContinuousAlert,
     stopNativeAlerts,
     emitCrossDeviceSync,
@@ -6343,25 +6437,12 @@ export default function App() {
         emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
       }
 
-      void pushToTasksVaultImmediately({
-        cupsLogged: nextLogged,
-        ...(becomingActive
-          ? {
-              lastDismissSignal: {
-                timestampMs: Date.now(),
-                scope: 'alarm_dismiss',
-                action: 'water_confirmed',
-                clientId: clientIdRef.current,
-              },
-            }
-          : {}),
-      });
       return {
         ...today,
         slots: nextSlots,
         cupsLogged: nextLogged,
       };
-    });
+    }, { scope: 'alarm_dismiss', action: 'water_confirmed' });
   };
 
   // Handle PWA Home Screen App Shortcuts (/?action=water | meeting | voice)
@@ -7809,13 +7890,34 @@ export default function App() {
   );
 
   const handleToggleDailyCommitmentStreak = () => {
-    setStreaks((s) => ({
-      ...s,
-      dailyCommitmentDoneToday: !s.dailyCommitmentDoneToday,
-      dailyCommitmentDays: !s.dailyCommitmentDoneToday
+    localWriteLockUntilRef.current = Date.now() + 5000;
+    const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
+    const isAuthed = Boolean(firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle));
+
+    setStreaks((s) => {
+      const nextDone = !s.dailyCommitmentDoneToday;
+      const nextDays = nextDone
         ? s.dailyCommitmentDays + 1
-        : Math.max(0, s.dailyCommitmentDays - 1),
-    }));
+        : Math.max(0, s.dailyCommitmentDays - 1);
+      const nextStreaks = {
+        ...s,
+        dailyCommitmentDoneToday: nextDone,
+        dailyCommitmentDays: nextDays,
+      };
+
+      void pushToTasksVaultImmediately({
+        dailyCommitmentDays: nextDays,
+        dailyCommitmentDoneToday: nextDone,
+        waterTargetDays: s.waterTargetDays,
+        waterTargetDoneToday: s.waterTargetDoneToday,
+      });
+
+      if (isAuthed && firebaseUser?.uid) {
+        void saveStreaksRecord(firebaseUser.uid, nextStreaks).catch(() => {});
+      }
+
+      return nextStreaks;
+    });
   };
 
   // Next untaken medication dose for today (used by Floating Capsule 1-tap Check-In & Windows Tray Capsule)
