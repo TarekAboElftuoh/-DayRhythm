@@ -26,19 +26,10 @@ interface TopBarProps {
   onToggleSunMode?: () => void;
 }
 
+import { isMobileDevice } from '../services/platform';
+
 function detectIsMobileEnvironment(): boolean {
-  if (typeof window === 'undefined') return false;
-  // BUG THIS FIXES: this used to also treat a narrow WINDOW as "mobile" (window.innerWidth < 768).
-  // On the real Windows EXE, simply resizing the app window narrower than 768px silently swapped
-  // the nav from "وضع الكمبيوتر" (desktop capsule settings) to "الهاتف" (phone-only settings) and
-  // kept it swapped on every resize afterwards — so the desktop capsule's own size/orientation
-  // controls became unreachable, which looked exactly like "the setting doesn't take effect".
-  // Device type never changes at runtime, so decide it the same way App.tsx's
-  // detectIsMobileDeviceClient does: the Android APK's native bridge, or the user agent — never
-  // window size (a narrow PC window is still a PC).
-  if ((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative) return true;
-  const ua = navigator.userAgent || '';
-  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+  return isMobileDevice();
 }
 
 export const TopBar: React.FC<TopBarProps> = ({

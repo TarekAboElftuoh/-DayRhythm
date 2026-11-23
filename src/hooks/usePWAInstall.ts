@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { isWindowsNative, isAndroidNativeApp } from '../services/platform';
 
 interface BeforeInstallPromptEvent extends Event {
   readonly platforms: string[];
@@ -18,6 +19,12 @@ export function usePWAInstall() {
   const [isIOS, setIsIOS] = useState(false);
 
   useEffect(() => {
+    // If running in native Windows .NET app or Android native APK, already installed!
+    if (isWindowsNative() || isAndroidNativeApp()) {
+      setIsInstalled(true);
+      return;
+    }
+
     const isStandalone =
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as unknown as { standalone?: boolean }).standalone === true;

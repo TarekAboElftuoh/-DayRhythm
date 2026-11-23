@@ -22,9 +22,13 @@ import {
   Key,
   Eye,
   EyeOff,
+  Monitor,
+  Rows2,
+  Columns2,
 } from 'lucide-react';
 import { MemoryItemCard } from './MemoryItemCard';
 import { AndroidPermissionsCard } from './AndroidPermissionsCard';
+import { isMobileDevice } from '../services/platform';
 import {
   getGeminiApiKey,
   setGeminiApiKey,
@@ -163,6 +167,45 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     previewSummary: string;
   } | null>(null);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const isMobile = isMobileDevice();
+
+  const [capsuleOrientation, setCapsuleOrientation] = useState<'horizontal' | 'vertical'>(() => {
+    if (typeof window === 'undefined') return 'horizontal';
+    try {
+      const raw = localStorage.getItem('dayrhythm_capsule_prefs_v1');
+      if (raw) return JSON.parse(raw).orientation || 'horizontal';
+    } catch {}
+    return 'horizontal';
+  });
+
+  const [capsuleSize, setCapsuleSize] = useState<'sm' | 'md' | 'lg'>(() => {
+    if (typeof window === 'undefined') return 'md';
+    try {
+      const raw = localStorage.getItem('dayrhythm_capsule_prefs_v1');
+      if (raw) return JSON.parse(raw).size || 'md';
+    } catch {}
+    return 'md';
+  });
+
+  const handleUpdateCapsuleOrientation = (o: 'horizontal' | 'vertical') => {
+    setCapsuleOrientation(o);
+    try {
+      const cur = JSON.parse(localStorage.getItem('dayrhythm_capsule_prefs_v1') || '{}');
+      cur.orientation = o;
+      localStorage.setItem('dayrhythm_capsule_prefs_v1', JSON.stringify(cur));
+      window.dispatchEvent(new Event('dayrhythm_capsule_prefs_changed'));
+    } catch {}
+  };
+
+  const handleUpdateCapsuleSize = (s: 'sm' | 'md' | 'lg') => {
+    setCapsuleSize(s);
+    try {
+      const cur = JSON.parse(localStorage.getItem('dayrhythm_capsule_prefs_v1') || '{}');
+      cur.size = s;
+      localStorage.setItem('dayrhythm_capsule_prefs_v1', JSON.stringify(cur));
+      window.dispatchEvent(new Event('dayrhythm_capsule_prefs_changed'));
+    } catch {}
+  };
   const backupFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Gemini Client-Side API Key Management
@@ -820,7 +863,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 🕌 طقوس الجمعة
               </button>
             )}
-            {isFridayMode && onToggleBiweeklyPcCleanup && (
+            {!isMobile && isFridayMode && onToggleBiweeklyPcCleanup && (
               <button
                 type="button"
                 onClick={() => onToggleBiweeklyPcCleanup(!includeBiweeklyPcCleanup)}
@@ -829,8 +872,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                     ? 'border-indigo-400/50 bg-indigo-400/15 text-indigo-200'
                     : 'border-white/10 text-zinc-400'
                 }`}
+                title="تذكير دوري بصيانة ونظافة جهاز الكمبيوتر"
               >
-                💻 كل جمعتين 04:15 م
+                💻 صيانة الكمبيوتر (كل جمعتين)
               </button>
             )}
           </div>
@@ -975,7 +1019,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 )}
               </div>
               <p className="text-[11px] text-zinc-400">
-                يصدر إشعاراً صوتياً خاصاً على الكمبيوتر عند وصول شحن الهاتف إلى النسبة المحددة، مع إمكانية إيقافه بضغطة واحدة.
+                {isMobile
+                  ? 'حماية بطارية الهاتف من الشحن الزائد: يصدر تنبيهاً صوتياً فورياً عند وصول نسبة الشحن إلى الحد المحدد للحفاظ على عمر البطارية.'
+                  : 'يصدر إشعاراً صوتياً خاصاً على الكمبيوتر عند وصول شحن الهاتف إلى النسبة المحددة، مع إمكانية إيقافه بضغطة واحدة.'}
               </p>
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <button
@@ -1181,6 +1227,66 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               )}
             </div>
           )}
+        {/* Desktop PC Exclusive: Floating PiP Capsule Controls */}
+          {!isMobile && (
+            <div className="space-y-3 pt-3 border-t border-white/10">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-white">
+                  <Monitor className="w-4 h-4 text-[#7FFFD4]" />
+                  <span>إعدادات كبسولة سطح المكتب للكمبيوتر (Desktop PiP Capsule)</span>
+                </div>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-[#7FFFD4]/10 text-[#7FFFD4] border border-[#7FFFD4]/20 font-mono">
+                  Windows / Desktop
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400 leading-relaxed">
+                الكبسولة العائمة تظل ظاهرة فوق كافة البرامج والنوافذ على شاشة الكمبيوتر لتعرض العد التنازلي للحدث القادم والتنبيهات السريعة.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-zinc-400 text-[11px]">اتجاه الكبسولة:</span>
+                <button
+                  type="button"
+                  onClick={() => handleUpdateCapsuleOrientation('horizontal')}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition ${
+                    capsuleOrientation === 'horizontal'
+                      ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4]'
+                      : 'border-white/10 bg-black/40 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <Rows2 className="w-3.5 h-3.5" />
+                  <span>أفقي (مستطيل)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleUpdateCapsuleOrientation('vertical')}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition ${
+                    capsuleOrientation === 'vertical'
+                      ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4]'
+                      : 'border-white/10 bg-black/40 text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <Columns2 className="w-3.5 h-3.5" />
+                  <span>رأسي (عمودي)</span>
+                </button>
+
+                <span className="text-zinc-400 text-[11px] mr-2">الحجم:</span>
+                {(['sm', 'md', 'lg'] as const).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => handleUpdateCapsuleSize(s)}
+                    className={`px-2.5 py-1 rounded-lg border font-mono-tabular text-xs cursor-pointer transition ${
+                      capsuleSize === s
+                        ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
+                        : 'border-white/10 text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    {s === 'sm' ? 'صغير' : s === 'md' ? 'متوسط' : 'عريض'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* 7. Google Gemini Client-Side API Key & Model Settings */}
@@ -1265,8 +1371,10 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           </div>
         </section>
 
-        {/* 8. Android Permissions Matrix (Android 12 – 16) */}
-        <AndroidPermissionsCard />
+        {/* 8. Android Permissions Matrix (Shown ONLY on Mobile devices) */}
+        {isMobile && (
+          <AndroidPermissionsCard />
+        )}
 
         {/* Footer */}
         <div className="pt-3 border-t border-white/10 flex items-center justify-end gap-2">
