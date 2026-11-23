@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { motion } from 'motion/react';
 import {
   Globe,
   LayoutDashboard,
@@ -124,8 +125,8 @@ export const TopBar: React.FC<TopBarProps> = ({
             <span className="hidden sm:inline">{t(language, 'brand')}</span>
           </button>
 
-          {/* Zone 2: Clean Single-Line Navigation (Desktop) */}
-          <nav className="hidden md:flex items-center gap-1 text-[13px] font-medium">
+          {/* Zone 2: Clean Single-Line Navigation (Desktop) with Motion Layout Pill */}
+          <nav className="hidden md:flex items-center gap-1 text-[13px] font-medium" aria-label="Desktop navigation">
             {navItems.map((item) => {
               const active = activeTab === item.id;
               return (
@@ -133,13 +134,21 @@ export const TopBar: React.FC<TopBarProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => onSelectTab(item.id)}
-                  className={`relative px-3.5 py-2 rounded-lg whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                  aria-current={active ? 'page' : undefined}
+                  className={`relative px-3.5 py-2 rounded-lg whitespace-nowrap shrink-0 transition-colors cursor-pointer select-none ${
                     active
-                      ? 'text-[#7FFFD4] bg-[#7FFFD4]/[0.08] font-semibold'
+                      ? 'text-[#7FFFD4] font-semibold'
                       : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]'
                   }`}
                 >
-                  {item.label}
+                  {active && (
+                    <motion.div
+                      layoutId="activeTabPillDesktop"
+                      className="absolute inset-0 rounded-lg bg-[#7FFFD4]/[0.09] border border-[#7FFFD4]/25 shadow-[0_0_12px_rgba(127,255,212,0.12)]"
+                      transition={{ type: 'spring', stiffness: 480, damping: 32 }}
+                    />
+                  )}
+                  <span className="relative z-10">{item.label}</span>
                 </button>
               );
             })}
@@ -150,7 +159,9 @@ export const TopBar: React.FC<TopBarProps> = ({
             <PWAInstallButton language={language} />
 
             {onCheckAppUpdates && (
-              <button
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
                 type="button"
                 onClick={onCheckAppUpdates}
                 disabled={isCheckingUpdates}
@@ -161,11 +172,13 @@ export const TopBar: React.FC<TopBarProps> = ({
                 <RefreshCw
                   className={`w-3.5 h-3.5 ${isCheckingUpdates ? 'animate-spin text-[#7FFFD4]' : ''}`}
                 />
-              </button>
+              </motion.button>
             )}
 
             {onToggleSunMode && (
-              <button
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
                 type="button"
                 onClick={onToggleSunMode}
                 className="w-9 h-9 rounded-lg text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-colors cursor-pointer shrink-0"
@@ -174,10 +187,12 @@ export const TopBar: React.FC<TopBarProps> = ({
                 aria-pressed={sunMode}
               >
                 {sunMode ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
-              </button>
+              </motion.button>
             )}
 
-            <button
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.96 }}
               type="button"
               onClick={onToggleLanguage}
               className="min-h-[36px] px-2.5 py-1.5 text-xs font-medium rounded-lg border border-white/[0.09] bg-white/[0.03] text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors"
@@ -186,16 +201,19 @@ export const TopBar: React.FC<TopBarProps> = ({
               <Globe className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
               <span className="sm:hidden">{language === 'ar' ? 'EN' : 'ع'}</span>
               <span className="hidden sm:inline">{t(language, 'langSwitchLabel')}</span>
-            </button>
+            </motion.button>
 
-            <button
+            <motion.button
+              whileHover={{ scale: 1.03, boxShadow: '0 0 16px rgba(127,255,212,0.3)' }}
+              whileTap={{ scale: 0.96 }}
+              transition={{ type: 'spring', stiffness: 500, damping: 25 }}
               type="button"
               onClick={onOpenCatchUp}
-              className="min-h-[36px] px-3 sm:px-3.5 py-1.5 text-xs font-bold rounded-lg bg-[#7FFFD4] text-black hover:bg-[#66eec2] active:scale-[0.98] transition-all whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[36px] px-3 sm:px-3.5 py-1.5 text-xs font-bold rounded-lg bg-[#7FFFD4] text-black hover:bg-[#66eec2] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span className="sm:hidden">{language === 'ar' ? 'تدارك' : 'Catch-Up'}</span>
               <span className="hidden sm:inline">{t(language, 'ctaCatchUp')}</span>
-            </button>
+            </motion.button>
           </div>
         </div>
       </header>
@@ -210,21 +228,28 @@ export const TopBar: React.FC<TopBarProps> = ({
             const active = activeTab === item.id;
             const Icon = item.Icon;
             return (
-              <button
+              <motion.button
                 key={item.id}
+                whileTap={{ scale: 0.93 }}
                 type="button"
                 onClick={() => onSelectTab(item.id)}
-                className={`min-h-[48px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer ${
-                  active
-                    ? 'bg-[#7FFFD4]/12 text-[#7FFFD4] font-bold'
-                    : 'text-zinc-500 hover:text-zinc-200'
+                aria-current={active ? 'page' : undefined}
+                className={`relative min-h-[48px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer select-none ${
+                  active ? 'text-[#7FFFD4] font-bold' : 'text-zinc-500 hover:text-zinc-200'
                 }`}
               >
-                <Icon className="w-[19px] h-[19px] shrink-0" />
-                <span className="text-[11px] leading-none truncate max-w-full">
+                {active && (
+                  <motion.div
+                    layoutId="mobileActiveTabPill"
+                    className="absolute inset-0 rounded-xl bg-[#7FFFD4]/12 border border-[#7FFFD4]/20"
+                    transition={{ type: 'spring', stiffness: 480, damping: 32 }}
+                  />
+                )}
+                <Icon className="relative z-10 w-[19px] h-[19px] shrink-0" />
+                <span className="relative z-10 text-[11px] leading-none truncate max-w-full">
                   {item.mobileLabel}
                 </span>
-              </button>
+              </motion.button>
             );
           })}
         </div>

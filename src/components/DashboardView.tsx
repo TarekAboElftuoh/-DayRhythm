@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Droplets,
   Trash2,
@@ -1422,61 +1423,73 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       )}
 
       {/* 2. PRIORITY ACTIONAL ALERTS ONLY (Rendered strictly when an urgent action or undo exists) */}
-      {activeAudioAlert && (
-        <div
-          className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
-            activeAudioAlert.isContinuous
-              ? 'border-amber-400/50 bg-amber-400/12'
-              : 'border-[#7FFFD4]/40 bg-[#7FFFD4]/10'
-          }`}
-        >
-          <div className="flex items-center gap-2.5 text-sm">
-            <span className="text-2xl leading-none">{activeAudioAlert.title || TASK_SOUND_META[activeAudioAlert.category].icon}</span>
-            <span className="text-xs font-medium text-zinc-200">
-              {activeAudioAlert.category === 'water'
-                ? 'تأكيد شرب الكوب'
-                : activeAudioAlert.isContinuous
-                  ? 'رنين نشط'
-                  : 'تنبيه'}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            {activeAudioAlert.category === 'water' ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onLogWaterCup();
-                    onAcknowledgeAudioAlert();
-                  }}
-                  className="px-3.5 py-1.5 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
-                >
-                  💧 شربت فعلاً ✓
-                </button>
-                <button
+      <AnimatePresence>
+        {activeAudioAlert && (
+          <motion.div
+            initial={{ opacity: 0, y: -10, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -8, scale: 0.98 }}
+            transition={{ type: 'spring', stiffness: 450, damping: 28 }}
+            className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
+              activeAudioAlert.isContinuous
+                ? 'border-amber-400/50 bg-amber-400/12'
+                : 'border-[#7FFFD4]/40 bg-[#7FFFD4]/10'
+            }`}
+          >
+            <div className="flex items-center gap-2.5 text-sm">
+              <span className="text-2xl leading-none">{activeAudioAlert.title || TASK_SOUND_META[activeAudioAlert.category].icon}</span>
+              <span className="text-xs font-medium text-zinc-200">
+                {activeAudioAlert.category === 'water'
+                  ? 'تأكيد شرب الكوب'
+                  : activeAudioAlert.isContinuous
+                    ? 'رنين نشط'
+                    : 'تنبيه'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {activeAudioAlert.category === 'water' ? (
+                <>
+                  <motion.button
+                    whileHover={{ scale: 1.04 }}
+                    whileTap={{ scale: 0.94 }}
+                    type="button"
+                    onClick={() => {
+                      onLogWaterCup();
+                      onAcknowledgeAudioAlert();
+                    }}
+                    className="px-3.5 py-1.5 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
+                  >
+                    💧 شربت فعلاً ✓
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.03 }}
+                    whileTap={{ scale: 0.95 }}
+                    type="button"
+                    onClick={onAcknowledgeAudioAlert}
+                    className="px-3 py-1.5 rounded-lg border border-white/15 text-zinc-300 text-xs hover:text-white cursor-pointer"
+                  >
+                    لاحقاً
+                  </motion.button>
+                </>
+              ) : (
+                <motion.button
+                  whileHover={{ scale: 1.04 }}
+                  whileTap={{ scale: 0.94 }}
                   type="button"
                   onClick={onAcknowledgeAudioAlert}
-                  className="px-3 py-1.5 rounded-lg border border-white/15 text-zinc-300 text-xs hover:text-white cursor-pointer"
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
+                    activeAudioAlert.isContinuous
+                      ? 'bg-amber-400 text-black hover:bg-amber-300'
+                      : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
+                  }`}
                 >
-                  لاحقاً
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={onAcknowledgeAudioAlert}
-                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                  activeAudioAlert.isContinuous
-                    ? 'bg-amber-400 text-black hover:bg-amber-300'
-                    : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
-                }`}
-              >
-                {activeAudioAlert.isContinuous ? 'إيقاف ✓' : '✓ تم'}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
+                  {activeAudioAlert.isContinuous ? 'إيقاف ✓' : '✓ تم'}
+                </motion.button>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {(smartChargeAudioActive ||
         (phoneBattery &&
@@ -3145,8 +3158,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {hydrationToday.slots.map((filled, idx) => {
                 const slotPlan = dailyRhythmPlan.hydrationSlots[idx];
                 return (
-                  <button
+                  <motion.button
                     key={idx}
+                    whileHover={{ scale: 1.08 }}
+                    whileTap={{ scale: 0.90 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 25 }}
                     type="button"
                     onClick={() => onToggleWaterSlot(idx)}
                     title={
@@ -3154,14 +3170,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         ? `كوب ${idx + 1} · ${formatMinutes12h(slotPlan.timeMinutes, language)}`
                         : `كوب ${idx + 1}`
                     }
-                    className={`flex-1 h-8 rounded-md font-mono-tabular text-[11px] font-bold flex items-center justify-center transition-colors cursor-pointer ${
+                    className={`flex-1 h-8 rounded-md font-mono-tabular text-[11px] font-bold flex items-center justify-center transition-colors cursor-pointer select-none ${
                       filled
-                        ? 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
+                        ? 'bg-[#7FFFD4] text-black shadow-[0_0_8px_rgba(127,255,212,0.3)] hover:bg-[#66eec2]'
                         : 'bg-white/[0.06] text-zinc-400 hover:bg-white/[0.14] hover:text-white'
                     }`}
                   >
                     {idx + 1}
-                  </button>
+                  </motion.button>
                 );
               })}
             </div>
@@ -3784,13 +3800,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           )}
                         </button>
                         <div className="flex items-center gap-1 shrink-0">
-                          <button
+                          <motion.button
+                            whileHover={{ scale: 1.04 }}
+                            whileTap={{ scale: 0.92 }}
                             type="button"
                             onClick={() => onToggleMedication(med.id)}
                             aria-pressed={takenToday}
-                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer ${
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer select-none ${
                               takenToday
-                                ? 'border-[#4ADE80] bg-[#4ADE80] text-black'
+                                ? 'border-[#4ADE80] bg-[#4ADE80] text-black shadow-[0_0_8px_rgba(74,222,128,0.25)]'
                                 : 'border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4] hover:text-black'
                             }`}
                           >
@@ -3806,7 +3824,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   ? `${takenDoses.length}/${doseTimes.length}`
                                   : 'تم اليوم'}
                             </span>
-                          </button>
+                          </motion.button>
                           <button
                             type="button"
                             onClick={() => {

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Send,
   MapPin,
@@ -2505,12 +2506,15 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               const isStreamingThis = streamingMsgId === m.id;
               const displayProposal = m.pendingProposal;
               return (
-                <div
+                <motion.div
                   key={m.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.22, ease: 'easeOut' }}
                   className={`flex ${m.role === 'user' ? 'justify-start' : 'justify-end'}`}
                 >
                   <article
-                    className={`max-w-[92%] sm:max-w-[85%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed ${
+                    className={`max-w-[92%] sm:max-w-[85%] rounded-2xl px-4 py-3 text-[13px] leading-relaxed transition-colors ${
                       m.role === 'user'
                         ? 'bg-[#7FFFD4]/12 border border-[#7FFFD4]/25 text-white'
                         : m.error
@@ -2920,7 +2924,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                       </div>
                     )}
                   </article>
-                </div>
+                </motion.div>
               );
             })}
 
@@ -2937,49 +2941,62 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             <div ref={threadEndRef} />
           </div>
 
-          {/* Quick Action Chips & Suggestions */}
+          {/* Quick Action Chips & Suggestions with Motion Spring Physics */}
           {!loading && (
             <div className="px-3 sm:px-4 py-2 border-t border-white/10 flex items-center gap-1.5 overflow-x-auto bg-[#090C12] no-scrollbar">
               {mode === 'chat'
                 ? QUICK_ACTION_CHIPS.map((chip, idx) => (
-                    <button
+                    <motion.button
                       key={idx}
+                      whileHover={{ scale: 1.05, y: -1 }}
+                      whileTap={{ scale: 0.94 }}
+                      transition={{ type: 'spring', stiffness: 480, damping: 26 }}
                       type="button"
                       onClick={() => void sendMessage(chip.prompt)}
-                      className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/60 hover:bg-[#7FFFD4]/10 hover:text-[#7FFFD4] whitespace-nowrap shrink-0 cursor-pointer transition-all flex items-center gap-1"
+                      className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/60 hover:bg-[#7FFFD4]/10 hover:text-[#7FFFD4] whitespace-nowrap shrink-0 cursor-pointer transition-colors flex items-center gap-1 select-none"
                     >
                       <span>{chip.emoji}</span>
                       <span>{chip.label}</span>
-                    </button>
+                    </motion.button>
                   ))
                 : SUGGESTED_PROMPTS[mode].map((prompt, idx) => (
-                    <button
+                    <motion.button
                       key={idx}
+                      whileHover={{ scale: 1.03 }}
+                      whileTap={{ scale: 0.95 }}
+                      transition={{ type: 'spring', stiffness: 480, damping: 26 }}
                       type="button"
                       onClick={() => void sendMessage(prompt)}
-                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.02] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/50 hover:text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.02] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/50 hover:text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors select-none"
                     >
                       {prompt}
-                    </button>
+                    </motion.button>
                   ))}
             </div>
           )}
 
           {/* Voice Status Notice */}
-          {voiceNote && (
-            <div className="px-4 py-1.5 border-t border-white/10 bg-[#7FFFD4]/[0.06] text-xs text-[#7FFFD4] flex items-center justify-between gap-2">
-              <span>{voiceNote}</span>
-              {isListeningVoice && (
-                <button
-                  type="button"
-                  onClick={toggleVoiceInput}
-                  className="text-rose-300 hover:underline font-semibold cursor-pointer whitespace-nowrap"
-                >
-                  إيقاف
-                </button>
-              )}
-            </div>
-          )}
+          <AnimatePresence>
+            {voiceNote && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="px-4 py-1.5 border-t border-white/10 bg-[#7FFFD4]/[0.06] text-xs text-[#7FFFD4] flex items-center justify-between gap-2 overflow-hidden"
+              >
+                <span>{voiceNote}</span>
+                {isListeningVoice && (
+                  <button
+                    type="button"
+                    onClick={toggleVoiceInput}
+                    className="text-rose-300 hover:underline font-semibold cursor-pointer whitespace-nowrap"
+                  >
+                    إيقاف
+                  </button>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Fast Responsive Composer */}
           <form
@@ -2993,7 +3010,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             }}
             className="p-3 border-t border-white/10 bg-[#07090D] flex items-end gap-2"
           >
-            <button
+            <motion.button
+              whileTap={{ scale: 0.92 }}
               type="button"
               onClick={toggleVoiceInput}
               disabled={loading}
@@ -3006,7 +3024,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               }`}
             >
               {isListeningVoice ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            </button>
+            </motion.button>
 
             <textarea
               ref={textareaRef}
@@ -3040,7 +3058,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             />
 
             {loading ? (
-              <button
+              <motion.button
+                whileTap={{ scale: 0.93 }}
                 type="button"
                 onClick={() => stopGeneration(mode)}
                 aria-label="إيقاف التوليد"
@@ -3048,9 +3067,11 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
                 <span className="max-sm:hidden">إيقاف</span>
-              </button>
+              </motion.button>
             ) : (
-              <button
+              <motion.button
+                whileHover={{ scale: input.trim() ? 1.03 : 1 }}
+                whileTap={{ scale: input.trim() ? 0.94 : 1 }}
                 type="submit"
                 disabled={!input.trim()}
                 aria-label="إرسال"
@@ -3058,7 +3079,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               >
                 <Send className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                 <span className="max-sm:hidden">إرسال</span>
-              </button>
+              </motion.button>
             )}
           </form>
         </section>
