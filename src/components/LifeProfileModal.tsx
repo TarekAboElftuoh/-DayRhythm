@@ -27,7 +27,7 @@ import {
   Columns2,
 } from 'lucide-react';
 import { MemoryItemCard } from './MemoryItemCard';
-import { AndroidPermissionsCard } from './AndroidPermissionsCard';
+import type { CapsulePrefs } from './FloatingPiPCapsule';
 import { isMobileDevice } from '../services/platform';
 import {
   getGeminiApiKey,
@@ -106,6 +106,8 @@ interface LifeProfileModalProps {
   onCheckAppUpdates?: () => void;
   activeBrandLogo?: { titleAr: string; src: string; isDefault?: boolean } | null;
   onOpenLogoPicker?: () => void;
+  capsulePrefs?: CapsulePrefs;
+  onChangeCapsulePrefs?: (next: CapsulePrefs) => void;
   onExportBackupJson?: () => void;
   onImportBackupJson?: (rawText: string) => Promise<{
     ok: boolean;
@@ -150,6 +152,8 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   onCheckAppUpdates,
   activeBrandLogo,
   onOpenLogoPicker,
+  capsulePrefs,
+  onChangeCapsulePrefs,
   onExportBackupJson,
   onImportBackupJson,
 }) => {
@@ -169,42 +173,21 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const isMobile = isMobileDevice();
 
-  const [capsuleOrientation, setCapsuleOrientation] = useState<'horizontal' | 'vertical'>(() => {
-    if (typeof window === 'undefined') return 'horizontal';
-    try {
-      const raw = localStorage.getItem('dayrhythm_capsule_prefs_v1');
-      if (raw) return JSON.parse(raw).orientation || 'horizontal';
-    } catch {}
-    return 'horizontal';
-  });
-
-  const [capsuleSize, setCapsuleSize] = useState<'sm' | 'md' | 'lg'>(() => {
-    if (typeof window === 'undefined') return 'md';
-    try {
-      const raw = localStorage.getItem('dayrhythm_capsule_prefs_v1');
-      if (raw) return JSON.parse(raw).size || 'md';
-    } catch {}
-    return 'md';
-  });
+  const capsuleOrientation = capsulePrefs?.orientation ?? 'horizontal';
+  const capsuleSize = capsulePrefs?.size ?? 'md';
 
   const handleUpdateCapsuleOrientation = (o: 'horizontal' | 'vertical') => {
-    setCapsuleOrientation(o);
-    try {
-      const cur = JSON.parse(localStorage.getItem('dayrhythm_capsule_prefs_v1') || '{}');
-      cur.orientation = o;
-      localStorage.setItem('dayrhythm_capsule_prefs_v1', JSON.stringify(cur));
-      window.dispatchEvent(new Event('dayrhythm_capsule_prefs_changed'));
-    } catch {}
+    onChangeCapsulePrefs?.({
+      orientation: o,
+      size: capsuleSize,
+    });
   };
 
   const handleUpdateCapsuleSize = (s: 'sm' | 'md' | 'lg') => {
-    setCapsuleSize(s);
-    try {
-      const cur = JSON.parse(localStorage.getItem('dayrhythm_capsule_prefs_v1') || '{}');
-      cur.size = s;
-      localStorage.setItem('dayrhythm_capsule_prefs_v1', JSON.stringify(cur));
-      window.dispatchEvent(new Event('dayrhythm_capsule_prefs_changed'));
-    } catch {}
+    onChangeCapsulePrefs?.({
+      orientation: capsuleOrientation,
+      size: s,
+    });
   };
   const backupFileInputRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -1371,10 +1354,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           </div>
         </section>
 
-        {/* 8. Android Permissions Matrix (Shown ONLY on Mobile devices) */}
-        {isMobile && (
-          <AndroidPermissionsCard />
-        )}
+
 
         {/* Footer */}
         <div className="pt-3 border-t border-white/10 flex items-center justify-end gap-2">

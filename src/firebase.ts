@@ -1767,8 +1767,6 @@ export async function upsertChatMessageRecord(
       } else {
         await updateDoc(docRef, {
           text: trimmedText,
-          timestampMs,
-          createdAtIso,
           updatedAt: serverTimestamp(),
         });
       }

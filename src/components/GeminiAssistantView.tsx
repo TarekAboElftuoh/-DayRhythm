@@ -925,13 +925,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       onChangeMessages((prev) =>
         prev.map((m): PersistedChatMessage => {
           if (m.id !== msgId) return m;
-          const prop =
-            m.pendingProposal ||
-            (m.role === 'model' && m.text.includes('propose_')
-              ? extractPendingProposalFromFunctionCalls(
-                  sanitizeGeminiOutputText(m.text).recoveredFnCalls
-                )
-              : undefined);
+          const prop = m.pendingProposal;
           return {
             ...m,
             text: queuedNote
@@ -957,13 +951,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     onChangeMessages((prev) =>
       prev.map((m): PersistedChatMessage => {
         if (m.id !== msgId) return m;
-        const prop =
-          m.pendingProposal ||
-          (m.role === 'model' && m.text.includes('propose_')
-            ? extractPendingProposalFromFunctionCalls(
-                sanitizeGeminiOutputText(m.text).recoveredFnCalls
-              )
-            : undefined);
+        const prop = m.pendingProposal;
         return {
           ...m,
           text: cleanDisplayMessageText(m.text),
@@ -1060,6 +1048,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       proposal?: PersistedChatMessage['pendingProposal']
     ) => {
       if (!proposal || !autoExecuteRef.current) return;
+      if (proposal.fromTextFallback) return;
       const totalItems =
         proposal.actions.length +
         (proposal.taskActions?.length ?? 0) +
@@ -2484,13 +2473,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
             {visibleMessages.map((m) => {
               const isStreamingThis = streamingMsgId === m.id;
-              const displayProposal =
-                m.pendingProposal ||
-                (!isStreamingThis && m.role === 'model' && m.text.includes('propose_')
-                  ? extractPendingProposalFromFunctionCalls(
-                      sanitizeGeminiOutputText(m.text).recoveredFnCalls
-                    )
-                  : undefined);
+              const displayProposal = m.pendingProposal;
               return (
                 <div
                   key={m.id}

@@ -1,5 +1,3 @@
-import { Capacitor } from '@capacitor/core';
-
 /**
  * Universal platform detection service for DayRhythm.
  * Distinguishes cleanly between Desktop (Windows PC / Mac) and Mobile (Android APK / Smartphone).
@@ -7,19 +5,11 @@ import { Capacitor } from '@capacitor/core';
 
 export function isMobileDevice(): boolean {
   if (typeof window === 'undefined') return false;
-  // 1. Android Native Capacitor Bridge
-  try {
-    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
-      return true;
-    }
-  } catch {
-    // ignore
-  }
-  // 2. Legacy / Custom Android WebKit Bridge
+  // 1. Android WebKit Bridge
   if (Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative)) {
     return true;
   }
-  // 3. Mobile User Agent
+  // 2. Mobile User Agent
   const ua = navigator.userAgent || '';
   return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
 }
@@ -37,12 +27,5 @@ export function isWindowsNative(): boolean {
 
 export function isAndroidNativeApp(): boolean {
   if (typeof window === 'undefined') return false;
-  try {
-    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
-      return true;
-    }
-  } catch {
-    // ignore
-  }
   return Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative);
 }

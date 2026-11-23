@@ -478,6 +478,19 @@ export interface GroundingSource {
   uri: string;
 }
 
+export interface PendingProposal {
+  summaryAr: string;
+  actions: CalendarActionProposal[];
+  taskActions?: TaskActionProposal[];
+  medicationActions?: MedicationActionProposal[];
+  creativeActions?: CreativeActivityActionProposal[];
+  profileUpdates?: Partial<LifeProfile>;
+  memoryActions?: MemoryActionProposal[];
+  appSettings?: AppSettingsPatch;
+  status: 'pending' | 'confirmed' | 'cancelled';
+  fromTextFallback?: boolean;
+}
+
 export interface PersistedChatMessage {
   id: string;
   role: 'user' | 'model';
@@ -487,17 +500,7 @@ export interface PersistedChatMessage {
   places?: GroundingPlace[];
   sources?: GroundingSource[];
   executionLinks?: Array<{ title: string; htmlLink: string }>;
-  pendingProposal?: {
-    summaryAr: string;
-    actions: CalendarActionProposal[];
-    taskActions?: TaskActionProposal[];
-    medicationActions?: MedicationActionProposal[];
-    creativeActions?: CreativeActivityActionProposal[];
-    profileUpdates?: Partial<LifeProfile>;
-    memoryActions?: MemoryActionProposal[];
-    appSettings?: AppSettingsPatch;
-    status: 'pending' | 'confirmed' | 'cancelled';
-  };
+  pendingProposal?: PendingProposal;
   error?: boolean;
   latencyMs?: number;
   memoriesAppliedCount?: number;
