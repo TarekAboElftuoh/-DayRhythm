@@ -41,6 +41,20 @@ export interface FullDayRhythmCloudBackup {
 
 let cachedFileId: string | null = null;
 
+export interface DriveApiStatus {
+  status: 'ok' | 'service_disabled' | 'scope_missing' | 'unknown_error';
+  enableUrl: string;
+}
+
+let lastDriveStatus: DriveApiStatus = {
+  status: 'ok',
+  enableUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=527201435015',
+};
+
+export function getDriveApiStatus(): DriveApiStatus {
+  return lastDriveStatus;
+}
+
 function getStoredFileId(): string | null {
   if (cachedFileId) return cachedFileId;
   try {
@@ -98,9 +112,16 @@ export async function getOrFindAppDataFileId(token: string): Promise<string | nu
     }
 
     if (res.status === 403) {
-      console.warn('[GoogleDriveStorage] Scope drive.appdata is missing (HTTP 403). Re-authorization required.');
+      const errJson = await res.json().catch(() => ({}));
+      const str = JSON.stringify(errJson);
+      const isServiceDisabled = str.includes('SERVICE_DISABLED') || str.includes('has not been used in project');
+      lastDriveStatus = {
+        status: isServiceDisabled ? 'service_disabled' : 'scope_missing',
+        enableUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=527201435015',
+      };
+      console.warn('[GoogleDriveStorage] Google Drive API 403 on getOrFind:', lastDriveStatus.status, errJson);
       if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-scope-missing'));
+        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: lastDriveStatus }));
       }
       return null;
     }
@@ -177,9 +198,16 @@ export async function loadFromGoogleDriveAppData(
         return null;
       }
       if (searchRes.status === 403) {
-        console.warn('[GoogleDriveStorage] Scope drive.appdata is missing on search (HTTP 403).');
+        const errJson = await searchRes.json().catch(() => ({}));
+        const str = JSON.stringify(errJson);
+        const isServiceDisabled = str.includes('SERVICE_DISABLED') || str.includes('has not been used in project');
+        lastDriveStatus = {
+          status: isServiceDisabled ? 'service_disabled' : 'scope_missing',
+          enableUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=527201435015',
+        };
+        console.warn('[GoogleDriveStorage] Google Drive API 403 on search:', lastDriveStatus.status, errJson);
         if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-scope-missing'));
+          window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: lastDriveStatus }));
         }
         return null;
       }
@@ -292,9 +320,16 @@ export async function saveToGoogleDriveAppData(
     }
 
     if (patchRes.status === 403) {
-      console.warn('[GoogleDriveStorage] Scope drive.appdata is missing on patch (HTTP 403).');
+      const errJson = await patchRes.json().catch(() => ({}));
+      const str = JSON.stringify(errJson);
+      const isServiceDisabled = str.includes('SERVICE_DISABLED') || str.includes('has not been used in project');
+      lastDriveStatus = {
+        status: isServiceDisabled ? 'service_disabled' : 'scope_missing',
+        enableUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=527201435015',
+      };
+      console.warn('[GoogleDriveStorage] Google Drive API 403 on patch:', lastDriveStatus.status, errJson);
       if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-scope-missing'));
+        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: lastDriveStatus }));
       }
       return false;
     }

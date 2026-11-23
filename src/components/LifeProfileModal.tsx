@@ -27,7 +27,9 @@ import {
   Columns2,
   Cloud,
   RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
+import { getDriveApiStatus } from '../services/googleDriveStorage';
 import { MemoryItemCard } from './MemoryItemCard';
 import { AndroidPermissionsCard } from './AndroidPermissionsCard';
 import type { CapsulePrefs } from './FloatingPiPCapsule';
@@ -175,6 +177,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     text: string;
   } | null>(null);
   const [driveSyncNotice, setDriveSyncNotice] = useState<string | null>(null);
+  const [driveEnableUrl, setDriveEnableUrl] = useState<string | null>(null);
   const [isSyncingDriveLocal, setIsSyncingDriveLocal] = useState(false);
   const [pendingRestoreFile, setPendingRestoreFile] = useState<{
     fileName: string;
@@ -1161,12 +1164,21 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                     onClick={async () => {
                       setIsSyncingDriveLocal(true);
                       setDriveSyncNotice(null);
+                      setDriveEnableUrl(null);
                       try {
                         const ok = await onSyncGoogleDriveNow();
                         if (ok) {
                           setDriveSyncNotice('✓ تم حفظ ومزامنة جميع الإعدادات والدستور مع حسابك على Google Drive بنجاح');
                         } else {
-                          setDriveSyncNotice('⚠️ تعذر رفع النسخة السحابية الآن — تأكد من الاتصال وجدد ربط Google إذا تطلب الأمر.');
+                          const statusInfo = getDriveApiStatus();
+                          if (statusInfo.status === 'service_disabled') {
+                            setDriveSyncNotice(
+                              '⚠️ خدمة Google Drive API معطلة في مشروع Google Cloud الخاص بك. اضغط على الزر بالأسفل لتفعيلها بضغطة زر واحدة (Enable):'
+                            );
+                            setDriveEnableUrl(statusInfo.enableUrl);
+                          } else {
+                            setDriveSyncNotice('⚠️ تعذر رفع النسخة السحابية الآن — تأكد من الاتصال وجدد ربط Google إذا تطلب الأمر.');
+                          }
                         }
                       } finally {
                         setIsSyncingDriveLocal(false);
@@ -1185,8 +1197,21 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               </div>
             </div>
             {driveSyncNotice && (
-              <div className="text-[11px] text-[#7FFFD4] bg-[#7FFFD4]/10 border border-[#7FFFD4]/20 rounded-lg px-3 py-2">
-                {driveSyncNotice}
+              <div className="text-[11px] text-zinc-200 bg-black/40 border border-[#7FFFD4]/30 rounded-lg p-3 space-y-2">
+                <p>{driveSyncNotice}</p>
+                {driveEnableUrl && (
+                  <div>
+                    <a
+                      href={driveEnableUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold text-xs hover:bg-emerald-500/30 transition-colors"
+                    >
+                      <span>تفعيل Google Drive API في مشروعك (اضغط هنا)</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+                )}
               </div>
             )}
           </div>
