@@ -20,7 +20,7 @@ import {
   limit,
   onSnapshot,
   persistentLocalCache,
-  persistentMultipleTabManager,
+  persistentSingleTabManager,
   query,
   serverTimestamp,
   setDoc,
@@ -85,9 +85,8 @@ function createResilientFirestore() {
       app,
       {
         localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager(),
+          tabManager: persistentSingleTabManager(undefined),
         }),
-        experimentalAutoDetectLongPolling: true,
       },
       configuredDbId
     );
@@ -437,6 +436,9 @@ export interface SyncedRhythmPayload {
   phoneBattery?: PhoneBatteryTelemetry;
   uiPrefs?: UiPrefs;
   appSettings?: AppSyncSettings;
+  medications?: MedicationItem[];
+  creativeActivities?: CreativeActivityItem[];
+  memories?: MemoryItem[];
 }
 
 /** App preferences that must match on every device (they used to live only in localStorage). */

@@ -105,6 +105,10 @@ public final class CloudSignalClient {
 
     /** Phone stopped/snoozed the alert → tell the PC. */
     public static void sendAlarmDismiss(Context context, String action) {
+        sendAlarmDismiss(context, action, null, null, null);
+    }
+
+    public static void sendAlarmDismiss(Context context, String action, String kind, String medId, String doseTime) {
         final Context app = context.getApplicationContext();
         stopWatching();
         EXEC.execute(() -> {
@@ -120,6 +124,15 @@ public final class CloudSignalClient {
                         .put("scope", new JSONObject().put("stringValue", "alarm_dismiss"))
                         .put("action", new JSONObject().put("stringValue", action == null || action.isEmpty() ? "native_dismiss" : action))
                         .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)));
+
+                if (kind != null || medId != null || doseTime != null) {
+                    JSONObject extraMap = new JSONObject();
+                    if (kind != null) extraMap.put("kind", new JSONObject().put("stringValue", kind));
+                    if (medId != null) extraMap.put("medId", new JSONObject().put("stringValue", medId));
+                    if (doseTime != null) extraMap.put("doseTime", new JSONObject().put("stringValue", doseTime));
+                    sigFields.put("extra", new JSONObject().put("mapValue", new JSONObject().put("fields", extraMap)));
+                }
+
                 JSONObject write1 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth))

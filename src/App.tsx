@@ -595,6 +595,10 @@ const RHYTHM_FIELD_GROUPS: ReadonlyArray<ReadonlyArray<keyof SyncedRhythmPayload
   ['deviceSettings'],
   ['lifeProfile'],
   ['uiPrefs'],
+  ['appSettings'],
+  ['medications'],
+  ['creativeActivities'],
+  ['memories'],
 ];
 
 function serializeRhythmFields(p: SyncedRhythmPayload): Record<string, string> {
@@ -896,6 +900,9 @@ export default function App() {
   const [cloudPausedUntil, setCloudPausedUntil] = useState(0);
   const pendingRemoteTimerRef = useRef<number | null>(null);
   const pushToTasksVaultRef = useRef<(patch?: Partial<TasksVaultPayload>) => Promise<void>>(() => Promise.resolve());
+  const pendingPatchesBeforeHydrationRef = useRef<Array<Partial<TasksVaultPayload>>>([]);
+  const handleToggleMedicationRef = useRef<(id: string, doseTime24?: string) => void>(() => {});
+  const handleLogWaterCupRef = useRef<() => void>(() => {});
 
   // Any LOCALLY-initiated lifeProfile edit arms the write lock (see the Firestore listener's
   // "Date.now() < localWriteLockUntilRef.current" guard above) so a snapshot that happens to
@@ -3508,6 +3515,7 @@ export default function App() {
       setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
       setWaterRemindersEnabled(a.waterRemindersEnabled);
       setSunMode(a.sunMode);
+      lastServerAppSettingsRef.current = JSON.stringify(a);
       try {
         localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
         localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
@@ -3638,11 +3646,13 @@ export default function App() {
               : 0
             : baseCounts[idx] ?? 0;
 
-          // Bulletproof Anti-Downgrade: NEVER allow remote sync to wipe today's logged cups!
+          // Bulletproof Anti-Downgrade: NEVER allow remote sync to wipe today's logged cups while writing locally!
           if (isToday) {
             if (isSameDay) {
-              if (Date.now() < localWriteLockUntilRef.current || (prevToday && prevToday.cupsLogged > c)) {
+              if (Date.now() < localWriteLockUntilRef.current) {
                 c = Math.max(c, prevToday ? prevToday.cupsLogged : 0);
+              } else {
+                c = remote.cupsLogged!;
               }
             } else {
               // Remote snapshot hasn't recorded today yet or is from a previous day:
@@ -3667,6 +3677,12 @@ export default function App() {
           };
         });
       });
+    }
+
+    try {
+      lastServerFieldsRef.current = serializeRhythmFields(sanitizeRhythmPayload(remote));
+    } catch {
+      // ignore
     }
   }, []);
 
@@ -3702,7 +3718,10 @@ export default function App() {
     async (patch?: Partial<UserSettingsPayload>) => {
       // NEVER allow any writes while settings are loading or if remote has not successfully hydrated
       if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
-        console.warn('[CloudSync] Write blocked: settings are currently unhydrated or loading from cloud.');
+        console.warn('[CloudSync] Write queued: settings are currently unhydrated or loading from cloud.');
+        if (patch) {
+          pendingPatchesBeforeHydrationRef.current.push(patch);
+        }
         return;
       }
 
@@ -3759,6 +3778,15 @@ export default function App() {
         const ok = await saveCloudUserSettings(uid, payload);
         if (ok) {
           setFirestoreSynced(true);
+          try {
+            const updatedFields = serializeRhythmFields(sanitizeRhythmPayload(payload as SyncedRhythmPayload));
+            lastServerFieldsRef.current = {
+              ...lastServerFieldsRef.current,
+              ...updatedFields,
+            };
+          } catch {
+            // ignore
+          }
         }
       } catch (err) {
         console.error('[CloudSync] saveCloudUserSettings error:', err);
@@ -3875,39 +3903,53 @@ export default function App() {
     const unsubscribe = subscribeToUserDocument(
       uid,
       (remote) => {
-        // A) Android background alarm dismissal check
+        // A) Cross-device syncSignal (Alarm dismiss, Calendar, Tasks, Native Done)
         const sig = remote.syncSignal;
-        if (sig && sig.scope === 'alarm_dismiss' && sig.clientId !== clientIdRef.current) {
-          const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
-          const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
-          const isCurrentlyRinging = Boolean(currentAlertId || alarmRinging);
+        if (sig && sig.clientId !== clientIdRef.current) {
+          if (sig.scope === 'alarm_dismiss') {
+            const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
+            const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
+            const isCurrentlyRinging = Boolean(currentAlertId || alarmRinging);
 
-          if (isCurrentlyRinging && sig.timestampMs && sig.timestampMs >= (currentFiredAtMs - 5000)) {
-            console.info('[CloudSync] Remote alarm dismiss signal received from Android Native:', sig.action);
-            stopContinuousAlert();
-            stopNativeAlerts();
-            setActiveAudioAlert(null);
-            setPersistentAlert(null);
-            setAlarmRinging(false);
-            try {
-              const bridge = (
-                window as Window & {
-                  DayRhythmNative?: {
-                    dismissActiveAlerts?: () => void;
-                    stopNativeAlarmSound?: () => void;
-                  };
-                }
-              ).DayRhythmNative;
-              bridge?.stopNativeAlarmSound?.();
-              bridge?.dismissActiveAlerts?.();
-            } catch {
-              // ignore bridge
+            if (isCurrentlyRinging && sig.timestampMs && sig.timestampMs >= (currentFiredAtMs - 5000)) {
+              console.info('[CloudSync] Remote alarm dismiss signal received:', sig.action);
+              stopContinuousAlert();
+              stopNativeAlerts();
+              setActiveAudioAlert(null);
+              setPersistentAlert(null);
+              setAlarmRinging(false);
+              try {
+                const bridge = (
+                  window as Window & {
+                    DayRhythmNative?: {
+                      dismissActiveAlerts?: () => void;
+                      stopNativeAlarmSound?: () => void;
+                    };
+                  }
+                ).DayRhythmNative;
+                bridge?.stopNativeAlarmSound?.();
+                bridge?.dismissActiveAlerts?.();
+              } catch {
+                // ignore bridge
+              }
             }
+
+            if (sig.action === 'native_done' && sig.extra) {
+              const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string };
+              if (extra.kind === 'water') {
+                handleLogWaterCupRef.current();
+              } else if (extra.kind === 'medication' && extra.medId) {
+                handleToggleMedicationRef.current(extra.medId, extra.doseTime);
+              }
+            }
+          } else {
+            // Forward calendar, tasks, workspace sync signals across devices in real time!
+            handleIncomingRemoteSyncRef.current(sig);
           }
         }
 
         // B) Real-time settings & rhythm live sync from other devices
-        if (remote.originClientId !== clientIdRef.current && remote.updatedAtMs) {
+        if ((!remote.originClientId || remote.originClientId !== clientIdRef.current) && remote.updatedAtMs) {
           applyOrDefer(remote as SyncedRhythmPayload & {
             medications?: MedicationItem[];
             creativeActivities?: CreativeActivityItem[];
@@ -3947,6 +3989,11 @@ export default function App() {
         if (cloudData) {
           console.info('[CloudSync] Applying cloud settings with priority for uid:', uid);
           applyOrDefer(cloudData as any);
+          try {
+            lastServerFieldsRef.current = serializeRhythmFields(sanitizeRhythmPayload(cloudData as SyncedRhythmPayload));
+          } catch {
+            // ignore
+          }
           hasHydratedRemoteRef.current = true;
           setFirestoreReady(true);
           setFirestoreSynced(true);
@@ -3955,6 +4002,15 @@ export default function App() {
           hasHydratedRemoteRef.current = true;
           setFirestoreReady(true);
           setFirestoreSynced(true);
+        }
+
+        // Flush any queued writes that occurred while hydrating
+        if (pendingPatchesBeforeHydrationRef.current.length > 0) {
+          const queued = [...pendingPatchesBeforeHydrationRef.current];
+          pendingPatchesBeforeHydrationRef.current = [];
+          for (const patch of queued) {
+            void saveCloudUserSettingsImmediately(patch);
+          }
         }
 
         // Send cloud auth to Android Native bridge
@@ -4182,8 +4238,20 @@ export default function App() {
     }
     if (changedKeys.length === 0) return;
 
-    // Immediately push to Google Tasks Cloud Vault for sub-second cross-device sync
-    void pushToTasksVaultImmediately(payload);
+    // Only send the granular patch of changed fields to avoid overwriting other devices!
+    const patch: Partial<UserSettingsPayload> = {};
+    for (const key of changedKeys) {
+      (patch as any)[key] = (payload as any)[key];
+    }
+
+    // Update local copy of server fields immediately to prevent bounce loops
+    lastServerFieldsRef.current = {
+      ...lastServerFieldsRef.current,
+      ...localFields,
+    };
+
+    // Immediately push granular patch for sub-second cross-device sync
+    void pushToTasksVaultImmediately(patch);
     setFirestoreSynced(true);
   }, [
     activeTimeZone,
@@ -6424,6 +6492,7 @@ export default function App() {
     stopNativeAlerts,
     emitCrossDeviceSync,
   ]);
+  handleLogWaterCupRef.current = handleLogWaterCup;
 
   const handleToggleWaterSlot = (index: number) => {
     updateTodayHydration((today) => {
@@ -7363,6 +7432,7 @@ export default function App() {
     },
     [activeTimeZone, medications, showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
+  handleToggleMedicationRef.current = handleToggleMedication;
 
   const handleToggleMedicationDate = useCallback(
     (id: string, dateIso: string) => {

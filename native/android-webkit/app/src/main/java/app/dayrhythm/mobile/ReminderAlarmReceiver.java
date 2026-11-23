@@ -528,7 +528,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             stopRinging();
             cancelNotification(context, notifId);
             closeAlarmUi(context);
-            CloudSignalClient.sendAlarmDismiss(context, "native_done");
+            CloudSignalClient.sendAlarmDismiss(context, "native_done", kind, medId, doseTime);
             enqueuePendingQuickAction(context, kind, alarmId, medId, doseTime);
             Intent notifyIntent = new Intent(ACTION_PENDING_QUEUE_UPDATED);
             notifyIntent.setPackage(context.getPackageName());
