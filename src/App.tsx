@@ -599,6 +599,13 @@ const RHYTHM_FIELD_GROUPS: ReadonlyArray<ReadonlyArray<keyof SyncedRhythmPayload
   ['medications'],
   ['creativeActivities'],
   ['memories'],
+  ['completedOverrides'],
+  ['fastingOverride'],
+  ['isFridayMode'],
+  ['includeBiweeklyPcCleanup'],
+  ['periodicRituals'],
+  ['travelState'],
+  ['pomodoro'],
 ];
 
 function serializeRhythmFields(p: SyncedRhythmPayload): Record<string, string> {
@@ -1499,14 +1506,14 @@ export default function App() {
         }
       }
 
-      const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-      if (firebaseUser?.uid && (firebaseUser.emailVerified || isGoogle)) {
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
         void publishWorkspaceSyncSignal(firebaseUser.uid, {
           opId,
           clientId: clientIdRef.current,
           scope,
           action,
           timestampMs,
+          extra: extraPayload,
         });
       }
 
@@ -1900,7 +1907,14 @@ export default function App() {
   }, []);
 
   const fetchCalendarEvents = useCallback(async (tokenOverride?: string) => {
-    const token = tokenOverride ?? getCalendarAccessToken();
+    let token: string | null = tokenOverride ?? getCalendarAccessToken();
+    if (!token) {
+      try {
+        token = (await getOrRefreshCalendarAccessToken()) || null;
+      } catch {
+        // ignore
+      }
+    }
     if (!token) {
       return;
     }
@@ -2032,7 +2046,14 @@ export default function App() {
   }, [handleWorkspaceUnauthorized]);
 
   const fetchGoogleTasks = useCallback(async (tokenOverride?: string) => {
-    const token = tokenOverride ?? getCalendarAccessToken();
+    let token: string | null = tokenOverride ?? getCalendarAccessToken();
+    if (!token) {
+      try {
+        token = (await getOrRefreshCalendarAccessToken()) || null;
+      } catch {
+        // ignore
+      }
+    }
     if (!token) return;
     setLoadingTasks(true);
     // Dev backend (server.ts) only — static APK/EXE/PWA builds skip straight to Google.
@@ -3528,7 +3549,7 @@ export default function App() {
     if (remote.quietMode) setQuietMode(remote.quietMode);
     if (typeof remote.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(remote.adhanOverrideSilent);
     lastSyncedQuietSigRef.current = `${remote.quietMode || quietMode}:${remote.adhanOverrideSilent ?? adhanOverrideSilent}`;
-    setSurfaceTheme('amoled');
+    if (remote.surfaceTheme) setSurfaceTheme(remote.surfaceTheme);
     if (remote.deviceSettings) {
       const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
       setDeviceSettings(cleanDev);
@@ -3679,6 +3700,28 @@ export default function App() {
       });
     }
 
+    if (remote.completedOverrides) {
+      setCompletedOverrides(remote.completedOverrides);
+    }
+    if (remote.fastingOverride) {
+      setFastingOverride(remote.fastingOverride);
+    }
+    if (typeof remote.isFridayMode === 'boolean') {
+      setIsFridayMode(remote.isFridayMode);
+    }
+    if (typeof remote.includeBiweeklyPcCleanup === 'boolean') {
+      setIncludeBiweeklyPcCleanup(remote.includeBiweeklyPcCleanup);
+    }
+    if (remote.travelState) {
+      setTravelState(remote.travelState);
+    }
+    if (remote.pomodoro) {
+      setPomodoro(remote.pomodoro);
+    }
+    if (Array.isArray(remote.periodicRituals)) {
+      setPeriodicRituals(remote.periodicRituals);
+    }
+
     try {
       lastServerFieldsRef.current = serializeRhythmFields(sanitizeRhythmPayload(remote));
     } catch {
@@ -3758,6 +3801,13 @@ export default function App() {
           creativeActivities,
           memories,
           originClientId: clientIdRef.current,
+          completedOverrides,
+          fastingOverride,
+          isFridayMode,
+          includeBiweeklyPcCleanup,
+          travelState,
+          pomodoro,
+          periodicRituals,
           appSettings: {
             phoneChargeLimitPct,
             smartChargeAlertEnabled,
@@ -4386,6 +4436,22 @@ export default function App() {
     syncUiPrefsCloud(DEFAULT_LOGO_ID, capsulePrefs);
     showToast('تمت العودة للشعار الافتراضي (أفق الشروق الزجاجي) ومزامنته ✓');
   }, [capsulePrefs, showToast, syncUiPrefsCloud]);
+
+  const handleChangeFastingOverride = useCallback(
+    (next: 'auto' | 'fasting' | 'normal') => {
+      setFastingOverride(next);
+      void pushToTasksVaultImmediately({ fastingOverride: next });
+    },
+    [pushToTasksVaultImmediately]
+  );
+
+  const handleToggleSurfaceTheme = useCallback(
+    (theme: SurfaceTheme) => {
+      setSurfaceTheme(theme);
+      void pushToTasksVaultImmediately({ surfaceTheme: theme });
+    },
+    [pushToTasksVaultImmediately]
+  );
 
   const handleUpdateDeviceSettings = useCallback(
     (patch: Partial<OnePlusDeviceSettings>) => {
@@ -5421,6 +5487,7 @@ export default function App() {
     setUndoSnapshot(null);
     setReflowedBlocksOverride(null);
     rebuildOfflineSchedule(effectiveDayMode, travelState, v, includeBiweeklyPcCleanup);
+    void pushToTasksVaultImmediately({ isFridayMode: v });
   };
 
   const handleToggleBiweeklyPcCleanup = (v: boolean) => {
@@ -5428,6 +5495,7 @@ export default function App() {
     setUndoSnapshot(null);
     setReflowedBlocksOverride(null);
     rebuildOfflineSchedule(effectiveDayMode, travelState, isFridayMode, v);
+    void pushToTasksVaultImmediately({ includeBiweeklyPcCleanup: v });
   };
 
   const handleApplyTravel = (nextTravel: TravelState) => {
@@ -5436,6 +5504,7 @@ export default function App() {
     rebuildOfflineSchedule(effectiveDayMode, nextTravel, isFridayMode, includeBiweeklyPcCleanup);
     appendChangelog('Web/PC', `تفعيل وضع السفر (${nextTravel.location.nameAr})`, `Activated Travel Mode`);
     showToast('تم تفعيل وضع السفر وتحديث المواقيت.');
+    void pushToTasksVaultImmediately({ travelState: nextTravel });
   };
 
   const handleDisableTravel = () => {
@@ -5448,6 +5517,7 @@ export default function App() {
     setTravelState(resetTravel);
     setReflowedBlocksOverride(null);
     rebuildOfflineSchedule(effectiveDayMode, resetTravel, isFridayMode, includeBiweeklyPcCleanup);
+    void pushToTasksVaultImmediately({ travelState: resetTravel });
   };
 
   const handleApplyOfflineActions = useCallback(
@@ -6132,15 +6202,17 @@ export default function App() {
   const handleCompletePeriodicRitual = useCallback(
     (id: PeriodicRitualStatus['id']) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
-      setPeriodicRituals((prev) =>
-        prev.map((r) =>
+      setPeriodicRituals((prev) => {
+        const next = prev.map((r) =>
           r.id === id ? { ...r, daysSinceLast: 0, lastCompletedIso: todayIso } : r
-        )
-      );
+        );
+        void pushToTasksVaultImmediately({ periodicRituals: next });
+        return next;
+      });
       appendChangelog('Web/PC', `تسجيل إتمام المهمة الدورية (${id})`, `Completed periodic ritual ${id}`);
       showToast('تم تسجيل إنجاز المهمة الدورية وتصفير العداد ✓');
     },
-    [activeTimeZone, appendChangelog, showToast]
+    [activeTimeZone, appendChangelog, showToast, pushToTasksVaultImmediately]
   );
 
   const handleToggleCreativeToday = useCallback(
@@ -6173,16 +6245,23 @@ export default function App() {
     [activeTimeZone, showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
-  const handleToggleComplete = (id: string) => {
-    if (id.startsWith('creative_')) {
-      handleToggleCreativeToday(id.slice('creative_'.length));
-      return;
-    }
-    setCompletedOverrides((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
-  };
+  const handleToggleComplete = useCallback(
+    (id: string) => {
+      if (id.startsWith('creative_')) {
+        handleToggleCreativeToday(id.slice('creative_'.length));
+        return;
+      }
+      setCompletedOverrides((prev) => {
+        const next = {
+          ...prev,
+          [id]: !prev[id],
+        };
+        void pushToTasksVaultImmediately({ completedOverrides: next });
+        return next;
+      });
+    },
+    [handleToggleCreativeToday, pushToTasksVaultImmediately]
+  );
 
   const handleDeleteBlock = (id: string) => {
     const target = liveBlocks.find((b) => b.id === id) ?? null;
@@ -9261,7 +9340,7 @@ ${lifeConstitution}
             onToggleAdhanOverrideSilent={() => setAdhanOverrideSilent((v) => !v)}
             onTestAdhanChime={handleTestAdhanChime}
             surfaceTheme={surfaceTheme}
-            onToggleSurfaceTheme={setSurfaceTheme}
+            onToggleSurfaceTheme={handleToggleSurfaceTheme}
             prayers={prayers}
             blocks={liveBlocks}
             includePrayerAnchors={includePrayerAnchors}
@@ -9341,7 +9420,7 @@ ${lifeConstitution}
             lifeProfile={lifeProfile}
             dailyRhythmPlan={dailyRhythmPlan}
             fastingOverride={fastingOverride}
-            onChangeFastingOverride={setFastingOverride}
+            onChangeFastingOverride={handleChangeFastingOverride}
             onOpenLifeProfile={() => setIsLifeProfileModalOpen(true)}
             onQuickUpdateWeight={handleQuickUpdateWeight}
             memoryCount={memories.length}
@@ -9644,26 +9723,38 @@ ${lifeConstitution}
         onClose={() => setIsPomodoroModalOpen(false)}
         state={pomodoro}
         onToggleRun={() =>
-          setPomodoro((p) => ({ ...p, isRunning: !p.isRunning }))
+          setPomodoro((p) => {
+            const next = { ...p, isRunning: !p.isRunning };
+            void pushToTasksVaultImmediately({ pomodoro: next });
+            return next;
+          })
         }
         onReset={() =>
-          setPomodoro((p) => ({
-            ...p,
-            phase: 'focus',
-            remainingSeconds: p.presetMinutes * 60,
-            totalSeconds: p.presetMinutes * 60,
-            isRunning: false,
-          }))
+          setPomodoro((p) => {
+            const next: PomodoroState = {
+              ...p,
+              phase: 'focus',
+              remainingSeconds: p.presetMinutes * 60,
+              totalSeconds: p.presetMinutes * 60,
+              isRunning: false,
+            };
+            void pushToTasksVaultImmediately({ pomodoro: next });
+            return next;
+          })
         }
         onSelectPreset={(minutes) =>
-          setPomodoro((p) => ({
-            ...p,
-            phase: minutes === 5 ? 'break' : 'focus',
-            presetMinutes: minutes,
-            remainingSeconds: minutes * 60,
-            totalSeconds: minutes * 60,
-            isRunning: false,
-          }))
+          setPomodoro((p) => {
+            const next: PomodoroState = {
+              ...p,
+              phase: minutes === 5 ? 'break' : 'focus',
+              presetMinutes: minutes,
+              remainingSeconds: minutes * 60,
+              totalSeconds: minutes * 60,
+              isRunning: false,
+            };
+            void pushToTasksVaultImmediately({ pomodoro: next });
+            return next;
+          })
         }
         onFastForwardTest={() =>
           setPomodoro((p) => ({

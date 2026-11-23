@@ -20,9 +20,12 @@ import {
   LifeProfile,
   MedicationItem,
   MemoryItem,
+  PeriodicRitualStatus,
+  PomodoroState,
   QuietModeType,
   SurfaceTheme,
   TaskSoundCategory,
+  TravelState,
   UiPrefs,
   WorkspaceSyncSignal,
 } from '../types/dayrhythm';
@@ -65,6 +68,13 @@ export interface UserSettingsPayload {
   dailyCommitmentDoneToday?: boolean;
   waterTargetDays?: number;
   waterTargetDoneToday?: boolean;
+  completedOverrides?: Record<string, boolean>;
+  fastingOverride?: 'auto' | 'fasting' | 'normal';
+  isFridayMode?: boolean;
+  includeBiweeklyPcCleanup?: boolean;
+  periodicRituals?: PeriodicRitualStatus[];
+  travelState?: TravelState;
+  pomodoro?: PomodoroState;
   syncSignal?: WorkspaceSyncSignal;
   originClientId?: string;
   lastDismissSignal?: {
