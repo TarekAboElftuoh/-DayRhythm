@@ -94,6 +94,10 @@ public class DayRhythmSyncService extends Service {
 
     private static volatile DayRhythmSyncService instance = null;
 
+    public static DayRhythmSyncService getInstance() {
+        return instance;
+    }
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Random jitterRandom = new Random();
 
@@ -812,6 +816,69 @@ public class DayRhythmSyncService extends Service {
         }).start();
     }
 
+    public void triggerLanDiscovery() {
+        LanDiscoveryManager.discoverPcAsync(this, (pcName, wsUrl, restUrl) -> {
+            handler.post(() -> {
+                if (wsUrl != null && !wsUrl.isEmpty()) {
+                    lastDiscoveredPcIp = wsUrl.replace("ws://", "").replaceAll(":[0-9]+.*", "");
+                    SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE);
+                    prefs.edit()
+                            .putString(MainActivity.KEY_REMOTE_WS_URL, wsUrl)
+                            .putString("remote_rest_url", restUrl)
+                            .apply();
+                    connectBackgroundWebSocket();
+                }
+            });
+        });
+    }
+
+    public void sendWebSocketMessageOrRest(String jsonPayload) {
+        if (jsonPayload == null || jsonPayload.isEmpty()) return;
+        WebSocket ws = activeWebSocket;
+        if (ws != null) {
+            try {
+                if (ws.send(jsonPayload)) {
+                    return;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE);
+        String restUrl = prefs.getString("remote_rest_url", "");
+        if (restUrl.isEmpty() && lastDiscoveredPcIp != null) {
+            restUrl = "http://" + lastDiscoveredPcIp + ":" + LAN_PORT + "/api/v1";
+        }
+        if (!restUrl.isEmpty()) {
+            postSignedSettingsUpdateAsync(this, restUrl, jsonPayload);
+        }
+    }
+
+    public static void postSignedSettingsUpdateAsync(Context context, String targetRestUrl, String jsonPayload) {
+        new Thread(() -> {
+            try {
+                String path = "/api/v1/settings/update";
+                URL url = new URL(targetRestUrl.replaceAll("/+$", "") + path);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(1500);
+                conn.setReadTimeout(1500);
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+
+                Map<String, String> signedHeaders = LanSecurityManager.generateSignedHeaders(context, "POST", path, jsonPayload);
+                for (Map.Entry<String, String> entry : signedHeaders.entrySet()) {
+                    conn.setRequestProperty(entry.getKey(), entry.getValue());
+                }
+
+                byte[] bodyBytes = jsonPayload.getBytes(StandardCharsets.UTF_8);
+                conn.getOutputStream().write(bodyBytes);
+                conn.getResponseCode();
+                conn.disconnect();
+            } catch (Exception ignored) {
+            }
+        }, "DayRhythm-SignedRest").start();
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_REFRESH_NOTIF.equals(intent.getAction())) {
@@ -910,6 +977,7 @@ public class DayRhythmSyncService extends Service {
                         hadNetworkLoss = false;
                         backoffAttempt = 0;
                         handler.removeCallbacks(wsReconnectRunnable);
+                        triggerLanDiscovery();
                         connectBackgroundWebSocket();
                         if (shouldBroadcastRecovery) {
                             broadcastNetworkRecovered();
@@ -991,6 +1059,7 @@ public class DayRhythmSyncService extends Service {
         if (wsUrl.isEmpty() || (!wsUrl.startsWith("ws://") && !wsUrl.startsWith("wss://"))) {
             syncSubtitle = "مزامنة لحظية نشطة 24/7";
             refreshPersistentNotification();
+            triggerLanDiscovery();
             return;
         }
 

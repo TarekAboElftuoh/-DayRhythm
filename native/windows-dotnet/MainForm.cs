@@ -83,7 +83,7 @@ namespace DayRhythm
             InitializeDesktopCapsule();
             InitializeWebViewControl();
 
-            _lanBatteryServer = new LanBatteryServer(OnLanBatteryTelemetry);
+            _lanBatteryServer = new LanBatteryServer(OnLanBatteryTelemetry, OnLanMessageReceived);
             _lanBatteryServer.Start();
 
             HandleCreated += (_, __) => ApplyDarkObsidianTitleBar(Handle);
@@ -422,6 +422,27 @@ namespace DayRhythm
                                             }
                                             CloseActiveScreenAlert();
                                         });
+                                    }
+                                    else if (string.Equals(msgType, "lan_broadcast", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        if (doc.RootElement.TryGetProperty("payload", out JsonElement payloadEl))
+                                        {
+                                            string payloadJson = payloadEl.GetRawText();
+                                            _ = _lanBatteryServer?.BroadcastAsync(payloadJson);
+                                        }
+                                    }
+                                    else if (string.Equals(msgType, "get-lan-pairing-code", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        string code = LanSecurityManager.GetPairingCode();
+                                        string js = $"window.dispatchEvent(new CustomEvent('dayrhythm:lan-pairing-code', {{ detail: {JsonSerializer.Serialize(code)} }}));";
+                                        _ = _webView.CoreWebView2.ExecuteScriptAsync(js);
+                                    }
+                                    else if (string.Equals(msgType, "set-lan-pairing-key", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        if (doc.RootElement.TryGetProperty("key", out JsonElement keyEl))
+                                        {
+                                            LanSecurityManager.SetPairingKeyFromBase64(keyEl.GetString());
+                                        }
                                     }
                                 }
                             }
@@ -888,6 +909,20 @@ namespace DayRhythm
             _lanBatteryServer?.Dispose();
             _lanBatteryServer = null;
             _bgServices.Dispose();
+        }
+
+        private void OnLanMessageReceived(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return;
+            RunOnUi(() =>
+            {
+                if (_webView?.CoreWebView2 != null)
+                {
+                    string literal = JsonSerializer.Serialize(json);
+                    string js = $"window.dispatchEvent(new CustomEvent('dayrhythm:ws-sync', {{ detail: {literal} }}));";
+                    _ = _webView.CoreWebView2.ExecuteScriptAsync(js);
+                }
+            });
         }
 
         private void OnLanBatteryTelemetry(LanBatteryTelemetry telemetry)

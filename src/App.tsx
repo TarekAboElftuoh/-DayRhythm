@@ -132,6 +132,7 @@ import {
   type SyncedRhythmPayload,
   triggerFirestoreRecovery,
 } from './firebase';
+import { dispatchLanBroadcast } from './services/platform';
 import {
   HOME_LOCATION,
   PRESET_LOCATIONS,
@@ -1487,6 +1488,9 @@ export default function App() {
         extra: extraPayload,
         timestampMs,
       };
+
+      // 0. Instant Local Area Network Broadcast (< 50ms, Zero-Latency)
+      dispatchLanBroadcast(packet);
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         try {
@@ -3169,6 +3173,7 @@ export default function App() {
   handleIncomingRemoteSyncRef.current = handleIncomingRemoteSync;
   const refreshWorkspaceRef = useRef(refreshWorkspace);
   refreshWorkspaceRef.current = refreshWorkspace;
+  const applyRemoteRef = useRef<(remote: SyncedRhythmPayload) => void>(() => {});
   const callRemoteSync = useCallback(
     (payload: Parameters<typeof handleIncomingRemoteSync>[0]) => handleIncomingRemoteSyncRef.current(payload),
     []
@@ -3449,7 +3454,14 @@ export default function App() {
         if (typeof detail === 'string') {
           const parsed = JSON.parse(detail);
           if (parsed && typeof parsed === 'object') {
-            callRemoteSync(parsed);
+            if (parsed.clientId === clientIdRef.current) return;
+            if (parsed.type === 'settings_update' && parsed.settings) {
+              applyRemoteRef.current(parsed.settings);
+            } else if (parsed.settings) {
+              applyRemoteRef.current(parsed.settings);
+            } else {
+              callRemoteSync(parsed);
+            }
           }
         }
       } catch {
@@ -3728,6 +3740,7 @@ export default function App() {
       // ignore
     }
   }, []);
+  applyRemoteRef.current = applyRemote;
 
   const applyOrDefer = useCallback(
     (remote: SyncedRhythmPayload & {
@@ -3823,6 +3836,12 @@ export default function App() {
           }),
         };
       }
+
+      // Protocol 1 & 2: Broadcast immediately over LAN (< 50ms) to update PC and Mobile in real-time
+      dispatchLanBroadcast({
+        type: 'settings_update',
+        settings: payload,
+      });
 
       try {
         const ok = await saveCloudUserSettings(uid, payload);

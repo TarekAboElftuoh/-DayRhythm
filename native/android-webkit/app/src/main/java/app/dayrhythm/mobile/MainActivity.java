@@ -98,9 +98,9 @@ public class MainActivity extends Activity {
             } else if (DayRhythmSyncService.ACTION_WS_SYNC_MESSAGE.equals(action)) {
                 String payload = intent.getStringExtra(DayRhythmSyncService.EXTRA_WS_PAYLOAD);
                 if (payload != null && webView != null) {
-                    String escaped = payload.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "");
+                    String quoted = org.json.JSONObject.quote(payload);
                     webView.evaluateJavascript(
-                            "window.dispatchEvent(new CustomEvent('dayrhythm:ws-sync',{detail:'" + escaped + "'}));",
+                            "window.dispatchEvent(new CustomEvent('dayrhythm:ws-sync',{detail:" + quoted + "}));",
                             null
                     );
                 }
@@ -851,6 +851,37 @@ public class MainActivity extends Activity {
                     } catch (Exception ignored) {
                     }
                 });
+            }
+
+            @JavascriptInterface
+            public void broadcastLanMessage(String messageJson) {
+                executor.execute(() -> {
+                    DayRhythmSyncService svc = DayRhythmSyncService.getInstance();
+                    if (svc != null) {
+                        svc.sendWebSocketMessageOrRest(messageJson);
+                    }
+                });
+            }
+
+            @JavascriptInterface
+            public void setLanPairingKey(String base64Key) {
+                LanSecurityManager.saveSharedSecret(MainActivity.this, base64Key);
+            }
+
+            @JavascriptInterface
+            public void discoverLanDevices() {
+                DayRhythmSyncService svc = DayRhythmSyncService.getInstance();
+                if (svc != null) {
+                    svc.triggerLanDiscovery();
+                } else {
+                    LanDiscoveryManager.discoverPcAsync(MainActivity.this, (pcName, wsUrl, restUrl) -> {
+                        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                        prefs.edit()
+                                .putString(KEY_REMOTE_WS_URL, wsUrl)
+                                .putString("remote_rest_url", restUrl)
+                                .apply();
+                    });
+                }
             }
         }, "DayRhythmNative");
 

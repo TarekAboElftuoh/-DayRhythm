@@ -15,7 +15,7 @@ namespace DayRhythm
             {
                 try
                 {
-                    string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log");
+                    string logPath = Path.Combine(AppConfig.GetDataDir(), "crash.log");
                     File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] UnhandledException: {e.ExceptionObject}\n");
                 }
                 catch { }
@@ -24,7 +24,7 @@ namespace DayRhythm
             {
                 try
                 {
-                    string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log");
+                    string logPath = Path.Combine(AppConfig.GetDataDir(), "crash.log");
                     File.AppendAllText(logPath, $"[{DateTime.UtcNow:O}] ThreadException: {e.Exception}\n");
                 }
                 catch { }

@@ -12,6 +12,7 @@ package-lock.json
 native/windows-dotnet/bin/
 native/windows-dotnet/obj/
 native/windows-dotnet/publish-out/
+native/windows-dotnet/www/
 
 # Android WebKit native build outputs & local properties
 native/android-webkit/local.properties
