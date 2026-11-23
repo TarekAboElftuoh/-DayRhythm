@@ -53,6 +53,7 @@ import {
   SoundRepeatMap,
   SoundRepeatSetting,
   TaskSoundCategory,
+  APP_VERSION,
 } from '../types/dayrhythm';
 import {
   ARABIC_WEEKDAYS,
@@ -1459,30 +1460,37 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         <AndroidPermissionsCard />
 
         {/* Footer */}
-        <div className="pt-3 border-t border-white/10 flex items-center justify-end gap-2">
-          {onCheckAppUpdates && (
+        <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {onCheckAppUpdates && (
+              <button
+                type="button"
+                onClick={onCheckAppUpdates}
+                className="px-3 py-2 rounded-xl border border-white/10 text-xs text-zinc-400 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 cursor-pointer"
+              >
+                فحص التحديثات
+              </button>
+            )}
+            <span className="text-[10.5px] font-mono text-zinc-500/70 select-none px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06]">
+              {APP_VERSION}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={onCheckAppUpdates}
-              className="me-auto px-3 py-2 rounded-xl border border-white/10 text-xs text-zinc-400 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 cursor-pointer"
+              onClick={handleClose}
+              className="px-4 py-2 rounded-xl border border-white/15 text-xs text-zinc-300 hover:text-white cursor-pointer"
             >
-              فحص التحديثات
+              إلغاء
             </button>
-          )}
-          <button
-            type="button"
-            onClick={handleClose}
-            className="px-4 py-2 rounded-xl border border-white/15 text-xs text-zinc-300 hover:text-white cursor-pointer"
-          >
-            إلغاء
-          </button>
-          <button
-            type="submit"
-            className="px-5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1.5 cursor-pointer"
-          >
-            <Check className="w-4 h-4" />
-            <span>حفظ الثوابت ومزامنتها</span>
-          </button>
+            <button
+              type="submit"
+              className="px-5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1.5 cursor-pointer"
+            >
+              <Check className="w-4 h-4" />
+              <span>حفظ الثوابت ومزامنتها</span>
+            </button>
+          </div>
         </div>
       </form>
     </div>

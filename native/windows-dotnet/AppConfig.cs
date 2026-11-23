@@ -31,7 +31,7 @@ namespace DayRhythm
         {
             if (string.IsNullOrWhiteSpace(AppVersion) || AppVersion.StartsWith("DAYRHYTHM_", StringComparison.Ordinal))
             {
-                return "2.0.37";
+                return "2.0.38";
             }
             return AppVersion.Trim();
         }

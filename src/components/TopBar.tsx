@@ -10,7 +10,7 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
-import { ActiveTab, AppLanguage } from '../types/dayrhythm';
+import { ActiveTab, AppLanguage, APP_VERSION } from '../types/dayrhythm';
 import { t } from '../engines/i18n';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -105,25 +105,33 @@ export const TopBar: React.FC<TopBarProps> = ({
     <>
       <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-[#070A0F]/92 backdrop-blur-xl pt-[env(safe-area-inset-top)]">
         <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3.5 sm:px-6 h-14">
-          {/* Zone 1: Brand Lockup */}
-          <button
-            type="button"
-            onClick={() => onSelectTab('dashboard')}
-            className="text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0 hover:text-[#7FFFD4] transition-colors cursor-pointer min-h-[40px] flex items-center gap-2.5"
-          >
-            {brandLogoSrc && (
-              <img
-                src={brandLogoSrc}
-                alt="شعار إيقاع اليوم"
-                referrerPolicy="no-referrer"
-                className="w-7 h-7 rounded-lg object-cover ring-1 ring-white/15 shrink-0"
-              />
-            )}
-            <span className="sm:hidden">
-              {language === 'ar' ? 'إيقاع اليوم' : 'DayRhythm'}
+          {/* Zone 1: Brand Lockup with subtle version badge */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => onSelectTab('dashboard')}
+              className="text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0 hover:text-[#7FFFD4] transition-colors cursor-pointer min-h-[40px] flex items-center gap-2.5"
+            >
+              {brandLogoSrc && (
+                <img
+                  src={brandLogoSrc}
+                  alt="شعار إيقاع اليوم"
+                  referrerPolicy="no-referrer"
+                  className="w-7 h-7 rounded-lg object-cover ring-1 ring-white/15 shrink-0"
+                />
+              )}
+              <span className="sm:hidden">
+                {language === 'ar' ? 'إيقاع اليوم' : 'DayRhythm'}
+              </span>
+              <span className="hidden sm:inline">{t(language, 'brand')}</span>
+            </button>
+            <span
+              className="text-[10px] font-mono tracking-wider text-zinc-500/70 select-none px-1.5 py-0.5 rounded bg-white/[0.03] border border-white/[0.06]"
+              title={`إصدار التطبيق ${APP_VERSION}`}
+            >
+              {APP_VERSION}
             </span>
-            <span className="hidden sm:inline">{t(language, 'brand')}</span>
-          </button>
+          </div>
 
           {/* Zone 2: Clean Single-Line Navigation (Desktop) with Motion Layout Pill */}
           <nav className="hidden md:flex items-center gap-1 text-[13px] font-medium" aria-label="Desktop navigation">

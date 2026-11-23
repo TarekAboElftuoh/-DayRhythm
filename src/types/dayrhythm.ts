@@ -628,3 +628,9 @@ export interface AppSettingsPatch {
     number | 'continuous'
   >>;
 }
+
+/**
+ * Global application version tag displayed across desktop and mobile clients.
+ */
+export const APP_VERSION = 'v2.0.38';
+

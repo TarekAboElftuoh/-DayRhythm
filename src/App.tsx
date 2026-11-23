@@ -8639,6 +8639,8 @@ ${lifeConstitution}
         language={language}
         onToggleLanguage={() => setLanguage((l) => (l === 'ar' ? 'en' : 'ar'))}
         brandLogoSrc={activeBrandLogo?.src ?? null}
+        onCheckAppUpdates={handleCheckAppUpdates}
+        isCheckingUpdates={isCheckingUpdates}
         sunMode={sunMode}
         onToggleSunMode={() => setSunMode((v) => !v)}
       />
