@@ -95,6 +95,8 @@ import {
 import {
   pushRhythmStateToTasks,
   pullRhythmStateFromTasks,
+  VAULT_LIST_TITLE,
+  SYNC_TASK_TITLE,
   type TasksVaultPayload,
 } from './services/googleTasksVault';
 import {
@@ -1968,8 +1970,15 @@ export default function App() {
         setLoadingTasks(false);
         setWorkspaceTokenExpired(false);
         const data = await res.json();
-        const nextLists = Array.isArray(data.taskLists) ? data.taskLists : undefined;
-        const nextTasks = Array.isArray(data.tasks) ? data.tasks : undefined;
+        const nextLists = Array.isArray(data.taskLists)
+          ? data.taskLists.filter((l: { title?: string }) => l.title !== VAULT_LIST_TITLE)
+          : undefined;
+        const nextTasks = Array.isArray(data.tasks)
+          ? data.tasks.filter(
+              (t: { title?: string; taskListTitle?: string }) =>
+                t.title !== SYNC_TASK_TITLE && t.taskListTitle !== VAULT_LIST_TITLE
+            )
+          : undefined;
         if (nextLists) setGoogleTaskLists(nextLists);
         if (nextTasks) setGoogleTasks(nextTasks);
         const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
@@ -1997,10 +2006,12 @@ export default function App() {
       if (!listsRes.ok) return;
       setWorkspaceTokenExpired(false);
       const listsJson = (await listsRes.json()) as { items?: Array<Record<string, unknown>> };
-      const mappedLists: GoogleTaskList[] = (listsJson.items || []).map((l) => ({
-        id: String(l.id || '@default'),
-        title: String(l.title || 'مهامي'),
-      }));
+      const mappedLists: GoogleTaskList[] = (listsJson.items || [])
+        .filter((l) => String(l.title || '') !== VAULT_LIST_TITLE)
+        .map((l) => ({
+          id: String(l.id || '@default'),
+          title: String(l.title || 'مهامي'),
+        }));
       setGoogleTaskLists(mappedLists);
 
       const allTasks: GoogleTaskItem[] = [];
@@ -2014,6 +2025,10 @@ export default function App() {
             if (!tRes.ok) return;
             const tJson = (await tRes.json()) as { items?: Array<Record<string, unknown>> };
             for (const item of tJson.items || []) {
+              const itemTitle = String(item.title || '');
+              if (itemTitle === SYNC_TASK_TITLE || list.title === VAULT_LIST_TITLE) {
+                continue;
+              }
               allTasks.push({
                 id: String(item.id || ''),
                 taskListId: list.id,

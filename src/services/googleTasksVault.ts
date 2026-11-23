@@ -17,8 +17,8 @@ export interface TasksVaultPayload extends Partial<SyncedRhythmPayload> {
   uiPrefs?: UiPrefs;
 }
 
-const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
-const SYNC_TASK_TITLE = 'sync_state';
+export const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
+export const SYNC_TASK_TITLE = 'sync_state';
 const VAULT_LIST_ID_CACHE = 'dayrhythm_tasks_vault_list_id_v2';
 const SYNC_TASK_ID_CACHE = 'dayrhythm_tasks_vault_task_id_v2';
 

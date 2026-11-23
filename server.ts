@@ -1251,7 +1251,7 @@ async function startServer() {
         items?: Array<{ id?: string; title?: string }>;
       };
       const taskLists = (listsJson.items ?? [])
-        .filter((l) => Boolean(l.id))
+        .filter((l) => Boolean(l.id) && l.title !== '[DayRhythm Sync Vault]')
         .slice(0, 6)
         .map((l) => ({
           id: String(l.id),
@@ -1277,7 +1277,7 @@ async function startServer() {
             }>;
           };
           return (tJson.items ?? [])
-            .filter((t) => Boolean(t.id && t.title))
+            .filter((t) => Boolean(t.id && t.title) && t.title !== 'sync_state')
             .map((t) => ({
               id: String(t.id),
               taskListId: list.id,

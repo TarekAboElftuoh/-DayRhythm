@@ -932,10 +932,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       selectedTaskListId === 'all'
         ? googleTasks
         : googleTasks.filter((tk) => tk.taskListId === selectedTaskListId);
-    return [...base].sort((a, b) => {
-      if (a.status !== b.status) return a.status === 'needsAction' ? -1 : 1;
-      return (a.due ?? '9999').localeCompare(b.due ?? '9999');
-    });
+    return base
+      .filter((tk) => tk.title !== 'sync_state' && tk.taskListTitle !== '[DayRhythm Sync Vault]')
+      .sort((a, b) => {
+        if (a.status !== b.status) return a.status === 'needsAction' ? -1 : 1;
+        return (a.due ?? '9999').localeCompare(b.due ?? '9999');
+      });
   }, [googleTasks, selectedTaskListId]);
 
   const newEventTime24 = useMemo(() => {
@@ -2578,7 +2580,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   >
                     الكل
                   </button>
-                  {googleTaskLists.map((list) => (
+                  {googleTaskLists
+                    .filter((list) => list.title !== '[DayRhythm Sync Vault]')
+                    .map((list) => (
                     <button
                       key={list.id}
                       type="button"
