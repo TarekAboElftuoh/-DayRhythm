@@ -42,6 +42,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -857,7 +858,11 @@ public class DayRhythmSyncService extends Service {
         new Thread(() -> {
             try {
                 String path = "/api/v1/settings/update";
-                URL url = new URL(targetRestUrl.replaceAll("/+$", "") + path);
+                String base = targetRestUrl.replaceAll("/+$", "");
+                if (base.endsWith("/api/v1")) {
+                    base = base.substring(0, base.length() - "/api/v1".length());
+                }
+                URL url = new URL(base + path);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
                 conn.setConnectTimeout(1500);
