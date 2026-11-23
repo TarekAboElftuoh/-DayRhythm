@@ -560,6 +560,18 @@ namespace DayRhythm
             Activate();
         }
 
+        private static readonly int WM_ACTIVATE_DAYRHYTHM = Program.RegisterWindowMessage(Program.ShowWindowMessageName);
+
+        protected override void WndProc(ref Message m)
+        {
+            if (WM_ACTIVATE_DAYRHYTHM != 0 && m.Msg == WM_ACTIVATE_DAYRHYTHM)
+            {
+                RunOnUi(ShowAndFocusWindow);
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
         private void UpdateWsStatus(string status)
         {
             _wsStatusText = status;
