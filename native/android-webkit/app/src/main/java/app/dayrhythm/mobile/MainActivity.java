@@ -828,6 +828,19 @@ public class MainActivity extends Activity {
             }
 
             @JavascriptInterface
+            public void openLiveAlertSettings() {
+                runOnUiThread(() -> {
+                    try {
+                        Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                        intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                        startActivity(intent);
+                    } catch (Exception e) {
+                        openAppSystemSettings();
+                    }
+                });
+            }
+
+            @JavascriptInterface
             public void openAppSystemSettings() {
                 runOnUiThread(() -> {
                     try {

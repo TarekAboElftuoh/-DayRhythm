@@ -19,6 +19,7 @@ interface DayRhythmNativeBridge {
   openBatteryOptimizationSettings?: () => void;
   openFullScreenIntentSettings?: () => void;
   openDndSettings?: () => void;
+  openLiveAlertSettings?: () => void;
   openAppSystemSettings?: () => void;
 }
 
@@ -72,6 +73,10 @@ export function openFullScreenIntentSettings(): void {
 
 export function openDndSettings(): void {
   getNativeBridge()?.openDndSettings?.();
+}
+
+export function openLiveAlertSettings(): void {
+  getNativeBridge()?.openLiveAlertSettings?.();
 }
 
 export function openAppSystemSettings(): void {

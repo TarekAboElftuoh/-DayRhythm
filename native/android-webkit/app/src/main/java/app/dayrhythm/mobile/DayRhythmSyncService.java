@@ -61,7 +61,7 @@ import okhttp3.WebSocketListener;
  */
 public class DayRhythmSyncService extends Service {
     public static final String CHANNEL_KEEPALIVE = "dayrhythm_keepalive_v2";
-    public static final String CHANNEL_LIVE_ALERTS = "dayrhythm_live_alerts_v1";
+    public static final String CHANNEL_LIVE_ALERTS = "dayrhythm_live_alerts_v2";
     public static final String ACTION_WS_SYNC_MESSAGE = "app.dayrhythm.mobile.WS_SYNC_MESSAGE";
     public static final String ACTION_UPDATE_AVAILABLE = "app.dayrhythm.mobile.UPDATE_AVAILABLE";
     public static final String ACTION_NETWORK_RECOVERED = "app.dayrhythm.mobile.NETWORK_RECOVERED";
@@ -201,15 +201,18 @@ public class DayRhythmSyncService extends Service {
             if (liveTargetEpochMs > 0L) {
                 long now = System.currentTimeMillis();
                 long remainingMs = liveTargetEpochMs - now;
-                long leadMs = getEffectiveLeadWindowMs();
+                Long explicitTagSec = parseLeadTagSeconds(liveTitle);
+                if (explicitTagSec == null) {
+                    explicitTagSec = parseLeadTagSeconds(liveStatusLabel);
+                }
 
-                if (remainingMs > leadMs && liveAlertsEnabled) {
-                    // Outside lead window: sleep until the exact moment we enter the lead window
-                    long waitToLead = remainingMs - leadMs + 50L;
+                if (explicitTagSec != null && remainingMs > explicitTagSec * 1000L) {
+                    // Tagged event: sleep until the exact moment of entering the tag window
+                    long waitMs = (remainingMs - explicitTagSec * 1000L) + 50L;
                     long maxWait = lastBroadcastCharging ? 10_000L : 300_000L;
-                    handler.postDelayed(this, Math.max(1000L, Math.min(waitToLead, maxWait)));
-                } else if (remainingMs > 60_000L && remainingMs <= leadMs && liveAlertsEnabled) {
-                    // Inside lead window (> 60s):
+                    handler.postDelayed(this, Math.max(1000L, Math.min(waitMs, maxWait)));
+                } else if (remainingMs > 60_000L && liveAlertsEnabled) {
+                    // Inside countdown (> 60s):
                     // SystemUI Chronometer renders seconds live with 0% CPU.
                     // We wake on minute boundary to refresh the shortCriticalText chip (e.g. 8د -> 7د),
                     // or when transitioning into the final 60 seconds.
@@ -222,8 +225,8 @@ public class DayRhythmSyncService extends Service {
                 } else if (remainingMs > 0L && remainingMs <= 60_000L && liveAlertsEnabled) {
                     // Final 60 seconds:
                     // SystemUI Chronometer displays live seconds continuously.
-                    // We tick every 5 seconds for shortCriticalText chip accuracy and schedule exact arrival at 0s!
-                    long nextWake = Math.min(5000L, remainingMs + 50L);
+                    // We tick every 2.5 seconds for shortCriticalText chip accuracy and schedule exact arrival at 0s!
+                    long nextWake = Math.min(2500L, remainingMs + 50L);
                     if (lastBroadcastCharging) nextWake = Math.min(nextWake, 10_000L);
                     handler.postDelayed(this, Math.max(500L, nextWake));
                 } else if (remainingMs <= 0L && remainingMs > -60_000L) {
@@ -923,6 +926,7 @@ public class DayRhythmSyncService extends Service {
             if (nm == null) return;
 
             try {
+                nm.deleteNotificationChannel("dayrhythm_live_alerts_v1");
                 nm.deleteNotificationChannel(CHANNEL_KEEPALIVE);
                 nm.cancel(NOTIF_LIVE_ALERT_ID);
             } catch (Exception ignored) {
@@ -931,9 +935,9 @@ public class DayRhythmSyncService extends Service {
             NotificationChannel liveAlerts = new NotificationChannel(
                     CHANNEL_LIVE_ALERTS,
                     "العد التنازلي للمهمة القادمة (Live Alert)",
-                    NotificationManager.IMPORTANCE_DEFAULT
+                    NotificationManager.IMPORTANCE_HIGH
             );
-            liveAlerts.setDescription("يعرض اسم المهمة القادمة والعد التنازلي بالثواني والإيموجي");
+            liveAlerts.setDescription("يعرض اسم المهمة القادمة والعد التنازلي التفاعلي بجوار ثقب الكاميرا (OnePlus 12R)");
             liveAlerts.setShowBadge(false);
             liveAlerts.setSound(null, null);
             liveAlerts.enableVibration(false);
@@ -996,9 +1000,16 @@ public class DayRhythmSyncService extends Service {
 
         long nowMs = System.currentTimeMillis();
         long remainingMs = liveTargetEpochMs - nowMs;
-        long leadWindowMs = getEffectiveLeadWindowMs();
-        boolean inLeadWindow = liveAlertsEnabled && liveTargetEpochMs > 0L && remainingMs > 0L && remainingMs <= leadWindowMs;
-        boolean hasUpcomingLater = persistentCountdownEnabled && liveTargetEpochMs > nowMs + 1000L;
+        Long explicitTagSec = parseLeadTagSeconds(liveTitle);
+        if (explicitTagSec == null) {
+            explicitTagSec = parseLeadTagSeconds(liveStatusLabel);
+        }
+
+        // Live alert is active whenever there is an upcoming or ongoing event,
+        // respecting explicit tag (#45s, #30m) if set by user.
+        boolean hasUpcoming = liveTargetEpochMs > nowMs + 1000L;
+        boolean inLeadWindow = liveAlertsEnabled && hasUpcoming &&
+                (explicitTagSec == null || remainingMs <= explicitTagSec * 1000L);
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_LIVE_ALERTS)
                 .setSmallIcon(R.mipmap.ic_launcher)
@@ -1009,16 +1020,25 @@ public class DayRhythmSyncService extends Service {
                 .setContentIntent(pi);
 
         Bundle liveExtras = new Bundle();
+
         if (inLeadWindow) {
-            // ── Inside Lead Window: Live Alerts / Dynamic Island Punch Hole Pill active ──
+            // ── Live Alerts Capsule active (OnePlus 12R punch hole & Android Promoted Ongoing) ──
             String compactPill = formatChipText(liveEmoji, remainingMs);
             int categoryColor = (remainingMs <= 60_000L) ? 0xFFFF6B6B : (remainingMs <= 300_000L ? 0xFFFFB020 : 0xFF7FFFD4);
-            int progressPermille = (int) Math.max(0, Math.min(1000, ((leadWindowMs - remainingMs) * 1000) / leadWindowMs));
+            long leadRefMs = explicitTagSec != null ? explicitTagSec * 1000L : Math.max(1, liveAlertsLeadMinutes) * 60_000L;
+            int progressPermille = (int) Math.max(0, Math.min(1000, ((leadRefMs - remainingMs) * 1000) / Math.max(1000L, leadRefMs)));
 
-            // OnePlus 12R & Android 16 Promoted Ongoing notification keys
+            // Keys specifically recognized by OxygenOS 14/15/16 Fluid Cloud & Android 16 Promoted Ongoing
             liveExtras.putBoolean("android.requestPromotedOngoing", true);
+            liveExtras.putBoolean("android.promotedOngoing", true);
             liveExtras.putBoolean("oplus.live_alert.enable", true);
+            liveExtras.putBoolean("oplus.livealert.enable", true);
+            liveExtras.putInt("oplus.live_alert_state", 1);
             liveExtras.putString("android.shortCriticalText", compactPill);
+            liveExtras.putCharSequence("android.shortCriticalText", compactPill);
+            liveExtras.putString("oplus.live_alert.text", compactPill);
+            liveExtras.putBoolean("android.showChronometer", true);
+            liveExtras.putBoolean("android.chronometerCountdown", true);
 
             try {
                 Method setShortTextMethod = builder.getClass().getMethod("setShortCriticalText", CharSequence.class);
@@ -1026,17 +1046,15 @@ public class DayRhythmSyncService extends Service {
             } catch (Throwable ignored) {
             }
 
-            // ⏱️ Native Zero-Battery RemoteViews Chronometer (System UI / GPU renders seconds)
-            RemoteViews customViews = new RemoteViews(getPackageName(), R.layout.notif_countdown);
-            long chronoBase = SystemClock.elapsedRealtime() + remainingMs;
+            try {
+                Method setReqPromoted = builder.getClass().getMethod("setRequestPromotedOngoing", boolean.class);
+                setReqPromoted.invoke(builder, true);
+            } catch (Throwable ignored) {
+            }
+
             String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
             String cleanTitle = cleanDisplayTitle(rawTitle);
             String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
-
-            customViews.setTextViewText(R.id.notifNextTitle, displayTitle);
-            customViews.setViewVisibility(R.id.notifChronometer, View.VISIBLE);
-            customViews.setChronometerCountDown(R.id.notifChronometer, true);
-            customViews.setChronometer(R.id.notifChronometer, chronoBase, "⏳ %s", true);
 
             builder.setContentTitle(compactPill)
                     .setContentText(displayTitle)
@@ -1046,17 +1064,15 @@ public class DayRhythmSyncService extends Service {
                     .setUsesChronometer(true)
                     .setChronometerCountDown(true)
                     .setColor(categoryColor)
-                    .setPriority(NotificationCompat.PRIORITY_HIGH)
-                    .setCategory(NotificationCompat.CATEGORY_EVENT)
-                    .setCustomContentView(customViews)
-                    .setCustomBigContentView(customViews)
-                    .setStyle(new NotificationCompat.DecoratedCustomViewStyle())
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                    .setProgress(1000, progressPermille, false)
                     .addExtras(liveExtras);
 
             applyProgressStyleCompat(builder, progressPermille, categoryColor);
-        } else if (hasUpcomingLater) {
-            // ── Outside Lead Window but has upcoming event: clean status, pill not active ──
-            String timeUntil = formatChipText(liveEmoji, remainingMs);
+        } else if (hasUpcoming && persistentCountdownEnabled) {
+            // ── Waiting for explicit tag window: ongoing silent countdown ──
+            String compactPill = formatChipText(liveEmoji, remainingMs);
             String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
             String cleanTitle = cleanDisplayTitle(rawTitle);
             String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
@@ -1064,11 +1080,12 @@ public class DayRhythmSyncService extends Service {
             liveExtras.putBoolean("oplus.live_alert.enable", false);
             liveExtras.putBoolean("android.requestPromotedOngoing", false);
 
-            builder.setContentTitle(displayTitle)
-                    .setContentText("الموعد القادم (" + timeUntil + ") • " + liveStatusLabel)
+            builder.setContentTitle(compactPill)
+                    .setContentText(displayTitle + " • " + liveStatusLabel)
                     .setShowWhen(true)
                     .setWhen(liveTargetEpochMs)
-                    .setUsesChronometer(false)
+                    .setUsesChronometer(true)
+                    .setChronometerCountDown(true)
                     .setColor(0xFF7FFFD4)
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                     .setCategory(NotificationCompat.CATEGORY_EVENT)
