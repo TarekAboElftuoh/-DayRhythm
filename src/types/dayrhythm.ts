@@ -631,6 +631,11 @@ export interface AppSettingsPatch {
 
 /**
  * Global application version tag displayed across desktop and mobile clients.
+ * Automatically injected by CI/CD (VITE_APP_VERSION) or falls back to current release.
  */
-export const APP_VERSION = 'v2.0.38';
+export const APP_VERSION =
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_APP_VERSION)
+    ? String(import.meta.env.VITE_APP_VERSION)
+    : 'v2.0.54';
+
 
