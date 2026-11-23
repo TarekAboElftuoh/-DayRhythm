@@ -74,7 +74,7 @@ function formatAuthErrorAr(err: unknown): string {
     return 'المتصفح منع نافذة تسجيل الدخول المنبثقة — اسمح بالـ Popups أو أعد الضغط للمتابعة.';
   }
   if (code === 'auth/unauthorized-domain') {
-    return 'هذا الرابط غير مضاف بعد في نطاقات Firebase المصرح بها — حدّث التطبيق لآخر إصدار من Releases أو افتحه من الرابط المصرح به.';
+    return 'هذا الرابط غير مضاف بعد في نطاقات Google المصرح بها — حدّث التطبيق لآخر إصدار من Releases أو افتحه من الرابط المصرح به.';
   }
   if (code === 'auth/network-request-failed') {
     return 'تعذر الاتصال بخوادم Google — تحقق من الإنترنت وحاول مرة أخرى.';

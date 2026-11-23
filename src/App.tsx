@@ -105,10 +105,6 @@ import {
   DEFAULT_MEDICATIONS,
   DEFAULT_MEMORIES,
   OnePlusDeviceSettings,
-  clearUserChatMessages,
-  deleteCreativeActivityRecord,
-  deleteMedicationRecord,
-  deleteMemoryRecord,
   publishPhoneBatteryTelemetry,
   getNativeCloudAuthPayload,
   publishWorkspaceSyncSignal,
@@ -123,27 +119,10 @@ import {
   sanitizeRhythmPayload,
   sanitizeSoundRepeats,
   sanitizeUiPrefs,
-  saveUserRhythmState,
-  saveHydrationRecord,
-  saveStreaksRecord,
-  saveQuietModeRecord,
-  saveLifeProfileRecord,
-  saveDeviceSettingsRecord,
-  saveUserAppSettings,
   getCloudQuotaPausedUntil,
   type AppSyncSettings,
   type SyncedRhythmPayload,
-  saveUserUiPrefs,
-  subscribeChatMessages,
-  subscribeCreativeActivities,
-  subscribeMedications,
-  subscribeMemories,
-  subscribeUserRhythmState,
   triggerFirestoreRecovery,
-  upsertChatMessageRecord,
-  upsertCreativeActivityRecord,
-  upsertMedicationRecord,
-  upsertMemoryRecord,
 } from './firebase';
 import {
   HOME_LOCATION,
@@ -909,14 +888,10 @@ export default function App() {
       setLifeProfile((prev) => {
         const next = typeof updater === 'function' ? updater(prev) : updater;
         void pushToTasksVaultRef.current({ lifeProfile: next });
-        const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-        if (firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle)) {
-          void saveLifeProfileRecord(firebaseUser.uid, next).catch(() => {});
-        }
         return next;
       });
     },
-    [firebaseUser]
+    []
   );
 
   const [calendarList, setCalendarList] = useState<GoogleCalendarInfo[]>([]);
@@ -1846,16 +1821,8 @@ export default function App() {
         quietMode: mode,
         adhanOverrideSilent,
       });
-
-      const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle)) {
-        void saveQuietModeRecord(firebaseUser.uid, {
-          quietMode: mode,
-          adhanOverrideSilent,
-        }).catch(() => {});
-      }
     },
-    [appendChangelog, showToast, adhanOverrideSilent, firebaseUser]
+    [appendChangelog, showToast, adhanOverrideSilent]
   );
 
   const handleCycleQuietMode = useCallback(() => {
@@ -2575,13 +2542,8 @@ export default function App() {
     const json = JSON.stringify(next);
     if (json === lastServerAppSettingsRef.current) return;
     lastServerAppSettingsRef.current = json;
-    if (firebaseUser?.uid && firestoreReady) {
-      void saveUserAppSettings(firebaseUser.uid, next);
-    }
     void pushToTasksVaultRef.current({ appSettings: next });
   }, [
-    firebaseUser?.uid,
-    firestoreReady,
     phoneChargeLimitPct,
     smartChargeAlertEnabled,
     smartChargeKeepUntilUnplugged,
@@ -3603,8 +3565,8 @@ export default function App() {
       });
     }
 
-    if (remote.lifeProfile && typeof remote.cupsLogged === 'number') {
-      const remoteTz = remote.lifeProfile.currentTimeZone || 'Africa/Cairo';
+    if (typeof remote.cupsLogged === 'number') {
+      const remoteTz = remote.lifeProfile?.currentTimeZone || activeTimeZone || 'Africa/Cairo';
       const labels = getLast7DayLabels(remoteTz);
       const todayIso = getDateIsoInTimeZone(remoteTz);
       const isSameDay = remote.hydrationDateKey === todayIso;
@@ -3616,17 +3578,25 @@ export default function App() {
         const prevToday = prev.length > 0 ? prev[prev.length - 1] : null;
         return labels.map((labelAr, idx) => {
           const isToday = idx === 6;
-          const t = remote.targetCups || 13;
+          const t = remote.targetCups || (prevToday ? prevToday.targetCups : 13);
           let c = isToday
             ? isSameDay
               ? remote.cupsLogged!
               : 0
             : baseCounts[idx] ?? 0;
 
-          // Guard: if local write lock is active OR local state has higher cupsLogged for today, never downgrade
-          if (isToday && isSameDay && prevToday && prevToday.dateKey === todayIso) {
-            if (Date.now() < localWriteLockUntilRef.current || prevToday.cupsLogged > c) {
-              c = Math.max(c, prevToday.cupsLogged);
+          // Bulletproof Anti-Downgrade: NEVER allow remote sync to wipe today's logged cups!
+          if (isToday) {
+            if (isSameDay) {
+              if (Date.now() < localWriteLockUntilRef.current || (prevToday && prevToday.cupsLogged > c)) {
+                c = Math.max(c, prevToday ? prevToday.cupsLogged : 0);
+              }
+            } else {
+              // Remote snapshot hasn't recorded today yet or is from a previous day:
+              // Preserve today's local logged progress completely!
+              if (prevToday && prevToday.dateKey === todayIso) {
+                c = prevToday.cupsLogged;
+              }
             }
           }
 
@@ -3761,6 +3731,8 @@ export default function App() {
 
       lastAppliedTasksSyncMsRef.current = remote.updatedAtMs;
       hasHydratedRemoteRef.current = true;
+      setFirestoreSynced(true);
+      setGoogleDriveSynced(true);
       applyOrDefer(remote as SyncedRhythmPayload & {
         medications?: MedicationItem[];
         creativeActivities?: CreativeActivityItem[];
@@ -3782,7 +3754,7 @@ export default function App() {
     };
 
     checkSync();
-    const intervalId = window.setInterval(checkSync, 4000);
+    const intervalId = window.setInterval(checkSync, 3000);
 
     window.addEventListener('visibilitychange', checkSync);
     window.addEventListener('focus', checkSync);
@@ -3796,58 +3768,18 @@ export default function App() {
     };
   }, [pullFromTasksVault]);
 
-  // Real-time Firebase Firestore listener (strictly verified non-anonymous user; auto-bootstraps new accounts immediately!)
+  // Google Cloud Session Initializer (strictly verified Google account)
   useEffect(() => {
     const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
     if (!firebaseUser?.uid || firebaseUser.isAnonymous || (!firebaseUser.emailVerified && !isGoogle)) {
       return;
     }
 
-    const uid = firebaseUser.uid;
-
-    const unsubscribe = subscribeUserRhythmState(
-      uid,
-      (remote) => {
-        hasHydratedRemoteRef.current = true;
-        setFirestoreReady(true);
-        if (remote.phoneBattery) {
-          setPhoneBattery((prev) =>
-            !prev || remote.phoneBattery!.updatedAtMs >= prev.updatedAtMs ? remote.phoneBattery! : prev
-          );
-        }
-        applyOrDefer(remote);
-      },
-      () => {
-        hasHydratedRemoteRef.current = true;
-        setFirestoreReady(true);
-      },
-      () => {}
-    );
-
-    return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firebaseUser?.providerData, applyOrDefer]);
-
-  // Immediate real-time Firestore subscription for Medications (non-anonymous verified users only)
-  useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreReady) {
-      return;
-    }
-
-    const uid = firebaseUser.uid;
-    const unsubscribe = subscribeMedications(
-      uid,
-      (remoteItems) => {
-        if (Date.now() < getCloudQuotaPausedUntil()) return;
-        seededDefaultMedRef.current = true;
-        setMedications(remoteItems);
-      },
-      () => {
-        // Keep current state if Firestore temporarily unreachable
-      }
-    );
-
-    return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
+    hasHydratedRemoteRef.current = true;
+    setFirestoreReady(true);
+    setFirestoreSynced(true);
+    void pullFromTasksVault();
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firebaseUser?.providerData, pullFromTasksVault]);
 
   useEffect(() => {
     try {
@@ -3856,28 +3788,6 @@ export default function App() {
       // ignore storage errors
     }
   }, [medications]);
-
-  // Immediate real-time Firestore subscription for Creative Activities (non-anonymous verified users only)
-  useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreReady) {
-      return;
-    }
-
-    const uid = firebaseUser.uid;
-    const unsubscribe = subscribeCreativeActivities(
-      uid,
-      (remoteItems) => {
-        if (Date.now() < getCloudQuotaPausedUntil()) return;
-        seededDefaultCreativeRef.current = true;
-        setCreativeActivities(remoteItems);
-      },
-      () => {
-        // Keep current state if Firestore temporarily unreachable
-      }
-    );
-
-    return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
 
   useEffect(() => {
     try {
@@ -3927,28 +3837,6 @@ export default function App() {
     }
   }, [showToast]);
 
-  // Immediate real-time Firestore subscription for Memories (non-anonymous verified users only)
-  useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreReady) {
-      return;
-    }
-
-    const uid = firebaseUser.uid;
-    const unsubscribe = subscribeMemories(
-      uid,
-      (remoteItems) => {
-        if (Date.now() < getCloudQuotaPausedUntil()) return;
-        seededDefaultMemoriesRef.current = true;
-        setMemories(remoteItems);
-      },
-      () => {
-        // Keep current state if Firestore temporarily unreachable
-      }
-    );
-
-    return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
-
   useEffect(() => {
     try {
       localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(memories));
@@ -3956,98 +3844,6 @@ export default function App() {
       // ignore storage errors
     }
   }, [memories]);
-
-  // Immediate real-time Firestore cloud vault for Gemini conversation archive (non-anonymous verified users only)
-  useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified || !firestoreReady) {
-      return;
-    }
-
-    const uid = firebaseUser.uid;
-    const unsubscribe = subscribeChatMessages(
-      uid,
-      (remoteMsgs) => {
-        hasHydratedCloudChatRef.current = true;
-        for (const rm of remoteMsgs) {
-          syncedChatTextByIdRef.current.set(rm.id, rm.text.trim());
-          cloudChatIdsRef.current.add(rm.id);
-        }
-        setChatMessages((prev) => {
-          const remoteById = new Map(remoteMsgs.map((m) => [m.id, m]));
-          const merged: PersistedChatMessage[] = [WELCOME_MESSAGE];
-          const seen = new Set<string>([WELCOME_MESSAGE.id]);
-
-          for (const rm of remoteMsgs) {
-            if (seen.has(rm.id)) continue;
-            seen.add(rm.id);
-            const localMatch = prev.find((p) => p.id === rm.id);
-            merged.push(
-              localMatch
-                ? {
-                    ...localMatch,
-                    text: rm.text,
-                    createdAtIso: rm.createdAtIso || localMatch.createdAtIso,
-                  }
-                : rm
-            );
-          }
-
-          // Preserve any optimistic/local-only messages (e.g. currently streaming or errors)
-          for (const localMsg of prev) {
-            if (seen.has(localMsg.id) || remoteById.has(localMsg.id)) continue;
-            seen.add(localMsg.id);
-            merged.push(localMsg);
-          }
-
-          return sortChatMessagesChronologically(merged);
-        });
-      },
-      () => {
-        // Keep local chat state if Firestore temporarily unreachable
-      }
-    );
-
-    return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firestoreReady]);
-
-  // Debounced cloud sync of finalized chat messages to users/{uid}/chatMessages
-  useEffect(() => {
-    if (
-      !firebaseUser?.uid ||
-      firebaseUser.isAnonymous ||
-      !firebaseUser.emailVerified ||
-      !firestoreReady ||
-      !hasHydratedCloudChatRef.current
-    ) {
-      return;
-    }
-
-    const uid = firebaseUser.uid;
-    const timerId = window.setTimeout(() => {
-      const candidates = chatMessages.filter(
-        (m) =>
-          m.id !== WELCOME_MESSAGE.id &&
-          !m.error &&
-          typeof m.text === 'string' &&
-          m.text.trim().length > 0
-      );
-      for (const msg of candidates.slice(-60)) {
-        const cleanText = msg.text.trim().slice(0, 4000);
-        const alreadySynced = syncedChatTextByIdRef.current.get(msg.id);
-        if (alreadySynced === cleanText) continue;
-        syncedChatTextByIdRef.current.set(msg.id, cleanText);
-        void upsertChatMessageRecord(uid, msg, cloudChatIdsRef.current.has(msg.id))
-          .then(() => {
-            cloudChatIdsRef.current.add(msg.id);
-          })
-          .catch(() => {
-            syncedChatTextByIdRef.current.delete(msg.id);
-          });
-      }
-    }, 1_400);
-
-    return () => window.clearTimeout(timerId);
-  }, [chatMessages, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreReady]);
 
   // Continuous Auto-Save to Google Drive appDataFolder (Single Account Source of Truth)
   useEffect(() => {
@@ -4171,13 +3967,7 @@ export default function App() {
 
     // Immediately push to Google Tasks Cloud Vault for sub-second cross-device sync
     void pushToTasksVaultImmediately(payload);
-
-    if (firebaseUser?.uid && firestoreReady && Date.now() >= getCloudQuotaPausedUntil()) {
-      localWriteLockUntilRef.current = Date.now() + 3500;
-      void saveUserRhythmState(firebaseUser.uid, payload as SyncedRhythmPayload, changedKeys)
-        .then(() => setFirestoreSynced(true))
-        .catch(() => setFirestoreSynced(false));
-    }
+    setFirestoreSynced(true);
   }, [
     activeTimeZone,
     firebaseUser?.uid,
@@ -4218,13 +4008,9 @@ export default function App() {
         capsuleOrientation: 'horizontal',
         capsuleSize: 'md',
       };
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        localWriteLockUntilRef.current = Date.now() + 3500;
-        void saveUserUiPrefs(firebaseUser.uid, clean).catch(() => {});
-      }
       void pushToTasksVaultImmediately({ uiPrefs: clean });
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, pushToTasksVaultImmediately]
+    [pushToTasksVaultImmediately]
   );
 
   const handleSaveCloudApiUrl = useCallback(
@@ -4322,14 +4108,10 @@ export default function App() {
       setDeviceSettings((prev) => {
         const next = sanitizeDeviceSettings({ ...prev, ...patch });
         void pushToTasksVaultImmediately({ deviceSettings: next });
-        const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-        if (firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle)) {
-          void saveDeviceSettingsRecord(firebaseUser.uid, next).catch(() => {});
-        }
         return next;
       });
     },
-    [firebaseUser, pushToTasksVaultImmediately]
+    [pushToTasksVaultImmediately]
   );
 
   const handleUpdateLifeProfile = useCallback(
@@ -4500,24 +4282,34 @@ export default function App() {
         ruleText: trimmed,
         source: input.source ?? 'user',
       });
-      setMemories((prev) => [item, ...prev]);
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void upsertMemoryRecord(firebaseUser.uid, item).catch(() => {});
-      }
-      showToast('🧠 تم حفظ القاعدة في ذاكرة Gemini الدائمة (Firestore) ✓');
+      setMemories((prev) => {
+        const next = [item, ...prev];
+        void pushToTasksVaultImmediately({ memories: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      showToast('🧠 تم حفظ القاعدة في ذاكرة Gemini الدائمة (Google Cloud) ✓');
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [pushToTasksVaultImmediately, pushFullCloudBackupImmediately, showToast]
   );
 
   const handleDeleteMemory = useCallback(
     (id: string) => {
-      setMemories((prev) => prev.filter((m) => m.id !== id));
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void deleteMemoryRecord(firebaseUser.uid, id).catch(() => {});
-      }
+      setMemories((prev) => {
+        const next = prev.filter((m) => m.id !== id);
+        void pushToTasksVaultImmediately({ memories: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
       showToast('تم حذف القاعدة من ذاكرة Gemini الدائمة');
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [pushToTasksVaultImmediately, pushFullCloudBackupImmediately, showToast]
   );
 
   const handleUpdateMemory = useCallback(
@@ -4531,13 +4323,18 @@ export default function App() {
         category: patch.category,
         ruleText: trimmed,
       });
-      setMemories((prev) => prev.map((m) => (m.id === id ? updatedItem : m)));
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void upsertMemoryRecord(firebaseUser.uid, updatedItem).catch(() => {});
-      }
+      setMemories((prev) => {
+        const next = prev.map((m) => (m.id === id ? updatedItem : m));
+        void pushToTasksVaultImmediately({ memories: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
       showToast('✏️ تم حفظ تعديل القاعدة في ذاكرة Gemini الدائمة ✓');
     },
-    [memories, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [memories, pushToTasksVaultImmediately, pushFullCloudBackupImmediately, showToast]
   );
 
   const handleResetChatMode = useCallback(
@@ -4551,11 +4348,8 @@ export default function App() {
           ? preserved
           : [WELCOME_MESSAGE, ...preserved];
       });
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void clearUserChatMessages(firebaseUser.uid, targetMode).catch(() => {});
-      }
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
+    []
   );
 
   const handleExecuteMemoryActions = useCallback(
@@ -4571,9 +4365,6 @@ export default function App() {
             );
             if (target) {
               next = next.filter((m) => m.id !== target.id);
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void deleteMemoryRecord(firebaseUser.uid, target.id).catch(() => {});
-              }
             }
           } else if (act.operation === 'update' && act.memoryId) {
             const targetIdx = next.findIndex((m) => m.id === act.memoryId);
@@ -4584,9 +4375,6 @@ export default function App() {
                 ruleText: act.ruleText,
               });
               next[targetIdx] = updated;
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertMemoryRecord(firebaseUser.uid, updated).catch(() => {});
-              }
             }
           } else {
             const existing = next.find((m) => m.ruleText.trim() === act.ruleText.trim());
@@ -4600,16 +4388,18 @@ export default function App() {
                 source: 'gemini',
               });
               next = [created, ...next];
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertMemoryRecord(firebaseUser.uid, created).catch(() => {});
-              }
             }
           }
         }
+        void pushToTasksVaultImmediately({ memories: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(next));
+        } catch {}
         return next;
       });
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
+    [pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleDetectGpsLocation = useCallback(async () => {
@@ -6071,28 +5861,31 @@ export default function App() {
   const handleToggleCreativeToday = useCallback(
     (activityId: string) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
-      setCreativeActivities((prev) =>
-        prev.map((act) => {
+      setCreativeActivities((prev) => {
+        const next = prev.map((act) => {
           if (act.id !== activityId) return act;
           const exists = act.loggedDates.includes(todayIso);
           const nextDates = exists
             ? act.loggedDates.filter((d) => d !== todayIso)
             : [...act.loggedDates, todayIso].slice(-30);
           const updated: CreativeActivityItem = { ...act, loggedDates: nextDates };
-          if (firebaseUser?.uid && firebaseUser.emailVerified) {
-            void upsertCreativeActivityRecord(firebaseUser.uid, updated).catch(() => {});
-          }
           showToast(
             exists
               ? `تم إلغاء تسجيل جلسة «${act.name}» اليوم`
               : `${act.emoji} أحسنت! تم تسجيل جلسة «${act.name}» اليوم ✓`
           );
           return updated;
-        })
-      );
+        });
+        void pushToTasksVaultImmediately({ creativeActivities: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
       triggerHapticWaveform('water_cup');
     },
-    [activeTimeZone, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [activeTimeZone, showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleToggleComplete = (id: string) => {
@@ -6311,8 +6104,6 @@ export default function App() {
     ) => {
       localWriteLockUntilRef.current = Date.now() + 6000;
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
-      const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-      const isAuthed = Boolean(firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle));
 
       setHydrationHistory((prev) => {
         if (prev.length === 0) return prev;
@@ -6369,28 +6160,19 @@ export default function App() {
             : {}),
         });
 
-        // 2) Write DIRECTLY to Firebase Firestore (matching medication pattern)
-        if (isAuthed && firebaseUser?.uid) {
-          void saveHydrationRecord(firebaseUser.uid, {
-            hydrationDateKey: todayIso,
-            cupsLogged: updated.cupsLogged,
-            targetCups: updated.targetCups,
-            hydrationWeeklyCounts: nextWeekly,
-            waterTargetDays: nextTargetDays,
-            waterTargetDoneToday: nextTargetDone,
-          }).catch(() => {});
-        }
+        // 2) Trigger Google Drive AppData full backup
+        void pushFullCloudBackupImmediately();
 
         return next;
       });
     },
     [
       activeTimeZone,
-      firebaseUser,
       streaks,
       deviceSettings,
       lifeProfile,
       pushToTasksVaultImmediately,
+      pushFullCloudBackupImmediately,
     ]
   );
 
@@ -7324,12 +7106,14 @@ export default function App() {
       setMedications((prev) => {
         const next = prev.map((m) => (m.id === id ? updated : m));
         void pushToTasksVaultImmediately({ medications: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
         return next;
       });
-
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
-      }
 
       if (lowStockMsg) {
         showToast(lowStockMsg);
@@ -7342,15 +7126,15 @@ export default function App() {
       }
       triggerHapticWaveform('water_cup');
     },
-    [activeTimeZone, medications, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast, pushToTasksVaultImmediately]
+    [activeTimeZone, medications, showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleToggleMedicationDate = useCallback(
     (id: string, dateIso: string) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       const cutoff7Iso = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
-      setMedications((prev) =>
-        prev.map((m) => {
+      setMedications((prev) => {
+        const next = prev.map((m) => {
           if (m.id !== id) return m;
           const allTimes =
             m.times24 && m.times24.length > 0 ? m.times24 : m.time24 ? [m.time24] : [];
@@ -7388,15 +7172,20 @@ export default function App() {
                 }
               : {}),
           };
-          if (firebaseUser?.uid && firebaseUser.emailVerified) {
-            void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
-          }
           return updated;
-        })
-      );
+        });
+        void pushToTasksVaultImmediately({ medications: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
       triggerHapticWaveform('water_cup');
     },
-    [activeTimeZone, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
+    [activeTimeZone, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleRefillMedication = useCallback(
@@ -7420,15 +7209,18 @@ export default function App() {
       setMedications((prev) => {
         const next = prev.map((m) => (m.id === id ? updated : m));
         void pushToTasksVaultImmediately({ medications: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
         return next;
       });
 
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
-      }
       showToast(`💊 تم تحديث مخزون «${target.name}» إلى ${clampedDoses} جرعة متبقية ✓`);
     },
-    [medications, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [medications, showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleAddMedication = useCallback(
@@ -7480,15 +7272,18 @@ export default function App() {
       setMedications((prev) => {
         const next = [...prev, med];
         void pushToTasksVaultImmediately({ medications: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
         return next;
       });
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void upsertMedicationRecord(firebaseUser.uid, med).catch(() => {});
-      }
       showToast(`💊 تمت إضافة «${med.name}» إلى قائمة العلاجات والمكملات`);
       return med;
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast, pushToTasksVaultImmediately]
+    [showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleDeleteMedication = useCallback(
@@ -7496,14 +7291,17 @@ export default function App() {
       setMedications((prev) => {
         const next = prev.filter((m) => m.id !== id);
         void pushToTasksVaultImmediately({ medications: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
         return next;
       });
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void deleteMedicationRecord(firebaseUser.uid, id).catch(() => {});
-      }
       showToast('تم حذف العلاج من القائمة اليومية');
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast, pushToTasksVaultImmediately]
+    [showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleExecuteMedicationActions = useCallback(
@@ -7542,9 +7340,6 @@ export default function App() {
                 : undefined);
             if (target) {
               next = next.filter((m) => m.id !== target.id);
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void deleteMedicationRecord(firebaseUser.uid, target.id).catch(() => {});
-              }
               results.push({ name: target.name, operation: 'remove', status: 'removed', id: target.id });
               showToast(`🗑️ تم حذف «${target.name}» من قائمة العلاجات والمكملات`);
             }
@@ -7578,9 +7373,6 @@ export default function App() {
                 remainingDoses: nextRem,
               };
               next = next.map((m) => (m.id === target.id ? updated : m));
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
-              }
               results.push({ name: target.name, operation: 'mark_taken', status: 'taken', id: target.id });
             }
           } else if (op === 'update') {
@@ -7612,9 +7404,6 @@ export default function App() {
                     : target.refillAlertDays,
               });
               next = next.map((m) => (m.id === target.id ? updated : m));
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
-              }
               results.push({ name: updated.name, operation: 'update', status: 'updated', id: updated.id });
             }
           } else {
@@ -7643,9 +7432,6 @@ export default function App() {
                     : existing.refillAlertDays,
               });
               next = next.map((m) => (m.id === existing.id ? updated : m));
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
-              }
               results.push({ name: updated.name, operation: 'update', status: 'updated', id: updated.id });
             } else {
               const rem =
@@ -7676,20 +7462,23 @@ export default function App() {
                   typeof act.refillAlertDays === 'number' ? act.refillAlertDays : 3,
               });
               next = [...next, created];
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertMedicationRecord(firebaseUser.uid, created).catch(() => {});
-              }
               results.push({ name: created.name, operation: 'add', status: 'added', id: created.id });
             }
           }
         }
         void pushToTasksVaultImmediately({ medications: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
         return next;
       });
 
       return results;
     },
-    [activeTimeZone, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast, pushToTasksVaultImmediately]
+    [activeTimeZone, showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleAddCreativeActivity = useCallback(
@@ -7719,25 +7508,39 @@ export default function App() {
         calendarEventId: '',
         expiresOnDate: input.expiresOnDate ?? '',
       });
-      setCreativeActivities((prev) => [...prev, act]);
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void upsertCreativeActivityRecord(firebaseUser.uid, act).catch(() => {});
-      }
+      setCreativeActivities((prev) => {
+        const next = [...prev, act];
+        void pushToTasksVaultImmediately({ creativeActivities: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
       showToast(`${act.emoji} تمت إضافة «${act.name}» وسيُوضع تلقائياً في أوقاتك الفاضية ✓`);
       return act;
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleDeleteCreativeActivity = useCallback(
     (id: string) => {
-      setCreativeActivities((prev) => prev.filter((a) => a.id !== id));
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
-        void deleteCreativeActivityRecord(firebaseUser.uid, id).catch(() => {});
-      }
+      setCreativeActivities((prev) => {
+        const next = prev.filter((a) => a.id !== id);
+        void pushToTasksVaultImmediately({ creativeActivities: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
       showToast('تم حذف النشاط الإبداعي');
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleScheduleCreativeInCalendar = useCallback(
@@ -7757,28 +7560,32 @@ export default function App() {
       };
       const res = await handleExecuteCalendarActions([action]);
       const createdId = res.results[0]?.id ?? '';
-      setCreativeActivities((prev) =>
-        prev.map((a) => {
+      setCreativeActivities((prev) => {
+        const next = prev.map((a) => {
           if (a.id !== placement.activity.id) return a;
           const updated: CreativeActivityItem = {
             ...a,
             scheduledTime24: placement.suggestedSlot!.time24,
             calendarEventId: createdId || a.calendarEventId,
           };
-          if (firebaseUser?.uid && firebaseUser.emailVerified) {
-            void upsertCreativeActivityRecord(firebaseUser.uid, updated).catch(() => {});
-          }
           return updated;
-        })
-      );
+        });
+        void pushToTasksVaultImmediately({ creativeActivities: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
     },
     [
       activeTimeZone,
-      firebaseUser?.uid,
-      firebaseUser?.emailVerified,
-      firestoreSynced,
       handleExecuteCalendarActions,
       showToast,
+      pushToTasksVaultImmediately,
+      pushFullCloudBackupImmediately,
     ]
   );
 
@@ -7802,9 +7609,6 @@ export default function App() {
             );
             if (target) {
               next = next.filter((a) => a.id !== target.id);
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void deleteCreativeActivityRecord(firebaseUser.uid, target.id).catch(() => {});
-              }
               results.push({ name: target.name, operation: 'remove', status: 'removed', id: target.id });
             }
           } else if (op === 'log_session' || op === 'log_today') {
@@ -7819,9 +7623,6 @@ export default function App() {
                 : [...target.loggedDates, todayIso].slice(-30);
               const updated: CreativeActivityItem = { ...target, loggedDates: nextDates };
               next = next.map((a) => (a.id === target.id ? updated : a));
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertCreativeActivityRecord(firebaseUser.uid, updated).catch(() => {});
-              }
               results.push({ name: target.name, operation: 'log_session', status: 'logged', id: target.id });
             }
           } else {
@@ -7848,9 +7649,6 @@ export default function App() {
                 expiresOnDate: act.expiresOnDate ?? existing.expiresOnDate,
               });
               next = next.map((a) => (a.id === existing.id ? updated : a));
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertCreativeActivityRecord(firebaseUser.uid, updated).catch(() => {});
-              }
               results.push({ name: updated.name, operation: 'update', status: 'updated', id: updated.id });
             } else {
               const nextCadence: CreativeCadence = act.cadence ?? 'weekly';
@@ -7874,25 +7672,27 @@ export default function App() {
                 expiresOnDate: act.expiresOnDate ?? '',
               });
               next = [...next, created];
-              if (firebaseUser?.uid && firebaseUser.emailVerified) {
-                void upsertCreativeActivityRecord(firebaseUser.uid, created).catch(() => {});
-              }
               results.push({ name: created.name, operation: 'add', status: 'added', id: created.id });
             }
           }
+        }
+        void pushToTasksVaultImmediately({ creativeActivities: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
         }
         return next;
       });
 
       return results;
     },
-    [activeTimeZone, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
+    [activeTimeZone, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
   const handleToggleDailyCommitmentStreak = () => {
     localWriteLockUntilRef.current = Date.now() + 5000;
-    const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-    const isAuthed = Boolean(firebaseUser?.uid && !firebaseUser.isAnonymous && (firebaseUser.emailVerified || isGoogle));
 
     setStreaks((s) => {
       const nextDone = !s.dailyCommitmentDoneToday;
@@ -7912,9 +7712,7 @@ export default function App() {
         waterTargetDoneToday: s.waterTargetDoneToday,
       });
 
-      if (isAuthed && firebaseUser?.uid) {
-        void saveStreaksRecord(firebaseUser.uid, nextStreaks).catch(() => {});
-      }
+      void pushFullCloudBackupImmediately();
 
       return nextStreaks;
     });
@@ -8110,31 +7908,27 @@ export default function App() {
           // ignore storage errors
         }
 
-        if (firebaseUser?.uid && firebaseUser.emailVerified) {
-          const uid = firebaseUser.uid;
-          const todayEntry = nextHydration[nextHydration.length - 1];
-          await saveUserRhythmState(uid, {
-            hydrationDateKey: getDateIsoInTimeZone(restoreTz),
-            cupsLogged: todayEntry?.cupsLogged ?? 0,
-            targetCups: todayEntry?.targetCups ?? targetCups,
-            hydrationWeeklyCounts: nextHydration.map((d) => d.cupsLogged),
-            dailyCommitmentDays: nextStreaks.dailyCommitmentDays,
-            dailyCommitmentDoneToday: nextStreaks.dailyCommitmentDoneToday,
-            waterTargetDays: nextStreaks.waterTargetDays,
-            waterTargetDoneToday: nextStreaks.waterTargetDoneToday,
-            quietMode,
-            adhanOverrideSilent,
-            surfaceTheme,
-            deviceSettings: nextDevice,
-            lifeProfile: nextProfile,
-            uiPrefs: nextUi,
-          });
-          await Promise.all([
-            ...nextMeds.map((m) => upsertMedicationRecord(uid, m).catch(() => {})),
-            ...nextMems.map((m) => upsertMemoryRecord(uid, m).catch(() => {})),
-            ...nextCreative.map((a) => upsertCreativeActivityRecord(uid, a).catch(() => {})),
-          ]);
-        }
+        const todayEntry = nextHydration[nextHydration.length - 1];
+        void pushToTasksVaultImmediately({
+          hydrationDateKey: getDateIsoInTimeZone(restoreTz),
+          cupsLogged: todayEntry?.cupsLogged ?? 0,
+          targetCups: todayEntry?.targetCups ?? targetCups,
+          hydrationWeeklyCounts: nextHydration.map((d) => d.cupsLogged),
+          dailyCommitmentDays: nextStreaks.dailyCommitmentDays,
+          dailyCommitmentDoneToday: nextStreaks.dailyCommitmentDoneToday,
+          waterTargetDays: nextStreaks.waterTargetDays,
+          waterTargetDoneToday: nextStreaks.waterTargetDoneToday,
+          quietMode,
+          adhanOverrideSilent,
+          surfaceTheme,
+          deviceSettings: nextDevice,
+          lifeProfile: nextProfile,
+          medications: nextMeds,
+          creativeActivities: nextCreative,
+          memories: nextMems,
+          uiPrefs: nextUi,
+        });
+        void pushFullCloudBackupImmediately();
 
         const summaryAr = `تم استرجاع النسخة الاحتياطية بنجاح ✓ (${nextMeds.length} علاج · ${nextMems.length} قاعدة ذاكرة · ${nextCreative.length} نشاط إبداعي)`;
         showToast(summaryAr);

@@ -113,6 +113,14 @@ export async function getOrFindSyncTaskId(token: string, listId: string): Promis
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
+    if (res.status === 404) {
+      cachedTaskId = null;
+      setStored(SYNC_TASK_ID_CACHE, null);
+      cachedListId = null;
+      setStored(VAULT_LIST_ID_CACHE, null);
+      return null;
+    }
+
     if (res.status === 401) {
       const fresh = await refreshGoogleCalendarTokenSilently();
       if (fresh && fresh !== token) return getOrFindSyncTaskId(fresh, listId);
@@ -193,7 +201,12 @@ export async function pushRhythmStateToTasks(
           }),
         });
 
-        if (res.status === 401) {
+        if (res.status === 404) {
+          cachedTaskId = null;
+          setStored(SYNC_TASK_ID_CACHE, null);
+          cachedListId = null;
+          setStored(VAULT_LIST_ID_CACHE, null);
+        } else if (res.status === 401) {
           const fresh = await refreshGoogleCalendarTokenSilently();
           if (fresh && fresh !== activeToken) {
             activeToken = fresh;
@@ -209,6 +222,12 @@ export async function pushRhythmStateToTasks(
                 notes: notesStr,
               }),
             });
+            if (res.status === 404) {
+              cachedTaskId = null;
+              setStored(SYNC_TASK_ID_CACHE, null);
+              cachedListId = null;
+              setStored(VAULT_LIST_ID_CACHE, null);
+            }
           }
         }
       } catch (err) {
@@ -236,6 +255,14 @@ export async function pullRhythmStateFromTasks(
     const res = await fetch(getUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });
+
+    if (res.status === 404) {
+      cachedTaskId = null;
+      setStored(SYNC_TASK_ID_CACHE, null);
+      cachedListId = null;
+      setStored(VAULT_LIST_ID_CACHE, null);
+      return null;
+    }
 
     if (res.status === 401) {
       const fresh = await refreshGoogleCalendarTokenSilently();

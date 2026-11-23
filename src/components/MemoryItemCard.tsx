@@ -34,7 +34,7 @@ export const MemoryItemCard: React.FC<MemoryItemCardProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const savedTimerRef = useRef<number | null>(null);
 
-  // Sync local draft when upstream memory updates (e.g., from Firestore cross-device sync)
+  // Sync local draft when upstream memory updates (e.g., from Google Cloud Vault cross-device sync)
   useEffect(() => {
     setDraftText(memory.ruleText);
     setDraftCategory(memory.category);

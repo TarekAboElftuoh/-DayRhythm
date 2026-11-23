@@ -759,7 +759,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           </label>
         </section>
 
-        {/* 5. Permanent Gemini Memory Bank (Firestore /users/{uid}/memories) */}
+        {/* 5. Permanent Gemini Memory Bank (Google Cloud Vault) */}
         <section className="rounded-xl border border-[#7FFFD4]/25 bg-black/60 p-4 space-y-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
