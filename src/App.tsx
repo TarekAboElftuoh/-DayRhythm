@@ -93,12 +93,19 @@ import {
   saveToGoogleDriveAppData,
 } from './services/googleDriveStorage';
 import {
-  pushRhythmStateToTasks,
-  pullRhythmStateFromTasks,
-  VAULT_LIST_TITLE,
-  SYNC_TASK_TITLE,
-  type TasksVaultPayload,
-} from './services/googleTasksVault';
+  fetchCloudUserSettings,
+  saveCloudUserSettings,
+  registerActiveAlarm,
+  dismissActiveAlarmInCloud,
+  subscribeToActiveAlarms,
+  cleanupExpiredActiveAlarms,
+  deleteTasksVaultListIfPresent,
+  type UserSettingsPayload,
+} from './services/cloudStateService';
+
+type TasksVaultPayload = UserSettingsPayload;
+const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
+const SYNC_TASK_TITLE = 'sync_state';
 import {
   DEFAULT_CREATIVE_ACTIVITIES,
   DEFAULT_DEVICE_SETTINGS,
@@ -863,6 +870,8 @@ export default function App() {
   const [lastDeletedWorkspaceItem, setLastDeletedWorkspaceItem] =
     useState<DeletedWorkspaceSnapshot | null>(null);
 
+  const [isLoadingSettings, setIsLoadingSettings] = useState<boolean>(true);
+  const isLoadingSettingsRef = useRef<boolean>(true);
   const hasHydratedRemoteRef = useRef(false);
   const localWriteLockUntilRef = useRef<number>(0);
   // Last value of each synced field as the server has it (from snapshots). A save only sends the
@@ -884,6 +893,7 @@ export default function App() {
   // and others did not, which is why clicking them could appear to silently "undo itself".
   const updateLifeProfileLocal = useCallback(
     (updater: Parameters<typeof setLifeProfile>[0]) => {
+      if (isLoadingSettingsRef.current) return;
       localWriteLockUntilRef.current = Date.now() + 5000;
       setLifeProfile((prev) => {
         const next = typeof updater === 'function' ? updater(prev) : updater;
@@ -1524,15 +1534,31 @@ export default function App() {
     stopNativeAlerts();
     const hadAlert = Boolean(activeAudioAlert || persistentAlert || alarmRinging);
     const title = activeAudioAlert?.title || persistentAlert?.title || 'التنبيه';
+    const alertId = activeAudioAlert?.id || persistentAlert?.id || 'all';
     setActiveAudioAlert(null);
     setPersistentAlert(null);
     setAlarmRinging(false);
     triggerHapticWaveform('shake_undo');
     emitCrossDeviceSync('alarm_dismiss', 'dismiss');
+
+    // Requirement 3: Real-time cloud alarm dismissal across all connected devices
+    if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+      void dismissActiveAlarmInCloud(firebaseUser.uid, alertId, clientIdRef.current);
+    }
+
     if (hadAlert) {
       showToast(`✓ تم إيقاف وتأكيد تنبيه «${title}» على أجهزتك`);
     }
-  }, [activeAudioAlert, alarmRinging, emitCrossDeviceSync, persistentAlert, showToast, stopNativeAlerts]);
+  }, [
+    activeAudioAlert,
+    alarmRinging,
+    emitCrossDeviceSync,
+    firebaseUser?.isAnonymous,
+    firebaseUser?.uid,
+    persistentAlert,
+    showToast,
+    stopNativeAlerts,
+  ]);
 
   // Auto-dismiss non-continuous active audio alert banner after 12 seconds (continuous loops stay until user stops!)
   useEffect(() => {
@@ -1665,6 +1691,21 @@ export default function App() {
         isContinuous: Boolean(playRes.isContinuous || isContinuous),
       });
 
+      // Requirement 3: Register ringing alarm in Firestore active_alarms
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void registerActiveAlarm(firebaseUser.uid, {
+          id: alertId,
+          title: visibleTitle,
+          body: visibleDescription,
+          category,
+          originClientId: clientIdRef.current,
+          medicationId: options?.medicationId,
+          doseTime24: options?.medicationDoseTime24,
+          taskId: options?.taskId,
+          taskListId: options?.taskListId,
+        });
+      }
+
       // Avoid showing TWO duplicate alerts on Windows EXE (native SecondaryMonitorToastForm handles PC alert cleanly!)
       if (!isNativeWin) {
         setPersistentAlert({
@@ -1758,6 +1799,9 @@ export default function App() {
       setPersistentAlert(null);
       setAlarmRinging(false);
       emitCrossDeviceSync('alarm_dismiss', 'snooze');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, alertItem.id, clientIdRef.current);
+      }
       const timerId = window.setTimeout(() => {
         snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);
         triggerTaskAlert(alertItem.emoji || alertItem.title, alertItem.category, {
@@ -2528,7 +2572,7 @@ export default function App() {
 
   // App settings that used to be per-device only: change it on one device, it changes on the other.
   useEffect(() => {
-    if (!hasHydratedRemoteRef.current) {
+    if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
       return;
     }
     // Same key order as sanitizeAppSyncSettings, so equal settings serialize identically.
@@ -2946,14 +2990,12 @@ export default function App() {
         if (token && navigator.onLine !== false) {
           void refreshWorkspace(token, { forceGmail: true });
         }
-        void pullFromTasksVault();
         if (token) {
           void hydrateGoogleDriveOnce(token);
         } else {
           void getOrRefreshCalendarAccessToken().then((freshToken) => {
             if (freshToken) {
               setWorkspaceTokenExpired(false);
-              void pullFromTasksVault();
               void hydrateGoogleDriveOnce(freshToken);
             } else {
               hasHydratedGoogleDriveRef.current = true;
@@ -2980,7 +3022,6 @@ export default function App() {
         return;
       }
       setFirebaseUser(user);
-      void pullFromTasksVault();
       try {
         const prevUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
         if (prevUid && prevUid !== user.uid) {
@@ -3643,23 +3684,21 @@ export default function App() {
   );
 
   const lastAppliedTasksSyncMsRef = useRef<number>(0);
-  const isPullingTasksVaultRef = useRef<boolean>(false);
 
-  const pushToTasksVaultImmediately = useCallback(
-    async (patch?: Partial<TasksVaultPayload>) => {
+  // Requirement 1: Save settings immediately to cloud with merge: true
+  const saveCloudUserSettingsImmediately = useCallback(
+    async (patch?: Partial<UserSettingsPayload>) => {
       // Avoid pushing default state before having hydrated from cloud on startup
-      if (!hasHydratedRemoteRef.current && !patch) return;
+      if (isLoadingSettingsRef.current && !patch) return;
 
-      const token = await getOrRefreshCalendarAccessToken();
-      if (!token) return;
+      const uid = firebaseUser?.uid;
+      if (!uid || firebaseUser?.isAnonymous) return;
 
       const todayEntry = hydrationHistory[hydrationHistory.length - 1];
       const remoteTz = (patch?.lifeProfile || lifeProfile).currentTimeZone || 'Africa/Cairo';
       const todayIso = getDateIsoInTimeZone(remoteTz);
 
-      const payload: TasksVaultPayload = {
-        updatedAtMs: Date.now(),
-        originClientId: clientIdRef.current,
+      const payload: Partial<UserSettingsPayload> = {
         hydrationDateKey: todayIso,
         cupsLogged: patch?.cupsLogged ?? todayEntry?.cupsLogged ?? 0,
         targetCups: patch?.targetCups ?? todayEntry?.targetCups ?? 13,
@@ -3689,12 +3728,21 @@ export default function App() {
           capsuleSize: patch?.uiPrefs?.capsuleSize ?? capsulePrefs.size,
           cloudApiUrl: getSavedCloudApiUrl() || undefined,
         }),
+        ...patch,
       };
 
-      lastAppliedTasksSyncMsRef.current = payload.updatedAtMs;
-      void pushRhythmStateToTasks(token, payload);
+      try {
+        const ok = await saveCloudUserSettings(uid, payload);
+        if (ok) {
+          setFirestoreSynced(true);
+        }
+      } catch (err) {
+        console.error('[CloudSync] saveCloudUserSettings error:', err);
+      }
     },
     [
+      firebaseUser?.uid,
+      firebaseUser?.isAnonymous,
       hydrationHistory,
       lifeProfile,
       streaks,
@@ -3715,76 +3763,126 @@ export default function App() {
     ]
   );
 
+  const pushToTasksVaultImmediately = saveCloudUserSettingsImmediately;
+
   useEffect(() => {
-    pushToTasksVaultRef.current = pushToTasksVaultImmediately;
-  }, [pushToTasksVaultImmediately]);
+    pushToTasksVaultRef.current = saveCloudUserSettingsImmediately;
+  }, [saveCloudUserSettingsImmediately]);
 
-  const pullFromTasksVault = useCallback(async () => {
-    if (isPullingTasksVaultRef.current) return;
-    const token = await getOrRefreshCalendarAccessToken();
-    if (!token) return;
-
-    isPullingTasksVaultRef.current = true;
-    try {
-      const remote = await pullRhythmStateFromTasks(token);
-      if (!remote) {
-        hasHydratedRemoteRef.current = true;
-        return;
-      }
-      if (remote.originClientId === clientIdRef.current) return;
-      if (remote.updatedAtMs <= lastAppliedTasksSyncMsRef.current) return;
-
-      lastAppliedTasksSyncMsRef.current = remote.updatedAtMs;
-      hasHydratedRemoteRef.current = true;
-      setFirestoreSynced(true);
-      setGoogleDriveSynced(true);
-      applyOrDefer(remote as SyncedRhythmPayload & {
-        medications?: MedicationItem[];
-        creativeActivities?: CreativeActivityItem[];
-        memories?: MemoryItem[];
-      });
-    } catch (err) {
-      console.warn('[TasksVault] pull error:', err);
-    } finally {
-      isPullingTasksVaultRef.current = false;
-    }
-  }, [applyOrDefer]);
-
-  // Real-time automatic polling & focus resume for Google Tasks Cloud Sync (sub-second cross-device sync)
+  // Requirement 3: Real-time active_alarms listener (onSnapshot) for zero-latency alarm dismissal
   useEffect(() => {
-    const checkSync = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine !== false) {
-        void pullFromTasksVault();
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) return;
+
+    void cleanupExpiredActiveAlarms(uid);
+
+    const unsubscribe = subscribeToActiveAlarms(
+      uid,
+      (alarms) => {
+        // If an alarm is marked dismissed in cloud (by another device or background worker), stop ringing immediately!
+        const dismissed = alarms.find(
+          (a) => a.status === 'dismissed' && a.dismissedByClientId !== clientIdRef.current
+        );
+        if (dismissed) {
+          console.info('[CloudSync] Real-time remote alarm dismissed:', dismissed.id, 'by:', dismissed.dismissedByClientId);
+          stopContinuousAlert();
+          stopNativeAlerts();
+          setActiveAudioAlert(null);
+          setPersistentAlert(null);
+          setAlarmRinging(false);
+          try {
+            const bridge = (
+              window as Window & {
+                DayRhythmNative?: {
+                  dismissActiveAlerts?: () => void;
+                  stopNativeAlarmSound?: () => void;
+                };
+              }
+            ).DayRhythmNative;
+            bridge?.stopNativeAlarmSound?.();
+            bridge?.dismissActiveAlerts?.();
+          } catch {
+            // ignore bridge
+          }
+        }
+      },
+      (err) => {
+        console.warn('[CloudSync] active_alarms listener error:', err);
       }
-    };
-
-    checkSync();
-    const intervalId = window.setInterval(checkSync, 3000);
-
-    window.addEventListener('visibilitychange', checkSync);
-    window.addEventListener('focus', checkSync);
-    window.addEventListener('online', checkSync);
+    );
 
     return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener('visibilitychange', checkSync);
-      window.removeEventListener('focus', checkSync);
-      window.removeEventListener('online', checkSync);
+      unsubscribe();
     };
-  }, [pullFromTasksVault]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts]);
 
-  // Google Cloud Session Initializer (strictly verified Google account)
+  // Requirement 1: Load user settings from cloud with strict priority over defaults & prevent overwrite
   useEffect(() => {
-    const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || (!firebaseUser.emailVerified && !isGoogle)) {
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) {
+      setIsLoadingSettings(false);
+      isLoadingSettingsRef.current = false;
       return;
     }
 
-    hasHydratedRemoteRef.current = true;
-    setFirestoreReady(true);
-    setFirestoreSynced(true);
-    void pullFromTasksVault();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firebaseUser?.providerData, pullFromTasksVault]);
+    let isMounted = true;
+    setIsLoadingSettings(true);
+    isLoadingSettingsRef.current = true;
+
+    async function loadCloudSettings() {
+      try {
+        console.info('[CloudSync] Loading settings for uid:', uid);
+        const cloudData = await fetchCloudUserSettings(uid!);
+        if (!isMounted) return;
+
+        if (cloudData) {
+          console.info('[CloudSync] Applying cloud settings with priority for uid:', uid);
+          applyOrDefer(cloudData as any);
+        } else {
+          console.info('[CloudSync] No cloud settings doc found yet. Keeping existing profile.');
+        }
+
+        // Send cloud auth to Android Native bridge
+        try {
+          const authPayload = getNativeCloudAuthPayload();
+          const nativeBridge = (
+            window as Window & { DayRhythmNative?: { setCloudAuth?: (json: string) => void } }
+          ).DayRhythmNative;
+          if (authPayload && nativeBridge?.setCloudAuth) {
+            nativeBridge.setCloudAuth(authPayload);
+          }
+        } catch (e) {
+          console.warn('[CloudSync] Bridge setCloudAuth error:', e);
+        }
+
+        // Clean up legacy "[DayRhythm Sync Vault]" list from Google Tasks
+        try {
+          const token = await getOrRefreshCalendarAccessToken();
+          if (token) {
+            void deleteTasksVaultListIfPresent(token);
+          }
+        } catch {
+          // ignore
+        }
+      } catch (err) {
+        console.error('[CloudSync] Error fetching cloud settings:', err);
+      } finally {
+        if (isMounted) {
+          setIsLoadingSettings(false);
+          isLoadingSettingsRef.current = false;
+          hasHydratedRemoteRef.current = true;
+          setFirestoreReady(true);
+          setFirestoreSynced(true);
+        }
+      }
+    }
+
+    void loadCloudSettings();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, applyOrDefer]);
 
   useEffect(() => {
     try {
@@ -3919,7 +4017,7 @@ export default function App() {
       // ignore quota errors
     }
 
-    if (!hasHydratedRemoteRef.current) {
+    if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
       return;
     }
 
@@ -6190,6 +6288,9 @@ export default function App() {
     setPersistentAlert(null);
     setAlarmRinging(false);
     emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
+    if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+      void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+    }
 
     updateTodayHydration((today) => {
       const nextIdx = today.slots.findIndex((filled) => !filled);
@@ -6224,6 +6325,9 @@ export default function App() {
         setPersistentAlert(null);
         setAlarmRinging(false);
         emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
+        if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+          void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+        }
       }
 
       return {
@@ -7110,6 +7214,16 @@ export default function App() {
         }
       }
 
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = prev.map((m) => (m.id === id ? updated : m));
         void pushToTasksVaultImmediately({ medications: next });
@@ -7140,6 +7254,16 @@ export default function App() {
     (id: string, dateIso: string) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       const cutoff7Iso = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = prev.map((m) => {
           if (m.id !== id) return m;
@@ -7213,6 +7337,16 @@ export default function App() {
         refillAlertDays: nextAlertDays,
       });
 
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = prev.map((m) => (m.id === id ? updated : m));
         void pushToTasksVaultImmediately({ medications: next });
@@ -7276,6 +7410,16 @@ export default function App() {
             ? Math.max(1, Math.min(14, Math.round(input.refillAlertDays)))
             : 3,
       });
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = [...prev, med];
         void pushToTasksVaultImmediately({ medications: next });
@@ -7295,6 +7439,16 @@ export default function App() {
 
   const handleDeleteMedication = useCallback(
     (id: string) => {
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = prev.filter((m) => m.id !== id);
         void pushToTasksVaultImmediately({ medications: next });
@@ -7318,6 +7472,16 @@ export default function App() {
     ): Promise<MedicationExecutionResult[]> => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       const results: MedicationExecutionResult[] = [];
+
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
 
       setMedications((prev) => {
         let next = [...prev];

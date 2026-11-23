@@ -933,7 +933,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         ? googleTasks
         : googleTasks.filter((tk) => tk.taskListId === selectedTaskListId);
     return base
-      .filter((tk) => tk.title !== 'sync_state' && tk.taskListTitle !== '[DayRhythm Sync Vault]')
+      .filter((tk) => {
+        const title = (tk.title || '').trim().toLowerCase();
+        const listTitle = (tk.taskListTitle || '').trim().toLowerCase();
+        return (
+          title !== 'sync_state' &&
+          !title.includes('sync_state') &&
+          !listTitle.includes('sync vault')
+        );
+      })
       .sort((a, b) => {
         if (a.status !== b.status) return a.status === 'needsAction' ? -1 : 1;
         return (a.due ?? '9999').localeCompare(b.due ?? '9999');
@@ -2581,7 +2589,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     الكل
                   </button>
                   {googleTaskLists
-                    .filter((list) => list.title !== '[DayRhythm Sync Vault]')
+                    .filter((list) => !(list.title || '').toLowerCase().includes('sync vault'))
                     .map((list) => (
                     <button
                       key={list.id}
