@@ -3561,84 +3561,109 @@ export default function App() {
     }
     if (remote.appSettings) {
       const a = remote.appSettings;
-      setPhoneChargeLimitPct(a.phoneChargeLimitPct);
-      setSmartChargeAlertEnabled(a.smartChargeAlertEnabled);
-      setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
-      setWaterRemindersEnabled(a.waterRemindersEnabled);
-      setSunMode(a.sunMode);
-      lastServerAppSettingsRef.current = JSON.stringify(a);
-      try {
-        localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
-        localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
-        localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
-        localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(a.waterRemindersEnabled));
-      } catch {
-        // ignore storage errors
+      const json = JSON.stringify(a);
+      if (json !== lastServerAppSettingsRef.current) {
+        lastServerAppSettingsRef.current = json;
+        if (typeof a.phoneChargeLimitPct === 'number') setPhoneChargeLimitPct(a.phoneChargeLimitPct);
+        if (typeof a.smartChargeAlertEnabled === 'boolean') setSmartChargeAlertEnabled(a.smartChargeAlertEnabled);
+        if (typeof a.smartChargeKeepUntilUnplugged === 'boolean') setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
+        if (typeof a.waterRemindersEnabled === 'boolean') setWaterRemindersEnabled(a.waterRemindersEnabled);
+        if (typeof a.sunMode === 'boolean') setSunMode(a.sunMode);
+        try {
+          if (typeof a.phoneChargeLimitPct === 'number') localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
+          if (typeof a.smartChargeAlertEnabled === 'boolean') localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
+          if (typeof a.smartChargeKeepUntilUnplugged === 'boolean') localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
+          if (typeof a.waterRemindersEnabled === 'boolean') localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(a.waterRemindersEnabled));
+        } catch {
+          // ignore storage errors
+        }
       }
     }
-    if (remote.quietMode) setQuietMode(remote.quietMode);
-    if (typeof remote.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(remote.adhanOverrideSilent);
+    if (remote.quietMode && remote.quietMode !== quietMode) setQuietMode(remote.quietMode);
+    if (typeof remote.adhanOverrideSilent === 'boolean' && remote.adhanOverrideSilent !== adhanOverrideSilent) {
+      setAdhanOverrideSilent(remote.adhanOverrideSilent);
+    }
     lastSyncedQuietSigRef.current = `${remote.quietMode || quietMode}:${remote.adhanOverrideSilent ?? adhanOverrideSilent}`;
-    if (remote.surfaceTheme) setSurfaceTheme(remote.surfaceTheme);
+    if (remote.surfaceTheme && remote.surfaceTheme !== surfaceTheme) setSurfaceTheme(remote.surfaceTheme);
     if (remote.deviceSettings) {
       const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
-      setDeviceSettings(cleanDev);
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
-      } catch {
-        // ignore
+      const isDiff = JSON.stringify(cleanDev) !== JSON.stringify(deviceSettings);
+      if (isDiff) {
+        setDeviceSettings(cleanDev);
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
+        } catch {
+          // ignore
+        }
       }
     }
     if (remote.lifeProfile) {
       const cleanProfile = sanitizeLifeProfile(remote.lifeProfile);
-      setLifeProfile(cleanProfile);
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
-      } catch {
-        // ignore
+      const isDiff = JSON.stringify(cleanProfile) !== JSON.stringify(lifeProfileRef.current);
+      if (isDiff) {
+        lifeProfileRef.current = cleanProfile;
+        setLifeProfile(cleanProfile);
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+        } catch {
+          // ignore
+        }
       }
     }
     if (Array.isArray(remote.medications)) {
       const cleanMeds = remote.medications.map((m) => sanitizeMedicationItem(m));
-      setMedications(cleanMeds);
-      try {
-        localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(cleanMeds));
-      } catch {
-        // ignore
+      const sig = JSON.stringify(cleanMeds);
+      if (sig !== JSON.stringify(medications)) {
+        setMedications(cleanMeds);
+        try {
+          localStorage.setItem(MEDS_STORAGE_KEY, sig);
+        } catch {
+          // ignore
+        }
       }
     }
     if (Array.isArray(remote.memories)) {
       const cleanMems = remote.memories.map((m) => sanitizeMemoryItem(m));
-      lastSyncedMemoriesSigRef.current = JSON.stringify(cleanMems);
-      setMemories(cleanMems);
-      try {
-        localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(cleanMems));
-      } catch {
-        // ignore
+      const sig = JSON.stringify(cleanMems);
+      if (sig !== lastSyncedMemoriesSigRef.current) {
+        lastSyncedMemoriesSigRef.current = sig;
+        setMemories(cleanMems);
+        try {
+          localStorage.setItem(MEMORIES_STORAGE_KEY, sig);
+        } catch {
+          // ignore
+        }
       }
     }
     if (Array.isArray(remote.creativeActivities)) {
       const cleanCreatives = remote.creativeActivities.map((c) => sanitizeCreativeActivityItem(c));
-      lastSyncedCreativeSigRef.current = JSON.stringify(cleanCreatives);
-      setCreativeActivities(cleanCreatives);
-      try {
-        localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(cleanCreatives));
-      } catch {
-        // ignore
+      const sig = JSON.stringify(cleanCreatives);
+      if (sig !== lastSyncedCreativeSigRef.current) {
+        lastSyncedCreativeSigRef.current = sig;
+        setCreativeActivities(cleanCreatives);
+        try {
+          localStorage.setItem(CREATIVE_STORAGE_KEY, sig);
+        } catch {
+          // ignore
+        }
       }
     }
     if (remote.uiPrefs) {
       const cleanUi = sanitizeUiPrefs(remote.uiPrefs);
       if (cleanUi) {
-        setSelectedLogoId(cleanUi.selectedLogoId);
-        setCapsulePrefs({
-          orientation: cleanUi.capsuleOrientation,
-          size: cleanUi.capsuleSize,
-        });
+        if (cleanUi.selectedLogoId && cleanUi.selectedLogoId !== selectedLogoId) {
+          setSelectedLogoId(cleanUi.selectedLogoId);
+        }
+        if (cleanUi.capsuleOrientation !== capsulePrefs.orientation || cleanUi.capsuleSize !== capsulePrefs.size) {
+          setCapsulePrefs({
+            orientation: cleanUi.capsuleOrientation,
+            size: cleanUi.capsuleSize,
+          });
+        }
         if (cleanUi.cloudApiUrl) {
           syncSavedCloudApiUrlFromRemote(cleanUi.cloudApiUrl);
           try {
@@ -3798,7 +3823,8 @@ export default function App() {
         if (typeof detail === 'string') {
           const parsed = JSON.parse(detail);
           if (parsed && typeof parsed === 'object') {
-            if (parsed.clientId === clientIdRef.current) return;
+            const senderId = parsed.clientId || parsed.settings?.originClientId;
+            if (senderId === clientIdRef.current) return;
             if (parsed.type === 'settings_update' && parsed.settings) {
               applyRemoteRef.current(parsed.settings);
             } else if (parsed.settings) {
@@ -3820,7 +3846,8 @@ export default function App() {
         bc.onmessage = (event) => {
           const data = event.data;
           if (data && typeof data === 'object') {
-            if (data.clientId === clientIdRef.current) return;
+            const senderId = data.clientId || data.settings?.originClientId;
+            if (senderId === clientIdRef.current) return;
             if (data.type === 'settings_update' && data.settings) {
               applyRemoteRef.current(data.settings);
             } else if (data.settings) {
@@ -3835,30 +3862,10 @@ export default function App() {
       }
     }
 
-    const handleStorageEvent = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY && e.newValue) {
-        try {
-          const parsed = JSON.parse(e.newValue);
-          if (parsed && typeof parsed === 'object') {
-            if (parsed.lifeProfile) {
-              applyRemoteRef.current({ lifeProfile: parsed.lifeProfile } as any);
-            }
-            if (parsed.deviceSettings) {
-              applyRemoteRef.current({ deviceSettings: parsed.deviceSettings } as any);
-            }
-          }
-        } catch {
-          // ignore parse error
-        }
-      }
-    };
-
     window.addEventListener('dayrhythm:ws-sync', handleNativeWsSync);
-    window.addEventListener('storage', handleStorageEvent);
 
     return () => {
       window.removeEventListener('dayrhythm:ws-sync', handleNativeWsSync);
-      window.removeEventListener('storage', handleStorageEvent);
       bc?.close();
     };
   }, [callRemoteSync]);
@@ -3923,15 +3930,19 @@ export default function App() {
       }
 
       // 2. Protocol 1 & 2: Broadcast immediately over LAN (< 50ms) & Cross-Tab BroadcastChannel
-      dispatchLanBroadcast({
+      const broadcastPacket = {
         type: 'settings_update',
         settings: payload,
-      });
+        clientId: clientIdRef.current,
+        timestampMs: Date.now(),
+      };
+
+      dispatchLanBroadcast(broadcastPacket);
 
       if (typeof BroadcastChannel !== 'undefined') {
         try {
           const bc = new BroadcastChannel('dayrhythm_sync');
-          bc.postMessage({ type: 'settings_update', settings: payload });
+          bc.postMessage(broadcastPacket);
           bc.close();
         } catch {
           // ignore
@@ -4125,7 +4136,12 @@ export default function App() {
         }
 
         // B) Real-time settings & rhythm live sync from other devices
-        if (!remote.originClientId || remote.originClientId !== clientIdRef.current) {
+        const remoteOrigin = remote.originClientId || (remote as any).clientId;
+        if (remoteOrigin === clientIdRef.current) {
+          // Never re-apply our own writes!
+          return;
+        }
+        if (remoteOrigin && remoteOrigin !== clientIdRef.current) {
           applyOrDefer(remote as SyncedRhythmPayload & {
             medications?: MedicationItem[];
             creativeActivities?: CreativeActivityItem[];

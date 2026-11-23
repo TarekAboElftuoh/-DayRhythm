@@ -373,6 +373,7 @@ export function subscribeToUserDocument(
     onUpdate({
       ...cachedUserDoc,
       ...cachedProfile,
+      originClientId: cachedProfile.originClientId || cachedUserDoc.originClientId,
     });
   };
 
