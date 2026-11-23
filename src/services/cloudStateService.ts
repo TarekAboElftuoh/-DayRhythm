@@ -308,20 +308,27 @@ export function subscribeToActiveAlarms(
 }
 
 /**
- * Periodically cleanup alarms that fired more than 15 minutes ago.
+ * Periodically cleanup alarms that fired or were dismissed.
+ * Dismissed alarms are purged after 30 seconds to prevent them from acting as poison pills.
  */
 export async function cleanupExpiredActiveAlarms(uid: string): Promise<void> {
   if (!uid) return;
   try {
-    const cutoffMs = Date.now() - 15 * 60_000;
+    const nowMs = Date.now();
+    const ringingCutoffMs = nowMs - 5 * 60_000;
+    const dismissedCutoffMs = nowMs - 30_000;
     const alarmsCol = collection(db, 'users', uid, 'active_alarms');
     const snap = await getDocs(alarmsCol);
 
     const toDelete: Promise<void>[] = [];
     snap.forEach((d) => {
       const data = d.data() as Partial<ActiveAlarmItem>;
-      if (data.firedAtMs && data.firedAtMs < cutoffMs) {
-        toDelete.push(deleteDoc(d.ref));
+      const isDismissedExpired =
+        data.status === 'dismissed' && (!data.dismissedAtMs || data.dismissedAtMs < dismissedCutoffMs);
+      const isRingingExpired = data.firedAtMs && data.firedAtMs < ringingCutoffMs;
+
+      if (isDismissedExpired || isRingingExpired) {
+        toDelete.push(deleteDoc(d.ref).catch(() => {}));
       }
     });
 
@@ -331,6 +338,33 @@ export async function cleanupExpiredActiveAlarms(uid: string): Promise<void> {
   } catch (err) {
     console.warn('[CloudSync] Cleanup expired alarms failed:', err);
   }
+}
+
+/**
+ * Real-time listener for the user root document (users/{uid}).
+ * Catches cross-device syncSignal (including background Android dismissals)
+ * and real-time settings/rhythm updates live across devices.
+ */
+export function subscribeToUserDocument(
+  uid: string,
+  onUpdate: (data: UserSettingsPayload) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  if (!uid) return () => {};
+  const userDocRef = doc(db, 'users', uid);
+  return onSnapshot(
+    userDocRef,
+    (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as UserSettingsPayload;
+        onUpdate(data);
+      }
+    },
+    (err) => {
+      console.warn('[CloudSync] UserDoc onSnapshot error:', err);
+      onError?.(err);
+    }
+  );
 }
 
 /**

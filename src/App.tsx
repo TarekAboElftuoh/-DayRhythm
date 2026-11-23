@@ -98,6 +98,7 @@ import {
   registerActiveAlarm,
   dismissActiveAlarmInCloud,
   subscribeToActiveAlarms,
+  subscribeToUserDocument,
   cleanupExpiredActiveAlarms,
   deleteTasksVaultListIfPresent,
   type UserSettingsPayload,
@@ -858,6 +859,17 @@ export default function App() {
     isContinuous?: boolean;
   } | null>(null);
   const [persistentAlert, setPersistentAlert] = useState<PersistentAlertItem | null>(null);
+  const activeAudioAlertRef = useRef<{ id: string; firedAtMs: number } | null>(null);
+  const persistentAlertRef = useRef<{ id: string; createdAtMs: number } | null>(null);
+  const handledDismissedAlarmIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    activeAudioAlertRef.current = activeAudioAlert ? { id: activeAudioAlert.id, firedAtMs: Date.now() } : null;
+  }, [activeAudioAlert]);
+
+  useEffect(() => {
+    persistentAlertRef.current = persistentAlert ? { id: persistentAlert.id, createdAtMs: persistentAlert.createdAtMs } : null;
+  }, [persistentAlert]);
 
   const clientIdRef = useRef<string>(
     `dr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -3531,7 +3543,7 @@ export default function App() {
         // ignore
       }
     }
-    if (Array.isArray(remote.medications) && remote.medications.length > 0) {
+    if (Array.isArray(remote.medications)) {
       const cleanMeds = remote.medications.map((m) => sanitizeMedicationItem(m));
       setMedications(cleanMeds);
       try {
@@ -3540,7 +3552,7 @@ export default function App() {
         // ignore
       }
     }
-    if (Array.isArray(remote.memories) && remote.memories.length > 0) {
+    if (Array.isArray(remote.memories)) {
       const cleanMems = remote.memories.map((m) => sanitizeMemoryItem(m));
       lastSyncedMemoriesSigRef.current = JSON.stringify(cleanMems);
       setMemories(cleanMems);
@@ -3550,7 +3562,7 @@ export default function App() {
         // ignore
       }
     }
-    if (Array.isArray(remote.creativeActivities) && remote.creativeActivities.length > 0) {
+    if (Array.isArray(remote.creativeActivities)) {
       const cleanCreatives = remote.creativeActivities.map((c) => sanitizeCreativeActivityItem(c));
       lastSyncedCreativeSigRef.current = JSON.stringify(cleanCreatives);
       setCreativeActivities(cleanCreatives);
@@ -3685,51 +3697,63 @@ export default function App() {
 
   const lastAppliedTasksSyncMsRef = useRef<number>(0);
 
-  // Requirement 1: Save settings immediately to cloud with merge: true
+  // Requirement 1 & Finding 4: Pure granular patch saving with strict unhydrated write lock
   const saveCloudUserSettingsImmediately = useCallback(
     async (patch?: Partial<UserSettingsPayload>) => {
-      // Avoid pushing default state before having hydrated from cloud on startup
-      if (isLoadingSettingsRef.current && !patch) return;
+      // NEVER allow any writes while settings are loading or if remote has not successfully hydrated
+      if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
+        console.warn('[CloudSync] Write blocked: settings are currently unhydrated or loading from cloud.');
+        return;
+      }
 
       const uid = firebaseUser?.uid;
       if (!uid || firebaseUser?.isAnonymous) return;
 
-      const todayEntry = hydrationHistory[hydrationHistory.length - 1];
-      const remoteTz = (patch?.lifeProfile || lifeProfile).currentTimeZone || 'Africa/Cairo';
-      const todayIso = getDateIsoInTimeZone(remoteTz);
-
-      const payload: Partial<UserSettingsPayload> = {
-        hydrationDateKey: todayIso,
-        cupsLogged: patch?.cupsLogged ?? todayEntry?.cupsLogged ?? 0,
-        targetCups: patch?.targetCups ?? todayEntry?.targetCups ?? 13,
-        hydrationWeeklyCounts: patch?.hydrationWeeklyCounts ?? hydrationHistory.map((d) => d.cupsLogged),
-        dailyCommitmentDays: patch?.dailyCommitmentDays ?? streaks.dailyCommitmentDays,
-        dailyCommitmentDoneToday: patch?.dailyCommitmentDoneToday ?? streaks.dailyCommitmentDoneToday,
-        waterTargetDays: patch?.waterTargetDays ?? streaks.waterTargetDays,
-        waterTargetDoneToday: patch?.waterTargetDoneToday ?? streaks.waterTargetDoneToday,
-        quietMode: patch?.quietMode ?? quietMode,
-        adhanOverrideSilent: patch?.adhanOverrideSilent ?? adhanOverrideSilent,
-        surfaceTheme,
-        deviceSettings: patch?.deviceSettings ?? deviceSettings,
-        lifeProfile: patch?.lifeProfile ?? lifeProfile,
-        medications: patch?.medications ?? medications,
-        creativeActivities: patch?.creativeActivities ?? creativeActivities,
-        memories: patch?.memories ?? memories,
-        appSettings: patch?.appSettings ?? {
-          phoneChargeLimitPct,
-          smartChargeAlertEnabled,
-          smartChargeKeepUntilUnplugged,
-          waterRemindersEnabled,
-          sunMode,
-        },
-        uiPrefs: sanitizeUiPrefs({
-          selectedLogoId: patch?.uiPrefs?.selectedLogoId ?? selectedLogoId,
-          capsuleOrientation: patch?.uiPrefs?.capsuleOrientation ?? capsulePrefs.orientation,
-          capsuleSize: patch?.uiPrefs?.capsuleSize ?? capsulePrefs.size,
-          cloudApiUrl: getSavedCloudApiUrl() || undefined,
-        }),
-        ...patch,
-      };
+      // If a specific patch is provided, write ONLY that patch to preserve multi-device concurrency!
+      let payload: Partial<UserSettingsPayload>;
+      if (patch && Object.keys(patch).length > 0) {
+        payload = {
+          ...patch,
+          originClientId: clientIdRef.current,
+        };
+      } else {
+        // Full rhythm snapshot only when explicitly called without patch
+        const todayEntry = hydrationHistory[hydrationHistory.length - 1];
+        const remoteTz = lifeProfile.currentTimeZone || 'Africa/Cairo';
+        const todayIso = getDateIsoInTimeZone(remoteTz);
+        payload = {
+          hydrationDateKey: todayIso,
+          cupsLogged: todayEntry?.cupsLogged ?? 0,
+          targetCups: todayEntry?.targetCups ?? 13,
+          hydrationWeeklyCounts: hydrationHistory.map((d) => d.cupsLogged),
+          dailyCommitmentDays: streaks.dailyCommitmentDays,
+          dailyCommitmentDoneToday: streaks.dailyCommitmentDoneToday,
+          waterTargetDays: streaks.waterTargetDays,
+          waterTargetDoneToday: streaks.waterTargetDoneToday,
+          quietMode,
+          adhanOverrideSilent,
+          surfaceTheme,
+          deviceSettings,
+          lifeProfile,
+          medications,
+          creativeActivities,
+          memories,
+          originClientId: clientIdRef.current,
+          appSettings: {
+            phoneChargeLimitPct,
+            smartChargeAlertEnabled,
+            smartChargeKeepUntilUnplugged,
+            waterRemindersEnabled,
+            sunMode,
+          },
+          uiPrefs: sanitizeUiPrefs({
+            selectedLogoId,
+            capsuleOrientation: capsulePrefs.orientation,
+            capsuleSize: capsulePrefs.size,
+            cloudApiUrl: getSavedCloudApiUrl() || undefined,
+          }),
+        };
+      }
 
       try {
         const ok = await saveCloudUserSettings(uid, payload);
@@ -3769,7 +3793,7 @@ export default function App() {
     pushToTasksVaultRef.current = saveCloudUserSettingsImmediately;
   }, [saveCloudUserSettingsImmediately]);
 
-  // Requirement 3: Real-time active_alarms listener (onSnapshot) for zero-latency alarm dismissal
+  // Requirement 3 & Finding 1: Real-time active_alarms listener with poison-pill prevention
   useEffect(() => {
     const uid = firebaseUser?.uid;
     if (!uid || firebaseUser?.isAnonymous) return;
@@ -3779,12 +3803,37 @@ export default function App() {
     const unsubscribe = subscribeToActiveAlarms(
       uid,
       (alarms) => {
-        // If an alarm is marked dismissed in cloud (by another device or background worker), stop ringing immediately!
-        const dismissed = alarms.find(
-          (a) => a.status === 'dismissed' && a.dismissedByClientId !== clientIdRef.current
-        );
-        if (dismissed) {
-          console.info('[CloudSync] Real-time remote alarm dismissed:', dismissed.id, 'by:', dismissed.dismissedByClientId);
+        // Is an alert currently ringing on THIS device?
+        const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
+        const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
+        const isCurrentlyRinging = Boolean(currentAlertId || alarmRinging);
+
+        if (!isCurrentlyRinging) {
+          return;
+        }
+
+        // Match dismissal strictly against the currently active alert or a dismissal that happened AFTER this alert started ringing!
+        const relevantDismissal = alarms.find((a) => {
+          if (a.status !== 'dismissed') return false;
+          if (a.dismissedByClientId === clientIdRef.current) return false;
+          if (handledDismissedAlarmIdsRef.current.has(a.id)) return false;
+
+          // 1. Direct ID match
+          if (currentAlertId && (a.id === currentAlertId || a.id === 'all' || a.id === 'latest_dismiss')) {
+            return true;
+          }
+
+          // 2. Timestamp match: dismissal happened after or around the time our alert fired
+          if (a.dismissedAtMs && currentFiredAtMs > 0 && a.dismissedAtMs >= currentFiredAtMs - 3000) {
+            return true;
+          }
+
+          return false;
+        });
+
+        if (relevantDismissal) {
+          handledDismissedAlarmIdsRef.current.add(relevantDismissal.id);
+          console.info('[CloudSync] Real-time remote alarm dismissed:', relevantDismissal.id, 'by:', relevantDismissal.dismissedByClientId);
           stopContinuousAlert();
           stopNativeAlerts();
           setActiveAudioAlert(null);
@@ -3814,9 +3863,69 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging]);
 
-  // Requirement 1: Load user settings from cloud with strict priority over defaults & prevent overwrite
+  // Requirement 2 & Finding 2, 6: Real-time listener for users/{uid} root document
+  // 1) Catches Android background lock-screen alarm dismissals via syncSignal.
+  // 2) Streams live settings/rhythm updates across devices live.
+  useEffect(() => {
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) return;
+
+    const unsubscribe = subscribeToUserDocument(
+      uid,
+      (remote) => {
+        // A) Android background alarm dismissal check
+        const sig = remote.syncSignal;
+        if (sig && sig.scope === 'alarm_dismiss' && sig.clientId !== clientIdRef.current) {
+          const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
+          const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
+          const isCurrentlyRinging = Boolean(currentAlertId || alarmRinging);
+
+          if (isCurrentlyRinging && sig.timestampMs && sig.timestampMs >= (currentFiredAtMs - 5000)) {
+            console.info('[CloudSync] Remote alarm dismiss signal received from Android Native:', sig.action);
+            stopContinuousAlert();
+            stopNativeAlerts();
+            setActiveAudioAlert(null);
+            setPersistentAlert(null);
+            setAlarmRinging(false);
+            try {
+              const bridge = (
+                window as Window & {
+                  DayRhythmNative?: {
+                    dismissActiveAlerts?: () => void;
+                    stopNativeAlarmSound?: () => void;
+                  };
+                }
+              ).DayRhythmNative;
+              bridge?.stopNativeAlarmSound?.();
+              bridge?.dismissActiveAlerts?.();
+            } catch {
+              // ignore bridge
+            }
+          }
+        }
+
+        // B) Real-time settings & rhythm live sync from other devices
+        if (remote.originClientId !== clientIdRef.current && remote.updatedAtMs) {
+          applyOrDefer(remote as SyncedRhythmPayload & {
+            medications?: MedicationItem[];
+            creativeActivities?: CreativeActivityItem[];
+            memories?: MemoryItem[];
+          });
+        }
+      },
+      (err) => {
+        console.warn('[CloudSync] subscribeToUserDocument error:', err);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging, applyOrDefer]);
+
+  // Requirement 1 & Finding 3: Load user settings from cloud with strict priority over defaults & offline protection
   useEffect(() => {
     const uid = firebaseUser?.uid;
     if (!uid || firebaseUser?.isAnonymous) {
@@ -3838,8 +3947,14 @@ export default function App() {
         if (cloudData) {
           console.info('[CloudSync] Applying cloud settings with priority for uid:', uid);
           applyOrDefer(cloudData as any);
+          hasHydratedRemoteRef.current = true;
+          setFirestoreReady(true);
+          setFirestoreSynced(true);
         } else {
           console.info('[CloudSync] No cloud settings doc found yet. Keeping existing profile.');
+          hasHydratedRemoteRef.current = true;
+          setFirestoreReady(true);
+          setFirestoreSynced(true);
         }
 
         // Send cloud auth to Android Native bridge
@@ -3865,14 +3980,13 @@ export default function App() {
           // ignore
         }
       } catch (err) {
-        console.error('[CloudSync] Error fetching cloud settings:', err);
+        console.error('[CloudSync] Error fetching cloud settings (offline or network failure). Keeping cloud write lock ARMED:', err);
+        // CRITICAL (Finding 3): Do NOT set hasHydratedRemoteRef.current = true here!
+        // This ensures that local default values are NEVER written over remote cloud settings on offline boot.
       } finally {
         if (isMounted) {
           setIsLoadingSettings(false);
           isLoadingSettingsRef.current = false;
-          hasHydratedRemoteRef.current = true;
-          setFirestoreReady(true);
-          setFirestoreSynced(true);
         }
       }
     }

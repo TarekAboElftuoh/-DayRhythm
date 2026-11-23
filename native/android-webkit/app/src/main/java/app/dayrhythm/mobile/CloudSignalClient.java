@@ -120,7 +120,7 @@ public final class CloudSignalClient {
                         .put("scope", new JSONObject().put("stringValue", "alarm_dismiss"))
                         .put("action", new JSONObject().put("stringValue", action == null || action.isEmpty() ? "native_dismiss" : action))
                         .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)));
-                JSONObject write = new JSONObject()
+                JSONObject write1 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth))
                                 .put("fields", new JSONObject().put("syncSignal",
@@ -129,7 +129,19 @@ public final class CloudSignalClient {
                         .put("updateTransforms", new JSONArray().put(new JSONObject()
                                 .put("fieldPath", "updatedAt")
                                 .put("setToServerValue", "REQUEST_TIME")));
-                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write));
+
+                JSONObject alarmFields = new JSONObject()
+                        .put("id", new JSONObject().put("stringValue", "latest_dismiss"))
+                        .put("status", new JSONObject().put("stringValue", "dismissed"))
+                        .put("dismissedByClientId", new JSONObject().put("stringValue", CLIENT_ID))
+                        .put("dismissedAtMs", new JSONObject().put("integerValue", String.valueOf(now)));
+                JSONObject write2 = new JSONObject()
+                        .put("update", new JSONObject()
+                                .put("name", docName(auth) + "/active_alarms/latest_dismiss")
+                                .put("fields", alarmFields))
+                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("id").put("status").put("dismissedByClientId").put("dismissedAtMs")));
+
+                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
 
                 Request req = new Request.Builder()
                         .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
@@ -245,8 +257,8 @@ public final class CloudSignalClient {
                         }
                     }
                     long now = System.currentTimeMillis();
-                    // Tolerant clock-skew window (up to 3 minutes or 90s future/past) to account for phone/PC clock drift
-                    boolean isRecentDismiss = (ts >= firedAtMs - 90_000L && ts <= now + 90_000L) || Math.abs(ts - firedAtMs) <= 180_000L;
+                    // Dismissal must happen AFTER the alarm started firing (with 5s clock drift allowance)
+                    boolean isRecentDismiss = ts >= (firedAtMs - 5_000L) && ts <= (now + 60_000L);
                     if ("alarm_dismiss".equals(scope) && !CLIENT_ID.equals(client) && isRecentDismiss) {
                         stopWatching();
                         MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
