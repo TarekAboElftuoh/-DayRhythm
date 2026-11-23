@@ -1,11 +1,20 @@
-import { SyncedRhythmPayload } from '../firebase';
-import { MedicationItem } from '../types/dayrhythm';
+import { SyncedRhythmPayload, AppSyncSettings } from '../firebase';
+import {
+  MedicationItem,
+  CreativeActivityItem,
+  MemoryItem,
+  UiPrefs,
+} from '../types/dayrhythm';
 import { refreshGoogleCalendarTokenSilently } from './googleCalendarAuth';
 
 export interface TasksVaultPayload extends Partial<SyncedRhythmPayload> {
   updatedAtMs: number;
   originClientId: string;
   medications?: MedicationItem[];
+  creativeActivities?: CreativeActivityItem[];
+  memories?: MemoryItem[];
+  appSettings?: AppSyncSettings;
+  uiPrefs?: UiPrefs;
 }
 
 const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
@@ -139,43 +148,72 @@ export async function getOrFindSyncTaskId(token: string, listId: string): Promis
   return null;
 }
 
+let inFlightPush: Promise<boolean> | null = null;
+let pendingPushPayload: { token: string; payload: TasksVaultPayload } | null = null;
+
 export async function pushRhythmStateToTasks(
   token: string,
   payload: TasksVaultPayload
 ): Promise<boolean> {
   if (!token) return false;
-  try {
-    const listId = await getOrFindTasksVaultListId(token);
-    if (!listId) return false;
-    const taskId = await getOrFindSyncTaskId(token, listId);
-    if (!taskId) return false;
+  pendingPushPayload = { token, payload };
+  if (inFlightPush) return inFlightPush;
 
-    const notesStr = JSON.stringify(payload);
-    const putUrl = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`;
-    const res = await fetch(putUrl, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        id: taskId,
-        title: SYNC_TASK_TITLE,
-        notes: notesStr,
-      }),
-    });
+  inFlightPush = (async () => {
+    // 200ms debounce to collapse rapid sequential changes into one push
+    await new Promise((r) => setTimeout(r, 200));
+    while (pendingPushPayload) {
+      const current = pendingPushPayload;
+      pendingPushPayload = null;
+      try {
+        let activeToken = current.token;
+        const listId = await getOrFindTasksVaultListId(activeToken);
+        if (!listId) continue;
+        const taskId = await getOrFindSyncTaskId(activeToken, listId);
+        if (!taskId) continue;
 
-    if (res.status === 401) {
-      const fresh = await refreshGoogleCalendarTokenSilently();
-      if (fresh && fresh !== token) return pushRhythmStateToTasks(fresh, payload);
-      return false;
+        const notesStr = JSON.stringify(current.payload);
+        const putUrl = `https://tasks.googleapis.com/tasks/v1/lists/${encodeURIComponent(listId)}/tasks/${encodeURIComponent(taskId)}`;
+        let res = await fetch(putUrl, {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${activeToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            id: taskId,
+            title: SYNC_TASK_TITLE,
+            notes: notesStr,
+          }),
+        });
+
+        if (res.status === 401) {
+          const fresh = await refreshGoogleCalendarTokenSilently();
+          if (fresh && fresh !== activeToken) {
+            activeToken = fresh;
+            res = await fetch(putUrl, {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${activeToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                id: taskId,
+                title: SYNC_TASK_TITLE,
+                notes: notesStr,
+              }),
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[TasksVault] Failed pushing rhythm state:', err);
+      }
     }
+    inFlightPush = null;
+    return true;
+  })();
 
-    return res.ok;
-  } catch (err) {
-    console.warn('[TasksVault] Failed pushing rhythm state:', err);
-    return false;
-  }
+  return inFlightPush;
 }
 
 export async function pullRhythmStateFromTasks(

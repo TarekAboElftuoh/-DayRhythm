@@ -888,6 +888,7 @@ export default function App() {
   const lastServerAppSettingsRef = useRef<string>('');
   const [cloudPausedUntil, setCloudPausedUntil] = useState(0);
   const pendingRemoteTimerRef = useRef<number | null>(null);
+  const pushToTasksVaultRef = useRef<(patch?: Partial<TasksVaultPayload>) => Promise<void>>(() => Promise.resolve());
 
   // Any LOCALLY-initiated lifeProfile edit arms the write lock (see the Firestore listener's
   // "Date.now() < localWriteLockUntilRef.current" guard above) so a snapshot that happens to
@@ -2495,7 +2496,7 @@ export default function App() {
 
   // App settings that used to be per-device only: change it on one device, it changes on the other.
   useEffect(() => {
-    if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreReady || !hasHydratedRemoteRef.current) {
+    if (!hasHydratedRemoteRef.current) {
       return;
     }
     // Same key order as sanitizeAppSyncSettings, so equal settings serialize identically.
@@ -2509,10 +2510,12 @@ export default function App() {
     const json = JSON.stringify(next);
     if (json === lastServerAppSettingsRef.current) return;
     lastServerAppSettingsRef.current = json;
-    void saveUserAppSettings(firebaseUser.uid, next);
+    if (firebaseUser?.uid && firestoreReady) {
+      void saveUserAppSettings(firebaseUser.uid, next);
+    }
+    void pushToTasksVaultRef.current({ appSettings: next });
   }, [
     firebaseUser?.uid,
-    firebaseUser?.emailVerified,
     firestoreReady,
     phoneChargeLimitPct,
     smartChargeAlertEnabled,
@@ -2868,12 +2871,14 @@ export default function App() {
         if (token && navigator.onLine !== false) {
           void refreshWorkspace(token, { forceGmail: true });
         }
+        void pullFromTasksVault();
         if (token) {
           void hydrateGoogleDriveOnce(token);
         } else {
           void getOrRefreshCalendarAccessToken().then((freshToken) => {
             if (freshToken) {
               setWorkspaceTokenExpired(false);
+              void pullFromTasksVault();
               void hydrateGoogleDriveOnce(freshToken);
             } else {
               hasHydratedGoogleDriveRef.current = true;
@@ -2900,6 +2905,7 @@ export default function App() {
         return;
       }
       setFirebaseUser(user);
+      void pullFromTasksVault();
       try {
         const prevUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
         if (prevUid && prevUid !== user.uid) {
@@ -3324,7 +3330,11 @@ export default function App() {
     };
   }, [firebaseUser?.uid, firebaseUser?.emailVerified, callRemoteSync, callRefreshWorkspace]);
 
-  const applyRemote = useCallback((remote: SyncedRhythmPayload & { medications?: MedicationItem[] }) => {
+  const applyRemote = useCallback((remote: SyncedRhythmPayload & {
+    medications?: MedicationItem[];
+    creativeActivities?: CreativeActivityItem[];
+    memories?: MemoryItem[];
+  }) => {
     if (remote.appSettings) {
       const a = remote.appSettings;
       setPhoneChargeLimitPct(a.phoneChargeLimitPct);
@@ -3336,6 +3346,7 @@ export default function App() {
         localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
         localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
         localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
+        localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(a.waterRemindersEnabled));
       } catch {
         // ignore storage errors
       }
@@ -3370,6 +3381,24 @@ export default function App() {
       setMedications(cleanMeds);
       try {
         localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(cleanMeds));
+      } catch {
+        // ignore
+      }
+    }
+    if (Array.isArray(remote.memories) && remote.memories.length > 0) {
+      const cleanMems = remote.memories.map((m) => sanitizeMemoryItem(m));
+      setMemories(cleanMems);
+      try {
+        localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(cleanMems));
+      } catch {
+        // ignore
+      }
+    }
+    if (Array.isArray(remote.creativeActivities) && remote.creativeActivities.length > 0) {
+      const cleanCreatives = remote.creativeActivities.map((c) => sanitizeCreativeActivityItem(c));
+      setCreativeActivities(cleanCreatives);
+      try {
+        localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(cleanCreatives));
       } catch {
         // ignore
       }
@@ -3447,7 +3476,11 @@ export default function App() {
   }, []);
 
   const applyOrDefer = useCallback(
-    (remote: SyncedRhythmPayload & { medications?: MedicationItem[] }) => {
+    (remote: SyncedRhythmPayload & {
+      medications?: MedicationItem[];
+      creativeActivities?: CreativeActivityItem[];
+      memories?: MemoryItem[];
+    }) => {
       const waitMs = localWriteLockUntilRef.current - Date.now();
       if (waitMs > 0) {
         pendingRemoteRef.current = remote as SyncedRhythmPayload;
@@ -3472,6 +3505,9 @@ export default function App() {
 
   const pushToTasksVaultImmediately = useCallback(
     async (patch?: Partial<TasksVaultPayload>) => {
+      // Avoid pushing default state before having hydrated from cloud on startup
+      if (!hasHydratedRemoteRef.current && !patch) return;
+
       const token = await getOrRefreshCalendarAccessToken();
       if (!token) return;
 
@@ -3496,10 +3532,20 @@ export default function App() {
         deviceSettings: patch?.deviceSettings ?? deviceSettings,
         lifeProfile: patch?.lifeProfile ?? lifeProfile,
         medications: patch?.medications ?? medications,
+        creativeActivities: patch?.creativeActivities ?? creativeActivities,
+        memories: patch?.memories ?? memories,
+        appSettings: patch?.appSettings ?? {
+          phoneChargeLimitPct,
+          smartChargeAlertEnabled,
+          smartChargeKeepUntilUnplugged,
+          waterRemindersEnabled,
+          sunMode,
+        },
         uiPrefs: sanitizeUiPrefs({
-          selectedLogoId,
-          capsuleOrientation: capsulePrefs.orientation,
-          capsuleSize: capsulePrefs.size,
+          selectedLogoId: patch?.uiPrefs?.selectedLogoId ?? selectedLogoId,
+          capsuleOrientation: patch?.uiPrefs?.capsuleOrientation ?? capsulePrefs.orientation,
+          capsuleSize: patch?.uiPrefs?.capsuleSize ?? capsulePrefs.size,
+          cloudApiUrl: getSavedCloudApiUrl() || undefined,
         }),
       };
 
@@ -3515,25 +3561,44 @@ export default function App() {
       surfaceTheme,
       deviceSettings,
       medications,
+      creativeActivities,
+      memories,
+      phoneChargeLimitPct,
+      smartChargeAlertEnabled,
+      smartChargeKeepUntilUnplugged,
+      waterRemindersEnabled,
+      sunMode,
       selectedLogoId,
       capsulePrefs,
     ]
   );
 
+  useEffect(() => {
+    pushToTasksVaultRef.current = pushToTasksVaultImmediately;
+  }, [pushToTasksVaultImmediately]);
+
   const pullFromTasksVault = useCallback(async () => {
     if (isPullingTasksVaultRef.current) return;
-    const token = getCalendarAccessToken();
+    const token = await getOrRefreshCalendarAccessToken();
     if (!token) return;
 
     isPullingTasksVaultRef.current = true;
     try {
       const remote = await pullRhythmStateFromTasks(token);
-      if (!remote) return;
+      if (!remote) {
+        hasHydratedRemoteRef.current = true;
+        return;
+      }
       if (remote.originClientId === clientIdRef.current) return;
       if (remote.updatedAtMs <= lastAppliedTasksSyncMsRef.current) return;
 
       lastAppliedTasksSyncMsRef.current = remote.updatedAtMs;
-      applyOrDefer(remote as SyncedRhythmPayload & { medications?: MedicationItem[] });
+      hasHydratedRemoteRef.current = true;
+      applyOrDefer(remote as SyncedRhythmPayload & {
+        medications?: MedicationItem[];
+        creativeActivities?: CreativeActivityItem[];
+        memories?: MemoryItem[];
+      });
     } catch (err) {
       console.warn('[TasksVault] pull error:', err);
     } finally {
@@ -3566,7 +3631,8 @@ export default function App() {
 
   // Real-time Firebase Firestore listener (strictly verified non-anonymous user; auto-bootstraps new accounts immediately!)
   useEffect(() => {
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || !firebaseUser.emailVerified) {
+    const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
+    if (!firebaseUser?.uid || firebaseUser.isAnonymous || (!firebaseUser.emailVerified && !isGoogle)) {
       return;
     }
 
@@ -3584,12 +3650,14 @@ export default function App() {
         }
         applyOrDefer(remote);
       },
-      () => {},
+      () => {
+        hasHydratedRemoteRef.current = true;
+      },
       () => {}
     );
 
     return () => unsubscribe();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, applyOrDefer]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firebaseUser?.providerData, applyOrDefer]);
 
   // Immediate real-time Firestore subscription for Medications (non-anonymous verified users only)
   useEffect(() => {
@@ -3882,10 +3950,6 @@ export default function App() {
       // ignore quota errors
     }
 
-    if (!firebaseUser?.uid || !firebaseUser.emailVerified || !firestoreReady) {
-      return;
-    }
-
     if (!hasHydratedRemoteRef.current) {
       return;
     }
@@ -3893,7 +3957,9 @@ export default function App() {
     const todayEntry = hydrationHistory[hydrationHistory.length - 1];
     if (!todayEntry) return;
 
-    const payload: SyncedRhythmPayload = {
+    const payload: TasksVaultPayload = {
+      updatedAtMs: Date.now(),
+      originClientId: clientIdRef.current,
       hydrationDateKey: getDateIsoInTimeZone(activeTimeZone),
       cupsLogged: todayEntry.cupsLogged,
       targetCups: todayEntry.targetCups,
@@ -3907,6 +3973,16 @@ export default function App() {
       surfaceTheme,
       deviceSettings,
       lifeProfile,
+      medications,
+      creativeActivities,
+      memories,
+      appSettings: {
+        phoneChargeLimitPct,
+        smartChargeAlertEnabled,
+        smartChargeKeepUntilUnplugged,
+        waterRemindersEnabled,
+        sunMode,
+      },
       uiPrefs: sanitizeUiPrefs({
         selectedLogoId,
         capsuleOrientation: capsulePrefs.orientation,
@@ -3915,9 +3991,7 @@ export default function App() {
       }),
     };
 
-    if (Date.now() < getCloudQuotaPausedUntil()) return;
-
-    const localFields = serializeRhythmFields(sanitizeRhythmPayload(payload));
+    const localFields = serializeRhythmFields(sanitizeRhythmPayload(payload as SyncedRhythmPayload));
     const serverFields = lastServerFieldsRef.current;
     const changedKeys: Array<keyof SyncedRhythmPayload> = [];
     for (const group of RHYTHM_FIELD_GROUPS) {
@@ -3927,14 +4001,18 @@ export default function App() {
     }
     if (changedKeys.length === 0) return;
 
-    localWriteLockUntilRef.current = Date.now() + 3500;
-    void saveUserRhythmState(firebaseUser.uid, payload, changedKeys)
-      .then(() => setFirestoreSynced(true))
-      .catch(() => setFirestoreSynced(false));
+    // Immediately push to Google Tasks Cloud Vault for sub-second cross-device sync
+    void pushToTasksVaultImmediately(payload);
+
+    if (firebaseUser?.uid && firestoreReady && Date.now() >= getCloudQuotaPausedUntil()) {
+      localWriteLockUntilRef.current = Date.now() + 3500;
+      void saveUserRhythmState(firebaseUser.uid, payload as SyncedRhythmPayload, changedKeys)
+        .then(() => setFirestoreSynced(true))
+        .catch(() => setFirestoreSynced(false));
+    }
   }, [
     activeTimeZone,
     firebaseUser?.uid,
-    firebaseUser?.emailVerified,
     firestoreReady,
     hydrationHistory,
     streaks,
@@ -3943,10 +4021,19 @@ export default function App() {
     surfaceTheme,
     deviceSettings,
     lifeProfile,
+    medications,
+    creativeActivities,
+    memories,
+    phoneChargeLimitPct,
+    smartChargeAlertEnabled,
+    smartChargeKeepUntilUnplugged,
+    waterRemindersEnabled,
+    sunMode,
     selectedLogoId,
     capsulePrefs.orientation,
     capsulePrefs.size,
     cloudPausedUntil,
+    pushToTasksVaultImmediately,
   ]);
 
   const syncUiPrefsCloud = useCallback(
@@ -3967,8 +4054,9 @@ export default function App() {
         localWriteLockUntilRef.current = Date.now() + 3500;
         void saveUserUiPrefs(firebaseUser.uid, clean).catch(() => {});
       }
+      void pushToTasksVaultImmediately({ uiPrefs: clean });
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, pushToTasksVaultImmediately]
   );
 
   const handleSaveCloudApiUrl = useCallback(
@@ -4062,9 +4150,13 @@ export default function App() {
 
   const handleUpdateDeviceSettings = useCallback(
     (patch: Partial<OnePlusDeviceSettings>) => {
-      setDeviceSettings((prev) => sanitizeDeviceSettings({ ...prev, ...patch }));
+      setDeviceSettings((prev) => {
+        const next = sanitizeDeviceSettings({ ...prev, ...patch });
+        void pushToTasksVaultImmediately({ deviceSettings: next });
+        return next;
+      });
     },
-    []
+    [pushToTasksVaultImmediately]
   );
 
   const handleUpdateLifeProfile = useCallback(
@@ -7067,7 +7159,11 @@ export default function App() {
         refillAlertDays: nextAlertDays,
       });
 
-      setMedications((prev) => prev.map((m) => (m.id === id ? updated : m)));
+      setMedications((prev) => {
+        const next = prev.map((m) => (m.id === id ? updated : m));
+        void pushToTasksVaultImmediately({ medications: next });
+        return next;
+      });
 
       if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertMedicationRecord(firebaseUser.uid, updated).catch(() => {});
@@ -7123,25 +7219,33 @@ export default function App() {
             ? Math.max(1, Math.min(14, Math.round(input.refillAlertDays)))
             : 3,
       });
-      setMedications((prev) => [...prev, med]);
+      setMedications((prev) => {
+        const next = [...prev, med];
+        void pushToTasksVaultImmediately({ medications: next });
+        return next;
+      });
       if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void upsertMedicationRecord(firebaseUser.uid, med).catch(() => {});
       }
       showToast(`💊 تمت إضافة «${med.name}» إلى قائمة العلاجات والمكملات`);
       return med;
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast, pushToTasksVaultImmediately]
   );
 
   const handleDeleteMedication = useCallback(
     (id: string) => {
-      setMedications((prev) => prev.filter((m) => m.id !== id));
+      setMedications((prev) => {
+        const next = prev.filter((m) => m.id !== id);
+        void pushToTasksVaultImmediately({ medications: next });
+        return next;
+      });
       if (firebaseUser?.uid && firebaseUser.emailVerified) {
         void deleteMedicationRecord(firebaseUser.uid, id).catch(() => {});
       }
       showToast('تم حذف العلاج من القائمة اليومية');
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast, pushToTasksVaultImmediately]
   );
 
   const handleExecuteMedicationActions = useCallback(
@@ -7321,12 +7425,13 @@ export default function App() {
             }
           }
         }
+        void pushToTasksVaultImmediately({ medications: next });
         return next;
       });
 
       return results;
     },
-    [activeTimeZone, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [activeTimeZone, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast, pushToTasksVaultImmediately]
   );
 
   const handleAddCreativeActivity = useCallback(

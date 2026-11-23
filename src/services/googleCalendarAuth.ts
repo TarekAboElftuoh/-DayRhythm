@@ -228,12 +228,19 @@ export function initCalendarAuth(
       });
   }
 
-  return onAuthStateChanged(auth, (user: User | null) => {
+  return onAuthStateChanged(auth, async (user: User | null) => {
     if (user && !user.isAnonymous) {
       // Keep Firebase Auth session permanently fresh in the background (works 100% offline too)
       void user.getIdToken(false).catch(() => {});
 
-      const restoredToken = cachedAccessToken || readStoredAccessToken(user.uid) || '';
+      let restoredToken = cachedAccessToken || readStoredAccessToken(user.uid) || '';
+      if (!restoredToken) {
+        try {
+          restoredToken = (await refreshGoogleCalendarTokenSilently()) || '';
+        } catch {
+          // ignore
+        }
+      }
       cachedAccessToken = restoredToken || null;
       // CRITICAL: Never sign the user out just because the 60-min Google Calendar OAuth token expired or device is offline!
       onAuthSuccess?.(user, restoredToken);
