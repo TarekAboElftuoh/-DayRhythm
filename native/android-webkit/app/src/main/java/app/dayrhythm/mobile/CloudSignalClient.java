@@ -244,7 +244,10 @@ public final class CloudSignalClient {
                         } catch (NumberFormatException ignored) {
                         }
                     }
-                    if ("alarm_dismiss".equals(scope) && !CLIENT_ID.equals(client) && ts >= firedAtMs - 2_000L) {
+                    long now = System.currentTimeMillis();
+                    // Tolerant clock-skew window (up to 3 minutes or 90s future/past) to account for phone/PC clock drift
+                    boolean isRecentDismiss = (ts >= firedAtMs - 90_000L && ts <= now + 90_000L) || Math.abs(ts - firedAtMs) <= 180_000L;
+                    if ("alarm_dismiss".equals(scope) && !CLIENT_ID.equals(client) && isRecentDismiss) {
                         stopWatching();
                         MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
                     }

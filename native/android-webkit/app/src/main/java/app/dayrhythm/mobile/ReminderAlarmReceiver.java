@@ -804,6 +804,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             }
         }
         prefs.edit().putString(KEY_ACTIVE_NOTIF_IDS, "").apply();
+        DayRhythmSyncService.advanceScheduleIfExpired(context);
     }
 
     private static void cancelNotification(Context context, int notifId) {

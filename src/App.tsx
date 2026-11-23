@@ -1482,7 +1482,8 @@ export default function App() {
         }
       }
 
-      if (firebaseUser?.uid && firebaseUser.emailVerified) {
+      const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
+      if (firebaseUser?.uid && (firebaseUser.emailVerified || isGoogle)) {
         void publishWorkspaceSyncSignal(firebaseUser.uid, {
           opId,
           clientId: clientIdRef.current,
@@ -1491,8 +1492,18 @@ export default function App() {
           timestampMs,
         });
       }
+
+      // Also persist to Google Tasks Cloud Sync Vault so devices without active Firestore stop immediately
+      void pushToTasksVaultRef.current({
+        lastDismissSignal: {
+          timestampMs,
+          scope,
+          action,
+          clientId: clientIdRef.current,
+        },
+      });
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, firebaseUser?.providerData, firestoreSynced]
   );
 
   const stopNativeAlerts = useCallback(() => {
@@ -3398,6 +3409,44 @@ export default function App() {
     creativeActivities?: CreativeActivityItem[];
     memories?: MemoryItem[];
   }) => {
+    // ── Instant Bidirectional Remote Alarm Dismissal (Phone ↔ PC) ──
+    const remoteDismiss =
+      (remote as { lastDismissSignal?: { timestampMs: number; scope: string; action: string; clientId: string } })
+        .lastDismissSignal || remote.syncSignal;
+    const remoteSenderId =
+      (remoteDismiss as { clientId?: string; originClientId?: string })?.clientId ||
+      (remoteDismiss as { originClientId?: string })?.originClientId;
+    if (remoteDismiss && remoteSenderId !== clientIdRef.current) {
+      const dismissTs = remoteDismiss.timestampMs || 0;
+      if (Date.now() - dismissTs < 180_000) {
+        if (
+          remoteDismiss.scope === 'alarm_dismiss' ||
+          remoteDismiss.action?.includes('dismiss') ||
+          remoteDismiss.action?.includes('done') ||
+          remoteDismiss.action?.includes('water')
+        ) {
+          stopContinuousAlert();
+          stopNativeAlerts();
+          setActiveAudioAlert(null);
+          setPersistentAlert(null);
+          setAlarmRinging(false);
+          try {
+            const bridge = (
+              window as Window & {
+                DayRhythmNative?: {
+                  dismissActiveAlerts?: () => void;
+                  stopNativeAlarmSound?: () => void;
+                };
+              }
+            ).DayRhythmNative;
+            bridge?.stopNativeAlarmSound?.();
+            bridge?.dismissActiveAlerts?.();
+          } catch {
+            // ignore bridge
+          }
+        }
+      }
+    }
     if (remote.appSettings) {
       const a = remote.appSettings;
       setPhoneChargeLimitPct(a.phoneChargeLimitPct);
@@ -6230,27 +6279,71 @@ export default function App() {
   }, []);
 
   const handleLogWaterCup = useCallback(() => {
+    stopContinuousAlert();
+    stopNativeAlerts();
+    setActiveAudioAlert(null);
+    setPersistentAlert(null);
+    setAlarmRinging(false);
+    emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
+
     updateTodayHydration((today) => {
       const nextIdx = today.slots.findIndex((filled) => !filled);
       if (nextIdx === -1) return today;
       const nextSlots = [...today.slots];
       nextSlots[nextIdx] = true;
       const nextLogged = nextSlots.filter(Boolean).length;
-      void pushToTasksVaultImmediately({ cupsLogged: nextLogged });
+      void pushToTasksVaultImmediately({
+        cupsLogged: nextLogged,
+        lastDismissSignal: {
+          timestampMs: Date.now(),
+          scope: 'alarm_dismiss',
+          action: 'water_confirmed',
+          clientId: clientIdRef.current,
+        },
+      });
       return {
         ...today,
         slots: nextSlots,
         cupsLogged: nextLogged,
       };
     });
-  }, [updateTodayHydration, pushToTasksVaultImmediately]);
+  }, [
+    updateTodayHydration,
+    pushToTasksVaultImmediately,
+    stopContinuousAlert,
+    stopNativeAlerts,
+    emitCrossDeviceSync,
+  ]);
 
   const handleToggleWaterSlot = (index: number) => {
     updateTodayHydration((today) => {
       const nextSlots = [...today.slots];
-      nextSlots[index] = !nextSlots[index];
+      const becomingActive = !nextSlots[index];
+      nextSlots[index] = becomingActive;
       const nextLogged = nextSlots.filter(Boolean).length;
-      void pushToTasksVaultImmediately({ cupsLogged: nextLogged });
+
+      if (becomingActive) {
+        stopContinuousAlert();
+        stopNativeAlerts();
+        setActiveAudioAlert(null);
+        setPersistentAlert(null);
+        setAlarmRinging(false);
+        emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
+      }
+
+      void pushToTasksVaultImmediately({
+        cupsLogged: nextLogged,
+        ...(becomingActive
+          ? {
+              lastDismissSignal: {
+                timestampMs: Date.now(),
+                scope: 'alarm_dismiss',
+                action: 'water_confirmed',
+                clientId: clientIdRef.current,
+              },
+            }
+          : {}),
+      });
       return {
         ...today,
         slots: nextSlots,

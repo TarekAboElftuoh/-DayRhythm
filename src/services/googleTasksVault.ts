@@ -15,6 +15,12 @@ export interface TasksVaultPayload extends Partial<SyncedRhythmPayload> {
   memories?: MemoryItem[];
   appSettings?: AppSyncSettings;
   uiPrefs?: UiPrefs;
+  lastDismissSignal?: {
+    timestampMs: number;
+    scope: string;
+    action: string;
+    clientId: string;
+  };
 }
 
 export const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
