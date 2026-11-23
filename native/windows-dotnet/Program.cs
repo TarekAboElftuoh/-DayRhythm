@@ -35,8 +35,10 @@ namespace DayRhythm
             {
                 if (!createdNew)
                 {
+                    try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "main_entry.log"), $"[{DateTime.UtcNow:O}] Mutex already exists, exiting.\n"); } catch {}
                     return;
                 }
+                try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "main_entry.log"), $"[{DateTime.UtcNow:O}] Starting application...\n"); } catch {}
 
                 Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
                 Application.EnableVisualStyles();
@@ -44,6 +46,7 @@ namespace DayRhythm
 
                 bool startHidden = args != null && args.Any(a => string.Equals(a, "--background", StringComparison.OrdinalIgnoreCase));
                 Application.Run(new MainForm(startHidden));
+                try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "main_entry.log"), $"[{DateTime.UtcNow:O}] Application.Run exited!\n"); } catch {}
             }
         }
     }

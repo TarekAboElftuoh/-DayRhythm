@@ -316,6 +316,7 @@ namespace DayRhythm
 
         private async Task OnFormLoadedAsync()
         {
+            try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "main_entry.log"), $"[{DateTime.UtcNow:O}] OnFormLoadedAsync started\n"); } catch {}
             ApplyDarkObsidianTitleBar(Handle);
 
             if (_startHidden)
@@ -466,9 +467,11 @@ namespace DayRhythm
                 _ = RefreshClockOffsetLoopAsync();
                 _webView.CoreWebView2.Navigate(VirtualAppUrl);
                 _bgServices.Start(_settings.RemoteWsUrl);
+                try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "main_entry.log"), $"[{DateTime.UtcNow:O}] OnFormLoadedAsync completed successfully\n"); } catch {}
             }
             catch (Exception ex)
             {
+                try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "main_entry.log"), $"[{DateTime.UtcNow:O}] OnFormLoadedAsync exception: {ex}\n"); } catch {}
                 MessageBox.Show(
                     "يلزم تثبيت Microsoft Edge WebView2 Runtime لتشغيل إيقاع اليوم.\n\n" + ex.Message,
                     "إيقاع اليوم | DayRhythm",
@@ -878,6 +881,7 @@ namespace DayRhythm
 
         private void OnMainFormClosing(object sender, FormClosingEventArgs e)
         {
+            try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "main_entry.log"), $"[{DateTime.UtcNow:O}] OnMainFormClosing called: reason={e.CloseReason}, isQuitting={_isQuitting}\n"); } catch {}
             if (!_isQuitting && e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
