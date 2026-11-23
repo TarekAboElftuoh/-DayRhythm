@@ -457,6 +457,23 @@ namespace DayRhythm
             return Path.Combine(AppConfig.GetDataDir(), "ota_www");
         }
 
+        public static bool HasNewerOtaVersion()
+        {
+            string baseVer = AppConfig.GetVersionString();
+            try
+            {
+                string verFile = GetOtaVersionFile();
+                string otaIndex = Path.Combine(GetOtaWwwDir(), "index.html");
+                if (File.Exists(verFile) && File.Exists(otaIndex))
+                {
+                    string otaVer = File.ReadAllText(verFile).Trim().TrimStart('v', 'V');
+                    return !string.IsNullOrEmpty(otaVer) && IsVersionNewer(otaVer, baseVer);
+                }
+            }
+            catch { }
+            return false;
+        }
+
         /// <summary>
         /// Cleans stale versioned OTA folders safely on startup before WebView2 opens any handles.
         /// </summary>
@@ -465,6 +482,22 @@ namespace DayRhythm
             try
             {
                 string root = GetOtaReleasesRoot();
+                if (!HasNewerOtaVersion())
+                {
+                    if (Directory.Exists(root))
+                    {
+                        foreach (string sub in Directory.GetDirectories(root))
+                        {
+                            try { Directory.Delete(sub, true); } catch { }
+                        }
+                    }
+                    string ptrFile = GetActiveReleasePointerFile();
+                    if (File.Exists(ptrFile)) try { File.Delete(ptrFile); } catch { }
+                    string verFile = GetOtaVersionFile();
+                    if (File.Exists(verFile)) try { File.Delete(verFile); } catch { }
+                    return;
+                }
+
                 if (!Directory.Exists(root)) return;
                 string activeDir = Path.GetFullPath(GetOtaWwwDir());
                 foreach (string sub in Directory.GetDirectories(root))

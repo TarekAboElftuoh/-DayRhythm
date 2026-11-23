@@ -3600,12 +3600,17 @@ export default function App() {
             }
           }
 
+          const slots =
+            isToday && prevToday && prevToday.dateKey === todayIso && prevToday.cupsLogged >= c && prevToday.slots.length === t
+              ? prevToday.slots
+              : Array.from({ length: t }, (_, sIdx) => sIdx < c);
+
           return {
             dateKey: isToday ? todayIso : `day-${idx}`,
             labelAr,
             cupsLogged: Math.min(t, c),
             targetCups: t,
-            slots: Array.from({ length: t }, (_, sIdx) => sIdx < c),
+            slots,
           };
         });
       });
@@ -6132,9 +6137,11 @@ export default function App() {
         const nextWeekly = next.map((d) => d.cupsLogged);
 
         try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
           localStorage.setItem(
             STORAGE_KEY,
-            JSON.stringify({ hydrationHistory: next, deviceSettings, lifeProfile })
+            JSON.stringify({ ...parsed, hydrationHistory: next, deviceSettings, lifeProfile })
           );
         } catch {
           // ignore storage quota

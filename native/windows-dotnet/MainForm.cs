@@ -134,10 +134,13 @@ namespace DayRhythm
         private static string ResolveWwwDirectory()
         {
             BackgroundServices.CleanupOldOtaReleases();
-            string otaWww = BackgroundServices.GetOtaWwwDir();
-            if (File.Exists(Path.Combine(otaWww, "index.html")))
+            if (BackgroundServices.HasNewerOtaVersion())
             {
-                return otaWww;
+                string otaWww = BackgroundServices.GetOtaWwwDir();
+                if (File.Exists(Path.Combine(otaWww, "index.html")))
+                {
+                    return otaWww;
+                }
             }
             string baseWww = Path.Combine(AppContext.BaseDirectory, "www");
             if (File.Exists(Path.Combine(baseWww, "index.html")))
