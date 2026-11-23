@@ -351,9 +351,10 @@ export async function cleanupExpiredActiveAlarms(uid: string): Promise<void> {
 }
 
 /**
- * Real-time listener for the user root document (users/{uid}).
- * Catches cross-device syncSignal (including background Android dismissals)
- * and real-time settings/rhythm updates live across devices.
+ * Real-time listener for the user root document (users/{uid})
+ * and the profile document (users/{uid}/settings/profile).
+ * Merges updates from both documents in real time so changes from any client
+ * or subcollection are immediately received without requiring a manual refresh.
  */
 export function subscribeToUserDocument(
   uid: string,
@@ -361,13 +362,27 @@ export function subscribeToUserDocument(
   onError?: (err: Error) => void
 ): Unsubscribe {
   if (!uid) return () => {};
+
   const userDocRef = doc(db, 'users', uid);
-  return onSnapshot(
+  const profileRef = doc(db, 'users', uid, 'settings', 'profile');
+
+  let cachedUserDoc: UserSettingsPayload = {};
+  let cachedProfile: UserSettingsPayload = {};
+
+  const handleMergeAndNotify = () => {
+    onUpdate({
+      ...cachedUserDoc,
+      ...cachedProfile,
+      originClientId: cachedProfile.originClientId || cachedUserDoc.originClientId,
+    });
+  };
+
+  const unsubUser = onSnapshot(
     userDocRef,
     (snapshot) => {
       if (snapshot.exists()) {
-        const data = snapshot.data() as UserSettingsPayload;
-        onUpdate(data);
+        cachedUserDoc = snapshot.data() as UserSettingsPayload;
+        handleMergeAndNotify();
       }
     },
     (err) => {
@@ -375,6 +390,25 @@ export function subscribeToUserDocument(
       onError?.(err);
     }
   );
+
+  const unsubProfile = onSnapshot(
+    profileRef,
+    (snapshot) => {
+      if (snapshot.exists()) {
+        cachedProfile = snapshot.data() as UserSettingsPayload;
+        handleMergeAndNotify();
+      }
+    },
+    (err) => {
+      console.warn('[CloudSync] ProfileDoc onSnapshot error:', err);
+      onError?.(err);
+    }
+  );
+
+  return () => {
+    unsubUser();
+    unsubProfile();
+  };
 }
 
 /**

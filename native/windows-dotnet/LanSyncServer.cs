@@ -59,8 +59,9 @@ namespace DayRhythm
                         _ = Task.Run(() => HandleClientAsync(client, ct), ct);
                     }
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "crash.log"), $"[{DateTime.UtcNow:O}] StartTcpServer error: {ex}\n"); } catch {}
                 }
             }, ct);
         }
@@ -327,8 +328,9 @@ namespace DayRhythm
                         }
                     }
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
+                    try { File.AppendAllText(Path.Combine(AppConfig.GetDataDir(), "crash.log"), $"[{DateTime.UtcNow:O}] StartTcpServer error: {ex}\n"); } catch {}
                 }
             }, ct);
         }
