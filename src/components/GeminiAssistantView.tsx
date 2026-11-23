@@ -1963,7 +1963,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               <span aria-hidden="true">·</span>
               <span>النوم {Math.round(lifeProfile.sleepTargetMinutes / 60)} س</span>
               <span aria-hidden="true">·</span>
-              <span>{firestoreSynced ? 'متزامن مع Firestore' : 'محفوظ محلياً'}</span>
+              <span>{firestoreSynced ? 'متزامن سحابياً مع الحساب' : 'محفوظ محلياً'}</span>
             </div>
             {lifeProfile.priorityOrderAr && (
               <p className="text-[11px] text-zinc-300 leading-relaxed line-clamp-2">

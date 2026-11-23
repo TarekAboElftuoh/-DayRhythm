@@ -28,6 +28,7 @@ export const OFFLINE_ACCESS_SCOPES = [
   'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
   'https://www.googleapis.com/auth/tasks',
   'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/drive.appdata',
 ];
 
 interface StoredRefresh {

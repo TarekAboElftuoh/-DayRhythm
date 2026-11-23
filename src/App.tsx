@@ -87,6 +87,11 @@ import {
   syncSavedCloudApiUrlFromRemote,
 } from './services/apiClient';
 import {
+  FullDayRhythmCloudBackup,
+  loadFromGoogleDriveAppData,
+  saveToGoogleDriveAppData,
+} from './services/googleDriveStorage';
+import {
   DEFAULT_CREATIVE_ACTIVITIES,
   DEFAULT_DEVICE_SETTINGS,
   DEFAULT_MEDICATIONS,
@@ -798,6 +803,9 @@ export default function App() {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [firestoreReady, setFirestoreReady] = useState(false);
   const [firestoreSynced, setFirestoreSynced] = useState(false);
+  const [googleDriveSynced, setGoogleDriveSynced] = useState(false);
+  const hasHydratedGoogleDriveRef = useRef(false);
+  const isSavingGoogleDriveRef = useRef(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const [deviceSettings, setDeviceSettings] = useState<OnePlusDeviceSettings>(() => {
@@ -2678,6 +2686,32 @@ export default function App() {
         if (token && navigator.onLine !== false) {
           void refreshWorkspace(token, { forceGmail: true });
         }
+        if (token) {
+          void loadFromGoogleDriveAppData(token)
+            .then((backup) => {
+              if (backup) {
+                if (backup.lifeProfile) setLifeProfile(backup.lifeProfile);
+                if (Array.isArray(backup.medications)) setMedications(backup.medications);
+                if (backup.hydrationHistory) setHydrationHistory(backup.hydrationHistory);
+                if (Array.isArray(backup.creativeActivities)) setCreativeActivities(backup.creativeActivities);
+                if (Array.isArray(backup.memories)) setMemories(backup.memories);
+                if (backup.deviceSettings) setDeviceSettings(backup.deviceSettings);
+                if (backup.capsulePrefs) setCapsulePrefs(backup.capsulePrefs);
+                if (backup.selectedLogoId) setSelectedLogoId(backup.selectedLogoId);
+                if (backup.quietMode) setQuietMode(backup.quietMode);
+                if (typeof backup.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(backup.adhanOverrideSilent);
+                if (Array.isArray(backup.chatMessages) && backup.chatMessages.length > 0) {
+                  setChatMessages(backup.chatMessages);
+                }
+                setGoogleDriveSynced(true);
+                showToast('✓ تمت استعادة إعدادات ودستور حساب Google بالكامل');
+              }
+              hasHydratedGoogleDriveRef.current = true;
+            })
+            .catch(() => {
+              hasHydratedGoogleDriveRef.current = true;
+            });
+        }
       },
       () => {
         setAuthUser(null);
@@ -3275,20 +3309,21 @@ export default function App() {
           ...DEFAULT_LIFE_PROFILE,
           currentTimeZone: browserTz,
         });
+        const todayHydration = hydrationHistory[hydrationHistory.length - 1];
         void saveUserRhythmState(uid, {
           hydrationDateKey: getDateIsoInTimeZone(browserTz),
-          cupsLogged: 0,
-          targetCups: 10,
-          hydrationWeeklyCounts: [0, 0, 0, 0, 0, 0, 0],
-          dailyCommitmentDays: 0,
-          dailyCommitmentDoneToday: false,
-          waterTargetDays: 0,
-          waterTargetDoneToday: false,
-          quietMode: 'normal',
-          adhanOverrideSilent: true,
+          cupsLogged: todayHydration?.cupsLogged ?? 0,
+          targetCups: todayHydration?.targetCups ?? 10,
+          hydrationWeeklyCounts: hydrationHistory.map((d) => d.cupsLogged) ?? [0, 0, 0, 0, 0, 0, 0],
+          dailyCommitmentDays: streaks.dailyCommitmentDays ?? 0,
+          dailyCommitmentDoneToday: streaks.dailyCommitmentDoneToday ?? false,
+          waterTargetDays: streaks.waterTargetDays ?? 0,
+          waterTargetDoneToday: streaks.waterTargetDoneToday ?? false,
+          quietMode: quietMode ?? 'normal',
+          adhanOverrideSilent: adhanOverrideSilent ?? true,
           surfaceTheme: 'amoled',
-          deviceSettings: DEFAULT_DEVICE_SETTINGS,
-          lifeProfile: cleanProfile,
+          deviceSettings: deviceSettings ?? DEFAULT_DEVICE_SETTINGS,
+          lifeProfile: lifeProfile ?? cleanProfile,
           uiPrefs: sanitizeUiPrefs({
             selectedLogoId,
             capsuleOrientation: capsulePrefs.orientation,
@@ -3537,6 +3572,64 @@ export default function App() {
 
     return () => window.clearTimeout(timerId);
   }, [chatMessages, firebaseUser?.uid, firebaseUser?.emailVerified, firestoreReady]);
+
+  // Continuous Auto-Save to Google Drive appDataFolder (Single Account Source of Truth)
+  useEffect(() => {
+    if (!hasHydratedGoogleDriveRef.current) return;
+    const token = getCalendarAccessToken();
+    if (!token) return;
+
+    const timer = window.setTimeout(() => {
+      const backup: FullDayRhythmCloudBackup = {
+        version: 1,
+        updatedAtIso: new Date().toISOString(),
+        updatedAtMs: Date.now(),
+        lifeProfile,
+        medications,
+        hydrationHistory,
+        creativeActivities,
+        memories,
+        deviceSettings,
+        quietMode,
+        adhanOverrideSilent,
+        waterRemindersEnabled,
+        phoneChargeLimitPct,
+        smartChargeAlertEnabled,
+        smartChargeKeepUntilUnplugged,
+        capsulePrefs,
+        selectedLogoId,
+        chatMessages: chatMessages.slice(-50),
+      };
+
+      if (isSavingGoogleDriveRef.current) return;
+      isSavingGoogleDriveRef.current = true;
+      void saveToGoogleDriveAppData(token, backup)
+        .then((ok) => {
+          if (ok) setGoogleDriveSynced(true);
+        })
+        .finally(() => {
+          isSavingGoogleDriveRef.current = false;
+        });
+    }, 2500);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    lifeProfile,
+    medications,
+    hydrationHistory,
+    creativeActivities,
+    memories,
+    deviceSettings,
+    quietMode,
+    adhanOverrideSilent,
+    waterRemindersEnabled,
+    phoneChargeLimitPct,
+    smartChargeAlertEnabled,
+    smartChargeKeepUntilUnplugged,
+    capsulePrefs,
+    selectedLogoId,
+    chatMessages,
+  ]);
 
   // Persist local cache & push changes IMMEDIATELY to Firebase Firestore across devices (zero debounce lag)
   useEffect(() => {
@@ -8422,7 +8515,7 @@ ${lifeConstitution}
             onToggleSmartChargeAlertEnabled={handleToggleSmartChargeAlertEnabled}
             smartChargeAudioActive={smartChargeAudioActive}
             onTestSmartChargeAlert={handleTestSmartChargeAlert}
-            firestoreSynced={firestoreSynced}
+            firestoreSynced={firestoreSynced || googleDriveSynced}
             aquaTouchMode={deviceSettings.aquaTouchMode}
             alertSliderLinked={deviceSettings.alertSliderLinked}
             lifeProfile={lifeProfile}
@@ -8516,7 +8609,7 @@ ${lifeConstitution}
             onDismissTwoWay={handleDismissTwoWay}
             deviceSettings={deviceSettings}
             onUpdateDeviceSettings={handleUpdateDeviceSettings}
-            firestoreSynced={firestoreSynced}
+            firestoreSynced={firestoreSynced || googleDriveSynced}
           />
         )}
 
@@ -8538,7 +8631,7 @@ ${lifeConstitution}
             capsulePrefs={capsulePrefs}
             onChangeCapsulePrefs={handleUpdateCapsulePrefs}
             activeLocation={activeLocation}
-            firestoreSynced={firestoreSynced}
+            firestoreSynced={firestoreSynced || googleDriveSynced}
           />
         )}
 
@@ -8579,7 +8672,7 @@ ${lifeConstitution}
             memoryCount={memories.length}
             memories={memories}
             lifeProfile={lifeProfile}
-            firestoreSynced={firestoreSynced}
+            firestoreSynced={firestoreSynced || googleDriveSynced}
             onAddMemory={handleAddMemory}
             onUpdateMemory={handleUpdateMemory}
             onDeleteMemory={handleDeleteMemory}

@@ -1149,8 +1149,7 @@ export async function saveUserRhythmState(
   if (
     !auth.currentUser ||
     auth.currentUser.uid !== uid ||
-    auth.currentUser.isAnonymous ||
-    !auth.currentUser.emailVerified
+    auth.currentUser.isAnonymous
   ) {
     return;
   }
