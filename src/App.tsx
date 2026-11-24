@@ -3940,17 +3940,15 @@ export default function App() {
 
         // B) Real-time settings & rhythm live sync from other devices
         const remoteOrigin = remote.originClientId || (remote as any).clientId;
-        if (remoteOrigin === clientIdRef.current) {
+        if (remoteOrigin && remoteOrigin === clientIdRef.current) {
           // Never re-apply our own writes!
           return;
         }
-        if (remoteOrigin && remoteOrigin !== clientIdRef.current) {
-          applyOrDefer(remote as SyncedRhythmPayload & {
-            medications?: MedicationItem[];
-            creativeActivities?: CreativeActivityItem[];
-            memories?: MemoryItem[];
-          });
-        }
+        applyOrDefer(remote as SyncedRhythmPayload & {
+          medications?: MedicationItem[];
+          creativeActivities?: CreativeActivityItem[];
+          memories?: MemoryItem[];
+        });
       },
       (err) => {
         console.warn('[CloudSync] subscribeToUserDocument error:', err);
