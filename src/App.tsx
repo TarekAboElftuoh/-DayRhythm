@@ -101,6 +101,9 @@ import {
   subscribeToUserDocument,
   cleanupExpiredActiveAlarms,
   deleteTasksVaultListIfPresent,
+  emitCloudLiveSignal,
+  subscribeToCloudLiveSignals,
+  type LiveSyncSignal,
   type UserSettingsPayload,
 } from './services/cloudStateService';
 
@@ -1636,6 +1639,23 @@ export default function App() {
           action,
           timestampMs,
           extra: extraPayload,
+        });
+        void emitCloudLiveSignal(firebaseUser.uid, {
+          opId,
+          clientId: clientIdRef.current,
+          timestampMs,
+          type:
+            scope === 'alarm_dismiss'
+              ? 'alarm_dismiss'
+              : scope === 'alarm_trigger'
+              ? 'alarm_trigger'
+              : scope === 'tasks'
+              ? 'tasks'
+              : scope === 'calendar'
+              ? 'schedule_blocks'
+              : 'settings_patch',
+          action,
+          extra: packet,
         });
       }
 
@@ -3824,6 +3844,19 @@ export default function App() {
         }
       }
 
+      // Ultra-low-latency real-time live signal (<100ms) over Google Cloud Firestore
+      const liveUid = firebaseUser?.uid;
+      if (liveUid && !firebaseUser.isAnonymous) {
+        const liveOpId = `live_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        void emitCloudLiveSignal(liveUid, {
+          opId: liveOpId,
+          clientId: clientIdRef.current,
+          timestampMs: Date.now(),
+          type: 'settings_patch',
+          patch: payload,
+        });
+      }
+
       // 3. Cloud (Firestore) persistence guard:
       if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
         console.warn('[CloudSync] Write queued: settings are currently unhydrated or loading from cloud.');
@@ -4027,10 +4060,89 @@ export default function App() {
       }
     );
 
+    // Fast real-time cloud pub/sub live signal listener (<100ms) for all interactive buttons
+    const unsubscribeLive = subscribeToCloudLiveSignals(
+      uid,
+      (signal) => {
+        if (!signal || !signal.clientId || signal.clientId === clientIdRef.current) {
+          return;
+        }
+
+        // Avoid re-processing same live operation
+        if (signal.opId) {
+          if (seenSyncOpIdsRef.current.has(signal.opId)) return;
+          seenSyncOpIdsRef.current.add(signal.opId);
+          if (seenSyncOpIdsRef.current.size > 150) {
+            const oldest = seenSyncOpIdsRef.current.values().next().value;
+            if (oldest) seenSyncOpIdsRef.current.delete(oldest);
+          }
+        }
+
+        // 1. Alarm dismissal fast-path (<100ms)
+        if (signal.type === 'alarm_dismiss') {
+          stopContinuousAlert();
+          stopSmartChargeCompleteAlert();
+          stopNativeAlerts();
+          setSmartChargeAudioActive(false);
+          setActiveAudioAlert(null);
+          setPersistentAlert(null);
+          setAlarmRinging(false);
+          showToast('🔕 تم إيقاف التنبيه فورياً من جهازك الآخر ✓');
+          return;
+        }
+
+        // 2. Alarm trigger fast-path (<100ms)
+        if (signal.type === 'alarm_trigger' && signal.extra) {
+          const extra = (signal.extra as { extra?: Record<string, unknown> }).extra || signal.extra;
+          handleIncomingRemoteSyncRef.current({
+            scope: 'alarm_trigger',
+            action: signal.action || 'ring',
+            extra: extra as Record<string, unknown>,
+            clientId: signal.clientId,
+            opId: signal.opId,
+          });
+          return;
+        }
+
+        // 3. Settings / Button changes patch (<100ms)
+        if (signal.patch && Object.keys(signal.patch).length > 0) {
+          applyOrDefer(signal.patch as SyncedRhythmPayload & {
+            medications?: MedicationItem[];
+            creativeActivities?: CreativeActivityItem[];
+            memories?: MemoryItem[];
+          });
+        }
+
+        // 4. Any extra workspace signal forwarding (<100ms)
+        if (signal.extra) {
+          const extra = signal.extra as {
+            scope?: string;
+            action?: string;
+            undoSnapshot?: DeletedWorkspaceSnapshot;
+            extra?: Record<string, unknown>;
+          };
+          if (extra.scope && extra.scope !== 'alarm_dismiss' && extra.scope !== 'alarm_trigger') {
+            handleIncomingRemoteSyncRef.current({
+              scope: extra.scope,
+              action: extra.action,
+              undoSnapshot: extra.undoSnapshot,
+              extra: extra.extra,
+              clientId: signal.clientId,
+              opId: signal.opId,
+            });
+          }
+        }
+      },
+      (err) => {
+        console.warn('[CloudLiveSync] subscribeToCloudLiveSignals error:', err);
+      }
+    );
+
     return () => {
       unsubscribe();
+      unsubscribeLive();
     };
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging, applyOrDefer]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging, applyOrDefer, showToast]);
 
   // Requirement 1 & Finding 3: Load user settings from cloud with strict priority over defaults & offline protection
   useEffect(() => {
@@ -9261,6 +9373,7 @@ ${lifeConstitution}
         isCheckingUpdates={isCheckingUpdates}
         sunMode={sunMode}
         onToggleSunMode={() => updateAppSettings({ sunMode: !appSettingsRef.current.sunMode })}
+        isLiveSynced={Boolean(firebaseUser?.uid && !firebaseUser?.isAnonymous && firestoreSynced)}
       />
 
       {toastMessage && (

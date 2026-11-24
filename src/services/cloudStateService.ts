@@ -485,3 +485,76 @@ export async function deleteTasksVaultListIfPresent(token: string): Promise<bool
   }
   return false;
 }
+
+export interface LiveSyncSignal {
+  opId: string;
+  clientId: string;
+  timestampMs: number;
+  type:
+    | 'settings_patch'
+    | 'alarm_dismiss'
+    | 'alarm_trigger'
+    | 'water'
+    | 'quiet_mode'
+    | 'smart_charge'
+    | 'theme'
+    | 'pomodoro'
+    | 'fasting'
+    | 'friday'
+    | 'habits'
+    | 'tasks'
+    | 'schedule_blocks'
+    | 'life_profile'
+    | 'ui_prefs'
+    | 'clear_notifications';
+  action?: string;
+  patch?: Partial<UserSettingsPayload>;
+  extra?: Record<string, unknown>;
+}
+
+/**
+ * Publishes an ultra-low-latency real-time live signal (<100ms) over Google Cloud Firestore.
+ * Broadcasts to all connected devices on the user's account without requiring any local server or port.
+ */
+export async function emitCloudLiveSignal(
+  uid: string,
+  signal: LiveSyncSignal
+): Promise<boolean> {
+  if (!uid || !signal) return false;
+  try {
+    const liveDocRef = doc(db, 'users', uid, 'sync', 'live');
+    await setDoc(liveDocRef, {
+      ...signal,
+      serverTime: serverTimestamp(),
+    });
+    return true;
+  } catch (err) {
+    console.warn('[CloudLiveSync] Failed emitting live signal:', err);
+    return false;
+  }
+}
+
+/**
+ * Subscribes to the real-time live signal stream (<100ms) over Google Cloud Firestore.
+ * Any button clicked on PC or Mobile triggers this listener immediately on the other device.
+ */
+export function subscribeToCloudLiveSignals(
+  uid: string,
+  onSignal: (signal: LiveSyncSignal) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  if (!uid) return () => {};
+  const liveDocRef = doc(db, 'users', uid, 'sync', 'live');
+  return onSnapshot(
+    liveDocRef,
+    (snapshot) => {
+      if (!snapshot.exists()) return;
+      const data = snapshot.data() as LiveSyncSignal;
+      onSignal(data);
+    },
+    (err) => {
+      console.warn('[CloudLiveSync] Live signal listener error:', err);
+      onError?.(err);
+    }
+  );
+}

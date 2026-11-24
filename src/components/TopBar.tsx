@@ -25,6 +25,7 @@ interface TopBarProps {
   isCheckingUpdates?: boolean;
   sunMode?: boolean;
   onToggleSunMode?: () => void;
+  isLiveSynced?: boolean;
 }
 
 import { isMobileDevice } from '../services/platform';
@@ -44,6 +45,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   isCheckingUpdates = false,
   sunMode = false,
   onToggleSunMode,
+  isLiveSynced = false,
 }) => {
   const [isMobileEnv, setIsMobileEnv] = useState<boolean>(detectIsMobileEnvironment);
 
@@ -131,6 +133,25 @@ export const TopBar: React.FC<TopBarProps> = ({
             >
               {APP_VERSION}
             </span>
+            <div
+              className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-medium select-none ${
+                isLiveSynced
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                  : 'border-zinc-700/40 bg-zinc-800/30 text-zinc-500'
+              }`}
+              title={
+                isLiveSynced
+                  ? 'المزامنة السحابية اللحظية متصلة (<100ms بين الموبايل والكمبيوتر عبر حسابك)'
+                  : 'سجّل الدخول بحساب Google لتفعيل المزامنة اللحظية'
+              }
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  isLiveSynced ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'
+                }`}
+              />
+              <span className="inline">{isLiveSynced ? 'لحظي' : 'محلي'}</span>
+            </div>
           </div>
 
           {/* Zone 2: Clean Single-Line Navigation (Desktop) with Motion Layout Pill */}

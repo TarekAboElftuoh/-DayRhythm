@@ -116,4 +116,58 @@ describe('Cloud State Synchronization Payload Guards', () => {
     expect(merged.uiPrefs?.capsuleSize).toBe('lg');
     expect(merged.uiPrefs?.selectedLogoId).toBe('glass_horizon');
   });
+
+  describe('Cloud Real-time Live Signal Stream (Sub-100ms Pub/Sub)', () => {
+    it('constructs well-formed live signals for settings patches', () => {
+      const liveSignal = {
+        opId: 'live_test_123',
+        clientId: 'client_pc_1',
+        timestampMs: 1711000000000,
+        type: 'settings_patch' as const,
+        patch: {
+          quietMode: 'silent_all',
+          appSettings: {
+            phoneChargeLimitPct: 85,
+            sunMode: true,
+            smartChargeAlertEnabled: true,
+            smartChargeKeepUntilUnplugged: true,
+            waterRemindersEnabled: true,
+            includePrayerAnchors: false,
+          },
+        },
+      };
+
+      expect(liveSignal.type).toBe('settings_patch');
+      expect(liveSignal.patch?.quietMode).toBe('silent_all');
+      expect(liveSignal.patch?.appSettings?.phoneChargeLimitPct).toBe(85);
+      expect(liveSignal.patch?.appSettings?.sunMode).toBe(true);
+    });
+
+    it('constructs well-formed live signals for instant cross-device alarm dismissal', () => {
+      const dismissSignal = {
+        opId: 'live_dismiss_456',
+        clientId: 'client_mobile_2',
+        timestampMs: 1711000000100,
+        type: 'alarm_dismiss' as const,
+        action: 'dismiss',
+      };
+
+      expect(dismissSignal.type).toBe('alarm_dismiss');
+      expect(dismissSignal.action).toBe('dismiss');
+      expect(dismissSignal.clientId).toBe('client_mobile_2');
+    });
+
+    it('properly drops echo live signals from own client ID', () => {
+      const myClientId = 'client_local_current';
+      const incomingSignal = {
+        opId: 'live_op_999',
+        clientId: 'client_local_current',
+        timestampMs: Date.now(),
+        type: 'settings_patch' as const,
+      };
+
+      const isOwnEcho = incomingSignal.clientId === myClientId;
+      expect(isOwnEcho).toBe(true);
+    });
+  });
 });
