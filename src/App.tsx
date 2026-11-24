@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import type { User } from 'firebase/auth';
 import {
@@ -194,24 +194,25 @@ import { fetchOpenMeteoWeather, loadCachedWeather } from './engines/weatherEngin
 import { triggerHapticWaveform } from './engines/hapticsEngine';
 import { TopBar } from './components/TopBar';
 import { DashboardView } from './components/DashboardView';
-import { MobilePreviewView } from './components/MobilePreviewView';
 import {
   DEFAULT_LOGO_ID,
-  LogoPickerModal,
   SELECTED_LOGO_STORAGE_KEY,
   getLogoConceptById,
 } from './components/LogoPickerModal';
-import { OverlaySimulatorView } from './components/OverlaySimulatorView';
-import { GeminiAssistantView } from './components/GeminiAssistantView';
-import { TravelModeModal } from './components/TravelModeModal';
-import { SmartCatchUpModal } from './components/SmartCatchUpModal';
-import { PomodoroModal } from './components/PomodoroModal';
-import {
-  FloatingPiPCapsule,
+import type {
   CapsulePrefs,
   CapsuleTrackInfo,
 } from './components/FloatingPiPCapsule';
-import { LifeProfileModal } from './components/LifeProfileModal';
+import { isAndroidNativeApp, isWindowsNative } from './services/platform';
+const MobilePreviewView = lazy(() => import('./components/MobilePreviewView').then((m) => ({ default: m.MobilePreviewView })));
+const OverlaySimulatorView = lazy(() => import('./components/OverlaySimulatorView').then((m) => ({ default: m.OverlaySimulatorView })));
+const GeminiAssistantView = lazy(() => import('./components/GeminiAssistantView').then((m) => ({ default: m.GeminiAssistantView })));
+const TravelModeModal = lazy(() => import('./components/TravelModeModal').then((m) => ({ default: m.TravelModeModal })));
+const SmartCatchUpModal = lazy(() => import('./components/SmartCatchUpModal').then((m) => ({ default: m.SmartCatchUpModal })));
+const PomodoroModal = lazy(() => import('./components/PomodoroModal').then((m) => ({ default: m.PomodoroModal })));
+const LifeProfileModal = lazy(() => import('./components/LifeProfileModal').then((m) => ({ default: m.LifeProfileModal })));
+const LogoPickerModal = lazy(() => import('./components/LogoPickerModal').then((m) => ({ default: m.LogoPickerModal })));
+const FloatingPiPCapsule = lazy(() => import('./components/FloatingPiPCapsule').then((m) => ({ default: m.FloatingPiPCapsule })));
 import { trueNowMs } from './engines/trueClock';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import {
@@ -762,6 +763,10 @@ function extractEmojiPair(summary: string, fallback = '📅'): string {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  const hasOpenedAssistantRef = useRef(false);
+  if (activeTab === 'assistant') {
+    hasOpenedAssistantRef.current = true;
+  }
   useEffect(() => {
     const isMobilePlatform =
       /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
@@ -9563,7 +9568,7 @@ ${lifeConstitution}
         )}
 
         {activeTab === 'mobile' && (
-          <MobilePreviewView
+          <Suspense fallback={null}><MobilePreviewView
             language={language}
             activeTimeZone={activeTimeZone}
             activeLocation={activeLocation}
@@ -9602,11 +9607,11 @@ ${lifeConstitution}
             deviceSettings={deviceSettings}
             onUpdateDeviceSettings={handleUpdateDeviceSettings}
             firestoreSynced={firestoreSynced || googleDriveSynced}
-          />
+          /></Suspense>
         )}
 
         {activeTab === 'overlay' && (
-          <OverlaySimulatorView
+          <Suspense fallback={null}><OverlaySimulatorView
             blocks={liveBlocks}
             batteryGuard={batteryGuard}
             quietMode={quietMode}
@@ -9624,12 +9629,11 @@ ${lifeConstitution}
             onChangeCapsulePrefs={handleUpdateCapsulePrefs}
             activeLocation={activeLocation}
             firestoreSynced={firestoreSynced || googleDriveSynced}
-          />
+          /></Suspense>
         )}
 
-        {/* Keep GeminiAssistantView persistently mounted so switching to Dashboard NEVER cancels in-flight chat/search/maps queries or wipes drafts */}
-        <div className={activeTab === 'assistant' ? '' : 'hidden'}>
-          <GeminiAssistantView
+        {/* Lazy-load GeminiAssistantView on first visit, then keep persistently mounted */}
+        {hasOpenedAssistantRef.current && (<div className={activeTab === 'assistant' ? '' : 'hidden'}><Suspense fallback={null}><GeminiAssistantView
             isActive={activeTab === 'assistant'}
             language={language}
             activeLocation={activeLocation}
@@ -9669,11 +9673,10 @@ ${lifeConstitution}
             onUpdateMemory={handleUpdateMemory}
             onDeleteMemory={handleDeleteMemory}
             onSaveCloudApiUrl={handleSaveCloudApiUrl}
-          />
-        </div>
+          /></Suspense></div>)}
       </main>
 
-      <FloatingPiPCapsule
+      {!isAndroidNativeApp() && !isWindowsNative() && (<Suspense fallback={null}><FloatingPiPCapsule
         nextEmoji={capsuleTimerState.emoji}
         nextTitle={capsuleTimerState.title}
         statusLabel={capsuleTimerState.statusLabel}
@@ -9694,7 +9697,7 @@ ${lifeConstitution}
         nextMedicationQuick={nextMedicationQuick}
         onQuickTakeMedication={handleToggleMedication}
         onOpenDashboard={() => handleSelectTab('dashboard')}
-      />
+      /></Suspense>)}
 
       <PersistentAlertOverlay
         alert={
@@ -9743,7 +9746,7 @@ ${lifeConstitution}
 
       <OfflineIndicator language={language} />
 
-      <LifeProfileModal
+      {isLifeProfileModalOpen && (<Suspense fallback={null}><LifeProfileModal
         isOpen={isLifeProfileModalOpen}
         onClose={() => setIsLifeProfileModalOpen(false)}
         profile={lifeProfile}
@@ -9792,27 +9795,27 @@ ${lifeConstitution}
         isSyncingGoogleDrive={isSyncingGoogleDrive}
         onExportBackupJson={handleExportBackupJson}
         onImportBackupJson={handleImportBackupJson}
-      />
+      /></Suspense>)}
 
-      <TravelModeModal
+      {isTravelModalOpen && (<Suspense fallback={null}><TravelModeModal
         isOpen={isTravelModalOpen}
         onClose={() => setIsTravelModalOpen(false)}
         travelState={travelState}
         scheduleBlocks={liveBlocks}
         onApplyTravel={handleApplyTravel}
         onDisableTravel={handleDisableTravel}
-      />
+      /></Suspense>)}
 
-      <SmartCatchUpModal
+      {isCatchUpModalOpen && (<Suspense fallback={null}><SmartCatchUpModal
         isOpen={isCatchUpModalOpen}
         onClose={() => setIsCatchUpModalOpen(false)}
         blocks={liveBlocks}
         hasUndoSnapshot={!!undoSnapshot}
         onCommitReflow={handleCommitReflow}
         onUndoToOriginal={handleUndoReflow}
-      />
+      /></Suspense>)}
 
-      <PomodoroModal
+      {isPomodoroModalOpen && (<Suspense fallback={null}><PomodoroModal
         isOpen={isPomodoroModalOpen}
         onClose={() => setIsPomodoroModalOpen(false)}
         state={pomodoro}
@@ -9859,15 +9862,15 @@ ${lifeConstitution}
             isRunning: true,
           }))
         }
-      />
+      /></Suspense>)}
 
-      <LogoPickerModal
+      {isLogoPickerOpen && (<Suspense fallback={null}><LogoPickerModal
         isOpen={isLogoPickerOpen}
         selectedLogoId={selectedLogoId}
         onSelectLogo={handleSelectBrandLogo}
         onResetDefault={handleResetBrandLogo}
         onClose={() => setIsLogoPickerOpen(false)}
-      />
+      /></Suspense>)}
     </div>
   );
 }

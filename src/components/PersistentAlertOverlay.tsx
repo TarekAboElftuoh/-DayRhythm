@@ -131,7 +131,7 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
         'fixed z-50 transition-all',
         'top-[calc(0.75rem+env(safe-area-inset-top))] inset-x-3',
         'md:top-auto md:inset-x-auto md:bottom-5 md:right-5 md:w-[360px]',
-        'rounded-2xl border bg-[#070B10]/96 backdrop-blur-xl overflow-hidden',
+        'rounded-2xl border bg-[#070B10]/96 overflow-hidden',
         accentBorder,
       ].join(' ')}
     >

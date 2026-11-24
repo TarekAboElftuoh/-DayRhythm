@@ -93,7 +93,7 @@ export const LogoPickerModal: React.FC<LogoPickerModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/85 backdrop-blur-md p-2 sm:p-4"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/85 p-2 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="تغيير شعار برنامج إيقاع اليوم"

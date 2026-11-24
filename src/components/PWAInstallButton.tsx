@@ -46,7 +46,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ language }) 
         </button>
 
         {showIOSGuide && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
             <div className="w-full max-w-sm rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-5 space-y-3 text-xs">
               <h3 className="text-sm font-bold text-white">
                 {language === 'ar' ? 'تثبيت إيقاع اليوم على iPhone / iPad' : 'Install on iPhone / iPad'}

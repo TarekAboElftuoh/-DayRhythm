@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { motion } from 'motion/react';
 import {
   Globe,
   LayoutDashboard,
@@ -105,7 +104,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-[#070A0F]/92 backdrop-blur-xl pt-[env(safe-area-inset-top)]">
+      <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-[#070A0F]/92 pt-[env(safe-area-inset-top)]">
         <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3.5 sm:px-6 h-14">
           {/* Zone 1: Brand Lockup with subtle version badge */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
@@ -171,10 +170,8 @@ export const TopBar: React.FC<TopBarProps> = ({
                   }`}
                 >
                   {active && (
-                    <motion.div
-                      layoutId="activeTabPillDesktop"
+                    <div
                       className="absolute inset-0 rounded-lg bg-[#7FFFD4]/[0.09] border border-[#7FFFD4]/25 shadow-[0_0_12px_rgba(127,255,212,0.12)]"
-                      transition={{ type: 'spring', stiffness: 480, damping: 32 }}
                     />
                   )}
                   <span className="relative z-10">{item.label}</span>
@@ -188,61 +185,52 @@ export const TopBar: React.FC<TopBarProps> = ({
             <PWAInstallButton language={language} />
 
             {onCheckAppUpdates && (
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
+              <button
                 type="button"
                 onClick={onCheckAppUpdates}
                 disabled={isCheckingUpdates}
-                className="w-9 h-9 rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-colors cursor-pointer shrink-0 disabled:opacity-60"
+                className="w-9 h-9 rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-60"
                 title={language === 'ar' ? 'فحص التحديثات الآن' : 'Check for updates'}
                 aria-label={language === 'ar' ? 'فحص التحديثات' : 'Check for updates'}
               >
                 <RefreshCw
                   className={`w-3.5 h-3.5 ${isCheckingUpdates ? 'animate-spin text-[#7FFFD4]' : ''}`}
                 />
-              </motion.button>
+              </button>
             )}
 
             {onToggleSunMode && (
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
+              <button
                 type="button"
                 onClick={onToggleSunMode}
-                className="w-9 h-9 rounded-lg text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                className="w-9 h-9 rounded-lg text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0"
                 title={sunMode ? 'الرجوع للمود الليلي' : 'مود الشمس (للقراءة في النور)'}
                 aria-label={sunMode ? 'المود الليلي' : 'مود الشمس'}
                 aria-pressed={sunMode}
               >
                 {sunMode ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
-              </motion.button>
+              </button>
             )}
 
-            <motion.button
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.96 }}
+            <button
               type="button"
               onClick={onToggleLanguage}
-              className="min-h-[36px] px-2.5 py-1.5 text-xs font-medium rounded-lg border border-white/[0.09] bg-white/[0.03] text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-colors"
+              className="min-h-[36px] px-2.5 py-1.5 text-xs font-medium rounded-lg border border-white/[0.09] bg-white/[0.03] text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-95"
               title="عربي ↔ English"
             >
               <Globe className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
               <span className="sm:hidden">{language === 'ar' ? 'EN' : 'ع'}</span>
               <span className="hidden sm:inline">{t(language, 'langSwitchLabel')}</span>
-            </motion.button>
+            </button>
 
-            <motion.button
-              whileHover={{ scale: 1.03, boxShadow: '0 0 16px rgba(127,255,212,0.3)' }}
-              whileTap={{ scale: 0.96 }}
-              transition={{ type: 'spring', stiffness: 500, damping: 25 }}
+            <button
               type="button"
               onClick={onOpenCatchUp}
-              className="min-h-[36px] px-3 sm:px-3.5 py-1.5 text-xs font-bold rounded-lg bg-[#7FFFD4] text-black hover:bg-[#66eec2] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[36px] px-3 sm:px-3.5 py-1.5 text-xs font-bold rounded-lg bg-[#7FFFD4] text-black hover:bg-[#66eec2] transition-all active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span className="sm:hidden">{language === 'ar' ? 'تدارك' : 'Catch-Up'}</span>
               <span className="hidden sm:inline">{t(language, 'ctaCatchUp')}</span>
-            </motion.button>
+            </button>
           </div>
         </div>
       </header>
@@ -250,35 +238,32 @@ export const TopBar: React.FC<TopBarProps> = ({
       {/* Mobile Bottom Thumb-Zone Navigation */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-white/[0.08] bg-black/92 backdrop-blur-xl px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-white/[0.08] bg-[#050505] px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
       >
         <div className="grid grid-cols-3 gap-1">
           {navItems.map((item) => {
             const active = activeTab === item.id;
             const Icon = item.Icon;
             return (
-              <motion.button
+              <button
                 key={item.id}
-                whileTap={{ scale: 0.93 }}
                 type="button"
                 onClick={() => onSelectTab(item.id)}
                 aria-current={active ? 'page' : undefined}
-                className={`relative min-h-[48px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-colors cursor-pointer select-none ${
+                className={`relative min-h-[48px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer select-none ${
                   active ? 'text-[#7FFFD4] font-bold' : 'text-zinc-500 hover:text-zinc-200'
                 }`}
               >
                 {active && (
-                  <motion.div
-                    layoutId="mobileActiveTabPill"
+                  <div
                     className="absolute inset-0 rounded-xl bg-[#7FFFD4]/12 border border-[#7FFFD4]/20"
-                    transition={{ type: 'spring', stiffness: 480, damping: 32 }}
                   />
                 )}
                 <Icon className="relative z-10 w-[19px] h-[19px] shrink-0" />
                 <span className="relative z-10 text-[11px] leading-none truncate max-w-full">
                   {item.mobileLabel}
                 </span>
-              </motion.button>
+              </button>
             );
           })}
         </div>

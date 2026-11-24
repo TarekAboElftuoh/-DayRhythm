@@ -1,5 +1,4 @@
 import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
 import {
   Droplets,
   Trash2,
@@ -1461,73 +1460,61 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       )}
 
       {/* 2. PRIORITY ACTIONAL ALERTS ONLY (Rendered strictly when no floating persistent overlay is active to avoid duplicate cards) */}
-      <AnimatePresence>
-        {activeAudioAlert && !hasPersistentAlert && (
-          <motion.div
-            initial={{ opacity: 0, y: -10, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -8, scale: 0.98 }}
-            transition={{ type: 'spring', stiffness: 450, damping: 28 }}
-            className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
-              activeAudioAlert.isContinuous
-                ? 'border-amber-400/50 bg-amber-400/12'
-                : 'border-[#7FFFD4]/40 bg-[#7FFFD4]/10'
-            }`}
-          >
-            <div className="flex items-center gap-2.5 text-sm">
-              <span className="text-2xl leading-none">{activeAudioAlert.title || TASK_SOUND_META[activeAudioAlert.category].icon}</span>
-              <span className="text-xs font-medium text-zinc-200">
-                {activeAudioAlert.category === 'water'
-                  ? 'تأكيد شرب الكوب'
-                  : activeAudioAlert.isContinuous
-                    ? 'رنين نشط'
-                    : 'تنبيه'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              {activeAudioAlert.category === 'water' ? (
-                <>
-                  <motion.button
-                    whileHover={{ scale: 1.04 }}
-                    whileTap={{ scale: 0.94 }}
-                    type="button"
-                    onClick={() => {
-                      onLogWaterCup();
-                      onAcknowledgeAudioAlert();
-                    }}
-                    className="px-3.5 py-1.5 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
-                  >
-                    💧 شربت فعلاً ✓
-                  </motion.button>
-                  <motion.button
-                    whileHover={{ scale: 1.03 }}
-                    whileTap={{ scale: 0.95 }}
-                    type="button"
-                    onClick={onAcknowledgeAudioAlert}
-                    className="px-3 py-1.5 rounded-lg border border-white/15 text-zinc-300 text-xs hover:text-white cursor-pointer"
-                  >
-                    لاحقاً
-                  </motion.button>
-                </>
-              ) : (
-                <motion.button
-                  whileHover={{ scale: 1.04 }}
-                  whileTap={{ scale: 0.94 }}
+      {activeAudioAlert && !hasPersistentAlert && (
+        <div
+          className={`rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 ${
+            activeAudioAlert.isContinuous
+              ? 'border-amber-400/50 bg-amber-400/12'
+              : 'border-[#7FFFD4]/40 bg-[#7FFFD4]/10'
+          }`}
+        >
+          <div className="flex items-center gap-2.5 text-sm">
+            <span className="text-2xl leading-none">{activeAudioAlert.title || TASK_SOUND_META[activeAudioAlert.category].icon}</span>
+            <span className="text-xs font-medium text-zinc-200">
+              {activeAudioAlert.category === 'water'
+                ? 'تأكيد شرب الكوب'
+                : activeAudioAlert.isContinuous
+                  ? 'رنين نشط'
+                  : 'تنبيه'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {activeAudioAlert.category === 'water' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onLogWaterCup();
+                    onAcknowledgeAudioAlert();
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] active:scale-95 transition-transform cursor-pointer"
+                >
+                  💧 شربت فعلاً ✓
+                </button>
+                <button
                   type="button"
                   onClick={onAcknowledgeAudioAlert}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer ${
-                    activeAudioAlert.isContinuous
-                      ? 'bg-amber-400 text-black hover:bg-amber-300'
-                      : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
-                  }`}
+                  className="px-3 py-1.5 rounded-lg border border-white/15 text-zinc-300 text-xs hover:text-white active:scale-95 transition-transform cursor-pointer"
                 >
-                  {activeAudioAlert.isContinuous ? 'إيقاف ✓' : '✓ تم'}
-                </motion.button>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+                  لاحقاً
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={onAcknowledgeAudioAlert}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold active:scale-95 transition-transform cursor-pointer ${
+                  activeAudioAlert.isContinuous
+                    ? 'bg-amber-400 text-black hover:bg-amber-300'
+                    : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
+                }`}
+              >
+                {activeAudioAlert.isContinuous ? 'إيقاف ✓' : '✓ تم'}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {(smartChargeAudioActive ||
         (phoneBattery &&
@@ -3207,11 +3194,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {hydrationToday.slots.map((filled, idx) => {
                 const slotPlan = dailyRhythmPlan.hydrationSlots[idx];
                 return (
-                  <motion.button
+                  <button
                     key={idx}
-                    whileHover={{ scale: 1.08 }}
-                    whileTap={{ scale: 0.90 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 25 }}
                     type="button"
                     onClick={() => onToggleWaterSlot(idx)}
                     title={
@@ -3219,14 +3203,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         ? `كوب ${idx + 1} · ${formatMinutes12h(slotPlan.timeMinutes, language)}`
                         : `كوب ${idx + 1}`
                     }
-                    className={`flex-1 h-8 rounded-md font-mono-tabular text-[11px] font-bold flex items-center justify-center transition-colors cursor-pointer select-none ${
+                    className={`flex-1 h-8 rounded-md font-mono-tabular text-[11px] font-bold flex items-center justify-center transition-all active:scale-90 cursor-pointer select-none ${
                       filled
                         ? 'bg-[#7FFFD4] text-black shadow-[0_0_8px_rgba(127,255,212,0.3)] hover:bg-[#66eec2]'
                         : 'bg-white/[0.06] text-zinc-400 hover:bg-white/[0.14] hover:text-white'
                     }`}
                   >
                     {idx + 1}
-                  </motion.button>
+                  </button>
                 );
               })}
             </div>
@@ -3856,13 +3840,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           )}
                         </button>
                         <div className="flex items-center gap-1 shrink-0">
-                          <motion.button
-                            whileHover={{ scale: 1.04 }}
-                            whileTap={{ scale: 0.92 }}
+                          <button
                             type="button"
                             onClick={() => onToggleMedication(med.id)}
                             aria-pressed={takenToday}
-                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer select-none ${
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-all active:scale-95 cursor-pointer select-none ${
                               takenToday
                                 ? 'border-[#4ADE80] bg-[#4ADE80] text-black shadow-[0_0_8px_rgba(74,222,128,0.25)]'
                                 : 'border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4] hover:text-black'
@@ -3880,7 +3862,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   ? `${takenDoses.length}/${doseTimes.length}`
                                   : 'تم اليوم'}
                             </span>
-                          </motion.button>
+                          </button>
                           <button
                             type="button"
                             onClick={() => {
@@ -4364,7 +4346,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Quick Create Google Calendar Event Modal (Streamlined 1-Tap Presets + Smart Conflict Check) */}
       {newEventModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
           <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -4707,7 +4689,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Delete Event from Google Calendar */}
       {confirmDeleteGoogleEv && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
           <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-rose-500/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-rose-300">
               تأكيد حذف الحدث من Google Calendar
@@ -4738,7 +4720,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Mutate Google Task */}
       {pendingTaskConfirmation && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
           <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4]">
               تأكيد تعديل مهمة في Google Tasks
@@ -4786,7 +4768,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Add Gmail-Extracted Event to Google Calendar */}
       {pendingGmailEventConfirm && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
           <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4] flex items-center gap-2">
               <Mail className="w-4 h-4" />
@@ -4828,7 +4810,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Schedule Creative Activity in Free Slot on Google Calendar */}
       {pendingCreativeCalendarConfirm && pendingCreativeCalendarConfirm.suggestedSlot && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-2 sm:p-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
           <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4] flex items-center gap-2">
               <Palette className="w-4 h-4" />
@@ -4873,7 +4855,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* 2-Stage Safe Confirmation Modal: Prevent Accidental Medication Deletion */}
       {pendingDeleteMed && (
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/85 backdrop-blur-sm p-2 sm:p-4"
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/85 p-2 sm:p-4"
           role="dialog"
           aria-modal="true"
           aria-label="تأكيد حذف العلاج على مرحلتين"
