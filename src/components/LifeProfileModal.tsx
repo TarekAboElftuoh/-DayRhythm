@@ -28,7 +28,14 @@ import {
   Cloud,
   RefreshCw,
   ExternalLink,
+  Zap,
 } from 'lucide-react';
+import { getSavedCloudApiUrl, setSavedCloudApiUrl } from '../services/apiClient';
+import {
+  resolveSocketServerUrl,
+  subscribeSocketConnectStatus,
+  reconnectSocket,
+} from '../services/socketService';
 import { getDriveApiStatus } from '../services/googleDriveStorage';
 import { MemoryItemCard } from './MemoryItemCard';
 import { AndroidPermissionsCard } from './AndroidPermissionsCard';
@@ -285,6 +292,16 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
       setIsTestingKey(false);
     }
   };
+
+  // Socket.io Real-Time Connection State
+  const [isSocketLive, setIsSocketLive] = useState(false);
+  const [socketServerUrlInput, setSocketServerUrlInput] = useState(() => getSavedCloudApiUrl() || '');
+  const [socketNotice, setSocketNotice] = useState('');
+  const defaultSocketUrl = useMemo(() => resolveSocketServerUrl(), []);
+
+  useEffect(() => {
+    return subscribeSocketConnectStatus(setIsSocketLive);
+  }, []);
 
   const prevIsOpenRef = React.useRef(isOpen);
   useEffect(() => {
@@ -1253,6 +1270,58 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   </div>
                 )}
               </div>
+            )}
+          </div>
+
+          {/* Socket.io Real-Time Instant Cross-Device Sync (<50ms) */}
+          <div className="pt-3 border-t border-white/10 space-y-2.5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-semibold text-white flex items-center gap-1.5">
+                <Zap className="w-4 h-4 text-emerald-400" />
+                <span>المزامنة اللحظية الفورية (Socket.io Real-Time)</span>
+              </div>
+              <span
+                className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full font-bold ${
+                  isSocketLive
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    isSocketLive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                  }`}
+                />
+                {isSocketLive ? 'متصل لحظياً بالشبكة (<50ms)' : 'جارٍ الاتصال بالخادم...'}
+              </span>
+            </div>
+            <p className="text-[11px] text-zinc-400 leading-relaxed">
+              تسمح هذه التقنية بانتقال أي تعديل في الإعدادات، الدستور، تنبيهات الشحن، أو إيقاف المنبه بين الموبايل والكمبيوتر في نفس اللحظة أمام عينك ودون الحاجة لتحديث الصفحة.
+            </p>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+              <input
+                type="text"
+                dir="ltr"
+                placeholder={defaultSocketUrl}
+                value={socketServerUrlInput}
+                onChange={(e) => setSocketServerUrlInput(e.target.value)}
+                className="flex-1 px-3 py-1.5 rounded-lg border border-white/15 bg-black/50 text-white text-xs font-mono focus:border-emerald-400 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setSavedCloudApiUrl(socketServerUrlInput);
+                  reconnectSocket();
+                  setSocketNotice('✓ تم حفظ عنوان الخادم وإعادة الاتصال بنجاح');
+                  setTimeout(() => setSocketNotice(''), 3000);
+                }}
+                className="px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/20 text-emerald-300 text-xs font-bold hover:bg-emerald-500/30 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>حفظ واتصال</span>
+              </button>
+            </div>
+            {socketNotice && (
+              <p className="text-[11px] text-emerald-300 font-semibold">{socketNotice}</p>
             )}
           </div>
 

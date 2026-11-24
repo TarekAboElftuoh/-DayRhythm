@@ -69,21 +69,72 @@ export function isNonApiShareUrl(rawUrl: string): boolean {
   );
 }
 
-// Deprecated Cloud Run helpers kept as safe client stubs
+const CLOUD_API_STORAGE_KEY = 'dayrhythm_cloud_api_url';
+let memoryCloudApiUrl = '';
+
 export function getSavedCloudApiUrl(): string {
-  return '';
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      return window.localStorage.getItem(CLOUD_API_STORAGE_KEY) || memoryCloudApiUrl;
+    } catch {
+      return memoryCloudApiUrl;
+    }
+  }
+  return memoryCloudApiUrl;
 }
 
-export function setSavedCloudApiUrl(_rawUrl: string): { saved: string; error?: string } {
-  return { saved: '' };
+export function setSavedCloudApiUrl(rawUrl: string): { saved: string; error?: string } {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) {
+    memoryCloudApiUrl = '';
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        window.localStorage.removeItem(CLOUD_API_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+    }
+    return { saved: '' };
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const sanitized = `${parsed.protocol}//${parsed.host}`;
+    memoryCloudApiUrl = sanitized;
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        window.localStorage.setItem(CLOUD_API_STORAGE_KEY, sanitized);
+      } catch {
+        // ignore
+      }
+    }
+    return { saved: sanitized };
+  } catch {
+    return { saved: '', error: 'عنوان URL غير صالح' };
+  }
 }
 
 export function clearSavedCloudApiUrl(): void {
-  // no-op
+  memoryCloudApiUrl = '';
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      window.localStorage.removeItem(CLOUD_API_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
 }
 
-export function syncSavedCloudApiUrlFromRemote(_remoteUrl?: string): void {
-  // no-op
+export function syncSavedCloudApiUrlFromRemote(remoteUrl?: string): void {
+  if (!remoteUrl || typeof window === 'undefined') return;
+  try {
+    const current = window.localStorage.getItem(CLOUD_API_STORAGE_KEY);
+    if (!current && remoteUrl.startsWith('http')) {
+      const parsed = new URL(remoteUrl);
+      window.localStorage.setItem(CLOUD_API_STORAGE_KEY, `${parsed.protocol}//${parsed.host}`);
+    }
+  } catch {
+    // ignore
+  }
 }
 
 export function warmGeminiChatSocket(): void {

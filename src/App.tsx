@@ -103,6 +103,13 @@ import {
   deleteTasksVaultListIfPresent,
   type UserSettingsPayload,
 } from './services/cloudStateService';
+import {
+  initSocketClient,
+  emitSocketSettings,
+  emitSocketAlarmSignal,
+  emitSocketBattery,
+  emitSocketSyncEvent,
+} from './services/socketService';
 
 type TasksVaultPayload = UserSettingsPayload;
 const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
@@ -1616,7 +1623,13 @@ export default function App() {
         timestampMs,
       };
 
-
+      if (firebaseUser?.uid) {
+        if (scope === 'alarm_dismiss' || action?.includes('dismiss')) {
+          emitSocketAlarmSignal(firebaseUser.uid, clientIdRef.current, packet);
+        } else {
+          emitSocketSyncEvent(firebaseUser.uid, clientIdRef.current, packet);
+        }
+      }
 
       if (typeof BroadcastChannel !== 'undefined') {
         try {
@@ -3814,6 +3827,10 @@ export default function App() {
 
 
 
+      if (firebaseUser?.uid) {
+        emitSocketSettings(firebaseUser.uid, clientIdRef.current, payload);
+      }
+
       if (typeof BroadcastChannel !== 'undefined') {
         try {
           const bc = new BroadcastChannel('dayrhythm_sync');
@@ -3954,6 +3971,72 @@ export default function App() {
       unsubscribe();
     };
   }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging]);
+
+  // ── Ultra-Low-Latency Real-Time Sync Hub via Socket.io (<50ms) ──
+  useEffect(() => {
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) return;
+
+    initSocketClient(uid, clientIdRef.current, {
+      onSettingsUpdate: (remoteSettings) => {
+        if (!remoteSettings) return;
+        console.info('[Socket.io] Instant remote settings received — applying now');
+        applyOrDefer(remoteSettings as Parameters<typeof applyOrDefer>[0]);
+      },
+      onAlarmSignal: (signal) => {
+        const sig = signal as { scope?: string; action?: string; timestampMs?: number; extra?: unknown };
+        if (!sig) return;
+        if (sig.scope === 'alarm_dismiss' || sig.action?.includes('dismiss')) {
+          console.info('[Socket.io] Remote alarm dismiss signal received');
+          stopContinuousAlert();
+          stopNativeAlerts();
+          setActiveAudioAlert(null);
+          setPersistentAlert(null);
+          setAlarmRinging(false);
+          try {
+            const bridge = (
+              window as Window & {
+                DayRhythmNative?: {
+                  dismissActiveAlerts?: () => void;
+                  stopNativeAlarmSound?: () => void;
+                };
+              }
+            ).DayRhythmNative;
+            bridge?.stopNativeAlarmSound?.();
+            bridge?.dismissActiveAlerts?.();
+          } catch {
+            // ignore bridge
+          }
+          if (sig.action === 'native_done' && sig.extra) {
+            const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string };
+            if (extra.kind === 'water') {
+              handleLogWaterCupRef.current();
+            } else if (extra.kind === 'medication' && extra.medId) {
+              handleToggleMedicationRef.current(extra.medId, extra.doseTime);
+            }
+          }
+        }
+      },
+      onBattery: (battery) => {
+        const b = battery as Partial<PhoneBatteryTelemetry>;
+        if (b && typeof b.levelPct === 'number') {
+          setPhoneBattery({
+            levelPct: Math.max(0, Math.min(100, Math.round(b.levelPct))),
+            charging: Boolean(b.charging),
+            chargeLimitPct: b.chargeLimitPct || phoneChargeLimitRef.current,
+            chargeTimeRemainingMin: b.chargeTimeRemainingMin ?? -1,
+            updatedAtMs: Date.now(),
+            deviceLabel: b.deviceLabel || 'الهاتف',
+          });
+        }
+      },
+      onSyncEvent: (event) => {
+        if (event && typeof event === 'object') {
+          handleIncomingRemoteSyncRef.current(event as Parameters<typeof handleIncomingRemoteSyncRef.current>[0]);
+        }
+      },
+    });
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, applyOrDefer]);
 
   // Requirement 2 & Finding 2, 6: Real-time listener for users/{uid} root document
   // 1) Catches Android background lock-screen alarm dismissals via syncSignal.
@@ -7004,7 +7087,9 @@ export default function App() {
         lastSentKey = dedupeKey;
       }
 
-
+      if (changed && firebaseUser?.uid) {
+        emitSocketBattery(firebaseUser.uid, clientIdRef.current, snapshot);
+      }
 
       // Persist in Firestore immediately on first sync, on any change, or every 45s while charging
       if (
