@@ -29,3 +29,14 @@ dist-server/
 electron/
 
 native/windows-dotnet/www/
+
+# Migration tool build output & secrets
+tools/migration/bin/
+tools/migration/obj/
+tools/migration/*.json
+tools/migration/*.sha256
+firebase_auth_tokens.json
+extracted_user_root.json
+extracted_subcollections.json
+*.db
+

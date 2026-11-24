@@ -598,14 +598,23 @@ public final class CloudSignalClient {
                                         if (isRecent && !opId.equals(lastHandledOpId)) {
                                             lastHandledOpId = opId;
                                             lastHandledTriggerMs = ts > 0L ? ts : now;
-                                            MAIN.post(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
-                                                    app,
-                                                    "🔔 تنبيه متزامن",
-                                                    "مزامنة سحابية من جهازك الآخر",
-                                                    "general",
-                                                    true,
-                                                    5
-                                            ));
+                                            MAIN.post(() -> {
+                                                if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
+                                                    // User is actively in app; notify webview UI without locking screen or launching alarm card
+                                                    MainActivity.activeInstance.evaluateJavascriptInWebView(
+                                                            "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger'));"
+                                                    );
+                                                } else {
+                                                    ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                                                            app,
+                                                            "🔔 تنبيه متزامن",
+                                                            "مزامنة سحابية من جهازك الآخر",
+                                                            "general",
+                                                            true,
+                                                            5
+                                                    );
+                                                }
+                                            });
                                         }
                                     } else if ("alarm_dismiss".equals(scope)) {
                                         MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));

@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package dayrhythm.spirc;
+
+option java_package = "org.dayrhythm.spirc";
+option java_outer_classname = "SpircProto";
+
+enum DeviceType {
+  DEVICE_TYPE_UNKNOWN = 0;
+  DEVICE_TYPE_MOBILE_ANDROID = 1;
+  DEVICE_TYPE_DESKTOP_WINDOWS = 2;
+  DEVICE_TYPE_WEB = 3;
+}
+
+enum AlertType {
+  ALERT_TYPE_UNKNOWN = 0;
+  ALERT_TYPE_PRAYER = 1;
+  ALERT_TYPE_MEDICATION = 2;
+  ALERT_TYPE_HYDRATION = 3;
+  ALERT_TYPE_TASK = 4;
+}
+
+enum ActionType {
+  ACTION_UNKNOWN = 0;
+  ACTION_TRIGGER = 1;
+  ACTION_DISMISS = 2;
+  ACTION_SNOOZE = 3;
+  ACTION_HYDRATE_CUP = 4;
+  ACTION_MEDICATION_TAKEN = 5;
+  ACTION_HEARTBEAT = 6;
+  ACTION_SYNC_FULL = 7;
+}
+
+message DeviceDescriptor {
+  string device_id = 1;
+  DeviceType device_type = 2;
+  string device_name = 3;
+  int64 last_seen_ms = 4;
+  bool is_active_target = 5;
+}
+
+message ActiveAlert {
+  string alert_id = 1;
+  AlertType alert_type = 2;
+  string title = 3;
+  string subtitle = 4;
+  int64 trigger_epoch_ms = 5;
+  int32 snooze_count = 6;
+  bool is_ringing = 7;
+}
+
+message VectorClock {
+  map<string, int64> node_clocks = 1;
+}
+
+message SpircFrame {
+  int64 sequence_number = 1;
+  int64 sender_epoch_ms = 2;
+  string sender_device_id = 3;
+  string user_id = 4;
+  ActionType action = 5;
+  string target_alert_id = 6;
+  
+  VectorClock clock = 7;
+  
+  oneof payload {
+    ActiveAlert alert_payload = 8;
+    DeviceDescriptor device_payload = 9;
+    bytes raw_sync_payload = 10;
+  }
+}

@@ -9908,6 +9908,7 @@ ${lifeConstitution}
             silentNotifications={silentNotifications}
             onClearSilentNotifications={handleClearSilentNotifications}
             activeAudioAlert={activeAudioAlert}
+            hasPersistentAlert={Boolean(persistentAlert)}
             onAcknowledgeAudioAlert={handleAcknowledgeAudioAlert}
             onTriggerTaskAlert={triggerTaskAlert}
             weatherInfo={weatherInfo}
