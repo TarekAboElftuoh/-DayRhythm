@@ -249,6 +249,18 @@ public class DayRhythmSyncService extends Service {
         }
     };
 
+    private final Runnable cloudSignalPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isDestroyed) return;
+            try {
+                CloudSignalClient.pollRemoteSignals(DayRhythmSyncService.this);
+            } catch (Exception ignored) {
+            }
+            handler.postDelayed(this, 5000L);
+        }
+    };
+
     private final Runnable pongWatchdogRunnable = () -> {
         if (isDestroyed) return;
         teardownActiveWebSocket("pong_timeout");
@@ -541,6 +553,7 @@ public class DayRhythmSyncService extends Service {
 
         registerNetworkRecoveryCallback();
         registerChargeLimitWatcher();
+        handler.postDelayed(cloudSignalPollRunnable, 3000L);
     }
 
     // ── Charge-limit alert & Live Battery LAN Sync (works with the app closed) ─────
@@ -879,6 +892,7 @@ public class DayRhythmSyncService extends Service {
         isDestroyed = true;
         if (instance == this) instance = null;
         handler.removeCallbacks(liveCountdownTickRunnable);
+        handler.removeCallbacks(cloudSignalPollRunnable);
         cancelLiveAlertCapsule();
         unregisterNetworkRecoveryCallback();
         try {
@@ -911,6 +925,8 @@ public class DayRhythmSyncService extends Service {
                         backoffAttempt = 0;
                         handler.removeCallbacks(wsReconnectRunnable);
                         connectBackgroundWebSocket();
+                        handler.removeCallbacks(cloudSignalPollRunnable);
+                        handler.post(cloudSignalPollRunnable);
                         if (shouldBroadcastRecovery) {
                             broadcastNetworkRecovered();
                         }

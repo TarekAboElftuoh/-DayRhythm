@@ -1770,6 +1770,7 @@ export default function App() {
         taskListId?: string;
         durationMs?: number;
         description?: string;
+        isRemoteSignal?: boolean;
       }
     ) => {
       const meta = TASK_SOUND_META[category];
@@ -1937,6 +1938,18 @@ export default function App() {
         // ignore WebView2 postMessage errors
       }
 
+      // Broadcast real-time alarm trigger across devices (PC <-> Mobile) via Firestore live bus
+      if (!options?.isRemoteSignal) {
+        emitCrossDeviceSync('alarm_trigger', 'trigger', undefined, {
+          title: visibleTitle,
+          body: visibleDescription,
+          kind: category,
+          privacyEmoji: privacyBadge,
+          sourceLabel: visibleSource,
+          snoozeMinutes: defaultSnooze,
+          alertId,
+        });
+      }
 
       if (!isNativeWin) {
         showToast(`${privacyBadge} · ${visibleTitle} · ${nowTime12}`);
@@ -3267,6 +3280,8 @@ export default function App() {
           privacyEmoji: emoji,
           displayTitle: title,
           sourceLabel: source,
+          description: extra?.body,
+          isRemoteSignal: true,
         });
         return;
       }
@@ -9171,7 +9186,7 @@ export default function App() {
         };
       }
     ).DayRhythmNative;
-    if (!androidBridge?.scheduleExactAlarms || needsAuth) return;
+    if (!androidBridge?.scheduleExactAlarms) return;
 
     const nowMs = trueNowMs();
     const nowMinInTz = getNowMinutesInTimeZone(activeTimeZone, new Date(nowMs));

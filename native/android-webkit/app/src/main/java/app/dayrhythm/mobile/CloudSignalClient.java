@@ -264,4 +264,163 @@ public final class CloudSignalClient {
         }
     }
 
+    private static volatile String lastHandledOpId = null;
+    private static volatile long lastHandledTriggerMs = 0L;
+
+    private static String getFirestoreString(JSONObject fields, String key, String fallback) {
+        if (fields == null) return fallback;
+        JSONObject v = fields.optJSONObject(key);
+        if (v == null) return fallback;
+        return v.optString("stringValue", fallback);
+    }
+
+    private static int getFirestoreInt(JSONObject fields, String key, int fallback) {
+        if (fields == null) return fallback;
+        JSONObject v = fields.optJSONObject(key);
+        if (v == null) return fallback;
+        String s = v.optString("integerValue", null);
+        if (s == null) return fallback;
+        try {
+            return Integer.parseInt(s);
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private static long getFirestoreLong(JSONObject fields, String key, long fallback) {
+        if (fields == null) return fallback;
+        JSONObject v = fields.optJSONObject(key);
+        if (v == null) return fallback;
+        String s = v.optString("integerValue", null);
+        if (s == null) return fallback;
+        try {
+            return Long.parseLong(s);
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    /**
+     * Periodic background check for real-time alarm triggers or dismissals from the cloud (PC ↔ Mobile).
+     * Invoked periodically by DayRhythmSyncService so alerts ring immediately even when WebView is frozen.
+     */
+    public static void pollRemoteSignals(Context context) {
+        final Context app = context.getApplicationContext();
+        EXEC.execute(() -> {
+            try {
+                JSONObject auth = readAuth(app);
+                if (auth == null) return;
+                String token = getIdToken(app, auth);
+
+                // Priority 1: Check users/{uid}/sync/live (fast-path bus carrying rich metadata)
+                Request reqLive = new Request.Builder()
+                        .url("https://firestore.googleapis.com/v1/" + docName(auth) + "/sync/live")
+                        .header("Authorization", "Bearer " + token)
+                        .get()
+                        .build();
+                boolean handledFromLive = false;
+                try (Response res = HTTP.newCall(reqLive).execute()) {
+                    if (res.isSuccessful() && res.body() != null) {
+                        JSONObject doc = new JSONObject(res.body().string());
+                        JSONObject docFields = doc.optJSONObject("fields");
+                        if (docFields != null) {
+                            String type = getFirestoreString(docFields, "type", "");
+                            String client = getFirestoreString(docFields, "clientId", "");
+                            String opId = getFirestoreString(docFields, "opId", "");
+                            long ts = getFirestoreLong(docFields, "timestampMs", 0L);
+                            long now = System.currentTimeMillis();
+
+                            if (!CLIENT_ID.equals(client)) {
+                                if ("alarm_trigger".equals(type)) {
+                                    handledFromLive = true;
+                                    if (now - ts <= 45_000L && ts > lastHandledTriggerMs && !opId.equals(lastHandledOpId)) {
+                                        lastHandledOpId = opId;
+                                        lastHandledTriggerMs = ts;
+
+                                        JSONObject extraMap = docFields.optJSONObject("extra");
+                                        JSONObject packetFields = extraMap != null && extraMap.optJSONObject("mapValue") != null
+                                                ? extraMap.optJSONObject("mapValue").optJSONObject("fields") : null;
+                                        JSONObject payloadFields = packetFields;
+                                        if (packetFields != null && packetFields.optJSONObject("extra") != null
+                                                && packetFields.optJSONObject("extra").optJSONObject("mapValue") != null) {
+                                            payloadFields = packetFields.optJSONObject("extra").optJSONObject("mapValue").optJSONObject("fields");
+                                        }
+
+                                        String rawTitle = getFirestoreString(payloadFields, "title", "تنبيه إيقاع اليوم");
+                                        String emoji = getFirestoreString(payloadFields, "privacyEmoji", "");
+                                        String title = !emoji.isEmpty() && !rawTitle.contains(emoji) ? emoji + " " + rawTitle : rawTitle;
+                                        String body = getFirestoreString(payloadFields, "body", "");
+                                        String kind = getFirestoreString(payloadFields, "kind", "general");
+                                        int snoozeMin = getFirestoreInt(payloadFields, "snoozeMinutes", 5);
+
+                                        MAIN.post(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                                                app,
+                                                title,
+                                                body,
+                                                kind,
+                                                true,
+                                                snoozeMin
+                                        ));
+                                    }
+                                } else if ("alarm_dismiss".equals(type)) {
+                                    handledFromLive = true;
+                                    if (now - ts <= 60_000L) {
+                                        MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+
+                if (handledFromLive) return;
+
+                // Priority 2: Fallback check users/{uid}?mask.fieldPaths=syncSignal
+                Request reqSig = new Request.Builder()
+                        .url("https://firestore.googleapis.com/v1/" + docName(auth) + "?mask.fieldPaths=syncSignal")
+                        .header("Authorization", "Bearer " + token)
+                        .get()
+                        .build();
+                try (Response res = HTTP.newCall(reqSig).execute()) {
+                    if (!res.isSuccessful() || res.body() == null) return;
+                    JSONObject doc = new JSONObject(res.body().string());
+                    JSONObject fields = doc.optJSONObject("fields");
+                    JSONObject sig = fields == null ? null : fields.optJSONObject("syncSignal");
+                    JSONObject sf = sig == null ? null
+                            : (sig.optJSONObject("mapValue") == null ? null : sig.optJSONObject("mapValue").optJSONObject("fields"));
+                    if (sf == null) return;
+
+                    String scope = getFirestoreString(sf, "scope", "");
+                    String client = getFirestoreString(sf, "clientId", "");
+                    String opId = getFirestoreString(sf, "opId", "");
+                    long ts = getFirestoreLong(sf, "timestampMs", 0L);
+
+                    if (CLIENT_ID.equals(client)) return;
+
+                    long now = System.currentTimeMillis();
+                    if ("alarm_trigger".equals(scope)) {
+                        if (now - ts <= 45_000L && ts > lastHandledTriggerMs && !opId.equals(lastHandledOpId)) {
+                            lastHandledOpId = opId;
+                            lastHandledTriggerMs = ts;
+                            MAIN.post(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                                    app,
+                                    "🔔 تنبيه متزامن",
+                                    "مزامنة سحابية من جهازك الآخر",
+                                    "general",
+                                    true,
+                                    5
+                            ));
+                        }
+                    } else if ("alarm_dismiss".equals(scope)) {
+                        if (now - ts <= 60_000L) {
+                            MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
 }
