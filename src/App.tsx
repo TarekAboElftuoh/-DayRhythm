@@ -198,7 +198,7 @@ import {
   DEFAULT_LOGO_ID,
   SELECTED_LOGO_STORAGE_KEY,
   getLogoConceptById,
-} from './components/LogoPickerModal';
+} from './components/logoRegistry';
 import type {
   CapsulePrefs,
   CapsuleTrackInfo,

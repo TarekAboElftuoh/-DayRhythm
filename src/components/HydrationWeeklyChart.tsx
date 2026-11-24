@@ -200,7 +200,7 @@ export const HydrationWeeklyChart: React.FC<HydrationWeeklyChartProps> = ({
               <WeeklyHydrationTooltip pt={data[hoveredIdx]} />
             </div>
           )}
-          <svg viewBox="0 0 420 190" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+          <svg viewBox="0 0 420 190" className="w-full h-full overflow-visible" preserveAspectRatio="xMidYMid meet">
             {/* Horizontal grid lines & left Y-axis labels */}
             {[0, 0.33, 0.67, 1].map((ratio, idx) => {
               const y = 160 - ratio * 142;

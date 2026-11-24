@@ -360,7 +360,7 @@ export const MedicationConsumptionChart: React.FC<MedicationConsumptionChartProp
             const barW = Math.min(11, step * 0.65);
 
             return (
-              <svg viewBox="0 0 420 170" className="w-full h-full overflow-visible" preserveAspectRatio="none">
+              <svg viewBox="0 0 420 170" className="w-full h-full overflow-visible" preserveAspectRatio="xMidYMid meet">
                 {[0, 0.5, 1].map((ratio, idx) => {
                   const y = 144 - ratio * 128;
                   const val = Math.round(ratio * maxY);
