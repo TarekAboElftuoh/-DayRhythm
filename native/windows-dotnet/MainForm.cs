@@ -37,7 +37,6 @@ namespace DayRhythm
         private DesktopCapsuleForm _capsuleForm;
         private SecondaryMonitorToastForm _activeToastForm;
         private SecondaryScreenAlertForm _activeScreenAlert;
-        private LanBatteryServer _lanBatteryServer;
         private ToolStripMenuItem _wsStatusItem;
         private ToolStripMenuItem _capsuleMenuItem;
         private ToolStripMenuItem _secondaryScreenMenuItem;
@@ -48,9 +47,6 @@ namespace DayRhythm
         private bool _isDownloadingUpdate;
         private string _wsStatusText = "متصل 24/7 (Firestore لحظي)";
         private ReleaseUpdateInfo _pendingUpdate;
-        private DateTime _lastLanBatteryUtc = DateTime.MinValue;
-        private LanBatteryTelemetry _lastLanBattery;
-        private bool _lanChargeAlertShownThisCycle;
 
         public MainForm(bool startHidden)
         {
@@ -82,9 +78,6 @@ namespace DayRhythm
             InitializeTray(appIcon);
             InitializeDesktopCapsule();
             InitializeWebViewControl();
-
-            _lanBatteryServer = new LanBatteryServer(OnLanBatteryTelemetry);
-            _lanBatteryServer.Start();
 
             HandleCreated += (_, __) => ApplyDarkObsidianTitleBar(Handle);
             Load += async (_, __) => await OnFormLoadedAsync();
@@ -381,14 +374,6 @@ namespace DayRhythm
                                         CapsuleStatePayload payload = JsonSerializer.Deserialize<CapsuleStatePayload>(msg);
                                         if (payload != null)
                                         {
-                                            // Guard: If LAN reported the phone charging within the last 30s, keep charging telemetry active
-                                            if (_lastLanBattery != null && _lastLanBattery.EffectiveCharging && (DateTime.UtcNow - _lastLanBatteryUtc).TotalSeconds < 30)
-                                            {
-                                                payload.phoneCharging = true;
-                                                payload.phoneBatteryPct = _lastLanBattery.EffectiveLevel;
-                                                payload.phoneChargeLimitPct = _lastLanBattery.EffectiveLimit;
-                                                payload.phoneChargeEtaMin = _lastLanBattery.EffectiveEta;
-                                            }
                                             RunOnUi(() => _capsuleForm?.UpdateState(payload));
                                         }
                                     }
@@ -885,103 +870,7 @@ namespace DayRhythm
                 _trayIcon.Dispose();
                 _trayIcon = null;
             }
-            _lanBatteryServer?.Dispose();
-            _lanBatteryServer = null;
             _bgServices.Dispose();
-        }
-
-        private void OnLanBatteryTelemetry(LanBatteryTelemetry telemetry)
-        {
-            if (telemetry == null) return;
-            RunOnUi(() =>
-            {
-                _lastLanBattery = telemetry;
-                _lastLanBatteryUtc = DateTime.UtcNow;
-
-                int level = telemetry.EffectiveLevel;
-                bool charging = telemetry.EffectiveCharging;
-                int eta = telemetry.EffectiveEta;
-                int limit = telemetry.EffectiveLimit;
-                string device = telemetry.EffectiveDevice;
-
-                // 1. Update floating desktop capsule live
-                if (_capsuleForm != null)
-                {
-                    CapsuleStatePayload p = _capsuleForm.GetLastPayload() ?? new CapsuleStatePayload();
-                    p.phoneBatteryPct = charging && level >= 0 ? level : -1;
-                    p.phoneCharging = charging;
-                    p.phoneChargeLimitPct = limit;
-                    p.phoneChargeEtaMin = eta;
-                    _capsuleForm.UpdateState(p);
-
-                    // When charging begins, show floating capsule if not currently visible
-                    if (charging && !_capsuleForm.Visible)
-                    {
-                        _capsuleForm.ShowFloating();
-                    }
-                }
-
-                // 2. Dispatch to WebView2 web app
-                if (_webView?.CoreWebView2 != null)
-                {
-                    // Serialized, never spliced as text: the device name arrives from the network, and
-                    // pasting it inside quotes let any device on the Wi-Fi run code in this window.
-                    string batteryJson = JsonSerializer.Serialize(new
-                    {
-                        levelPct = level,
-                        charging,
-                        chargeTimeRemainingMin = eta,
-                        deviceLabel = device.Length > 40 ? device.Substring(0, 40) : device,
-                        chargeLimitPct = limit,
-                        updatedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    });
-                    string js = $"window.__dayRhythmNativeBattery = {batteryJson};"
-                        + "window.dispatchEvent(new CustomEvent('dayrhythm:native-battery', { detail: window.__dayRhythmNativeBattery }));";
-                    _ = _webView.CoreWebView2.ExecuteScriptAsync(js);
-                }
-
-                // 3. Handle 90% alarm & unplug cancellation
-                if ("alarm_dismiss".Equals(telemetry.action, StringComparison.OrdinalIgnoreCase) || (!charging && _activeToastForm != null && "charge".Equals(_activeToastForm.Tag as string, StringComparison.OrdinalIgnoreCase)))
-                {
-                    if (_activeToastForm != null && !_activeToastForm.IsDisposed)
-                    {
-                        _activeToastForm.Close();
-                        _activeToastForm.Dispose();
-                        _activeToastForm = null;
-                    }
-                    CloseActiveScreenAlert();
-                    if (_webView?.CoreWebView2 != null)
-                    {
-                        _ = _webView.CoreWebView2.ExecuteScriptAsync("if (window.__stopSmartChargeAlert) window.__stopSmartChargeAlert();");
-                    }
-                }
-                // Once per charging cycle: the phone repeats its battery packet every 10 s while on
-                // the charger, which used to reopen this alert every 10 s.
-                if (!charging || level < limit - 2)
-                {
-                    _lanChargeAlertShownThisCycle = false;
-                }
-                else if (level >= limit && !_lanChargeAlertShownThisCycle)
-                {
-                    _lanChargeAlertShownThisCycle = true;
-                    NativeAlertPayload alert = new NativeAlertPayload
-                    {
-                        emoji = $"🔋 {level}%",
-                        title = $"وصل شحن {device} إلى {level}% — افصل الشاحن الآن",
-                        sourceLabel = "تنبيه الشحن الذكي (LAN)",
-                        time12h = DateTime.Now.ToString("hh:mm tt"),
-                        category = "charge",
-                        isHydration = false,
-                        isContinuous = true,
-                        durationSeconds = 120,
-                    };
-                    ShowSecondaryMonitorAlert(alert);
-                    if (_activeToastForm != null)
-                    {
-                        _activeToastForm.Tag = "charge";
-                    }
-                }
-            });
         }
 
         private void RunOnUi(Action action)
