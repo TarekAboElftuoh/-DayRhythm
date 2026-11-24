@@ -291,7 +291,14 @@ export interface DeletedWorkspaceSnapshot {
 export interface WorkspaceSyncSignal {
   opId: string;
   clientId: string;
-  scope: 'calendar' | 'tasks' | 'all' | 'alarm_dismiss' | 'alarm_trigger';
+  scope:
+    | 'calendar'
+    | 'tasks'
+    | 'all'
+    | 'alarm_dismiss'
+    | 'alarm_trigger'
+    | 'schedule_blocks'
+    | 'clear_notifications';
   action: string;
   timestampMs: number;
   extra?: Record<string, unknown>;

@@ -13,6 +13,7 @@ import {
 import { ActiveTab, AppLanguage, APP_VERSION } from '../types/dayrhythm';
 import { t } from '../engines/i18n';
 import { PWAInstallButton } from './PWAInstallButton';
+import { subscribeSocketConnectStatus } from '../services/socketService';
 
 interface TopBarProps {
   activeTab: ActiveTab;
@@ -46,11 +47,16 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleSunMode,
 }) => {
   const [isMobileEnv, setIsMobileEnv] = useState<boolean>(detectIsMobileEnvironment);
+  const [isSocketLive, setIsSocketLive] = useState(false);
 
   useEffect(() => {
     const onResize = () => setIsMobileEnv(detectIsMobileEnvironment());
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const unsub = subscribeSocketConnectStatus(setIsSocketLive);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      unsub();
+    };
   }, []);
 
   // Platform-aware navigation: zero cross-platform clutter, zero technical architecture tab
@@ -131,6 +137,25 @@ export const TopBar: React.FC<TopBarProps> = ({
             >
               {APP_VERSION}
             </span>
+            <div
+              className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-medium select-none ${
+                isSocketLive
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                  : 'border-zinc-700/40 bg-zinc-800/30 text-zinc-500'
+              }`}
+              title={
+                isSocketLive
+                  ? 'المزامنة اللحظية متصلة (<50ms بين الموبايل والكمبيوتر)'
+                  : 'جارٍ الاتصال بموزع المزامنة اللحظية...'
+              }
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  isSocketLive ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'
+                }`}
+              />
+              <span className="hidden sm:inline">{isSocketLive ? 'لحظي' : 'غير متصل'}</span>
+            </div>
           </div>
 
           {/* Zone 2: Clean Single-Line Navigation (Desktop) with Motion Layout Pill */}

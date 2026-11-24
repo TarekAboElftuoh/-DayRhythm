@@ -83,6 +83,7 @@ export interface UserSettingsPayload {
     action: string;
     clientId: string;
   };
+  lanSocketUrl?: string;
   updatedAtMs?: number;
 }
 

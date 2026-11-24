@@ -2,8 +2,10 @@ import express from 'express';
 import http from 'http';
 import path from 'path';
 import crypto from 'crypto';
+import os from 'os';
 import dotenv from 'dotenv';
 import { WebSocketServer, WebSocket } from 'ws';
+import { Server as SocketIOServer } from 'socket.io';
 import { calendar } from '@googleapis/calendar';
 import {
   Content,
@@ -22,6 +24,19 @@ import {
 dotenv.config();
 
 const PORT = Number(process.env.PORT || 3000);
+
+export function getLocalLanIps(): string[] {
+  const interfaces = os.networkInterfaces();
+  const ips: string[] = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const net of interfaces[name] ?? []) {
+      if (net.family === 'IPv4' && !net.internal) {
+        ips.push(net.address);
+      }
+    }
+  }
+  return ips;
+}
 
 interface SyncClientEntry {
   ws: WebSocket;
@@ -808,6 +823,17 @@ async function startServer() {
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
       wsSyncRooms: syncRooms.size,
       serverTimeIso: new Date().toISOString(),
+    });
+  });
+
+  app.get('/api/lan-server-info', (_req, res) => {
+    const ips = getLocalLanIps();
+    const primaryIp = ips[0] || 'localhost';
+    res.json({
+      port: PORT,
+      localIps: ips,
+      primaryUrl: `http://${primaryIp}:${PORT}`,
+      socketPath: '/socket.io',
     });
   });
 
@@ -3244,6 +3270,101 @@ async function startServer() {
 
   const httpServer = http.createServer(app);
 
+  // Real-Time Cross-Device Sync with Socket.IO (<50ms ultra-low-latency sync across devices)
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: '*',
+      methods: ['GET', 'POST'],
+    },
+    transports: ['websocket', 'polling'],
+    pingTimeout: 20000,
+    pingInterval: 10000,
+  });
+
+  io.on('connection', (socket) => {
+    let currentRoom = '';
+
+    socket.on('join', (data: { uid?: string; clientId?: string }) => {
+      const uid = typeof data?.uid === 'string' ? data.uid.trim() : '';
+      if (!uid || uid.length > 128) return;
+      if (currentRoom) {
+        void socket.leave(currentRoom);
+      }
+      currentRoom = `user_${uid}`;
+      void socket.join(currentRoom);
+      socket.data.uid = uid;
+      socket.data.clientId = String(data?.clientId ?? 'anon').slice(0, 64);
+      socket.emit('joined', { uid, room: currentRoom, clientId: socket.data.clientId });
+
+      const cachedBattery = latestBatteryByUid.get(uid);
+      if (cachedBattery) {
+        socket.emit('battery', { clientId: 'server_cache', battery: cachedBattery });
+      }
+    });
+
+    socket.on('settings_update', (data: { uid?: string; clientId?: string; settings?: unknown; timestampMs?: number }) => {
+      const uid = typeof data?.uid === 'string' ? data.uid.trim() : (socket.data.uid as string | undefined);
+      if (!uid || !data?.settings) return;
+      const room = `user_${uid}`;
+      const payload = {
+        uid,
+        clientId: data.clientId || socket.data.clientId || 'unknown',
+        settings: data.settings,
+        timestampMs: data.timestampMs || Date.now(),
+      };
+      socket.to(room).emit('settings_update', payload);
+    });
+
+    socket.on('alarm_signal', (data: { uid?: string; clientId?: string; signal?: unknown; timestampMs?: number }) => {
+      const uid = typeof data?.uid === 'string' ? data.uid.trim() : (socket.data.uid as string | undefined);
+      if (!uid || !data?.signal) return;
+      const room = `user_${uid}`;
+      socket.to(room).emit('alarm_signal', {
+        uid,
+        clientId: data.clientId || socket.data.clientId || 'unknown',
+        signal: data.signal,
+        timestampMs: data.timestampMs || Date.now(),
+      });
+    });
+
+    socket.on('battery', (data: { uid?: string; clientId?: string; battery?: Partial<ServerBatterySnapshot> }) => {
+      const uid = typeof data?.uid === 'string' ? data.uid.trim() : (socket.data.uid as string | undefined);
+      if (!uid || !data?.battery || typeof data.battery !== 'object') return;
+      const rawLvl = Number(data.battery.levelPct);
+      if (Number.isFinite(rawLvl)) {
+        const snapshot: ServerBatterySnapshot = {
+          levelPct: Math.max(0, Math.min(100, Math.round(rawLvl))),
+          charging: Boolean(data.battery.charging),
+          chargeLimitPct: Math.max(60, Math.min(100, Math.round(Number(data.battery.chargeLimitPct) || 90))),
+          updatedAtMs: Date.now(),
+          deviceLabel: String(data.battery.deviceLabel ?? 'الهاتف').trim().slice(0, 40) || 'الهاتف',
+        };
+        latestBatteryByUid.set(uid, snapshot);
+        socket.to(`user_${uid}`).emit('battery', {
+          clientId: data.clientId || socket.data.clientId || 'unknown',
+          battery: snapshot,
+        });
+      }
+    });
+
+    socket.on('sync_event', (data: { uid?: string; clientId?: string; event?: unknown; timestampMs?: number }) => {
+      const uid = typeof data?.uid === 'string' ? data.uid.trim() : (socket.data.uid as string | undefined);
+      if (!uid) return;
+      socket.to(`user_${uid}`).emit('sync_event', {
+        uid,
+        clientId: data.clientId || socket.data.clientId || 'unknown',
+        event: data.event,
+        timestampMs: data.timestampMs || Date.now(),
+      });
+    });
+
+    socket.on('disconnect', () => {
+      if (currentRoom) {
+        void socket.leave(currentRoom);
+      }
+    });
+  });
+
   // Real-Time Cross-Device Sync + Ultra-Low-Latency Gemini Chat WebSocket Hub (/ws/sync) on port 3000
   // Disable perMessageDeflate + enable TCP_NODELAY so chat token deltas flush immediately with zero buffering delay
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
@@ -3520,7 +3641,12 @@ export class ErrorOverlay extends HTMLElement {}
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`DayRhythm server listening on http://0.0.0.0:${PORT}`);
+    const lanIps = getLocalLanIps();
+    console.log(`📡 DayRhythm server listening on http://0.0.0.0:${PORT}`);
+    console.log(`   - PC Local URL:   http://localhost:${PORT}`);
+    lanIps.forEach((ip) => {
+      console.log(`   - Mobile LAN URL: http://${ip}:${PORT}`);
+    });
   });
 }
 

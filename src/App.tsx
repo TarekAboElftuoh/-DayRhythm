@@ -103,6 +103,14 @@ import {
   deleteTasksVaultListIfPresent,
   type UserSettingsPayload,
 } from './services/cloudStateService';
+import {
+  initSocketClient,
+  emitSocketSettings,
+  emitSocketAlarmSignal,
+  emitSocketBattery,
+  emitSocketSyncEvent,
+  reconnectSocket,
+} from './services/socketService';
 
 type TasksVaultPayload = UserSettingsPayload;
 const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
@@ -1590,11 +1598,6 @@ export default function App() {
     };
   }, [activeTimeZone]);
 
-  const handleClearSilentNotifications = useCallback(() => {
-    setSilentNotifications([]);
-    showToast('تم مسح الإشعارات الصامتة المحفوظة ✓');
-  }, [showToast]);
-
   const emitCrossDeviceSync = useCallback(
     (
       scope: WorkspaceSyncSignal['scope'],
@@ -1616,7 +1619,13 @@ export default function App() {
         timestampMs,
       };
 
-
+      if (firebaseUser?.uid) {
+        if (scope === 'alarm_dismiss' || action?.includes('dismiss')) {
+          emitSocketAlarmSignal(firebaseUser.uid, clientIdRef.current, packet);
+        } else {
+          emitSocketSyncEvent(firebaseUser.uid, clientIdRef.current, packet);
+        }
+      }
 
       if (typeof BroadcastChannel !== 'undefined') {
         try {
@@ -1651,6 +1660,12 @@ export default function App() {
     },
     [firebaseUser?.uid, firebaseUser?.emailVerified, firebaseUser?.providerData, firestoreSynced]
   );
+
+  const handleClearSilentNotifications = useCallback(() => {
+    setSilentNotifications([]);
+    emitCrossDeviceSync('clear_notifications', 'clear');
+    showToast('تم مسح الإشعارات الصامتة المحفوظة ✓');
+  }, [emitCrossDeviceSync, showToast]);
 
   const stopNativeAlerts = useCallback(() => {
     try {
@@ -3251,6 +3266,23 @@ export default function App() {
         return;
       }
 
+      if (payload.scope === 'schedule_blocks') {
+        const extraId = payload.extra?.blockId as string | undefined;
+        if (payload.action === 'delete' && extraId) {
+          setOfflineBlocks((prev) => prev.map((b) => (b.id === extraId ? { ...b, deleted: true } : b)));
+        } else if (payload.action === 'restore' && extraId) {
+          setOfflineBlocks((prev) => prev.map((b) => (b.id === extraId ? { ...b, deleted: false } : b)));
+        } else if (payload.action === 'restore_all') {
+          setOfflineBlocks((prev) => prev.map((b) => ({ ...b, deleted: false })));
+        }
+        return;
+      }
+
+      if (payload.scope === 'clear_notifications') {
+        setSilentNotifications([]);
+        return;
+      }
+
       if (payload.action === 'undo_restore') {
         setLastDeletedWorkspaceItem(null);
       } else if (payload.undoSnapshot) {
@@ -3812,7 +3844,10 @@ export default function App() {
         timestampMs: Date.now(),
       };
 
-
+      const uid = firebaseUser?.uid;
+      if (uid) {
+        emitSocketSettings(uid, clientIdRef.current, payload);
+      }
 
       if (typeof BroadcastChannel !== 'undefined') {
         try {
@@ -3833,7 +3868,6 @@ export default function App() {
         return;
       }
 
-      const uid = firebaseUser?.uid;
       if (!uid || firebaseUser?.isAnonymous) return;
 
       try {
@@ -4010,7 +4044,16 @@ export default function App() {
           }
         }
 
-        // B) Real-time settings & rhythm live sync from other devices
+        // B) Auto-Connect Mobile to PC LAN Hub if URL received from cloud
+        if ((remote as any).lanSocketUrl && typeof (remote as any).lanSocketUrl === 'string') {
+          const lanUrl = (remote as any).lanSocketUrl as string;
+          if (lanUrl.startsWith('http')) {
+            syncSavedCloudApiUrlFromRemote(lanUrl);
+            reconnectSocket();
+          }
+        }
+
+        // C) Real-time settings & rhythm live sync from other devices
         const remoteOrigin = remote.originClientId || (remote as any).clientId;
         if (remoteOrigin && remoteOrigin === clientIdRef.current) {
           // Never re-apply our own writes!
@@ -4031,6 +4074,92 @@ export default function App() {
       unsubscribe();
     };
   }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging, applyOrDefer]);
+
+  // ── Auto-Detect PC LAN IP on local server and publish to Firestore for Mobile Auto-Discovery ──
+  useEffect(() => {
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) return;
+    if (detectIsMobileDeviceClient()) return;
+
+    fetch('http://localhost:3000/api/lan-server-info', { signal: AbortSignal.timeout(3000) })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((info: { primaryUrl?: string } | null) => {
+        if (info?.primaryUrl && info.primaryUrl.startsWith('http')) {
+          console.info('[LAN Hub] PC LAN Hub auto-detected at:', info.primaryUrl);
+          syncSavedCloudApiUrlFromRemote(info.primaryUrl);
+          void saveCloudUserSettings(uid, {
+            lanSocketUrl: info.primaryUrl,
+          });
+        }
+      })
+      .catch(() => {});
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous]);
+
+  // ── Ultra-Low-Latency Real-Time Sync Hub via Socket.io (<50ms) ──
+  useEffect(() => {
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) return;
+
+    initSocketClient(uid, clientIdRef.current, {
+      onSettingsUpdate: (remoteSettings) => {
+        if (!remoteSettings) return;
+        console.info('[Socket.io] Instant remote settings received — applying now');
+        applyOrDefer(remoteSettings as Parameters<typeof applyOrDefer>[0]);
+      },
+      onAlarmSignal: (signal) => {
+        const sig = signal as { scope?: string; action?: string; timestampMs?: number; extra?: unknown };
+        if (!sig) return;
+        if (sig.scope === 'alarm_dismiss' || sig.action?.includes('dismiss')) {
+          console.info('[Socket.io] Remote alarm dismiss signal received');
+          stopContinuousAlert();
+          stopNativeAlerts();
+          setActiveAudioAlert(null);
+          setPersistentAlert(null);
+          setAlarmRinging(false);
+          try {
+            const bridge = (
+              window as Window & {
+                DayRhythmNative?: {
+                  dismissActiveAlerts?: () => void;
+                  stopNativeAlarmSound?: () => void;
+                };
+              }
+            ).DayRhythmNative;
+            bridge?.stopNativeAlarmSound?.();
+            bridge?.dismissActiveAlerts?.();
+          } catch {
+            // ignore bridge
+          }
+          if (sig.action === 'native_done' && sig.extra) {
+            const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string };
+            if (extra.kind === 'water') {
+              handleLogWaterCupRef.current();
+            } else if (extra.kind === 'medication' && extra.medId) {
+              handleToggleMedicationRef.current(extra.medId, extra.doseTime);
+            }
+          }
+        }
+      },
+      onBattery: (battery) => {
+        const b = battery as Partial<PhoneBatteryTelemetry>;
+        if (b && typeof b.levelPct === 'number') {
+          setPhoneBattery({
+            levelPct: Math.max(0, Math.min(100, Math.round(b.levelPct))),
+            charging: Boolean(b.charging),
+            chargeLimitPct: b.chargeLimitPct || phoneChargeLimitRef.current,
+            chargeTimeRemainingMin: b.chargeTimeRemainingMin ?? -1,
+            updatedAtMs: Date.now(),
+            deviceLabel: b.deviceLabel || 'الهاتف',
+          });
+        }
+      },
+      onSyncEvent: (event) => {
+        if (event && typeof event === 'object') {
+          handleIncomingRemoteSyncRef.current(event as Parameters<typeof handleIncomingRemoteSyncRef.current>[0]);
+        }
+      },
+    });
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, applyOrDefer]);
 
   // Requirement 1 & Finding 3: Load user settings from cloud with strict priority over defaults & offline protection
   useEffect(() => {
@@ -6301,6 +6430,7 @@ export default function App() {
     setOfflineBlocks((prev) =>
       prev.map((b) => (b.id === id ? { ...b, deleted: true } : b))
     );
+    emitCrossDeviceSync('schedule_blocks', 'delete', undefined, { blockId: id });
     if (target) {
       setLastDeletedBlock(target);
       setShakeUndoSecondsLeft(8);
@@ -6322,10 +6452,12 @@ export default function App() {
     setOfflineBlocks((prev) =>
       prev.map((b) => (b.id === id ? { ...b, deleted: false } : b))
     );
+    emitCrossDeviceSync('schedule_blocks', 'restore', undefined, { blockId: id });
   };
 
   const handleRestoreAllDeleted = () => {
     setOfflineBlocks((prev) => prev.map((b) => ({ ...b, deleted: false })));
+    emitCrossDeviceSync('schedule_blocks', 'restore_all');
   };
 
   const handleSweepOldTombstones = () => {
@@ -7004,7 +7136,9 @@ export default function App() {
         lastSentKey = dedupeKey;
       }
 
-
+      if (changed && firebaseUser?.uid) {
+        emitSocketBattery(firebaseUser.uid, clientIdRef.current, snapshot);
+      }
 
       // Persist in Firestore immediately on first sync, on any change, or every 45s while charging
       if (
