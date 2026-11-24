@@ -63,6 +63,7 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     public static final String PREFS_NAME = "dayrhythm_mobile_prefs";
     public static final String KEY_REMOTE_WS_URL = "remote_ws_url";
+    public static volatile MainActivity activeInstance = null;
     private static final String KEY_BATTERY_PROMPTED = "battery_prompted_once";
     private static final String APP_HOST = "gen-lang-client-0625331922.web.app";
     private static final String APP_ORIGIN = "https://gen-lang-client-0625331922.web.app/index.html";
@@ -182,8 +183,20 @@ public class MainActivity extends Activity {
         }
     }
 
+    public void evaluateJavascriptInWebView(String script) {
+        if (webView != null && script != null) {
+            webView.post(() -> {
+                try {
+                    webView.evaluateJavascript(script, null);
+                } catch (Exception ignored) {
+                }
+            });
+        }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        activeInstance = this;
         super.onCreate(savedInstanceState);
         setVolumeControlStream(android.media.AudioManager.STREAM_ALARM);
 
@@ -420,6 +433,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (activeInstance == this) activeInstance = null;
         CookieManager.getInstance().flush();
         try {
             unregisterReceiver(nativeEventsReceiver);

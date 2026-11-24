@@ -53,12 +53,18 @@ public final class CloudSignalClient {
     private CloudSignalClient() {
     }
 
-    /** {apiKey, projectId, databaseId, uid, refreshToken} from the web app. */
+    /** {apiKey, projectId, databaseId, uid, refreshToken, idToken} from the web app. */
     public static void saveAuth(Context context, String json) {
         try {
-            new JSONObject(json); // validate
+            JSONObject o = new JSONObject(json); // validate
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_AUTH, json).apply();
-            idToken = null;
+            String directId = o.optString("idToken", "");
+            if (!directId.isEmpty()) {
+                idToken = directId;
+                idTokenExpiresAtMs = System.currentTimeMillis() + 3500_000L;
+            } else {
+                idToken = null;
+            }
         } catch (Exception ignored) {
         }
     }
@@ -68,7 +74,7 @@ public final class CloudSignalClient {
             String raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_AUTH, null);
             if (raw == null) return null;
             JSONObject o = new JSONObject(raw);
-            if (o.optString("refreshToken").isEmpty() || o.optString("uid").isEmpty()) return null;
+            if (o.optString("uid").isEmpty()) return null;
             return o;
         } catch (Exception e) {
             return null;
@@ -77,16 +83,30 @@ public final class CloudSignalClient {
 
     private static String getIdToken(Context context, JSONObject auth) throws Exception {
         if (idToken != null && System.currentTimeMillis() < idTokenExpiresAtMs - 60_000L) return idToken;
+        String directId = auth.optString("idToken", "");
+        if (!directId.isEmpty() && idToken == null) {
+            idToken = directId;
+            idTokenExpiresAtMs = System.currentTimeMillis() + 1800_000L;
+            return idToken;
+        }
+        String refresh = auth.optString("refreshToken", "");
+        if (refresh.isEmpty()) {
+            if (idToken != null) return idToken;
+            throw new IllegalStateException("no token available");
+        }
         RequestBody form = new FormBody.Builder()
                 .add("grant_type", "refresh_token")
-                .add("refresh_token", auth.getString("refreshToken"))
+                .add("refresh_token", refresh)
                 .build();
         Request req = new Request.Builder()
                 .url("https://securetoken.googleapis.com/v1/token?key=" + auth.getString("apiKey"))
                 .post(form)
                 .build();
         try (Response res = HTTP.newCall(req).execute()) {
-            if (!res.isSuccessful() || res.body() == null) throw new IllegalStateException("token " + res.code());
+            if (!res.isSuccessful() || res.body() == null) {
+                if (idToken != null) return idToken;
+                throw new IllegalStateException("token " + res.code());
+            }
             JSONObject j = new JSONObject(res.body().string());
             idToken = j.getString("id_token");
             idTokenExpiresAtMs = System.currentTimeMillis() + j.optLong("expires_in", 3600) * 1000L;
@@ -142,11 +162,17 @@ public final class CloudSignalClient {
                 JSONObject write2 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth) + "/sync/live")
-                                .put("fields", liveFields))
-                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray()
-                                .put("opId").put("clientId").put("status").put("dismissedBy").put("dismissedAtMs").put("type").put("action").put("timestampMs")));
+                                .put("fields", liveFields));
 
-                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
+                JSONObject write3 = new JSONObject()
+                        .put("update", new JSONObject()
+                                .put("name", docName(auth) + "/active_alarms/all")
+                                .put("fields", new JSONObject()
+                                        .put("status", new JSONObject().put("stringValue", "dismissed"))
+                                        .put("dismissedByClientId", new JSONObject().put("stringValue", CLIENT_ID))
+                                        .put("dismissedAtMs", new JSONObject().put("integerValue", String.valueOf(now)))));
+
+                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2).put(write3));
 
                 Request req = new Request.Builder()
                         .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
@@ -156,6 +182,12 @@ public final class CloudSignalClient {
                         .build();
                 try (Response res = HTTP.newCall(req).execute()) {
                     android.util.Log.d("CloudSignalClient", "sendAlarmDismiss status=" + res.code());
+                }
+
+                if (MainActivity.activeInstance != null) {
+                    MainActivity.activeInstance.evaluateJavascriptInWebView(
+                            "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+                    );
                 }
             } catch (Exception e) {
                 android.util.Log.e("CloudSignalClient", "sendAlarmDismiss error", e);
@@ -300,7 +332,6 @@ public final class CloudSignalClient {
                 }
                 JSONObject auth = readAuth(app);
                 if (auth == null) {
-                    stopWatching();
                     return;
                 }
                 String token = getIdToken(app, auth);
@@ -373,7 +404,7 @@ public final class CloudSignalClient {
             } catch (Throwable t) {
                 android.util.Log.e("CloudSignalClient", "watchForRemoteDismiss error", t);
             }
-        }, 100, 500, TimeUnit.MILLISECONDS);
+        }, 50, 250, TimeUnit.MILLISECONDS);
     }
 
     public static synchronized void stopWatching() {

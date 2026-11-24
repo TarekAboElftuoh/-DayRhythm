@@ -439,7 +439,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [newEvTitle, setNewEvTitle] = useState('');
   const [newEvDate, setNewEvDate] = useState(() => getDateIsoInTimeZone(activeTimeZone));
   const [newEvHour12, setNewEvHour12] = useState<number>(4);
-  const [newEvMinute, setNewEvMinute] = useState<number>(0);
+  const [newEvMinute, setNewEvMinute] = useState<string>('');
   const [newEvPeriod, setNewEvPeriod] = useState<'AM' | 'PM'>('PM');
   const [newEvDuration, setNewEvDuration] = useState<number>(0);
   const [newEvConfirmStep, setNewEvConfirmStep] = useState(false);
@@ -453,7 +453,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [showAddMedForm, setShowAddMedForm] = useState(false);
   const [newMedName, setNewMedName] = useState('');
   const [newMedHour12, setNewMedHour12] = useState<number>(8);
-  const [newMedMinute, setNewMedMinute] = useState<number>(0);
+  const [newMedMinute, setNewMedMinute] = useState<string>('');
   const [newMedPeriod, setNewMedPeriod] = useState<'AM' | 'PM'>('AM');
   const [newMedTimes24, setNewMedTimes24] = useState<string[]>([]);
   const [newMedDaysOfWeek, setNewMedDaysOfWeek] = useState<number[]>([]);
@@ -952,7 +952,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const applyTime24To12hPicker = (
     time24: string,
     setHour12: React.Dispatch<React.SetStateAction<number>>,
-    setMinute: React.Dispatch<React.SetStateAction<number>>,
+    setMinute: React.Dispatch<React.SetStateAction<string>>,
     setPeriod: React.Dispatch<React.SetStateAction<'AM' | 'PM'>>
   ) => {
     const match = time24.match(/^(\d{1,2}):(\d{2})$/);
@@ -962,7 +962,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setPeriod(h24 >= 12 ? 'PM' : 'AM');
     const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
     setHour12(h12);
-    setMinute(Math.max(0, Math.min(59, min)));
+    setMinute(min === 0 ? '' : String(min).padStart(2, '0'));
   };
 
   const newMedCurrentTime24 = useMemo(() => {
@@ -2102,6 +2102,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     type="button"
                     onClick={() => {
                       setNewEvConfirmStep(false);
+                      setNewEvMinute('');
                       setNewEventModalOpen(true);
                     }}
                     className="min-h-[34px] px-3 py-1 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer whitespace-nowrap transition-colors"
@@ -3565,15 +3566,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </select>
                     <span className="text-zinc-500 font-mono-tabular">:</span>
                     <input
-                      type="number"
-                      min={0}
-                      max={59}
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={2}
                       value={newMedMinute}
+                      placeholder="mm"
                       onChange={(e) => {
-                        const v = Number(e.target.value);
-                        setNewMedMinute(Number.isFinite(v) ? Math.max(0, Math.min(59, v)) : 0);
+                        const val = e.target.value.replace(/\D/g, '');
+                        if (val === '') {
+                          setNewMedMinute('');
+                          return;
+                        }
+                        const v = Number(val);
+                        setNewMedMinute(Number.isFinite(v) ? (v > 59 ? '59' : val.slice(0, 2)) : '');
                       }}
-                      className="w-14 rounded-lg border border-white/12 bg-black px-2 py-1 text-center text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                      className="w-14 rounded-lg border border-white/12 bg-black px-2 py-1 text-center text-white placeholder:text-zinc-500 placeholder:font-normal font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
                       aria-label="الدقائق"
                     />
                     <button
@@ -4341,7 +4349,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               const shiftEvMinutes = (deltaMin: number) => {
                 let h24 = newEvHour12 % 12;
                 if (newEvPeriod === 'PM') h24 += 12;
-                const total = (((h24 * 60 + newEvMinute + deltaMin) % 1440) + 1440) % 1440;
+                const total = (((h24 * 60 + (Number(newEvMinute) || 0) + deltaMin) % 1440) + 1440) % 1440;
                 const nh = Math.floor(total / 60);
                 const nm = total % 60;
                 applyTime24To12hPicker(
@@ -4476,15 +4484,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             ))}
                           </select>
                           <input
-                            type="number"
-                            min={0}
-                            max={59}
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            maxLength={2}
                             value={newEvMinute}
+                            placeholder="mm"
                             onChange={(e) => {
-                              const v = Number(e.target.value);
-                              setNewEvMinute(Number.isFinite(v) ? Math.max(0, Math.min(59, v)) : 0);
+                              const val = e.target.value.replace(/\D/g, '');
+                              if (val === '') {
+                                setNewEvMinute('');
+                                return;
+                              }
+                              const v = Number(val);
+                              setNewEvMinute(Number.isFinite(v) ? (v > 59 ? '59' : val.slice(0, 2)) : '');
                             }}
-                            className="rounded-lg border border-white/15 bg-black/75 px-2 py-2 text-center text-white font-mono-tabular text-sm font-bold focus:outline-none focus:border-[#7FFFD4]"
+                            className="rounded-lg border border-white/15 bg-black/75 px-2 py-2 text-center text-white placeholder:text-zinc-500 placeholder:font-normal font-mono-tabular text-sm font-bold focus:outline-none focus:border-[#7FFFD4]"
                             aria-label="الدقائق"
                           />
                           <div className="grid grid-cols-2 gap-0.5 p-0.5 rounded-lg border border-white/15 bg-black/75">

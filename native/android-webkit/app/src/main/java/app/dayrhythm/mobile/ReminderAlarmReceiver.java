@@ -890,6 +890,11 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             context.sendBroadcast(close);
         } catch (Exception ignored) {
         }
+        if (MainActivity.activeInstance != null) {
+            MainActivity.activeInstance.evaluateJavascriptInWebView(
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+            );
+        }
     }
 
     public static void cancelAllActiveAlarms(Context context) {

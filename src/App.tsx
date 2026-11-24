@@ -114,6 +114,9 @@ type TasksVaultPayload = UserSettingsPayload;
 const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
 const SYNC_TASK_TITLE = 'sync_state';
 import {
+  auth,
+  firebaseConfig,
+  configuredDbId,
   DEFAULT_CREATIVE_ACTIVITIES,
   DEFAULT_DEVICE_SETTINGS,
   DEFAULT_MEDICATIONS,
@@ -1729,15 +1732,21 @@ export default function App() {
     });
 
     // Requirement 3 & Spotify Connect: Real-time cloud alarm dismissal across all connected devices
-    if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-      void setCloudAlertSession(firebaseUser.uid, {
+    const effectiveUid =
+      firebaseUser?.uid ||
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+      '';
+    if (effectiveUid) {
+      void setCloudAlertSession(effectiveUid, {
         status: 'dismissed',
         alertId,
         blockId: dismissedBlockId,
         dismissedBy: clientIdRef.current,
         dismissedAtMs: Date.now(),
       });
-      void dismissActiveAlarmInCloud(firebaseUser.uid, alertId, clientIdRef.current);
+      void dismissActiveAlarmInCloud(effectiveUid, alertId, clientIdRef.current);
     }
 
     if (hadAlert) {
@@ -2774,15 +2783,43 @@ export default function App() {
   useEffect(() => {
     const native = (window as Window & { DayRhythmNative?: { setCloudAuth?: (json: string) => void } })
       .DayRhythmNative;
-    if (!native?.setCloudAuth || !firebaseUser?.uid) return;
-    const payload = getNativeCloudAuthPayload();
-    if (!payload) return;
-    try {
-      native.setCloudAuth(payload);
-    } catch {
-      // older APK without this bridge method
-    }
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified]);
+    if (!native?.setCloudAuth) return;
+    const effectiveUid =
+      firebaseUser?.uid ||
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
+    if (!effectiveUid) return;
+
+    void (async () => {
+      let idToken: string | undefined;
+      try {
+        idToken = await auth.currentUser?.getIdToken();
+      } catch {
+        // ignore token error
+      }
+      const rawPayload = getNativeCloudAuthPayload();
+      let payloadObj: Record<string, unknown> = {};
+      if (rawPayload) {
+        try {
+          payloadObj = JSON.parse(rawPayload);
+        } catch {}
+      } else {
+        payloadObj = {
+          apiKey: firebaseConfig.apiKey,
+          projectId: firebaseConfig.projectId,
+          databaseId: (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId || 'ai-studio-dayrhythm-1f2dd321-5d9e-4566-bb4c-87a3962fa6f7',
+          uid: effectiveUid,
+        };
+      }
+      if (idToken) payloadObj.idToken = idToken;
+      try {
+        native?.setCloudAuth?.(JSON.stringify(payloadObj));
+      } catch {
+        // older APK without this bridge method
+      }
+    })();
+  }, [firebaseUser?.uid, authUser?.uid]);
 
   // Keep the Android service's charge-limit alert in sync with the app setting.
   useEffect(() => {
@@ -4029,23 +4066,12 @@ export default function App() {
           return;
         }
 
-        // Match dismissal strictly against the currently active alert or a dismissal that happened AFTER this alert started ringing!
+        // Match dismissal: if ANY alert is active on this device and another device dismissed an alarm
         const relevantDismissal = alarms.find((a) => {
           if (a.status !== 'dismissed') return false;
           if (a.dismissedByClientId === clientIdRef.current) return false;
           if (handledDismissedAlarmIdsRef.current.has(a.id)) return false;
-
-          // 1. Direct ID match
-          if (currentAlertId && (a.id === currentAlertId || a.id === 'all' || a.id === 'latest_dismiss')) {
-            return true;
-          }
-
-          // 2. Timestamp match: dismissal happened after or around the time our alert fired
-          if (a.dismissedAtMs && currentFiredAtMs > 0 && a.dismissedAtMs >= currentFiredAtMs - 3000) {
-            return true;
-          }
-
-          return false;
+          return true;
         });
 
         if (relevantDismissal) {
@@ -8743,6 +8769,21 @@ export default function App() {
         setActiveAudioAlert(null);
         setPersistentAlert(null);
         setAlarmRinging(false);
+        const effectiveUid =
+          firebaseUser?.uid ||
+          authUser?.uid ||
+          auth.currentUser?.uid ||
+          localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+          '';
+        if (effectiveUid) {
+          void setCloudAlertSession(effectiveUid, {
+            status: 'dismissed',
+            alertId: 'all',
+            dismissedBy: clientIdRef.current,
+            dismissedAtMs: Date.now(),
+          });
+          void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
+        }
         emitCrossDeviceSync('alarm_dismiss', 'native_action');
         showToast(`✓ تمت مزامنة ${items.length} إجراء وإيقاف التنبيه على أجهزتك`);
       } catch {

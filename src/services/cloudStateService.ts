@@ -554,15 +554,35 @@ export async function setCloudAlertSession(
   if (!uid) return false;
   try {
     const liveDocRef = doc(db, 'users', uid, 'sync', 'live');
+    const nowMs = Date.now();
     const payload: Record<string, unknown> = {
       ...session,
       // Map to legacy type for backwards compatibility with native Java / older clients
       type: session.status === 'dismissed' ? 'alarm_dismiss' : session.status === 'ringing' ? 'alarm_trigger' : 'settings_patch',
-      timestampMs: session.status === 'dismissed' ? (session.dismissedAtMs || Date.now()) : (session.startedAtMs || Date.now()),
+      timestampMs: session.status === 'dismissed' ? (session.dismissedAtMs || nowMs) : (session.startedAtMs || nowMs),
       clientId: session.originClientId || session.dismissedBy || 'unknown',
       serverTime: serverTimestamp(),
     };
     await setDoc(liveDocRef, payload, { merge: true });
+
+    // Also update users/{uid}.syncSignal immediately so any client watching syncSignal catches it
+    if (session.status === 'dismissed') {
+      const userDocRef = doc(db, 'users', uid);
+      await setDoc(
+        userDocRef,
+        {
+          syncSignal: {
+            scope: 'alarm_dismiss',
+            action: 'dismiss',
+            clientId: session.dismissedBy || 'unknown',
+            timestampMs: session.dismissedAtMs || nowMs,
+            opId: `ses_dism_${nowMs}`,
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      ).catch(() => {});
+    }
     return true;
   } catch (err) {
     console.warn('[CloudAlertSession] Failed setting alert session:', err);

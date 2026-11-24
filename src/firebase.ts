@@ -57,9 +57,11 @@ import { DEFAULT_SOUND_REPEATS } from './engines/audioEngine';
 export const app =
   getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
 
-const configuredDbId =
+export const configuredDbId =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-dayrhythm-1f2dd321-5d9e-4566-bb4c-87a3962fa6f7';
+
+export { firebaseConfig };
 
 /**
  * What the Android background service needs to send/receive the "alarm dismissed" signal on its

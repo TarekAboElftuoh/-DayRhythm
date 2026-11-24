@@ -381,6 +381,11 @@ public class AlarmActivity extends Activity {
 
     private void sendDoneAction() {
         CloudSignalClient.sendAlarmDismiss(this, "native_done");
+        if (MainActivity.activeInstance != null) {
+            MainActivity.activeInstance.evaluateJavascriptInWebView(
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+            );
+        }
         Intent src = getIntent();
         Intent i = new Intent(this, ReminderAlarmReceiver.class);
         i.setAction(ReminderAlarmReceiver.ACTION_MARK_DONE);
@@ -391,6 +396,11 @@ public class AlarmActivity extends Activity {
 
     private void sendSnoozeAction(int minutes) {
         CloudSignalClient.sendAlarmDismiss(this, "native_snooze");
+        if (MainActivity.activeInstance != null) {
+            MainActivity.activeInstance.evaluateJavascriptInWebView(
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+            );
+        }
         Intent src = getIntent();
         Intent i = new Intent(this, ReminderAlarmReceiver.class);
         i.setAction(ReminderAlarmReceiver.ACTION_SNOOZE);
@@ -402,6 +412,11 @@ public class AlarmActivity extends Activity {
 
     private void sendDismissAction() {
         CloudSignalClient.sendAlarmDismiss(this, "native_dismiss");
+        if (MainActivity.activeInstance != null) {
+            MainActivity.activeInstance.evaluateJavascriptInWebView(
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+            );
+        }
         Intent src = getIntent();
         Intent i = new Intent(this, ReminderAlarmReceiver.class);
         i.setAction(ReminderAlarmReceiver.ACTION_DISMISS);
