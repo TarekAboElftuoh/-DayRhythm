@@ -1,9 +1,10 @@
 # DayRhythm Agent Engineering Constitution
 
-This repository adheres strictly to three foundational agent frameworks:
+This repository adheres strictly to four foundational agent frameworks:
 1. **Julius Brussee's Caveman** (Terse communication, token conservation, surgical patching, lean builds)
 2. **Matt Pocock's Engineering Skills** (Deep modules, rigorous domain modeling, TDD, zero `as` assertions)
 3. **Jesse Vincent's Superpowers** (Systematic debugging, disciplined plan execution, verification before completion)
+4. **Dietrich Gebert's Ponytail** (Lazy senior dev mode: smallest complete change, YAGNI, least new code, deletion beats addition)
 
 ---
 
@@ -38,7 +39,16 @@ This repository adheres strictly to three foundational agent frameworks:
 
 ---
 
-## 5. Verification Gate (Run Before Every Completion)
+## 5. Ponytail Lazy Senior Developer Laws
+- **The Best Code is Unwritten Code:** Solve the entire problem with the smallest complete change.
+- **YAGNI & Deletion:** No speculative abstractions, wrappers, or "for later" features nobody asked for. Deletion beats addition.
+- **Codebase Reuse:** Leverage existing utilities, patterns, and standard library before writing anything new.
+- **Finish What You Touch:** Lazy about the solution, rigorous about the change (callers, types, edge cases).
+- **Clear End-Lines:** End replies with what was skipped, what was left unchecked, and any known trade-offs or limits.
+
+---
+
+## 6. Verification Gate (Run Before Every Completion)
 ```bash
 npm run verify
 ```
