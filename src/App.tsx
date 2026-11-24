@@ -103,6 +103,7 @@ import {
   deleteTasksVaultListIfPresent,
   emitCloudLiveSignal,
   subscribeToCloudLiveSignals,
+  syncScheduledAlarmsToCloud,
   type LiveSyncSignal,
   type UserSettingsPayload,
 } from './services/cloudStateService';
@@ -9242,7 +9243,6 @@ export default function App() {
         };
       }
     ).DayRhythmNative;
-    if (!androidBridge?.scheduleExactAlarms) return;
 
     const nowMs = trueNowMs();
     const nowMinInTz = getNowMinutesInTimeZone(activeTimeZone, new Date(nowMs));
@@ -9377,15 +9377,27 @@ export default function App() {
 
     alarms.sort((a, b) => a.triggerAtMs - b.triggerAtMs);
 
-    try {
-      androidBridge.scheduleExactAlarms(JSON.stringify(alarms.slice(0, 60)));
-    } catch {
-      // ignore Android bridge errors
+    const alarmsJson = JSON.stringify(alarms.slice(0, 60));
+
+    if (androidBridge?.scheduleExactAlarms) {
+      try {
+        androidBridge.scheduleExactAlarms(alarmsJson);
+      } catch {
+        // ignore Android bridge errors
+      }
+    }
+
+    // Sync upcoming exact alarms to Firestore so Android background service arms hardware AlarmManager
+    // even if the user created or updated events from PC!
+    if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+      void syncScheduledAlarmsToCloud(firebaseUser.uid, alarmsJson);
     }
   }, [
     activeTimeZone,
     dailyRhythmPlan.cupSizeMl,
     dailyRhythmPlan.hydrationSlots,
+    firebaseUser?.isAnonymous,
+    firebaseUser?.uid,
     googleTasks,
     hydrationToday,
     includePrayerAnchors,

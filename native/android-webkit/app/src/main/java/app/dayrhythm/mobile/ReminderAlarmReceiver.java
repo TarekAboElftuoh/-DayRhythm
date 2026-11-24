@@ -878,6 +878,12 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     }
 
     private static void closeAlarmUi(Context context) {
+        if (AlarmActivity.activeInstance != null) {
+            try {
+                AlarmActivity.activeInstance.finish();
+            } catch (Exception ignored) {
+            }
+        }
         try {
             Intent close = new Intent(AlarmActivity.ACTION_CLOSE_ALARM_UI);
             close.setPackage(context.getPackageName());

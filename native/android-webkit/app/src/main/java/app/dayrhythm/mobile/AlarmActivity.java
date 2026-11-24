@@ -43,6 +43,7 @@ import java.util.Locale;
  */
 public class AlarmActivity extends Activity {
     public static final String ACTION_CLOSE_ALARM_UI = "app.dayrhythm.mobile.ACTION_CLOSE_ALARM_UI";
+    public static volatile AlarmActivity activeInstance = null;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long startedAtMs = 0L;
@@ -78,6 +79,7 @@ public class AlarmActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        activeInstance = this;
         setVolumeControlStream(android.media.AudioManager.STREAM_ALARM);
 
         // Turn on screen and show directly over lock screen without requesting keyguard dismissal or unlocking
@@ -425,6 +427,9 @@ public class AlarmActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (activeInstance == this) {
+            activeInstance = null;
+        }
         handler.removeCallbacks(elapsedRunnable);
         if (pulseAnim != null && pulseAnim.isRunning()) pulseAnim.cancel();
         if (cardAlphaAnim != null && cardAlphaAnim.isRunning()) cardAlphaAnim.cancel();

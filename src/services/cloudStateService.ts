@@ -535,6 +535,29 @@ export async function emitCloudLiveSignal(
 }
 
 /**
+ * Pushes the user's upcoming exact alarms to Firestore so Android background service
+ * can arm Android AlarmManager hardware wake-ups even when events were created or edited on PC.
+ */
+export async function syncScheduledAlarmsToCloud(
+  uid: string,
+  alarmsJson: string
+): Promise<boolean> {
+  if (!uid || !alarmsJson) return false;
+  try {
+    const docRef = doc(db, 'users', uid, 'sync', 'scheduled_alarms');
+    await setDoc(docRef, {
+      alarmsJson,
+      updatedAtMs: Date.now(),
+      serverTime: serverTimestamp(),
+    });
+    return true;
+  } catch (err) {
+    console.warn('[CloudSync] Failed to sync scheduled alarms:', err);
+    return false;
+  }
+}
+
+/**
  * Subscribes to the real-time live signal stream (<100ms) over Google Cloud Firestore.
  * Any button clicked on PC or Mobile triggers this listener immediately on the other device.
  */

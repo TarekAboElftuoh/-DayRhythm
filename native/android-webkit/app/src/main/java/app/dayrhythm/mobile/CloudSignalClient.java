@@ -42,11 +42,13 @@ public final class CloudSignalClient {
             .readTimeout(8, TimeUnit.SECONDS)
             .build();
     private static final ScheduledExecutorService EXEC = Executors.newSingleThreadScheduledExecutor();
+    private static final ScheduledExecutorService WATCH_EXEC = Executors.newSingleThreadScheduledExecutor();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     private static volatile String idToken;
     private static volatile long idTokenExpiresAtMs;
     private static ScheduledFuture<?> watchFuture;
+    private static volatile long lastScheduledAlarmsUpdateMs = 0L;
 
     private CloudSignalClient() {
     }
@@ -275,17 +277,17 @@ public final class CloudSignalClient {
         });
     }
 
-    /** Alert started on the phone → stop it here as soon as another device dismisses it. */
+    /** Alert started on the phone → stop it here as soon as another device dismisses it (<500ms). */
     public static synchronized void watchForRemoteDismiss(Context context, long firedAtMs) {
         final Context app = context.getApplicationContext();
         stopWatching();
         final long deadline = firedAtMs + 3 * 60_000L;
-        watchFuture = EXEC.scheduleWithFixedDelay(() -> {
-            if (System.currentTimeMillis() > deadline) {
-                stopWatching();
-                return;
-            }
+        watchFuture = WATCH_EXEC.scheduleWithFixedDelay(() -> {
             try {
+                if (System.currentTimeMillis() > deadline) {
+                    stopWatching();
+                    return;
+                }
                 JSONObject auth = readAuth(app);
                 if (auth == null) {
                     stopWatching();
@@ -309,7 +311,8 @@ public final class CloudSignalClient {
                             String client = getFirestoreString(docFields, "clientId", "");
                             long ts = getFirestoreLong(docFields, "timestampMs", 0L);
                             if ("alarm_dismiss".equals(type) && !CLIENT_ID.equals(client)) {
-                                if (now - ts <= 90_000L || Math.abs(ts - firedAtMs) <= 180_000L) {
+                                if (ts == 0L || Math.abs(now - ts) <= 300_000L || Math.abs(ts - firedAtMs) <= 300_000L) {
+                                    android.util.Log.d("CloudSignalClient", "Remote dismiss received from live bus, stopping phone alarm");
                                     stopWatching();
                                     MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
                                     return;
@@ -317,7 +320,8 @@ public final class CloudSignalClient {
                             }
                         }
                     }
-                } catch (Exception ignored) {
+                } catch (Throwable t) {
+                    android.util.Log.w("CloudSignalClient", "watchForRemoteDismiss live poll failed: " + t.getMessage());
                 }
 
                 // 2. Secondary check users/{uid}?mask.fieldPaths=syncSignal
@@ -327,25 +331,32 @@ public final class CloudSignalClient {
                         .get()
                         .build();
                 try (Response res = HTTP.newCall(req).execute()) {
-                    if (!res.isSuccessful() || res.body() == null) return;
-                    JSONObject doc = new JSONObject(res.body().string());
-                    JSONObject fields = doc.optJSONObject("fields");
-                    JSONObject sig = fields == null ? null : fields.optJSONObject("syncSignal");
-                    JSONObject sf = sig == null ? null
-                            : (sig.optJSONObject("mapValue") == null ? null : sig.optJSONObject("mapValue").optJSONObject("fields"));
-                    if (sf == null) return;
-                    String scope = getFirestoreString(sf, "scope", "");
-                    String client = getFirestoreString(sf, "clientId", "");
-                    long ts = getFirestoreLong(sf, "timestampMs", 0L);
-                    boolean isRecentDismiss = (ts >= firedAtMs - 90_000L && ts <= now + 90_000L) || Math.abs(ts - firedAtMs) <= 180_000L;
-                    if ("alarm_dismiss".equals(scope) && !CLIENT_ID.equals(client) && isRecentDismiss) {
-                        stopWatching();
-                        MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                    if (res.isSuccessful() && res.body() != null) {
+                        JSONObject doc = new JSONObject(res.body().string());
+                        JSONObject fields = doc.optJSONObject("fields");
+                        JSONObject sig = fields == null ? null : fields.optJSONObject("syncSignal");
+                        JSONObject sf = sig == null ? null
+                                : (sig.optJSONObject("mapValue") == null ? null : sig.optJSONObject("mapValue").optJSONObject("fields"));
+                        if (sf != null) {
+                            String scope = getFirestoreString(sf, "scope", "");
+                            String client = getFirestoreString(sf, "clientId", "");
+                            long ts = getFirestoreLong(sf, "timestampMs", 0L);
+                            if ("alarm_dismiss".equals(scope) && !CLIENT_ID.equals(client)) {
+                                if (ts == 0L || Math.abs(now - ts) <= 300_000L || Math.abs(ts - firedAtMs) <= 300_000L) {
+                                    android.util.Log.d("CloudSignalClient", "Remote dismiss received from syncSignal, stopping phone alarm");
+                                    stopWatching();
+                                    MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                }
+                            }
+                        }
                     }
+                } catch (Throwable t) {
+                    android.util.Log.w("CloudSignalClient", "watchForRemoteDismiss syncSignal poll failed: " + t.getMessage());
                 }
-            } catch (Exception ignored) {
+            } catch (Throwable t) {
+                android.util.Log.e("CloudSignalClient", "watchForRemoteDismiss error", t);
             }
-        }, 200, 600, TimeUnit.MILLISECONDS);
+        }, 100, 500, TimeUnit.MILLISECONDS);
     }
 
     public static synchronized void stopWatching() {
@@ -408,7 +419,7 @@ public final class CloudSignalClient {
     }
 
     /**
-     * Periodic background check for real-time alarm triggers or dismissals from the cloud (PC ↔ Mobile).
+     * Periodic background check for real-time alarm triggers, dismissals, and PC-scheduled alarms.
      * Invoked periodically by DayRhythmSyncService so alerts ring immediately even when WebView is frozen.
      */
     public static void pollRemoteSignals(Context context) {
@@ -418,6 +429,7 @@ public final class CloudSignalClient {
                 JSONObject auth = readAuth(app);
                 if (auth == null) return;
                 String token = getIdToken(app, auth);
+                long now = System.currentTimeMillis();
 
                 // Priority 1: Check users/{uid}/sync/live (fast-path bus carrying rich metadata)
                 Request reqLive = new Request.Builder()
@@ -435,14 +447,14 @@ public final class CloudSignalClient {
                             String client = getFirestoreString(docFields, "clientId", "");
                             String opId = getFirestoreString(docFields, "opId", "");
                             long ts = getFirestoreLong(docFields, "timestampMs", 0L);
-                            long now = System.currentTimeMillis();
 
                             if (!CLIENT_ID.equals(client)) {
                                 if ("alarm_trigger".equals(type)) {
                                     handledFromLive = true;
-                                    if (now - ts <= 45_000L && ts > lastHandledTriggerMs && !opId.equals(lastHandledOpId)) {
+                                    boolean isRecent = (ts == 0L || Math.abs(now - ts) <= 300_000L);
+                                    if (isRecent && !opId.equals(lastHandledOpId)) {
                                         lastHandledOpId = opId;
-                                        lastHandledTriggerMs = ts;
+                                        lastHandledTriggerMs = ts > 0L ? ts : now;
 
                                         JSONObject extraMap = docFields.optJSONObject("extra");
                                         JSONObject packetFields = extraMap != null && extraMap.optJSONObject("mapValue") != null
@@ -471,61 +483,86 @@ public final class CloudSignalClient {
                                     }
                                 } else if ("alarm_dismiss".equals(type)) {
                                     handledFromLive = true;
-                                    if (now - ts <= 60_000L) {
+                                    if (ts == 0L || Math.abs(now - ts) <= 300_000L) {
                                         MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
                                     }
                                 }
                             }
                         }
                     }
-                } catch (Exception ignored) {
+                } catch (Throwable ignored) {
                 }
 
-                if (handledFromLive) return;
-
                 // Priority 2: Fallback check users/{uid}?mask.fieldPaths=syncSignal
-                Request reqSig = new Request.Builder()
-                        .url("https://firestore.googleapis.com/v1/" + docName(auth) + "?mask.fieldPaths=syncSignal")
+                if (!handledFromLive) {
+                    Request reqSig = new Request.Builder()
+                            .url("https://firestore.googleapis.com/v1/" + docName(auth) + "?mask.fieldPaths=syncSignal")
+                            .header("Authorization", "Bearer " + token)
+                            .get()
+                            .build();
+                    try (Response res = HTTP.newCall(reqSig).execute()) {
+                        if (res.isSuccessful() && res.body() != null) {
+                            JSONObject doc = new JSONObject(res.body().string());
+                            JSONObject fields = doc.optJSONObject("fields");
+                            JSONObject sig = fields == null ? null : fields.optJSONObject("syncSignal");
+                            JSONObject sf = sig == null ? null
+                                    : (sig.optJSONObject("mapValue") == null ? null : sig.optJSONObject("mapValue").optJSONObject("fields"));
+                            if (sf != null) {
+                                String scope = getFirestoreString(sf, "scope", "");
+                                String client = getFirestoreString(sf, "clientId", "");
+                                String opId = getFirestoreString(sf, "opId", "");
+                                long ts = getFirestoreLong(sf, "timestampMs", 0L);
+
+                                if (!CLIENT_ID.equals(client)) {
+                                    if ("alarm_trigger".equals(scope)) {
+                                        boolean isRecent = (ts == 0L || Math.abs(now - ts) <= 300_000L);
+                                        if (isRecent && !opId.equals(lastHandledOpId)) {
+                                            lastHandledOpId = opId;
+                                            lastHandledTriggerMs = ts > 0L ? ts : now;
+                                            MAIN.post(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                                                    app,
+                                                    "🔔 تنبيه متزامن",
+                                                    "مزامنة سحابية من جهازك الآخر",
+                                                    "general",
+                                                    true,
+                                                    5
+                                            ));
+                                        }
+                                    } else if ("alarm_dismiss".equals(scope)) {
+                                        if (ts == 0L || Math.abs(now - ts) <= 300_000L) {
+                                            MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+
+                // Priority 3: Check users/{uid}/sync/scheduled_alarms (Syncs exact alarms scheduled from PC)
+                Request reqAlarms = new Request.Builder()
+                        .url("https://firestore.googleapis.com/v1/" + docName(auth) + "/sync/scheduled_alarms")
                         .header("Authorization", "Bearer " + token)
                         .get()
                         .build();
-                try (Response res = HTTP.newCall(reqSig).execute()) {
-                    if (!res.isSuccessful() || res.body() == null) return;
-                    JSONObject doc = new JSONObject(res.body().string());
-                    JSONObject fields = doc.optJSONObject("fields");
-                    JSONObject sig = fields == null ? null : fields.optJSONObject("syncSignal");
-                    JSONObject sf = sig == null ? null
-                            : (sig.optJSONObject("mapValue") == null ? null : sig.optJSONObject("mapValue").optJSONObject("fields"));
-                    if (sf == null) return;
-
-                    String scope = getFirestoreString(sf, "scope", "");
-                    String client = getFirestoreString(sf, "clientId", "");
-                    String opId = getFirestoreString(sf, "opId", "");
-                    long ts = getFirestoreLong(sf, "timestampMs", 0L);
-
-                    if (CLIENT_ID.equals(client)) return;
-
-                    long now = System.currentTimeMillis();
-                    if ("alarm_trigger".equals(scope)) {
-                        if (now - ts <= 45_000L && ts > lastHandledTriggerMs && !opId.equals(lastHandledOpId)) {
-                            lastHandledOpId = opId;
-                            lastHandledTriggerMs = ts;
-                            MAIN.post(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
-                                    app,
-                                    "🔔 تنبيه متزامن",
-                                    "مزامنة سحابية من جهازك الآخر",
-                                    "general",
-                                    true,
-                                    5
-                            ));
-                        }
-                    } else if ("alarm_dismiss".equals(scope)) {
-                        if (now - ts <= 60_000L) {
-                            MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                try (Response res = HTTP.newCall(reqAlarms).execute()) {
+                    if (res.isSuccessful() && res.body() != null) {
+                        JSONObject doc = new JSONObject(res.body().string());
+                        JSONObject fields = doc.optJSONObject("fields");
+                        if (fields != null) {
+                            String alarmsJson = getFirestoreString(fields, "alarmsJson", "");
+                            long updatedAt = getFirestoreLong(fields, "updatedAtMs", 0L);
+                            if (!alarmsJson.isEmpty() && updatedAt > lastScheduledAlarmsUpdateMs) {
+                                lastScheduledAlarmsUpdateMs = updatedAt;
+                                android.util.Log.d("CloudSignalClient", "Applying scheduled alarms synced from PC");
+                                ReminderAlarmReceiver.scheduleBatchFromJson(app, alarmsJson);
+                            }
                         }
                     }
+                } catch (Throwable ignored) {
                 }
-            } catch (Exception ignored) {
+            } catch (Throwable ignored) {
             }
         });
     }
