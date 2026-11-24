@@ -170,7 +170,7 @@ function computeCairoEventRange(
   const timeMatch = startTime24?.match(/^(\d{1,2}):(\d{2})$/);
   const hh = timeMatch ? Math.min(23, Math.max(0, Number(timeMatch[1]))) : 9;
   const mm = timeMatch ? Math.min(59, Math.max(0, Number(timeMatch[2]))) : 0;
-  const duration = durationMinutes && durationMinutes > 0 ? Math.round(durationMinutes) : 30;
+  const duration = durationMinutes === 0 ? 1 : (durationMinutes && durationMinutes > 0 ? Math.round(durationMinutes) : 30);
 
   const offset = getCairoOffsetString(baseDate);
   const startStr = `${baseDate}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00${offset}`;

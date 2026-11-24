@@ -458,7 +458,7 @@ export const GEMINI_CHAT_TOOLS = [
                     description:
                       'للتنبيهات النسبية فقط («بعد 5 دقايق»): عدد الدقايق من دلوقتي. لما تستخدمه متبعتش dateIso ولا startTime24 — التطبيق بيحسب الوقت من ساعة الجهاز.',
                   },
-                  durationMinutes: { type: 'NUMBER', description: 'المدة بالدقائق (مثال: 30 أو 60).' },
+                  durationMinutes: { type: 'NUMBER', description: 'المدة بالدقائق (مثال: 0 للمواعيد اللحظية أو بدون مدة، أو 15 أو 30 أو 60).' },
                   description: { type: 'STRING', description: 'وصف مختصر للحدث في Google Calendar.' },
                   recurrenceRule: { type: 'STRING', description: 'قاعدة التكرار الاختيارية: DAILY أو WEEKLY.' },
                   byDays: {

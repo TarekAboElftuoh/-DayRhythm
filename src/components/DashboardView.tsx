@@ -441,7 +441,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [newEvHour12, setNewEvHour12] = useState<number>(4);
   const [newEvMinute, setNewEvMinute] = useState<number>(0);
   const [newEvPeriod, setNewEvPeriod] = useState<'AM' | 'PM'>('PM');
-  const [newEvDuration, setNewEvDuration] = useState<number>(30);
+  const [newEvDuration, setNewEvDuration] = useState<number>(0);
   const [newEvConfirmStep, setNewEvConfirmStep] = useState(false);
 
   // Quick Add Google Task inline input -> confirmation dialog
@@ -671,6 +671,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const formatDurationLabel = (totalMin: number): string => {
     const safe = Math.max(0, Math.round(totalMin));
+    if (safe === 0) return language === 'ar' ? 'بدون مدة' : '0m';
     const h = Math.floor(safe / 60);
     const m = safe % 60;
     if (language !== 'ar') {
@@ -976,7 +977,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
     return checkSmartScheduleConflict({
       time24: newEventTime24,
-      durationMinutes: Math.max(5, Math.min(480, Math.round(Number(newEvDuration) || 30))),
+      durationMinutes: Math.max(0, Math.min(480, Math.round(newEvDuration ?? 0))),
       dateIso: newEvDate,
       prayers,
       plan: dailyRhythmPlan,
@@ -1063,6 +1064,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       setNewEventModalOpen(false);
       setNewEvConfirmStep(false);
       setNewEvTitle('');
+      setNewEvDuration(0);
     } finally {
       setSyncLoading(false);
     }
@@ -1898,7 +1900,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       {nextAlarmBlock
                         ? nextAlarmBlock.isAllDay
                           ? 'طوال اليوم'
-                          : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)} · ${formatDurationLabel(nextAlarmBlock.durationMin)}`
+                          : nextAlarmBlock.durationMin === 0
+                            ? `${formatMinutes12h(nextAlarmBlock.startMin, language)} · ${formatDurationLabel(0)}`
+                            : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)} · ${formatDurationLabel(nextAlarmBlock.durationMin)}`
                         : guestNextPrayer
                           ? `${formatMinutes12h(guestNextPrayer.prayer.adhanMinutes, language)} · ${
                               language === 'ar' ? 'التنبيه' : 'alarm'
@@ -2460,7 +2464,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               <span className="whitespace-nowrap text-zinc-300">
                                 {block.isAllDay
                                   ? 'طوال اليوم'
-                                  : `${formatMinutes12h(block.startMin, language)} – ${formatMinutes12h(block.startMin + block.durationMin, language)}`}
+                                  : block.durationMin === 0
+                                    ? formatMinutes12h(block.startMin, language)
+                                    : `${formatMinutes12h(block.startMin, language)} – ${formatMinutes12h(block.startMin + block.durationMin, language)}`}
                               </span>
                               {!block.isAllDay && (
                                 <span className="whitespace-nowrap">
@@ -4514,7 +4520,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <div className="flex items-center justify-between gap-2 pt-1">
                         <span className="text-[11px] text-zinc-400">المدة</span>
                         <div className="flex items-center gap-1">
-                          {[15, 30, 45, 60, 90].map((preset) => (
+                          {[0, 15, 30, 45, 60, 90].map((preset) => (
                             <button
                               key={preset}
                               type="button"
@@ -4525,7 +4531,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   : 'border-white/10 text-zinc-400 hover:text-white'
                               }`}
                             >
-                              {preset}د
+                              {preset === 0 ? 'بدون مدة' : `${preset}د`}
                             </button>
                           ))}
                         </div>
@@ -4569,7 +4575,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               const conflictList = newEventConflict.warnings.join('، ');
                               setNewEventModalOpen(false);
                               onOpenAssistantWithPrompt(
-                                `عاوز أضيف حدث «${titleLabel}» يوم ${newEvDate} الساعة ${pickedLabel} لمدة ${newEvDuration} دقيقة، بس النظام نبّهني إن فيه تعارض: ${conflictList}. اقترح عليّ أنسب وقت فاضي بدون تضارب مع الصلاة والنوم وأحداثي.`
+                                `عاوز أضيف حدث «${titleLabel}» يوم ${newEvDate} الساعة ${pickedLabel}${newEvDuration === 0 ? ' بدون مدة' : ` لمدة ${newEvDuration} دقيقة`}، بس النظام نبّهني إن فيه تعارض: ${conflictList}. اقترح عليّ أنسب وقت فاضي بدون تضارب مع الصلاة والنوم وأحداثي.`
                               );
                             }}
                             className="px-2.5 py-1 rounded-lg border border-white/15 bg-black/50 text-zinc-200 hover:text-white text-[11px] font-semibold cursor-pointer"
@@ -4616,7 +4622,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <div className="rounded-xl border border-white/10 bg-black/60 p-3.5 space-y-1.5">
                     <div className="font-bold text-white">{newEvTitle}</div>
                     <div className="font-mono-tabular text-[#7FFFD4]">
-                      {newEvDate} · {formatTime24To12h(newEventTime24, language)} ({newEvDuration} دقيقة)
+                      {newEvDate} · {formatTime24To12h(newEventTime24, language)} ({newEvDuration === 0 ? 'بدون مدة' : `${newEvDuration} دقيقة`})
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

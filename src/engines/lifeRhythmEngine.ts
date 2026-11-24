@@ -731,7 +731,8 @@ export function checkSmartScheduleConflict(params: {
     return { hasConflict: false, warnings: [], suggestedTime24: null, suggestedTime12Ar: null };
   }
   const startMin = Math.min(1439, Math.max(0, Number(m[1]) * 60 + Number(m[2])));
-  const dur = Math.max(10, Math.min(480, Math.round(params.durationMinutes ?? 15)));
+  const isZeroDuration = params.durationMinutes === 0;
+  const dur = isZeroDuration ? 0 : Math.max(10, Math.min(480, Math.round(params.durationMinutes ?? 15)));
   const endMin = startMin + dur;
   const warnings: string[] = [];
 
@@ -743,7 +744,10 @@ export function checkSmartScheduleConflict(params: {
     const silenceLen = p.id === 'fajr' ? profile.fajrSilenceMinutes : profile.prayerSilenceMinutes;
     const pStart = Math.max(0, p.adhanMinutes - profile.adhanLeadMinutes);
     const pEnd = p.adhanMinutes + silenceLen;
-    if (startMin < pEnd && endMin > pStart) {
+    const hasOverlap = isZeroDuration
+      ? startMin >= pStart && startMin < pEnd
+      : startMin < pEnd && endMin > pStart;
+    if (hasOverlap) {
       warnings.push(
         `يتعارض مع وقت صلاة ${p.nameAr} (${formatMinutes12h(p.adhanMinutes)} – ${formatMinutes12h(pEnd)})`
       );
@@ -761,7 +765,7 @@ export function checkSmartScheduleConflict(params: {
     }
     return w >= bed && w < wake;
   };
-  if (inSleep(startMin) || inSleep(endMin - 1)) {
+  if (inSleep(startMin) || (!isZeroDuration && inSleep(endMin - 1))) {
     warnings.push(
       `يقع داخل وقت النوم الليلي (${formatMinutes12h(bed)} – ${formatMinutes12h(wake)})`
     );
@@ -789,7 +793,10 @@ export function checkSmartScheduleConflict(params: {
     if (blk.deleted || blk.isAllDay || blk.isAnchor || blk.source === 'creative') continue;
     const bStart = blk.startMin;
     const bEnd = blk.startMin + Math.max(15, blk.durationMin);
-    if (startMin < bEnd && endMin > bStart) {
+    const hasOverlap = isZeroDuration
+      ? startMin >= bStart && startMin < bEnd
+      : startMin < bEnd && endMin > bStart;
+    if (hasOverlap) {
       const blkLabel = (blk.categoryAr || blk.emojiPair || 'موعد آخر').trim().slice(0, 42);
       warnings.push(
         `يتداخل مع «${blkLabel}» (${formatMinutes12h(bStart)} – ${formatMinutes12h(bEnd)})`

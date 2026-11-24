@@ -5382,12 +5382,13 @@ export default function App() {
           const startInfo = parseIsoToTimeZoneInfo(ev.start, activeTimeZone);
           if (startInfo.dateIso !== todayCairoIso) return null;
           const endInfo = ev.end ? parseIsoToTimeZoneInfo(ev.end, activeTimeZone) : null;
-          let durationMin = 30;
+          let durationMin = 0;
           if (!startInfo.isAllDay && endInfo && endInfo.dateIso === startInfo.dateIso) {
-            durationMin = Math.max(15, endInfo.minutesSinceMidnight - startInfo.minutesSinceMidnight);
+            const diff = endInfo.minutesSinceMidnight - startInfo.minutesSinceMidnight;
+            durationMin = diff <= 1 ? 0 : diff;
           } else if (!startInfo.isAllDay && ev.start && ev.end) {
             const diff = Math.round((new Date(ev.end).getTime() - new Date(ev.start).getTime()) / 60_000);
-            if (diff > 0 && diff < 1440) durationMin = diff;
+            durationMin = (diff <= 1 || diff >= 1440) ? 0 : diff;
           }
           const blockId = `gcal_${ev.calendarId ?? 'primary'}_${ev.id}`;
           const emojiPair = extractEmojiPair(ev.summary, '📅');
@@ -5822,7 +5823,8 @@ export default function App() {
             } else if (act.operation === 'create' && act.dateIso && act.startTime24) {
               const startDt = `${act.dateIso}T${act.startTime24}:00${tzOffsetStr}`;
               const startMs = new Date(startDt).getTime();
-              const endDt = new Date(startMs + (act.durationMinutes || 30) * 60_000).toISOString();
+              const duration = typeof act.durationMinutes === 'number' ? act.durationMinutes : 0;
+              const endDt = new Date(startMs + (duration === 0 ? 60_000 : duration * 60_000)).toISOString();
               const validByDays = Array.isArray(act.byDays)
                 ? act.byDays.filter((d) => ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].includes(d))
                 : [];
@@ -6172,7 +6174,8 @@ export default function App() {
             .filter((a) => a.operation === 'create' && a.dateIso && a.startTime24)
             .map((a, i) => {
               const start = `${a.dateIso}T${a.startTime24}:00${formatUtcOffsetForIso(activeTimeZone)}`;
-              const end = new Date(new Date(start).getTime() + (a.durationMinutes || 30) * 60_000).toISOString();
+              const duration = typeof a.durationMinutes === 'number' ? a.durationMinutes : 0;
+              const end = new Date(new Date(start).getTime() + (duration === 0 ? 60_000 : duration * 60_000)).toISOString();
               return {
                 id: `queued-${Date.now()}-${i}`,
                 calendarId: a.calendarId || 'primary',
