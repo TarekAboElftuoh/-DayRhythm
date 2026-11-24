@@ -486,10 +486,40 @@ export async function deleteTasksVaultListIfPresent(token: string): Promise<bool
   return false;
 }
 
+export type AlertSessionStatus = 'idle' | 'ringing' | 'dismissed';
+
+export interface DayRhythmAlertSession {
+  status: AlertSessionStatus;
+  sessionId: string;
+  alertId: string;
+  title: string;
+  body?: string;
+  kind?: string;
+  snoozeMinutes?: number;
+  blockId?: string;
+  startedAtMs: number;
+  dismissedAtMs?: number;
+  dismissedBy?: string;
+  originClientId: string;
+  serverTime?: unknown;
+}
+
 export interface LiveSyncSignal {
   opId: string;
   clientId: string;
   timestampMs: number;
+  status?: AlertSessionStatus;
+  sessionId?: string;
+  alertId?: string;
+  title?: string;
+  body?: string;
+  kind?: string;
+  snoozeMinutes?: number;
+  blockId?: string;
+  startedAtMs?: number;
+  dismissedAtMs?: number;
+  dismissedBy?: string;
+  originClientId?: string;
   type:
     | 'settings_patch'
     | 'alarm_dismiss'
@@ -510,6 +540,34 @@ export interface LiveSyncSignal {
   action?: string;
   patch?: Partial<UserSettingsPayload>;
   extra?: Record<string, unknown>;
+}
+
+/**
+ * Spotify-Connect style single alert state session.
+ * Updates the user's active alert session (status: ringing | dismissed | idle).
+ * When dismissed on any device, all connected devices observe status: dismissed and stop instantly.
+ */
+export async function setCloudAlertSession(
+  uid: string,
+  session: Partial<DayRhythmAlertSession>
+): Promise<boolean> {
+  if (!uid) return false;
+  try {
+    const liveDocRef = doc(db, 'users', uid, 'sync', 'live');
+    const payload: Record<string, unknown> = {
+      ...session,
+      // Map to legacy type for backwards compatibility with native Java / older clients
+      type: session.status === 'dismissed' ? 'alarm_dismiss' : session.status === 'ringing' ? 'alarm_trigger' : 'settings_patch',
+      timestampMs: session.status === 'dismissed' ? (session.dismissedAtMs || Date.now()) : (session.startedAtMs || Date.now()),
+      clientId: session.originClientId || session.dismissedBy || 'unknown',
+      serverTime: serverTimestamp(),
+    };
+    await setDoc(liveDocRef, payload, { merge: true });
+    return true;
+  } catch (err) {
+    console.warn('[CloudAlertSession] Failed setting alert session:', err);
+    return false;
+  }
 }
 
 /**

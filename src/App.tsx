@@ -104,6 +104,8 @@ import {
   emitCloudLiveSignal,
   subscribeToCloudLiveSignals,
   syncScheduledAlarmsToCloud,
+  setCloudAlertSession,
+  type DayRhythmAlertSession,
   type LiveSyncSignal,
   type UserSettingsPayload,
 } from './services/cloudStateService';
@@ -1724,8 +1726,15 @@ export default function App() {
       alertId,
     });
 
-    // Requirement 3: Real-time cloud alarm dismissal across all connected devices
+    // Requirement 3 & Spotify Connect: Real-time cloud alarm dismissal across all connected devices
     if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+      void setCloudAlertSession(firebaseUser.uid, {
+        status: 'dismissed',
+        alertId,
+        blockId: dismissedBlockId,
+        dismissedBy: clientIdRef.current,
+        dismissedAtMs: Date.now(),
+      });
       void dismissActiveAlarmInCloud(firebaseUser.uid, alertId, clientIdRef.current);
     }
 
@@ -1955,7 +1964,7 @@ export default function App() {
         // ignore WebView2 postMessage errors
       }
 
-      // Broadcast real-time alarm trigger across devices (PC <-> Mobile) via Firestore live bus
+      // Broadcast real-time alarm trigger across devices (PC <-> Mobile) via Firestore live bus (Spotify-style session)
       if (!options?.isRemoteSignal) {
         emitCrossDeviceSync('alarm_trigger', 'trigger', undefined, {
           title: visibleTitle,
@@ -1967,6 +1976,20 @@ export default function App() {
           alertId,
           blockId: options?.blockId,
         });
+        if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+          void setCloudAlertSession(firebaseUser.uid, {
+            status: 'ringing',
+            sessionId: `ses_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            alertId,
+            title: visibleTitle,
+            body: visibleDescription,
+            kind: category,
+            snoozeMinutes: defaultSnooze,
+            blockId: options?.blockId,
+            startedAtMs: Date.now(),
+            originClientId: clientIdRef.current,
+          });
+        }
       }
 
       if (!isNativeWin) {
@@ -4123,8 +4146,8 @@ export default function App() {
           }
         }
 
-        // 1. Alarm dismissal fast-path (<100ms)
-        if (signal.type === 'alarm_dismiss') {
+        // 1. Alarm dismissal fast-path (<100ms) — Spotify Connect Session Status
+        if (signal.status === 'dismissed' || signal.type === 'alarm_dismiss') {
           stopContinuousAlert();
           stopSmartChargeCompleteAlert();
           stopNativeAlerts();
@@ -4133,7 +4156,7 @@ export default function App() {
           setPersistentAlert(null);
           setAlarmRinging(false);
           const extraDismiss = (signal.extra as { blockId?: string; extra?: { blockId?: string } } | undefined);
-          const blockId = extraDismiss?.blockId || extraDismiss?.extra?.blockId;
+          const blockId = signal.blockId || extraDismiss?.blockId || extraDismiss?.extra?.blockId;
           if (blockId) {
             acknowledgedBlockIdsRef.current.add(blockId);
             setCompletedOverrides((prev) => ({
@@ -4145,15 +4168,26 @@ export default function App() {
           return;
         }
 
-        // 2. Alarm trigger fast-path (<100ms)
-        if (signal.type === 'alarm_trigger' && signal.extra) {
-          const extra = (signal.extra as { extra?: Record<string, unknown> }).extra || signal.extra;
+        // 2. Alarm trigger fast-path (<100ms) — Spotify Connect Session Status
+        if (signal.status === 'ringing' || signal.type === 'alarm_trigger') {
+          const extra = (signal.extra as { extra?: Record<string, unknown> })?.extra || signal.extra || {};
+          const title = signal.title || (extra as Record<string, unknown>).title as string || 'تنبيه إيقاع اليوم';
+          const body = signal.body || (extra as Record<string, unknown>).body as string || '';
+          const kind = (signal.kind || (extra as Record<string, unknown>).kind || 'general') as TaskSoundCategory;
+          const blockId = signal.blockId || (extra as Record<string, unknown>).blockId as string | undefined;
+
           handleIncomingRemoteSyncRef.current({
             scope: 'alarm_trigger',
             action: signal.action || 'ring',
-            extra: extra as Record<string, unknown>,
+            extra: {
+              title,
+              body,
+              kind,
+              blockId,
+              ...(extra as Record<string, unknown>),
+            },
             clientId: signal.clientId,
-            opId: signal.opId,
+            opId: signal.opId || signal.sessionId,
           });
           return;
         }
