@@ -80,7 +80,6 @@ public class AlarmActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         activeInstance = this;
-        LocalSyncServer.start(this);
         setVolumeControlStream(android.media.AudioManager.STREAM_ALARM);
 
         // Turn on screen and show directly over lock screen without requesting keyguard dismissal or unlocking
@@ -381,7 +380,6 @@ public class AlarmActivity extends Activity {
     }
 
     private void sendDoneAction() {
-        LocalSyncServer.broadcastDismiss(this, "native_done");
         CloudSignalClient.sendAlarmDismiss(this, "native_done");
         if (MainActivity.activeInstance != null) {
             MainActivity.activeInstance.evaluateJavascriptInWebView(
@@ -397,7 +395,6 @@ public class AlarmActivity extends Activity {
     }
 
     private void sendSnoozeAction(int minutes) {
-        LocalSyncServer.broadcastDismiss(this, "native_snooze");
         CloudSignalClient.sendAlarmDismiss(this, "native_snooze");
         if (MainActivity.activeInstance != null) {
             MainActivity.activeInstance.evaluateJavascriptInWebView(
@@ -414,7 +411,6 @@ public class AlarmActivity extends Activity {
     }
 
     private void sendDismissAction() {
-        LocalSyncServer.broadcastDismiss(this, "native_dismiss");
         CloudSignalClient.sendAlarmDismiss(this, "native_dismiss");
         if (MainActivity.activeInstance != null) {
             MainActivity.activeInstance.evaluateJavascriptInWebView(

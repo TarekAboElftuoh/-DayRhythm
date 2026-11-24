@@ -17,7 +17,7 @@ export interface UiPrefs {
 
 export type AppLanguage = 'ar' | 'en';
 
-export type ActiveTab = 'dashboard' | 'mobile' | 'overlay' | 'assistant' | 'blueprint';
+export type ActiveTab = 'dashboard' | 'mobile' | 'overlay' | 'assistant';
 
 export type TravelGroup = 'A_FIXED' | 'B_WORK' | 'C_PORTABLE' | 'ANCHOR';
 

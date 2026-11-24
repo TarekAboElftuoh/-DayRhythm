@@ -496,7 +496,6 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
         if (ACTION_DISMISS.equals(action)) {
             cancelAllActiveAlarms(context);
-            LocalSyncServer.broadcastDismiss(context, "native_dismiss");
             CloudSignalClient.sendAlarmDismiss(context, "native_dismiss");
             return;
         }
@@ -505,8 +504,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             stopRinging();
             cancelNotification(context, notifId);
             closeAlarmUi(context);
-            // Stopping here stops the PC too (and vice versa — see LocalSyncServer / CloudSignalClient).
-            LocalSyncServer.broadcastDismiss(context, "native_snooze");
+            // Stopping here stops the PC too via CloudSignalClient.
             CloudSignalClient.sendAlarmDismiss(context, "native_snooze");
             long snoozeAtMs = System.currentTimeMillis() + (long) snoozeMin * 60_000L;
             scheduleSingleExactAlarm(
@@ -532,7 +530,6 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             stopRinging();
             cancelNotification(context, notifId);
             closeAlarmUi(context);
-            LocalSyncServer.broadcastDismiss(context, "native_done");
             CloudSignalClient.sendAlarmDismiss(context, "native_done");
             enqueuePendingQuickAction(context, kind, alarmId, medId, doseTime);
             Intent notifyIntent = new Intent(ACTION_PENDING_QUEUE_UPDATED);
@@ -569,7 +566,6 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
 
                 // Spotify Connect: Ultra-low latency LAN broadcast + cloud trigger (<5ms local)
-                LocalSyncServer.broadcastTrigger(context, title, body, kind, snoozeMin);
                 CloudSignalClient.sendAlarmTrigger(context, title, body, kind, snoozeMin);
 
                 // If the PC (or another device) stops this alert, stop it here too.

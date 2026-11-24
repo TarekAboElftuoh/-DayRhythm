@@ -150,7 +150,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                   isLiveSynced ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'
                 }`}
               />
-              <span className="inline">{isLiveSynced ? 'لحظي' : 'محلي'}</span>
+              <span className="inline">{isLiveSynced ? 'لحظي' : 'غير متصل'}</span>
             </div>
           </div>
 

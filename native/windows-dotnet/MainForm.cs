@@ -75,23 +75,6 @@ namespace DayRhythm
                 onNetworkRecovered: () => RunOnUi(DispatchNetworkRecoveredToWebView)
             );
 
-            // Spotify Architecture: Ultra-low latency LAN peer-to-peer synchronization (<5ms)
-            LocalSyncServer.Initialize(
-                onRemoteDismiss: () => RunOnUi(() =>
-                {
-                    if (_activeToastForm != null && !_activeToastForm.IsDisposed)
-                    {
-                        _activeToastForm.Close();
-                        _activeToastForm.Dispose();
-                        _activeToastForm = null;
-                    }
-                    CloseActiveScreenAlert();
-                    DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true } }));");
-                }),
-                onRemoteTrigger: payload => RunOnUi(() => ShowSecondaryMonitorAlert(payload))
-            );
-            LocalSyncServer.Instance?.SetUid(_settings.SyncUid);
-
             InitializeTray(appIcon);
             InitializeDesktopCapsule();
             InitializeWebViewControl();
@@ -409,13 +392,11 @@ namespace DayRhythm
                                         NativeAlertPayload alertPayload = JsonSerializer.Deserialize<NativeAlertPayload>(msg);
                                         if (alertPayload != null)
                                         {
-                                            LocalSyncServer.Instance?.BroadcastAlertTrigger(alertPayload);
                                             RunOnUi(() => ShowSecondaryMonitorAlert(alertPayload));
                                         }
                                     }
                                     else if (string.Equals(msgType, "stop-alert", StringComparison.OrdinalIgnoreCase))
                                     {
-                                        LocalSyncServer.Instance?.BroadcastAlertDismiss("dismiss");
                                         RunOnUi(() =>
                                         {
                                             if (_activeToastForm != null && !_activeToastForm.IsDisposed)
@@ -435,7 +416,6 @@ namespace DayRhythm
                                             _settings.SyncUid = uid;
                                             AppConfig.SaveSettings(_settings);
                                         }
-                                        LocalSyncServer.Instance?.SetUid(uid);
                                     }
                                 }
                             }
@@ -763,18 +743,15 @@ namespace DayRhythm
                     secondary,
                     onWaterConfirmed: () =>
                     {
-                        LocalSyncServer.Instance?.BroadcastAlertDismiss("water_confirmed");
                         DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));");
                     },
                     onMedicationConfirmed: (medId, doseTime24) =>
                     {
-                        LocalSyncServer.Instance?.BroadcastAlertDismiss("medication_confirmed");
                         string detailJson = JsonSerializer.Serialize(new { medicationId = medId ?? "", doseTime24 = doseTime24 ?? "" });
                         DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:medication-confirmed', {{ detail: {detailJson} }}));");
                     },
                     onSnoozed: (alertPayload, minutes) =>
                     {
-                        LocalSyncServer.Instance?.BroadcastAlertDismiss("snooze");
                         string detailJson = JsonSerializer.Serialize(new
                         {
                             id = alertPayload?.id ?? "",
@@ -791,7 +768,6 @@ namespace DayRhythm
                     },
                     onDismissed: () =>
                     {
-                        LocalSyncServer.Instance?.BroadcastAlertDismiss("dismiss");
                         DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));");
                     }
                 );
@@ -826,7 +802,6 @@ namespace DayRhythm
                     preferSecondaryScreen: _settings.AlertsOnSecondaryScreen,
                     onWaterConfirmed: () => RunOnUi(() =>
                     {
-                        LocalSyncServer.Instance?.BroadcastAlertDismiss("water_confirmed");
                         if (_webView?.CoreWebView2 != null)
                         {
                             _ = _webView.CoreWebView2.ExecuteScriptAsync(
@@ -836,7 +811,6 @@ namespace DayRhythm
                     }),
                     onMedicationConfirmed: (medId, doseTime24) => RunOnUi(() =>
                     {
-                        LocalSyncServer.Instance?.BroadcastAlertDismiss("medication_confirmed");
                         if (_webView?.CoreWebView2 != null)
                         {
                             string detailJson = JsonSerializer.Serialize(new { medicationId = medId ?? "", doseTime24 = doseTime24 ?? "" });
@@ -847,7 +821,6 @@ namespace DayRhythm
                     }),
                     onSnoozed: (alertPayload, minutes) => RunOnUi(() =>
                     {
-                        LocalSyncServer.Instance?.BroadcastAlertDismiss("snooze");
                         if (_webView?.CoreWebView2 != null)
                         {
                             string detailJson = JsonSerializer.Serialize(new
@@ -869,7 +842,6 @@ namespace DayRhythm
                     }),
                     onDismissed: () => RunOnUi(() =>
                     {
-                        LocalSyncServer.Instance?.BroadcastAlertDismiss("dismiss");
                         if (_webView?.CoreWebView2 != null)
                         {
                             _ = _webView.CoreWebView2.ExecuteScriptAsync(
@@ -892,8 +864,6 @@ namespace DayRhythm
                 ShowInTaskbar = false;
                 return;
             }
-
-            LocalSyncServer.Instance?.Dispose();
 
             if (_activeToastForm != null && !_activeToastForm.IsDisposed)
             {

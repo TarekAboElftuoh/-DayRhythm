@@ -767,7 +767,6 @@ export default function App() {
       /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
       window.innerWidth < 768;
     if (
-      activeTab === 'blueprint' ||
       (isMobilePlatform && activeTab === 'overlay') ||
       (!isMobilePlatform && activeTab === 'mobile')
     ) {
