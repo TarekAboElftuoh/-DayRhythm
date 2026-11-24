@@ -27,3 +27,5 @@ release/
 release-win/
 dist-server/
 electron/
+
+native/windows-dotnet/www/
