@@ -108,6 +108,32 @@ import {
 import { cleanCalendarText, resolveBlockDisplayInfo } from '../services/apiClient';
 import { t } from '../engines/i18n';
 
+const LiveSecClock: React.FC<{ initialSec?: number; fallback: string; resetKey: number }> = ({
+  initialSec,
+  fallback,
+  resetKey,
+}) => {
+  const [sec, setSec] = useState<number | undefined>(initialSec);
+  useEffect(() => {
+    setSec(initialSec);
+    if (typeof initialSec !== 'number') return;
+    const id = window.setInterval(() => setSec((s) => (typeof s === 'number' && s > 0 ? s - 1 : 0)), 1000);
+    return () => window.clearInterval(id);
+  }, [initialSec, resetKey]);
+  if (typeof sec !== 'number') return <>{fallback}</>;
+  const safe = Math.max(0, Math.floor(sec));
+  const h = Math.floor(safe / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
+  return (
+    <>
+      {h > 0
+        ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+        : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`}
+    </>
+  );
+};
+
 interface DashboardViewProps {
   language: AppLanguage;
   isFridayMode: boolean;
@@ -625,7 +651,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [liveNowMs, setLiveNowMs] = useState<number>(() => Date.now());
   useEffect(() => {
     const syncNow = () => setLiveNowMs(Date.now());
-    const id = window.setInterval(syncNow, 1000);
+    const id = window.setInterval(syncNow, 15_000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') syncNow();
     };
@@ -846,8 +872,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     };
     if (!calendarConnected) {
       if (guestNextPrayer) {
+        const rem = Math.max(0, guestNextPrayer.targetSec - liveClockParts.nowSecOfDay);
         return {
-          clock: formatSecClock(guestNextPrayer.targetSec - liveClockParts.nowSecOfDay),
+          clock: formatSecClock(rem),
+          remainingSec: rem,
           caption:
             language === 'ar'
               ? `حتى أذان ${guestNextPrayer.prayer.nameAr}`
@@ -880,6 +908,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       const m = remMin % 60;
       return {
         clock: formatSecClock(remSec),
+        remainingSec: remSec,
         caption:
           language === 'ar'
             ? h > 0
@@ -897,6 +926,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const m = diffMin % 60;
     return {
       clock: formatSecClock(diffSec),
+      remainingSec: diffSec,
       caption:
         language === 'ar'
           ? h > 0
@@ -1929,7 +1959,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         : 'text-[#7FFFD4]'
                   }`}
                 >
-                  {countdownMeta.clock}
+                  <LiveSecClock
+                    initialSec={countdownMeta.remainingSec}
+                    fallback={countdownMeta.clock}
+                    resetKey={liveNowMs}
+                  />
                 </div>
                 <div className="text-[11px] font-medium text-zinc-400 whitespace-nowrap">
                   {countdownMeta.caption}

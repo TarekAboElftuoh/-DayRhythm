@@ -8595,7 +8595,7 @@ export default function App() {
 
   useEffect(() => {
     const syncNow = () => setCapsuleNowMs(Date.now());
-    const timer = window.setInterval(syncNow, 1000);
+    const timer = window.setInterval(syncNow, 15_000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') syncNow();
     };
@@ -9038,7 +9038,7 @@ export default function App() {
     capsuleNowMs,
   ]);
 
-  // Push live countdown + Dynamic Island (OnePlus 12R Live Alerts, 5/10m lead) + persistent countdown notification to Android
+    const lastPushedLiveStatusRef = useRef<string>('');
   useEffect(() => {
     const androidBridge = (
       window as Window & {
@@ -9049,6 +9049,17 @@ export default function App() {
       }
     ).DayRhythmNative;
     if (!androidBridge) return;
+    const dedupKey = [
+      capsuleTimerState.emoji,
+      capsuleTimerState.title,
+      capsuleTimerState.statusLabel,
+      capsuleTimerState.targetEpochMs || 0,
+      deviceSettings.liveAlertsEnabled,
+      deviceSettings.liveAlertsLeadMinutes,
+      deviceSettings.persistentCountdownNotif ?? true,
+    ].join('|');
+    if (lastPushedLiveStatusRef.current === dedupKey) return;
+    lastPushedLiveStatusRef.current = dedupKey;
     try {
       if (androidBridge.updateLiveStatus) {
         androidBridge.updateLiveStatus(
@@ -9077,7 +9088,6 @@ export default function App() {
   }, [
     capsuleTimerState.emoji,
     capsuleTimerState.title,
-    capsuleTimerState.countdownText,
     capsuleTimerState.statusLabel,
     capsuleTimerState.targetEpochMs,
     deviceSettings.liveAlertsEnabled,
@@ -9138,10 +9148,21 @@ export default function App() {
       }
     }
 
+    const sleepDurMin = (dailyRhythmPlan.wakeMin - dailyRhythmPlan.bedtimeMin + 1440) % 1440;
+    const isFullMuteMode = quietMode === 'silent_all' || quietMode === 'mute_audio';
+    const isSilencedAtMinute = (minOfDay: number) => {
+      if (isFullMuteMode) return true;
+      if (sleepDurMin > 0 && sleepDurMin < 900) {
+        const m = ((minOfDay % 1440) + 1440) % 1440;
+        if (((m - dailyRhythmPlan.bedtimeMin + 1440) % 1440) < sleepDurMin) return true;
+      }
+      return false;
+    };
+
     // 2. Remaining Water Cups today
     if (waterRemindersEnabled && hydrationToday) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
-        if (hydrationToday.slots[idx]) return;
+        if (hydrationToday.slots[idx] || isSilencedAtMinute(slot.timeMinutes)) return;
         const triggerAtMs = msForMinuteToday(slot.timeMinutes);
         if (triggerAtMs > nowMs + 1_000) {
           alarms.push({
@@ -9171,6 +9192,7 @@ export default function App() {
         const m = t24.match(/^(\d{1,2}):(\d{2})$/);
         if (!m) continue;
         const medMin = Number(m[1]) * 60 + Number(m[2]);
+        if (isSilencedAtMinute(medMin)) continue;
         const triggerAtMs = msForMinuteToday(medMin);
         if (triggerAtMs > nowMs + 1_000) {
           alarms.push({
@@ -9189,7 +9211,7 @@ export default function App() {
 
     // 4. Upcoming Google Calendar Events today (exact simultaneous firing with PC)
     for (const block of liveBlocks) {
-      if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer') continue;
+      if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer' || isSilencedAtMinute(block.startMin)) continue;
       const triggerAtMs = msForMinuteToday(block.startMin);
       if (triggerAtMs > nowMs + 1_000) {
         const emoji = (block.emojiPair || '📅').trim();
@@ -9210,7 +9232,7 @@ export default function App() {
     for (const tk of googleTasks) {
       if (tk.status === 'completed') continue;
       const info = extractTaskTimeMinutesForToday(tk, todayCairoIso, activeTimeZone);
-      if (!info || !info.hasExplicitTime) continue;
+      if (!info || !info.hasExplicitTime || isSilencedAtMinute(info.startMin)) continue;
       const triggerAtMs = msForMinuteToday(info.startMin);
       if (triggerAtMs > nowMs + 1_000) {
         const titleText = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
@@ -9245,8 +9267,11 @@ export default function App() {
     }
   }, [
     activeTimeZone,
+    dailyRhythmPlan.bedtimeMin,
+    dailyRhythmPlan.wakeMin,
     dailyRhythmPlan.cupSizeMl,
     dailyRhythmPlan.hydrationSlots,
+    quietMode,
     firebaseUser?.isAnonymous,
     firebaseUser?.uid,
     googleTasks,
