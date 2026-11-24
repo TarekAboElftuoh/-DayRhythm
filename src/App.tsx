@@ -951,6 +951,7 @@ export default function App() {
 
   const [calendarList, setCalendarList] = useState<GoogleCalendarInfo[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<GoogleCalendarEventItem[]>([]);
+  const recentlyCreatedEventIdsRef = useRef<Set<string>>(new Set());
   const [loadingEvents, setLoadingEvents] = useState(false);
 
   const [googleTaskLists, setGoogleTaskLists] = useState<GoogleTaskList[]>([]);
@@ -2134,7 +2135,14 @@ export default function App() {
         const nextCals = Array.isArray(data.calendars) ? data.calendars : undefined;
         const nextEvs = Array.isArray(data.events) ? data.events : undefined;
         if (nextCals) setCalendarList(nextCals);
-        if (nextEvs) setCalendarEvents(nextEvs);
+        if (nextEvs) {
+          setCalendarEvents((prev) => {
+            const missingNew = prev.filter(
+              (e) => !nextEvs.some((fresh: GoogleCalendarEventItem) => fresh.id === e.id) && recentlyCreatedEventIdsRef.current.has(e.id)
+            );
+            return [...nextEvs, ...missingNew].sort((a, b) => a.start.localeCompare(b.start));
+          });
+        }
         const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
         if (nextCals || nextEvs) {
           saveOfflineWorkspaceCache(OFFLINE_CAL_PREFIX, activeUid, {
@@ -2229,7 +2237,12 @@ export default function App() {
       );
 
       allEvents.sort((a, b) => a.start.localeCompare(b.start));
-      setCalendarEvents(allEvents);
+      setCalendarEvents((prev) => {
+        const missingNew = prev.filter(
+          (e) => !allEvents.some((fresh) => fresh.id === e.id) && recentlyCreatedEventIdsRef.current.has(e.id)
+        );
+        return [...allEvents, ...missingNew].sort((a, b) => a.start.localeCompare(b.start));
+      });
       const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
       saveOfflineWorkspaceCache(OFFLINE_CAL_PREFIX, activeUid, {
         calendars: mappedCals,
@@ -6004,6 +6017,44 @@ export default function App() {
         if (serverHandled) {
           googleSynced = true;
           setReflowedBlocksOverride(null);
+
+          // Optimistically insert newly created events directly into local state so Mobile timeline
+          // and exact alarms update instantly without waiting for Google Calendar eventual consistency
+          const createdItems: GoogleCalendarEventItem[] = [];
+          for (const act of actions) {
+            if (act.operation === 'create' && act.dateIso && act.startTime24) {
+              const resItem = results.find((r) => r.operation === 'create' && r.title === act.title);
+              const { startDateTime, endDateTime } = computeEventRangeInTimeZone(
+                act.dateIso,
+                act.startTime24,
+                act.durationMinutes,
+                activeTimeZone
+              );
+              const createdId = resItem?.id || `created_${Date.now()}`;
+              createdItems.push({
+                id: createdId,
+                calendarId: act.calendarId || 'primary',
+                summary: act.title,
+                description: act.description || '',
+                start: startDateTime,
+                end: endDateTime,
+                isAllDay: false,
+                htmlLink: resItem?.htmlLink,
+              });
+              recentlyCreatedEventIdsRef.current.add(createdId);
+            }
+          }
+          if (createdItems.length > 0) {
+            setCalendarEvents((prev) => {
+              const newIds = new Set(createdItems.map((c) => c.id));
+              const kept = prev.filter((e) => !newIds.has(e.id));
+              return [...kept, ...createdItems].sort((a, b) => a.start.localeCompare(b.start));
+            });
+            setTimeout(() => {
+              createdItems.forEach((c) => recentlyCreatedEventIdsRef.current.delete(c.id));
+            }, 30_000);
+          }
+
           for (const act of actions) {
             if (act.eventId) {
               const bId = `gcal_${act.calendarId || 'primary'}_${act.eventId}`;
