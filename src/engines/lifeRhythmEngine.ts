@@ -46,7 +46,7 @@ export const MEMORY_CATEGORY_LABELS: Record<MemoryCategory, string> = {
 
 export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   weightKg: 70,
-  heightCm: 170,
+  heightCm: 177,
   cupSizeMl: 250,
   fastingDays: [],
   suhoorLeadMinutes: 45,
@@ -116,15 +116,15 @@ export function computeScientificHydration(
 } {
   const safeHeatBonus = Math.max(0, Math.min(800, Math.round(heatBonusMl)));
   // Drinking water target (excluding ~20% fluid from food):
-  // ~31 ml/kg + fixed-height BSA adjustment (+6 ml per cm above 170cm) + weather heat bonus
+  // ~31 ml/kg + fixed-height BSA adjustment (+6 ml per cm above baseline 177cm) + weather heat bonus
   const rawNormalMl = Math.round(
-    profile.weightKg * 31 + (profile.heightCm - 170) * 6 + safeHeatBonus
+    profile.weightKg * 31 + (profile.heightCm - 177) * 6 + safeHeatBonus
   );
   const normalTargetMl = clamp(rawNormalMl, 1800, 4800);
 
   // Fasting day minimum physiological floor (~72% of base normal target + modest 35% heat buffer)
   const baseNoHeatMl = clamp(
-    Math.round(profile.weightKg * 31 + (profile.heightCm - 170) * 6),
+    Math.round(profile.weightKg * 31 + (profile.heightCm - 177) * 6),
     1800,
     4500
   );

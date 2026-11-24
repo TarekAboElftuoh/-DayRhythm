@@ -557,14 +557,22 @@ public final class CloudSignalClient {
                                     final String fBody = body;
                                     final String fKind = kind;
                                     final int fSnooze = snoozeMin;
-                                    MAIN.post(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
-                                            app,
-                                            fTitle,
-                                            fBody,
-                                            fKind,
-                                            true,
-                                            fSnooze
-                                    ));
+                                    MAIN.post(() -> {
+                                        if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
+                                            MainActivity.activeInstance.evaluateJavascriptInWebView(
+                                                    "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger'));"
+                                            );
+                                        } else {
+                                            ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                                                    app,
+                                                    fTitle,
+                                                    fBody,
+                                                    fKind,
+                                                    true,
+                                                    fSnooze
+                                            );
+                                        }
+                                    });
                                 }
                             }
                         }

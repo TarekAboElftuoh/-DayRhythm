@@ -4123,15 +4123,7 @@ export default function App() {
     const unsubscribe = subscribeToActiveAlarms(
       uid,
       (alarms) => {
-        // Is an alert currently ringing on THIS device?
-        const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
-        const isCurrentlyRinging = Boolean(currentAlertId || alarmRingingRef.current);
-
-        if (!isCurrentlyRinging) {
-          return;
-        }
-
-        // Match dismissal: if ANY alert is active on this device and another device dismissed an alarm
+        // Match dismissal: if ANY alert was dismissed by another device, stop native alert & sound immediately
         const relevantDismissal = alarms.find((a) => {
           if (a.status !== 'dismissed') return false;
           if (a.dismissedByClientId === clientIdRef.current) return false;
@@ -4178,25 +4170,21 @@ export default function App() {
         const sig = remote.syncSignal;
         if (sig && sig.clientId !== clientIdRef.current) {
           if (sig.scope === 'alarm_dismiss') {
-            const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
-            const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
-            const isCurrentlyRinging = Boolean(currentAlertId || alarmRingingRef.current);
+            console.info('[CloudSync] Remote alarm dismiss signal received:', sig.action);
+            stopContinuousAlert();
+            stopNativeAlerts();
+            setActiveAudioAlert(null);
+            setPersistentAlert(null);
+            setAlarmRinging(false);
 
-            if (isCurrentlyRinging && sig.timestampMs && sig.timestampMs >= (currentFiredAtMs - 15000)) {
-              console.info('[CloudSync] Remote alarm dismiss signal received:', sig.action);
-              stopContinuousAlert();
-              stopNativeAlerts();
-              setActiveAudioAlert(null);
-              setPersistentAlert(null);
-              setAlarmRinging(false);
-            }
-
-            if (sig.action === 'native_done' && sig.extra) {
-              const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string };
-              if (extra.kind === 'water') {
-                handleLogWaterCupRef.current();
-              } else if (extra.kind === 'medication' && extra.medId) {
-                handleToggleMedicationRef.current(extra.medId, extra.doseTime);
+            if (sig.action === 'water_confirmed' || (sig.extra as any)?.kind === 'water') {
+              handleLogWaterCupRef.current();
+            } else if (sig.action === 'medication_confirmed' || (sig.extra as any)?.kind === 'medication') {
+              const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string; medicationId?: string; doseTime24?: string } | undefined;
+              const medId = extra?.medId || extra?.medicationId;
+              const doseTime = extra?.doseTime || extra?.doseTime24;
+              if (medId) {
+                handleToggleMedicationRef.current(medId, doseTime);
               }
             }
           } else {
@@ -4261,6 +4249,17 @@ export default function App() {
               ...prev,
               [blockId]: true,
             }));
+          }
+          const action = signal.action || (signal.extra as any)?.action;
+          if (action === 'water_confirmed') {
+            handleLogWaterCupRef.current();
+          } else if (action === 'medication_confirmed' || action === 'med_confirmed') {
+            const extra = signal.extra as Record<string, unknown> | undefined;
+            const medId = (extra?.medicationId as string) || (extra?.medId as string) || signal.alertId;
+            const doseTime = (extra?.doseTime24 as string) || (extra?.doseTime as string);
+            if (medId && medId !== 'all' && medId !== 'medication') {
+              handleToggleMedicationRef.current(medId, doseTime);
+            }
           }
           showToastRef.current('🔕 تم إيقاف التنبيه فورياً من جهازك الآخر ✓');
           return;
@@ -4844,6 +4843,13 @@ export default function App() {
     },
     [showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
   );
+
+  // Auto-migrate user profile from old 170cm to new 177cm
+  useEffect(() => {
+    if (lifeProfile.heightCm === 170) {
+      handleUpdateLifeProfile({ heightCm: 177 });
+    }
+  }, [lifeProfile.heightCm, handleUpdateLifeProfile]);
 
   const handleQuickUpdateWeight = useCallback(
     (nextWeightKg: number) => {
@@ -6701,6 +6707,22 @@ export default function App() {
         handleToggleCreativeToday(id.slice('creative_'.length));
         return;
       }
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'block_completed', undefined, { blockId: id });
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'block_completed');
+        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
+      }
       setCompletedOverrides((prev) => {
         const next = {
           ...prev,
@@ -6999,8 +7021,15 @@ export default function App() {
     setPersistentAlert(null);
     setAlarmRinging(false);
     emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
-    if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-      void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+    const effectiveUid =
+      firebaseUser?.uid ||
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+      '';
+    if (effectiveUid) {
+      void broadcastAlertDismiss(effectiveUid, clientIdRef.current, 'water', 'water_confirmed');
+      void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
     }
 
     updateTodayHydration((today) => {
@@ -7037,8 +7066,15 @@ export default function App() {
         setPersistentAlert(null);
         setAlarmRinging(false);
         emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
-        if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-          void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+        const effectiveUid =
+          firebaseUser?.uid ||
+          authUser?.uid ||
+          auth.currentUser?.uid ||
+          localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+          '';
+        if (effectiveUid) {
+          void broadcastAlertDismiss(effectiveUid, clientIdRef.current, 'water', 'water_confirmed');
+          void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
         }
       }
 
@@ -7905,9 +7941,16 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
+        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
       }
 
       setMedications((prev) => {
@@ -7946,9 +7989,16 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
+        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
       }
 
       setMedications((prev) => {
@@ -8029,9 +8079,16 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
+        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
       }
 
       setMedications((prev) => {
@@ -8102,9 +8159,16 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
+        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
       }
 
       setMedications((prev) => {
@@ -8131,9 +8195,16 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
+        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
       }
 
       setMedications((prev) => {
@@ -8165,9 +8236,16 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
+        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
       }
 
       setMedications((prev) => {

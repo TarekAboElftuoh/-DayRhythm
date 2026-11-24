@@ -131,7 +131,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         if (key == null || key.isEmpty()) return false;
         long now = System.currentTimeMillis();
         Long prev = RECENT_FIRED_KEYS.get(key);
-        if (prev != null && (now - prev) < 4_000L) {
+        if (prev != null && (now - prev) < 60_000L) {
             return true;
         }
         RECENT_FIRED_KEYS.put(key, now);
@@ -226,6 +226,10 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
     private static void vibrateOnce(Context context) {
         if (context == null) return;
+        // Never vibrate if MainActivity is in foreground and user is looking at the screen
+        if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
+            return;
+        }
         try {
             Vibrator vib = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
             if (vib != null && vib.hasVibrator()) {
