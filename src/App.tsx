@@ -93,12 +93,20 @@ import {
   saveToGoogleDriveAppData,
 } from './services/googleDriveStorage';
 import {
-  pushRhythmStateToTasks,
-  pullRhythmStateFromTasks,
-  VAULT_LIST_TITLE,
-  SYNC_TASK_TITLE,
-  type TasksVaultPayload,
-} from './services/googleTasksVault';
+  fetchCloudUserSettings,
+  saveCloudUserSettings,
+  registerActiveAlarm,
+  dismissActiveAlarmInCloud,
+  subscribeToActiveAlarms,
+  subscribeToUserDocument,
+  cleanupExpiredActiveAlarms,
+  deleteTasksVaultListIfPresent,
+  type UserSettingsPayload,
+} from './services/cloudStateService';
+
+type TasksVaultPayload = UserSettingsPayload;
+const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
+const SYNC_TASK_TITLE = 'sync_state';
 import {
   DEFAULT_CREATIVE_ACTIVITIES,
   DEFAULT_DEVICE_SETTINGS,
@@ -587,6 +595,17 @@ const RHYTHM_FIELD_GROUPS: ReadonlyArray<ReadonlyArray<keyof SyncedRhythmPayload
   ['deviceSettings'],
   ['lifeProfile'],
   ['uiPrefs'],
+  ['appSettings'],
+  ['medications'],
+  ['creativeActivities'],
+  ['memories'],
+  ['completedOverrides'],
+  ['fastingOverride'],
+  ['isFridayMode'],
+  ['includeBiweeklyPcCleanup'],
+  ['periodicRituals'],
+  ['travelState'],
+  ['pomodoro'],
 ];
 
 function serializeRhythmFields(p: SyncedRhythmPayload): Record<string, string> {
@@ -825,6 +844,8 @@ export default function App() {
     }
     return DEFAULT_LIFE_PROFILE;
   });
+  const lifeProfileRef = useRef<LifeProfile>(lifeProfile);
+  lifeProfileRef.current = lifeProfile;
 
   const [fastingOverride, setFastingOverride] = useState<'auto' | 'fasting' | 'normal'>('auto');
   const [isLifeProfileModalOpen, setIsLifeProfileModalOpen] = useState(false);
@@ -851,18 +872,31 @@ export default function App() {
     isContinuous?: boolean;
   } | null>(null);
   const [persistentAlert, setPersistentAlert] = useState<PersistentAlertItem | null>(null);
+  const activeAudioAlertRef = useRef<{ id: string; firedAtMs: number } | null>(null);
+  const persistentAlertRef = useRef<{ id: string; createdAtMs: number } | null>(null);
+  const handledDismissedAlarmIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    activeAudioAlertRef.current = activeAudioAlert ? { id: activeAudioAlert.id, firedAtMs: Date.now() } : null;
+  }, [activeAudioAlert]);
+
+  useEffect(() => {
+    persistentAlertRef.current = persistentAlert ? { id: persistentAlert.id, createdAtMs: persistentAlert.createdAtMs } : null;
+  }, [persistentAlert]);
 
   const clientIdRef = useRef<string>(
     `dr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   );
   const wsRef = useRef<WebSocket | null>(null);
-  const [wsConnected, setWsConnected] = useState(false);
+  const wsConnected = firestoreSynced;
   const seenSyncOpIdsRef = useRef<Set<string>>(new Set());
   const restoredOpIdsRef = useRef<Set<string>>(new Set());
   const wasInPrayerSanctuaryRef = useRef<boolean>(false);
   const [lastDeletedWorkspaceItem, setLastDeletedWorkspaceItem] =
     useState<DeletedWorkspaceSnapshot | null>(null);
 
+  const [isLoadingSettings, setIsLoadingSettings] = useState<boolean>(true);
+  const isLoadingSettingsRef = useRef<boolean>(true);
   const hasHydratedRemoteRef = useRef(false);
   const localWriteLockUntilRef = useRef<number>(0);
   // Last value of each synced field as the server has it (from snapshots). A save only sends the
@@ -875,6 +909,9 @@ export default function App() {
   const [cloudPausedUntil, setCloudPausedUntil] = useState(0);
   const pendingRemoteTimerRef = useRef<number | null>(null);
   const pushToTasksVaultRef = useRef<(patch?: Partial<TasksVaultPayload>) => Promise<void>>(() => Promise.resolve());
+  const pendingPatchesBeforeHydrationRef = useRef<Array<Partial<TasksVaultPayload>>>([]);
+  const handleToggleMedicationRef = useRef<(id: string, doseTime24?: string) => void>(() => {});
+  const handleLogWaterCupRef = useRef<() => void>(() => {});
 
   // Any LOCALLY-initiated lifeProfile edit arms the write lock (see the Firestore listener's
   // "Date.now() < localWriteLockUntilRef.current" guard above) so a snapshot that happens to
@@ -885,11 +922,22 @@ export default function App() {
   const updateLifeProfileLocal = useCallback(
     (updater: Parameters<typeof setLifeProfile>[0]) => {
       localWriteLockUntilRef.current = Date.now() + 5000;
-      setLifeProfile((prev) => {
-        const next = typeof updater === 'function' ? updater(prev) : updater;
-        void pushToTasksVaultRef.current({ lifeProfile: next });
-        return next;
-      });
+      const prev = lifeProfileRef.current;
+      const next = sanitizeLifeProfile(typeof updater === 'function' ? updater(prev) : updater);
+      lifeProfileRef.current = next;
+      setLifeProfile(next);
+      try {
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        const current = currentRaw ? JSON.parse(currentRaw) : {};
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ...current, lifeProfile: next })
+        );
+      } catch {
+        // ignore storage errors
+      }
+      void pushToTasksVaultRef.current({ lifeProfile: next });
+      return next;
     },
     []
   );
@@ -914,7 +962,15 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<PersistedChatMessage[]>(loadSavedChats);
 
   // Toggles for Prayer Anchors overlay & Explicit Offline Demo fallback (false by default!)
-  const [includePrayerAnchors, setIncludePrayerAnchors] = useState<boolean>(true);
+  const [includePrayerAnchors, setIncludePrayerAnchors] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('dayrhythm_include_prayer_anchors');
+      if (saved !== null) return saved === 'true';
+    } catch {
+      // ignore
+    }
+    return true;
+  });
   const [useOfflineDemo, setUseOfflineDemo] = useState<boolean>(false);
   const [completedOverrides, setCompletedOverrides] = useState<Record<string, boolean>>({});
   const [reflowedBlocksOverride, setReflowedBlocksOverride] = useState<ScheduleBlock[] | null>(null);
@@ -1229,6 +1285,37 @@ export default function App() {
     }
     return true;
   });
+
+  // ── ☀️ Sunlight mode (per device; the night theme stays the default) ───────────────
+  const [sunMode, setSunMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('dayrhythm_sun_mode_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleIncludePrayerAnchors = useCallback(() => {
+    setIncludePrayerAnchors((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('dayrhythm_include_prayer_anchors', String(next));
+      } catch {
+        // ignore
+      }
+      void pushToTasksVaultRef.current({
+        appSettings: {
+          phoneChargeLimitPct,
+          smartChargeAlertEnabled,
+          smartChargeKeepUntilUnplugged,
+          waterRemindersEnabled,
+          sunMode,
+          includePrayerAnchors: next,
+        },
+      });
+      return next;
+    });
+  }, [phoneChargeLimitPct, smartChargeAlertEnabled, smartChargeKeepUntilUnplugged, waterRemindersEnabled, sunMode]);
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | 'unsupported'
   >(() =>
@@ -1273,6 +1360,39 @@ export default function App() {
   });
   const [capsulePrefs, setCapsulePrefs] = useState<CapsulePrefs>(loadSavedCapsulePrefs);
 
+  const surfaceThemeRef = useRef(surfaceTheme);
+  surfaceThemeRef.current = surfaceTheme;
+  const quietModeRef = useRef(quietMode);
+  quietModeRef.current = quietMode;
+  const adhanOverrideSilentRef = useRef(adhanOverrideSilent);
+  adhanOverrideSilentRef.current = adhanOverrideSilent;
+  const deviceSettingsRef = useRef(deviceSettings);
+  deviceSettingsRef.current = deviceSettings;
+  const medicationsRef = useRef(medications);
+  medicationsRef.current = medications;
+  const creativeActivitiesRef = useRef(creativeActivities);
+  creativeActivitiesRef.current = creativeActivities;
+  const memoriesRef = useRef(memories);
+  memoriesRef.current = memories;
+  const selectedLogoIdRef = useRef(selectedLogoId);
+  selectedLogoIdRef.current = selectedLogoId;
+  const capsulePrefsRef = useRef(capsulePrefs);
+  capsulePrefsRef.current = capsulePrefs;
+  const completedOverridesRef = useRef(completedOverrides);
+  completedOverridesRef.current = completedOverrides;
+  const fastingOverrideRef = useRef(fastingOverride);
+  fastingOverrideRef.current = fastingOverride;
+  const isFridayModeRef = useRef(isFridayMode);
+  isFridayModeRef.current = isFridayMode;
+  const includeBiweeklyPcCleanupRef = useRef(includeBiweeklyPcCleanup);
+  includeBiweeklyPcCleanupRef.current = includeBiweeklyPcCleanup;
+  const travelStateRef = useRef(travelState);
+  travelStateRef.current = travelState;
+  const pomodoroRef = useRef(pomodoro);
+  pomodoroRef.current = pomodoro;
+  const periodicRitualsRef = useRef(periodicRituals);
+  periodicRitualsRef.current = periodicRituals;
+
   const activeBrandLogo = useMemo(() => getLogoConceptById(selectedLogoId), [selectedLogoId]);
 
   useEffect(() => {
@@ -1311,21 +1431,24 @@ export default function App() {
           chargeLimitPct: clamped,
           updatedAtMs: Date.now(),
         };
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          try {
-            wsRef.current.send(JSON.stringify({ type: 'battery', ...updated }));
-          } catch {
-            // ignore ws send errors
-          }
-        }
+
         if (firebaseUser?.uid && firebaseUser.emailVerified) {
           void publishPhoneBatteryTelemetry(firebaseUser.uid, updated).catch(() => {});
         }
         return updated;
       });
       showToast(`🔋 تم ضبط حد تنبيه شحن الموبايل على ${clamped}%`);
+      void pushToTasksVaultRef.current({
+        appSettings: {
+          phoneChargeLimitPct: clamped,
+          smartChargeAlertEnabled,
+          smartChargeKeepUntilUnplugged,
+          waterRemindersEnabled,
+          sunMode,
+        },
+      });
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced, showToast]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, showToast, smartChargeAlertEnabled, smartChargeKeepUntilUnplugged, waterRemindersEnabled, sunMode]
   );
 
   const appendChangelog = useCallback(
@@ -1452,13 +1575,7 @@ export default function App() {
         timestampMs,
       };
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        try {
-          wsRef.current.send(JSON.stringify(packet));
-        } catch {
-          // ignore transient WS send error
-        }
-      }
+
 
       if (typeof BroadcastChannel !== 'undefined') {
         try {
@@ -1470,14 +1587,14 @@ export default function App() {
         }
       }
 
-      const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-      if (firebaseUser?.uid && (firebaseUser.emailVerified || isGoogle)) {
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
         void publishWorkspaceSyncSignal(firebaseUser.uid, {
           opId,
           clientId: clientIdRef.current,
           scope,
           action,
           timestampMs,
+          extra: extraPayload,
         });
       }
 
@@ -1524,15 +1641,31 @@ export default function App() {
     stopNativeAlerts();
     const hadAlert = Boolean(activeAudioAlert || persistentAlert || alarmRinging);
     const title = activeAudioAlert?.title || persistentAlert?.title || 'التنبيه';
+    const alertId = activeAudioAlert?.id || persistentAlert?.id || 'all';
     setActiveAudioAlert(null);
     setPersistentAlert(null);
     setAlarmRinging(false);
     triggerHapticWaveform('shake_undo');
     emitCrossDeviceSync('alarm_dismiss', 'dismiss');
+
+    // Requirement 3: Real-time cloud alarm dismissal across all connected devices
+    if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+      void dismissActiveAlarmInCloud(firebaseUser.uid, alertId, clientIdRef.current);
+    }
+
     if (hadAlert) {
       showToast(`✓ تم إيقاف وتأكيد تنبيه «${title}» على أجهزتك`);
     }
-  }, [activeAudioAlert, alarmRinging, emitCrossDeviceSync, persistentAlert, showToast, stopNativeAlerts]);
+  }, [
+    activeAudioAlert,
+    alarmRinging,
+    emitCrossDeviceSync,
+    firebaseUser?.isAnonymous,
+    firebaseUser?.uid,
+    persistentAlert,
+    showToast,
+    stopNativeAlerts,
+  ]);
 
   // Auto-dismiss non-continuous active audio alert banner after 12 seconds (continuous loops stay until user stops!)
   useEffect(() => {
@@ -1665,6 +1798,21 @@ export default function App() {
         isContinuous: Boolean(playRes.isContinuous || isContinuous),
       });
 
+      // Requirement 3: Register ringing alarm in Firestore active_alarms
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void registerActiveAlarm(firebaseUser.uid, {
+          id: alertId,
+          title: visibleTitle,
+          body: visibleDescription,
+          category,
+          originClientId: clientIdRef.current,
+          medicationId: options?.medicationId,
+          doseTime24: options?.medicationDoseTime24,
+          taskId: options?.taskId,
+          taskListId: options?.taskListId,
+        });
+      }
+
       // Avoid showing TWO duplicate alerts on Windows EXE (native SecondaryMonitorToastForm handles PC alert cleanly!)
       if (!isNativeWin) {
         setPersistentAlert({
@@ -1758,6 +1906,9 @@ export default function App() {
       setPersistentAlert(null);
       setAlarmRinging(false);
       emitCrossDeviceSync('alarm_dismiss', 'snooze');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, alertItem.id, clientIdRef.current);
+      }
       const timerId = window.setTimeout(() => {
         snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);
         triggerTaskAlert(alertItem.emoji || alertItem.title, alertItem.category, {
@@ -1837,7 +1988,14 @@ export default function App() {
   }, []);
 
   const fetchCalendarEvents = useCallback(async (tokenOverride?: string) => {
-    const token = tokenOverride ?? getCalendarAccessToken();
+    let token: string | null = tokenOverride ?? getCalendarAccessToken();
+    if (!token) {
+      try {
+        token = (await getOrRefreshCalendarAccessToken()) || null;
+      } catch {
+        // ignore
+      }
+    }
     if (!token) {
       return;
     }
@@ -1969,7 +2127,14 @@ export default function App() {
   }, [handleWorkspaceUnauthorized]);
 
   const fetchGoogleTasks = useCallback(async (tokenOverride?: string) => {
-    const token = tokenOverride ?? getCalendarAccessToken();
+    let token: string | null = tokenOverride ?? getCalendarAccessToken();
+    if (!token) {
+      try {
+        token = (await getOrRefreshCalendarAccessToken()) || null;
+      } catch {
+        // ignore
+      }
+    }
     if (!token) return;
     setLoadingTasks(true);
     // Dev backend (server.ts) only — static APK/EXE/PWA builds skip straight to Google.
@@ -2491,14 +2656,6 @@ export default function App() {
   // it still gets the charge-limit alert.
   const isPhoneClient = useMemo(() => detectIsMobileDeviceClient(), []);
 
-  // ── ☀️ Sunlight mode (per device; the night theme stays the default) ───────────────
-  const [sunMode, setSunMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('dayrhythm_sun_mode_v1') === '1';
-    } catch {
-      return false;
-    }
-  });
   useEffect(() => {
     document.documentElement.classList.toggle('theme-sun', sunMode);
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', sunMode ? '#eef1f4' : '#000000');
@@ -2528,7 +2685,7 @@ export default function App() {
 
   // App settings that used to be per-device only: change it on one device, it changes on the other.
   useEffect(() => {
-    if (!hasHydratedRemoteRef.current) {
+    if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
       return;
     }
     // Same key order as sanitizeAppSyncSettings, so equal settings serialize identically.
@@ -2946,14 +3103,12 @@ export default function App() {
         if (token && navigator.onLine !== false) {
           void refreshWorkspace(token, { forceGmail: true });
         }
-        void pullFromTasksVault();
         if (token) {
           void hydrateGoogleDriveOnce(token);
         } else {
           void getOrRefreshCalendarAccessToken().then((freshToken) => {
             if (freshToken) {
               setWorkspaceTokenExpired(false);
-              void pullFromTasksVault();
               void hydrateGoogleDriveOnce(freshToken);
             } else {
               hasHydratedGoogleDriveRef.current = true;
@@ -2980,7 +3135,6 @@ export default function App() {
         return;
       }
       setFirebaseUser(user);
-      void pullFromTasksVault();
       try {
         const prevUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
         if (prevUid && prevUid !== user.uid) {
@@ -3088,322 +3242,45 @@ export default function App() {
   handleIncomingRemoteSyncRef.current = handleIncomingRemoteSync;
   const refreshWorkspaceRef = useRef(refreshWorkspace);
   refreshWorkspaceRef.current = refreshWorkspace;
+  const applyRemoteRef = useRef<(remote: SyncedRhythmPayload) => void>(() => {});
   const callRemoteSync = useCallback(
     (payload: Parameters<typeof handleIncomingRemoteSync>[0]) => handleIncomingRemoteSyncRef.current(payload),
     []
   );
   const callRefreshWorkspace = useCallback(() => refreshWorkspaceRef.current(), []);
 
-  // Instant Cross-Device WebSocket Sync Hub (/ws/sync) + Auto-Recovery (Dead-Socket Teardown + Exponential Backoff + Wake/Online Recovery)
+  // Wake/Online/Visibility Recovery: ensures Firestore streams recover instantly after sleep or network toggle
   useEffect(() => {
-    const uid = firebaseUser?.uid;
-    if (!uid || !firebaseUser?.emailVerified) {
-      setWsConnected(false);
-      return;
-    }
-
-    let closedByCleanup = false;
-    let reconnectTimer: number | null = null;
-    let connectWatchdogTimer: number | null = null;
-    let heartbeatTimer: number | null = null;
-    let pongTimeoutTimer: number | null = null;
-    let backoffAttempt = 0;
-    // A host with no sync server (static build, plain preview) never accepts the socket:
-    // stop retrying after a few failures instead of reconnecting forever.
-    let everConnected = false;
-    let failedWithoutConnect = 0;
-    let hadPreviousDisconnect = false;
     let lastVisibleAtMs = Date.now();
-
-    const clearTimers = () => {
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      if (connectWatchdogTimer !== null) {
-        window.clearTimeout(connectWatchdogTimer);
-        connectWatchdogTimer = null;
-      }
-      if (heartbeatTimer !== null) {
-        window.clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
-      if (pongTimeoutTimer !== null) {
-        window.clearTimeout(pongTimeoutTimer);
-        pongTimeoutTimer = null;
-      }
-    };
-
-    const teardownSocket = (sock: WebSocket | null, reason = 'auto_recovery_reset') => {
-      if (!sock) return;
-      sock.onopen = null;
-      sock.onmessage = null;
-      sock.onclose = null;
-      sock.onerror = null;
-      try {
-        if (sock.readyState === WebSocket.OPEN || sock.readyState === WebSocket.CONNECTING) {
-          sock.close(4000, reason);
-        }
-      } catch {
-        // ignore socket close errors
-      }
-      if (wsRef.current === sock) {
-        wsRef.current = null;
-      }
-    };
-
-    const scheduleReconnect = () => {
-      if (closedByCleanup) return;
-      if (reconnectTimer !== null) return;
-      if (!everConnected) {
-        failedWithoutConnect += 1;
-        if (failedWithoutConnect >= 5) return;
-      }
-      const baseMs = Math.min(30_000, 1000 * Math.pow(2, backoffAttempt));
-      const jitterMs = Math.floor(Math.random() * Math.min(1500, baseMs * 0.3));
-      const delayMs = Math.min(30_000, baseMs + jitterMs);
-      backoffAttempt = Math.min(backoffAttempt + 1, 6);
-      reconnectTimer = window.setTimeout(() => {
-        reconnectTimer = null;
-        connectWs();
-      }, delayMs);
-    };
-
-    const connectWs = () => {
-      if (closedByCleanup) return;
-      clearTimers();
-      teardownSocket(wsRef.current, 'replace_stale_socket');
-
-      // Skip local /ws/sync if running on static virtual Firebase Hosting domain without a WS backend
-      const hostLower = window.location.hostname.toLowerCase();
-      if (hostLower.endsWith('.web.app') || hostLower.endsWith('.firebaseapp.com')) {
-        setWsConnected(false);
-        return;
-      }
-
-      try {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/sync`);
-        wsRef.current = ws;
-
-        // Abort hung CONNECTING handshakes after 10s
-        connectWatchdogTimer = window.setTimeout(() => {
-          if (ws.readyState !== WebSocket.OPEN) {
-            setWsConnected(false);
-            hadPreviousDisconnect = true;
-            teardownSocket(ws, 'connect_timeout');
-            scheduleReconnect();
-          }
-        }, 10_000);
-
-        ws.onopen = () => {
-          if (connectWatchdogTimer !== null) {
-            window.clearTimeout(connectWatchdogTimer);
-            connectWatchdogTimer = null;
-          }
-          backoffAttempt = 0;
-          everConnected = true;
-          setWsConnected(true);
-          ws.send(
-            JSON.stringify({
-              type: 'join',
-              uid,
-              clientId: clientIdRef.current,
-            })
-          );
-
-          if (hadPreviousDisconnect) {
-            hadPreviousDisconnect = false;
-            void callRefreshWorkspace();
-            triggerFirestoreRecovery(false);
-          }
-
-          // Active Ping/Pong dead-socket liveness monitor
-          heartbeatTimer = window.setInterval(() => {
-            if (ws.readyState !== WebSocket.OPEN) {
-              setWsConnected(false);
-              hadPreviousDisconnect = true;
-              teardownSocket(ws, 'socket_not_open');
-              scheduleReconnect();
-              return;
-            }
-            try {
-              ws.send(JSON.stringify({ type: 'ping', ts: Date.now() }));
-            } catch {
-              setWsConnected(false);
-              hadPreviousDisconnect = true;
-              teardownSocket(ws, 'ping_send_failed');
-              scheduleReconnect();
-              return;
-            }
-            if (pongTimeoutTimer !== null) window.clearTimeout(pongTimeoutTimer);
-            pongTimeoutTimer = window.setTimeout(() => {
-              // Zombie/half-open connection detected: no pong within 10s -> force teardown & recover
-              setWsConnected(false);
-              hadPreviousDisconnect = true;
-              teardownSocket(ws, 'pong_timeout');
-              scheduleReconnect();
-            }, 10_000);
-          }, 20_000);
-        };
-
-        ws.onmessage = (ev) => {
-          if (pongTimeoutTimer !== null) {
-            window.clearTimeout(pongTimeoutTimer);
-            pongTimeoutTimer = null;
-          }
-          try {
-            const msg = JSON.parse(String(ev.data)) as {
-              type?: string;
-              opId?: string;
-              clientId?: string;
-              scope?: string;
-              action?: string;
-              undoSnapshot?: DeletedWorkspaceSnapshot;
-              levelPct?: number;
-              charging?: boolean;
-              chargeLimitPct?: number;
-              updatedAtMs?: number;
-              deviceLabel?: string;
-            };
-            if (msg.type === 'pong') return;
-            if (msg.type === 'battery' && typeof msg.levelPct === 'number') {
-              const rawEta = (msg as { chargeTimeRemainingMin?: number }).chargeTimeRemainingMin;
-              const incoming: PhoneBatteryTelemetry = {
-                levelPct: Math.max(0, Math.min(100, Math.round(msg.levelPct))),
-                charging: Boolean(msg.charging),
-                chargeLimitPct:
-                  typeof msg.chargeLimitPct === 'number'
-                    ? Math.max(60, Math.min(100, Math.round(msg.chargeLimitPct)))
-                    : phoneChargeLimitRef.current,
-                chargeTimeRemainingMin:
-                  typeof rawEta === 'number' && Number.isFinite(rawEta)
-                    ? Math.max(-1, Math.min(1440, Math.round(rawEta)))
-                    : -1,
-                updatedAtMs: typeof msg.updatedAtMs === 'number' ? msg.updatedAtMs : Date.now(),
-                deviceLabel: typeof msg.deviceLabel === 'string' && msg.deviceLabel ? msg.deviceLabel : 'الهاتف',
-              };
-              setPhoneBattery(incoming);
-              setBatteryGuard((prev) => ({
-                ...prev,
-                levelPct: incoming.levelPct,
-                cableConnected: incoming.charging,
-                pcAlertActive:
-                  incoming.charging &&
-                  incoming.levelPct >= incoming.chargeLimitPct &&
-                  prev.bypassChargingLimitPct === null,
-                autoSilencedByDisconnect: !incoming.charging && prev.cableConnected,
-              }));
-              return;
-            }
-            if (msg.type === 'sync') {
-              callRemoteSync(msg);
-            }
-          } catch {
-            // ignore malformed message
-          }
-        };
-
-        ws.onclose = () => {
-          setWsConnected(false);
-          hadPreviousDisconnect = true;
-          clearTimers();
-          if (wsRef.current === ws) {
-            wsRef.current = null;
-          }
-          scheduleReconnect();
-        };
-
-        ws.onerror = () => {
-          setWsConnected(false);
-          hadPreviousDisconnect = true;
-          teardownSocket(ws, 'ws_error');
-          scheduleReconnect();
-        };
-      } catch {
-        setWsConnected(false);
-        hadPreviousDisconnect = true;
-        scheduleReconnect();
-      }
-    };
-
-    connectWs();
-
-    let bc: BroadcastChannel | null = null;
-    if (typeof BroadcastChannel !== 'undefined') {
-      try {
-        bc = new BroadcastChannel('dayrhythm_sync');
-        bc.onmessage = (ev) => {
-          if (ev.data?.type === 'sync') {
-            callRemoteSync(ev.data);
-          }
-        };
-      } catch {
-        // ignore BroadcastChannel errors
-      }
-    }
-
-    const triggerImmediateAutoRecovery = (forceFirestoreReset: boolean) => {
-      if (closedByCleanup) return;
-      backoffAttempt = 0;
-      const sock = wsRef.current;
-      if ((everConnected || failedWithoutConnect < 5) && (!sock || sock.readyState !== WebSocket.OPEN)) {
-        connectWs();
-      }
-      triggerFirestoreRecovery(forceFirestoreReset);
-      void callRefreshWorkspace();
-    };
-
-    const handleOnline = () => {
-      triggerImmediateAutoRecovery(true);
-    };
-
-    const handleNativeNetworkRecovered = () => {
-      triggerImmediateAutoRecovery(true);
-    };
-
-    const handleNativeWsSync = (ev: Event) => {
-      try {
-        const detail = (ev as CustomEvent<string>).detail;
-        if (typeof detail === 'string') {
-          const parsed = JSON.parse(detail);
-          if (parsed && typeof parsed === 'object') {
-            callRemoteSync(parsed);
-          }
-        }
-      } catch {
-        // ignore malformed native WS payload
-      }
-    };
 
     const handleResumeSync = () => {
       if (document.visibilityState === 'visible') {
         const sleptMs = Date.now() - lastVisibleAtMs;
         lastVisibleAtMs = Date.now();
-        triggerImmediateAutoRecovery(sleptMs > 45_000);
+        triggerFirestoreRecovery(sleptMs > 45_000);
+        void callRefreshWorkspace();
       } else {
         lastVisibleAtMs = Date.now();
       }
     };
 
+    const handleOnline = () => {
+      triggerFirestoreRecovery(true);
+      void callRefreshWorkspace();
+    };
+
     window.addEventListener('online', handleOnline);
     window.addEventListener('focus', handleResumeSync);
-    window.addEventListener('dayrhythm:network-recovered', handleNativeNetworkRecovered);
-    window.addEventListener('dayrhythm:ws-sync', handleNativeWsSync);
+    window.addEventListener('dayrhythm:network-recovered', handleOnline);
     document.addEventListener('visibilitychange', handleResumeSync);
 
     return () => {
-      closedByCleanup = true;
-      clearTimers();
-      teardownSocket(wsRef.current, 'unmount');
-      bc?.close();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('focus', handleResumeSync);
-      window.removeEventListener('dayrhythm:network-recovered', handleNativeNetworkRecovered);
-      window.removeEventListener('dayrhythm:ws-sync', handleNativeWsSync);
+      window.removeEventListener('dayrhythm:network-recovered', handleOnline);
       document.removeEventListener('visibilitychange', handleResumeSync);
     };
-  }, [firebaseUser?.uid, firebaseUser?.emailVerified, callRemoteSync, callRefreshWorkspace]);
+  }, [callRefreshWorkspace]);
 
   const applyRemote = useCallback((remote: SyncedRhythmPayload & {
     medications?: MedicationItem[];
@@ -3450,83 +3327,125 @@ export default function App() {
     }
     if (remote.appSettings) {
       const a = remote.appSettings;
-      setPhoneChargeLimitPct(a.phoneChargeLimitPct);
-      setSmartChargeAlertEnabled(a.smartChargeAlertEnabled);
-      setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
-      setWaterRemindersEnabled(a.waterRemindersEnabled);
-      setSunMode(a.sunMode);
-      try {
-        localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
-        localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
-        localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
-        localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(a.waterRemindersEnabled));
-      } catch {
-        // ignore storage errors
+      const json = JSON.stringify(a);
+      if (json !== lastServerAppSettingsRef.current) {
+        lastServerAppSettingsRef.current = json;
+        if (typeof a.phoneChargeLimitPct === 'number') setPhoneChargeLimitPct(a.phoneChargeLimitPct);
+        if (typeof a.smartChargeAlertEnabled === 'boolean') setSmartChargeAlertEnabled(a.smartChargeAlertEnabled);
+        if (typeof a.smartChargeKeepUntilUnplugged === 'boolean') setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
+        if (typeof a.waterRemindersEnabled === 'boolean') setWaterRemindersEnabled(a.waterRemindersEnabled);
+        if (typeof a.sunMode === 'boolean') setSunMode(a.sunMode);
+        try {
+          if (typeof a.phoneChargeLimitPct === 'number') localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
+          if (typeof a.smartChargeAlertEnabled === 'boolean') localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
+          if (typeof a.smartChargeKeepUntilUnplugged === 'boolean') localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
+          if (typeof a.waterRemindersEnabled === 'boolean') localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(a.waterRemindersEnabled));
+        } catch {
+          // ignore storage errors
+        }
       }
     }
-    if (remote.quietMode) setQuietMode(remote.quietMode);
-    if (typeof remote.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(remote.adhanOverrideSilent);
-    lastSyncedQuietSigRef.current = `${remote.quietMode || quietMode}:${remote.adhanOverrideSilent ?? adhanOverrideSilent}`;
-    setSurfaceTheme('amoled');
+    const targetQuiet = remote.quietMode || quietModeRef.current;
+    const targetAdhan = typeof remote.adhanOverrideSilent === 'boolean' ? remote.adhanOverrideSilent : adhanOverrideSilentRef.current;
+    lastSyncedQuietSigRef.current = `${targetQuiet}:${targetAdhan}`;
+
+    if (remote.quietMode && remote.quietMode !== quietModeRef.current) {
+      quietModeRef.current = remote.quietMode;
+      setQuietMode(remote.quietMode);
+    }
+    if (typeof remote.adhanOverrideSilent === 'boolean' && remote.adhanOverrideSilent !== adhanOverrideSilentRef.current) {
+      adhanOverrideSilentRef.current = remote.adhanOverrideSilent;
+      setAdhanOverrideSilent(remote.adhanOverrideSilent);
+    }
+    if (remote.surfaceTheme && remote.surfaceTheme !== surfaceThemeRef.current) {
+      surfaceThemeRef.current = remote.surfaceTheme;
+      setSurfaceTheme(remote.surfaceTheme);
+    }
     if (remote.deviceSettings) {
       const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
-      setDeviceSettings(cleanDev);
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
-      } catch {
-        // ignore
+      const isDiff = JSON.stringify(cleanDev) !== JSON.stringify(deviceSettingsRef.current);
+      if (isDiff) {
+        deviceSettingsRef.current = cleanDev;
+        setDeviceSettings(cleanDev);
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
+        } catch {
+          // ignore
+        }
       }
     }
     if (remote.lifeProfile) {
       const cleanProfile = sanitizeLifeProfile(remote.lifeProfile);
-      setLifeProfile(cleanProfile);
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
-      } catch {
-        // ignore
+      const isDiff = JSON.stringify(cleanProfile) !== JSON.stringify(lifeProfileRef.current);
+      if (isDiff) {
+        lifeProfileRef.current = cleanProfile;
+        setLifeProfile(cleanProfile);
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+        } catch {
+          // ignore
+        }
       }
     }
-    if (Array.isArray(remote.medications) && remote.medications.length > 0) {
+    if (Array.isArray(remote.medications)) {
       const cleanMeds = remote.medications.map((m) => sanitizeMedicationItem(m));
-      setMedications(cleanMeds);
-      try {
-        localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(cleanMeds));
-      } catch {
-        // ignore
+      const sig = JSON.stringify(cleanMeds);
+      if (sig !== JSON.stringify(medicationsRef.current)) {
+        medicationsRef.current = cleanMeds;
+        setMedications(cleanMeds);
+        try {
+          localStorage.setItem(MEDS_STORAGE_KEY, sig);
+        } catch {
+          // ignore
+        }
       }
     }
-    if (Array.isArray(remote.memories) && remote.memories.length > 0) {
+    if (Array.isArray(remote.memories)) {
       const cleanMems = remote.memories.map((m) => sanitizeMemoryItem(m));
-      lastSyncedMemoriesSigRef.current = JSON.stringify(cleanMems);
-      setMemories(cleanMems);
-      try {
-        localStorage.setItem(MEMORIES_STORAGE_KEY, JSON.stringify(cleanMems));
-      } catch {
-        // ignore
+      const sig = JSON.stringify(cleanMems);
+      if (sig !== JSON.stringify(memoriesRef.current)) {
+        lastSyncedMemoriesSigRef.current = sig;
+        memoriesRef.current = cleanMems;
+        setMemories(cleanMems);
+        try {
+          localStorage.setItem(MEMORIES_STORAGE_KEY, sig);
+        } catch {
+          // ignore
+        }
       }
     }
-    if (Array.isArray(remote.creativeActivities) && remote.creativeActivities.length > 0) {
+    if (Array.isArray(remote.creativeActivities)) {
       const cleanCreatives = remote.creativeActivities.map((c) => sanitizeCreativeActivityItem(c));
-      lastSyncedCreativeSigRef.current = JSON.stringify(cleanCreatives);
-      setCreativeActivities(cleanCreatives);
-      try {
-        localStorage.setItem(CREATIVE_STORAGE_KEY, JSON.stringify(cleanCreatives));
-      } catch {
-        // ignore
+      const sig = JSON.stringify(cleanCreatives);
+      if (sig !== JSON.stringify(creativeActivitiesRef.current)) {
+        lastSyncedCreativeSigRef.current = sig;
+        creativeActivitiesRef.current = cleanCreatives;
+        setCreativeActivities(cleanCreatives);
+        try {
+          localStorage.setItem(CREATIVE_STORAGE_KEY, sig);
+        } catch {
+          // ignore
+        }
       }
     }
     if (remote.uiPrefs) {
       const cleanUi = sanitizeUiPrefs(remote.uiPrefs);
       if (cleanUi) {
-        setSelectedLogoId(cleanUi.selectedLogoId);
-        setCapsulePrefs({
-          orientation: cleanUi.capsuleOrientation,
-          size: cleanUi.capsuleSize,
-        });
+        if (cleanUi.selectedLogoId && cleanUi.selectedLogoId !== selectedLogoIdRef.current) {
+          selectedLogoIdRef.current = cleanUi.selectedLogoId;
+          setSelectedLogoId(cleanUi.selectedLogoId);
+        }
+        if (cleanUi.capsuleOrientation !== capsulePrefsRef.current.orientation || cleanUi.capsuleSize !== capsulePrefsRef.current.size) {
+          capsulePrefsRef.current = {
+            orientation: cleanUi.capsuleOrientation,
+            size: cleanUi.capsuleSize,
+          };
+          setCapsulePrefs(capsulePrefsRef.current);
+        }
         if (cleanUi.cloudApiUrl) {
           syncSavedCloudApiUrlFromRemote(cleanUi.cloudApiUrl);
           try {
@@ -3585,11 +3504,13 @@ export default function App() {
               : 0
             : baseCounts[idx] ?? 0;
 
-          // Bulletproof Anti-Downgrade: NEVER allow remote sync to wipe today's logged cups!
+          // Bulletproof Anti-Downgrade: NEVER allow remote sync to wipe today's logged cups while writing locally!
           if (isToday) {
             if (isSameDay) {
-              if (Date.now() < localWriteLockUntilRef.current || (prevToday && prevToday.cupsLogged > c)) {
+              if (Date.now() < localWriteLockUntilRef.current) {
                 c = Math.max(c, prevToday ? prevToday.cupsLogged : 0);
+              } else {
+                c = remote.cupsLogged!;
               }
             } else {
               // Remote snapshot hasn't recorded today yet or is from a previous day:
@@ -3615,7 +3536,57 @@ export default function App() {
         });
       });
     }
+
+    if (remote.completedOverrides) {
+      if (JSON.stringify(remote.completedOverrides) !== JSON.stringify(completedOverridesRef.current)) {
+        completedOverridesRef.current = remote.completedOverrides;
+        setCompletedOverrides(remote.completedOverrides);
+      }
+    }
+    if (remote.fastingOverride) {
+      if (remote.fastingOverride !== fastingOverrideRef.current) {
+        fastingOverrideRef.current = remote.fastingOverride;
+        setFastingOverride(remote.fastingOverride);
+      }
+    }
+    if (typeof remote.isFridayMode === 'boolean') {
+      if (remote.isFridayMode !== isFridayModeRef.current) {
+        isFridayModeRef.current = remote.isFridayMode;
+        setIsFridayMode(remote.isFridayMode);
+      }
+    }
+    if (typeof remote.includeBiweeklyPcCleanup === 'boolean') {
+      if (remote.includeBiweeklyPcCleanup !== includeBiweeklyPcCleanupRef.current) {
+        includeBiweeklyPcCleanupRef.current = remote.includeBiweeklyPcCleanup;
+        setIncludeBiweeklyPcCleanup(remote.includeBiweeklyPcCleanup);
+      }
+    }
+    if (remote.travelState) {
+      if (JSON.stringify(remote.travelState) !== JSON.stringify(travelStateRef.current)) {
+        travelStateRef.current = remote.travelState;
+        setTravelState(remote.travelState);
+      }
+    }
+    if (remote.pomodoro) {
+      if (JSON.stringify(remote.pomodoro) !== JSON.stringify(pomodoroRef.current)) {
+        pomodoroRef.current = remote.pomodoro;
+        setPomodoro(remote.pomodoro);
+      }
+    }
+    if (Array.isArray(remote.periodicRituals)) {
+      if (JSON.stringify(remote.periodicRituals) !== JSON.stringify(periodicRitualsRef.current)) {
+        periodicRitualsRef.current = remote.periodicRituals;
+        setPeriodicRituals(remote.periodicRituals);
+      }
+    }
+
+    try {
+      lastServerFieldsRef.current = serializeRhythmFields(sanitizeRhythmPayload(remote));
+    } catch {
+      // ignore
+    }
   }, []);
+  applyRemoteRef.current = applyRemote;
 
   const applyOrDefer = useCallback(
     (remote: SyncedRhythmPayload & {
@@ -3643,58 +3614,177 @@ export default function App() {
   );
 
   const lastAppliedTasksSyncMsRef = useRef<number>(0);
-  const isPullingTasksVaultRef = useRef<boolean>(false);
 
-  const pushToTasksVaultImmediately = useCallback(
-    async (patch?: Partial<TasksVaultPayload>) => {
-      // Avoid pushing default state before having hydrated from cloud on startup
-      if (!hasHydratedRemoteRef.current && !patch) return;
+  // Dedicated Top-Level LAN & Cross-Tab Reactivity Listener
+  // Independent of Firebase auth or network connection:
+  // Receives instant messages over local Wi-Fi / LAN WebSocket (Windows port 48721, Android WebKit bridge)
+  // and multi-tab BroadcastChannel and storage events.
+  useEffect(() => {
+    const handleNativeWsSync = (ev: Event) => {
+      try {
+        const detail = (ev as CustomEvent<string>).detail;
+        if (typeof detail === 'string') {
+          const parsed = JSON.parse(detail);
+          if (parsed && typeof parsed === 'object') {
+            const senderId = parsed.clientId || parsed.settings?.originClientId;
+            if (senderId === clientIdRef.current) return;
+            if (parsed.type === 'settings_update' && parsed.settings) {
+              applyRemoteRef.current(parsed.settings);
+            } else if (parsed.settings) {
+              applyRemoteRef.current(parsed.settings);
+            } else {
+              callRemoteSync(parsed);
+            }
+          }
+        }
+      } catch {
+        // ignore malformed native WS payload
+      }
+    };
 
-      const token = await getOrRefreshCalendarAccessToken();
-      if (!token) return;
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      try {
+        bc = new BroadcastChannel('dayrhythm_sync');
+        bc.onmessage = (event) => {
+          const data = event.data;
+          if (data && typeof data === 'object') {
+            const senderId = data.clientId || data.settings?.originClientId;
+            if (senderId === clientIdRef.current) return;
+            if (data.type === 'settings_update' && data.settings) {
+              applyRemoteRef.current(data.settings);
+            } else if (data.settings) {
+              applyRemoteRef.current(data.settings);
+            } else {
+              callRemoteSync(data);
+            }
+          }
+        };
+      } catch {
+        // BroadcastChannel unsupported or blocked
+      }
+    }
 
-      const todayEntry = hydrationHistory[hydrationHistory.length - 1];
-      const remoteTz = (patch?.lifeProfile || lifeProfile).currentTimeZone || 'Africa/Cairo';
-      const todayIso = getDateIsoInTimeZone(remoteTz);
+    window.addEventListener('dayrhythm:ws-sync', handleNativeWsSync);
 
-      const payload: TasksVaultPayload = {
-        updatedAtMs: Date.now(),
-        originClientId: clientIdRef.current,
-        hydrationDateKey: todayIso,
-        cupsLogged: patch?.cupsLogged ?? todayEntry?.cupsLogged ?? 0,
-        targetCups: patch?.targetCups ?? todayEntry?.targetCups ?? 13,
-        hydrationWeeklyCounts: patch?.hydrationWeeklyCounts ?? hydrationHistory.map((d) => d.cupsLogged),
-        dailyCommitmentDays: patch?.dailyCommitmentDays ?? streaks.dailyCommitmentDays,
-        dailyCommitmentDoneToday: patch?.dailyCommitmentDoneToday ?? streaks.dailyCommitmentDoneToday,
-        waterTargetDays: patch?.waterTargetDays ?? streaks.waterTargetDays,
-        waterTargetDoneToday: patch?.waterTargetDoneToday ?? streaks.waterTargetDoneToday,
-        quietMode: patch?.quietMode ?? quietMode,
-        adhanOverrideSilent: patch?.adhanOverrideSilent ?? adhanOverrideSilent,
-        surfaceTheme,
-        deviceSettings: patch?.deviceSettings ?? deviceSettings,
-        lifeProfile: patch?.lifeProfile ?? lifeProfile,
-        medications: patch?.medications ?? medications,
-        creativeActivities: patch?.creativeActivities ?? creativeActivities,
-        memories: patch?.memories ?? memories,
-        appSettings: patch?.appSettings ?? {
-          phoneChargeLimitPct,
-          smartChargeAlertEnabled,
-          smartChargeKeepUntilUnplugged,
-          waterRemindersEnabled,
-          sunMode,
-        },
-        uiPrefs: sanitizeUiPrefs({
-          selectedLogoId: patch?.uiPrefs?.selectedLogoId ?? selectedLogoId,
-          capsuleOrientation: patch?.uiPrefs?.capsuleOrientation ?? capsulePrefs.orientation,
-          capsuleSize: patch?.uiPrefs?.capsuleSize ?? capsulePrefs.size,
-          cloudApiUrl: getSavedCloudApiUrl() || undefined,
-        }),
+    return () => {
+      window.removeEventListener('dayrhythm:ws-sync', handleNativeWsSync);
+      bc?.close();
+    };
+  }, [callRemoteSync]);
+
+  // Requirement 1 & Finding 4: Pure granular patch saving with strict unhydrated write lock
+  const saveCloudUserSettingsImmediately = useCallback(
+    async (patch?: Partial<UserSettingsPayload>) => {
+      // 1. Prepare granular or full payload
+      let payload: Partial<UserSettingsPayload>;
+      if (patch && Object.keys(patch).length > 0) {
+        payload = {
+          ...patch,
+          originClientId: clientIdRef.current,
+          updatedAtMs: Date.now(),
+        };
+      } else {
+        // Full rhythm snapshot only when explicitly called without patch
+        const todayEntry = hydrationHistory[hydrationHistory.length - 1];
+        const currentProfile = lifeProfileRef.current || lifeProfile;
+        const remoteTz = currentProfile.currentTimeZone || 'Africa/Cairo';
+        const todayIso = getDateIsoInTimeZone(remoteTz);
+        payload = {
+          hydrationDateKey: todayIso,
+          cupsLogged: todayEntry?.cupsLogged ?? 0,
+          targetCups: todayEntry?.targetCups ?? 13,
+          hydrationWeeklyCounts: hydrationHistory.map((d) => d.cupsLogged),
+          dailyCommitmentDays: streaks.dailyCommitmentDays,
+          dailyCommitmentDoneToday: streaks.dailyCommitmentDoneToday,
+          waterTargetDays: streaks.waterTargetDays,
+          waterTargetDoneToday: streaks.waterTargetDoneToday,
+          quietMode,
+          adhanOverrideSilent,
+          surfaceTheme,
+          deviceSettings,
+          lifeProfile: currentProfile,
+          medications,
+          creativeActivities,
+          memories,
+          originClientId: clientIdRef.current,
+          completedOverrides,
+          fastingOverride,
+          isFridayMode,
+          includeBiweeklyPcCleanup,
+          travelState,
+          pomodoro,
+          periodicRituals,
+          appSettings: {
+            phoneChargeLimitPct,
+            smartChargeAlertEnabled,
+            smartChargeKeepUntilUnplugged,
+            waterRemindersEnabled,
+            sunMode,
+          },
+          uiPrefs: sanitizeUiPrefs({
+            selectedLogoId,
+            capsuleOrientation: capsulePrefs.orientation,
+            capsuleSize: capsulePrefs.size,
+            cloudApiUrl: getSavedCloudApiUrl() || undefined,
+          }),
+          updatedAtMs: Date.now(),
+        };
+      }
+
+      // 2. Protocol 1 & 2: Broadcast immediately over LAN (< 50ms) & Cross-Tab BroadcastChannel
+      const broadcastPacket = {
+        type: 'settings_update',
+        settings: payload,
+        clientId: clientIdRef.current,
+        timestampMs: Date.now(),
       };
 
-      lastAppliedTasksSyncMsRef.current = payload.updatedAtMs;
-      void pushRhythmStateToTasks(token, payload);
+
+
+      if (typeof BroadcastChannel !== 'undefined') {
+        try {
+          const bc = new BroadcastChannel('dayrhythm_sync');
+          bc.postMessage(broadcastPacket);
+          bc.close();
+        } catch {
+          // ignore
+        }
+      }
+
+      // 3. Cloud (Firestore) persistence guard:
+      if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
+        console.warn('[CloudSync] Write queued: settings are currently unhydrated or loading from cloud.');
+        if (patch) {
+          pendingPatchesBeforeHydrationRef.current.push(patch);
+        }
+        return;
+      }
+
+      const uid = firebaseUser?.uid;
+      if (!uid || firebaseUser?.isAnonymous) return;
+
+      try {
+        const ok = await saveCloudUserSettings(uid, payload);
+        if (ok) {
+          setFirestoreSynced(true);
+          try {
+            const updatedFields = serializeRhythmFields(sanitizeRhythmPayload(payload as SyncedRhythmPayload));
+            lastServerFieldsRef.current = {
+              ...lastServerFieldsRef.current,
+              ...updatedFields,
+            };
+          } catch {
+            // ignore
+          }
+        }
+      } catch (err) {
+        console.error('[CloudSync] saveCloudUserSettings error:', err);
+      }
     },
     [
+      firebaseUser?.uid,
+      firebaseUser?.isAnonymous,
       hydrationHistory,
       lifeProfile,
       streaks,
@@ -3715,76 +3805,250 @@ export default function App() {
     ]
   );
 
+  const pushToTasksVaultImmediately = saveCloudUserSettingsImmediately;
+
   useEffect(() => {
-    pushToTasksVaultRef.current = pushToTasksVaultImmediately;
-  }, [pushToTasksVaultImmediately]);
+    pushToTasksVaultRef.current = saveCloudUserSettingsImmediately;
+  }, [saveCloudUserSettingsImmediately]);
 
-  const pullFromTasksVault = useCallback(async () => {
-    if (isPullingTasksVaultRef.current) return;
-    const token = await getOrRefreshCalendarAccessToken();
-    if (!token) return;
-
-    isPullingTasksVaultRef.current = true;
-    try {
-      const remote = await pullRhythmStateFromTasks(token);
-      if (!remote) {
-        hasHydratedRemoteRef.current = true;
-        return;
-      }
-      if (remote.originClientId === clientIdRef.current) return;
-      if (remote.updatedAtMs <= lastAppliedTasksSyncMsRef.current) return;
-
-      lastAppliedTasksSyncMsRef.current = remote.updatedAtMs;
-      hasHydratedRemoteRef.current = true;
-      setFirestoreSynced(true);
-      setGoogleDriveSynced(true);
-      applyOrDefer(remote as SyncedRhythmPayload & {
-        medications?: MedicationItem[];
-        creativeActivities?: CreativeActivityItem[];
-        memories?: MemoryItem[];
-      });
-    } catch (err) {
-      console.warn('[TasksVault] pull error:', err);
-    } finally {
-      isPullingTasksVaultRef.current = false;
-    }
-  }, [applyOrDefer]);
-
-  // Real-time automatic polling & focus resume for Google Tasks Cloud Sync (sub-second cross-device sync)
+  // Requirement 3 & Finding 1: Real-time active_alarms listener with poison-pill prevention
   useEffect(() => {
-    const checkSync = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine !== false) {
-        void pullFromTasksVault();
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) return;
+
+    void cleanupExpiredActiveAlarms(uid);
+
+    const unsubscribe = subscribeToActiveAlarms(
+      uid,
+      (alarms) => {
+        // Is an alert currently ringing on THIS device?
+        const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
+        const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
+        const isCurrentlyRinging = Boolean(currentAlertId || alarmRinging);
+
+        if (!isCurrentlyRinging) {
+          return;
+        }
+
+        // Match dismissal strictly against the currently active alert or a dismissal that happened AFTER this alert started ringing!
+        const relevantDismissal = alarms.find((a) => {
+          if (a.status !== 'dismissed') return false;
+          if (a.dismissedByClientId === clientIdRef.current) return false;
+          if (handledDismissedAlarmIdsRef.current.has(a.id)) return false;
+
+          // 1. Direct ID match
+          if (currentAlertId && (a.id === currentAlertId || a.id === 'all' || a.id === 'latest_dismiss')) {
+            return true;
+          }
+
+          // 2. Timestamp match: dismissal happened after or around the time our alert fired
+          if (a.dismissedAtMs && currentFiredAtMs > 0 && a.dismissedAtMs >= currentFiredAtMs - 3000) {
+            return true;
+          }
+
+          return false;
+        });
+
+        if (relevantDismissal) {
+          handledDismissedAlarmIdsRef.current.add(relevantDismissal.id);
+          console.info('[CloudSync] Real-time remote alarm dismissed:', relevantDismissal.id, 'by:', relevantDismissal.dismissedByClientId);
+          stopContinuousAlert();
+          stopNativeAlerts();
+          setActiveAudioAlert(null);
+          setPersistentAlert(null);
+          setAlarmRinging(false);
+          try {
+            const bridge = (
+              window as Window & {
+                DayRhythmNative?: {
+                  dismissActiveAlerts?: () => void;
+                  stopNativeAlarmSound?: () => void;
+                };
+              }
+            ).DayRhythmNative;
+            bridge?.stopNativeAlarmSound?.();
+            bridge?.dismissActiveAlerts?.();
+          } catch {
+            // ignore bridge
+          }
+        }
+      },
+      (err) => {
+        console.warn('[CloudSync] active_alarms listener error:', err);
       }
-    };
-
-    checkSync();
-    const intervalId = window.setInterval(checkSync, 3000);
-
-    window.addEventListener('visibilitychange', checkSync);
-    window.addEventListener('focus', checkSync);
-    window.addEventListener('online', checkSync);
+    );
 
     return () => {
-      window.clearInterval(intervalId);
-      window.removeEventListener('visibilitychange', checkSync);
-      window.removeEventListener('focus', checkSync);
-      window.removeEventListener('online', checkSync);
+      unsubscribe();
     };
-  }, [pullFromTasksVault]);
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging]);
 
-  // Google Cloud Session Initializer (strictly verified Google account)
+  // Requirement 2 & Finding 2, 6: Real-time listener for users/{uid} root document
+  // 1) Catches Android background lock-screen alarm dismissals via syncSignal.
+  // 2) Streams live settings/rhythm updates across devices live.
   useEffect(() => {
-    const isGoogle = Boolean(firebaseUser?.providerData?.some((p) => p.providerId === 'google.com'));
-    if (!firebaseUser?.uid || firebaseUser.isAnonymous || (!firebaseUser.emailVerified && !isGoogle)) {
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) return;
+
+    const unsubscribe = subscribeToUserDocument(
+      uid,
+      (remote) => {
+        // A) Cross-device syncSignal (Alarm dismiss, Calendar, Tasks, Native Done)
+        const sig = remote.syncSignal;
+        if (sig && sig.clientId !== clientIdRef.current) {
+          if (sig.scope === 'alarm_dismiss') {
+            const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
+            const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
+            const isCurrentlyRinging = Boolean(currentAlertId || alarmRinging);
+
+            if (isCurrentlyRinging && sig.timestampMs && sig.timestampMs >= (currentFiredAtMs - 5000)) {
+              console.info('[CloudSync] Remote alarm dismiss signal received:', sig.action);
+              stopContinuousAlert();
+              stopNativeAlerts();
+              setActiveAudioAlert(null);
+              setPersistentAlert(null);
+              setAlarmRinging(false);
+              try {
+                const bridge = (
+                  window as Window & {
+                    DayRhythmNative?: {
+                      dismissActiveAlerts?: () => void;
+                      stopNativeAlarmSound?: () => void;
+                    };
+                  }
+                ).DayRhythmNative;
+                bridge?.stopNativeAlarmSound?.();
+                bridge?.dismissActiveAlerts?.();
+              } catch {
+                // ignore bridge
+              }
+            }
+
+            if (sig.action === 'native_done' && sig.extra) {
+              const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string };
+              if (extra.kind === 'water') {
+                handleLogWaterCupRef.current();
+              } else if (extra.kind === 'medication' && extra.medId) {
+                handleToggleMedicationRef.current(extra.medId, extra.doseTime);
+              }
+            }
+          } else {
+            // Forward calendar, tasks, workspace sync signals across devices in real time!
+            handleIncomingRemoteSyncRef.current(sig);
+          }
+        }
+
+        // B) Real-time settings & rhythm live sync from other devices
+        const remoteOrigin = remote.originClientId || (remote as any).clientId;
+        if (remoteOrigin === clientIdRef.current) {
+          // Never re-apply our own writes!
+          return;
+        }
+        if (remoteOrigin && remoteOrigin !== clientIdRef.current) {
+          applyOrDefer(remote as SyncedRhythmPayload & {
+            medications?: MedicationItem[];
+            creativeActivities?: CreativeActivityItem[];
+            memories?: MemoryItem[];
+          });
+        }
+      },
+      (err) => {
+        console.warn('[CloudSync] subscribeToUserDocument error:', err);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging, applyOrDefer]);
+
+  // Requirement 1 & Finding 3: Load user settings from cloud with strict priority over defaults & offline protection
+  useEffect(() => {
+    const uid = firebaseUser?.uid;
+    if (!uid || firebaseUser?.isAnonymous) {
+      setIsLoadingSettings(false);
+      isLoadingSettingsRef.current = false;
+      hasHydratedRemoteRef.current = true;
       return;
     }
 
-    hasHydratedRemoteRef.current = true;
-    setFirestoreReady(true);
-    setFirestoreSynced(true);
-    void pullFromTasksVault();
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, firebaseUser?.emailVerified, firebaseUser?.providerData, pullFromTasksVault]);
+    let isMounted = true;
+    setIsLoadingSettings(true);
+    isLoadingSettingsRef.current = true;
+
+    async function loadCloudSettings() {
+      try {
+        console.info('[CloudSync] Loading settings for uid:', uid);
+        const cloudData = await fetchCloudUserSettings(uid!);
+        if (!isMounted) return;
+
+        if (cloudData) {
+          console.info('[CloudSync] Applying cloud settings with priority for uid:', uid);
+          applyOrDefer(cloudData as any);
+          try {
+            lastServerFieldsRef.current = serializeRhythmFields(sanitizeRhythmPayload(cloudData as SyncedRhythmPayload));
+          } catch {
+            // ignore
+          }
+          hasHydratedRemoteRef.current = true;
+          setFirestoreReady(true);
+          setFirestoreSynced(true);
+        } else {
+          console.info('[CloudSync] No cloud settings doc found yet. Keeping existing profile.');
+          hasHydratedRemoteRef.current = true;
+          setFirestoreReady(true);
+          setFirestoreSynced(true);
+        }
+
+        // Flush any queued writes that occurred while hydrating
+        if (pendingPatchesBeforeHydrationRef.current.length > 0) {
+          const queued = [...pendingPatchesBeforeHydrationRef.current];
+          pendingPatchesBeforeHydrationRef.current = [];
+          for (const patch of queued) {
+            void saveCloudUserSettingsImmediately(patch);
+          }
+        }
+
+        // Send cloud auth to Android Native bridge
+        try {
+          const authPayload = getNativeCloudAuthPayload();
+          const nativeBridge = (
+            window as Window & { DayRhythmNative?: { setCloudAuth?: (json: string) => void } }
+          ).DayRhythmNative;
+          if (authPayload && nativeBridge?.setCloudAuth) {
+            nativeBridge.setCloudAuth(authPayload);
+          }
+        } catch (e) {
+          console.warn('[CloudSync] Bridge setCloudAuth error:', e);
+        }
+
+        // Clean up legacy "[DayRhythm Sync Vault]" list from Google Tasks
+        try {
+          const token = await getOrRefreshCalendarAccessToken();
+          if (token) {
+            void deleteTasksVaultListIfPresent(token);
+          }
+        } catch {
+          // ignore
+        }
+      } catch (err) {
+        console.error('[CloudSync] Error fetching cloud settings (offline or network failure). Keeping cloud write lock ARMED:', err);
+        // CRITICAL (Finding 3): Do NOT set hasHydratedRemoteRef.current = true here!
+        // This ensures that local default values are NEVER written over remote cloud settings on offline boot.
+      } finally {
+        if (isMounted) {
+          setIsLoadingSettings(false);
+          isLoadingSettingsRef.current = false;
+        }
+      }
+    }
+
+    void loadCloudSettings();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, applyOrDefer]);
 
   useEffect(() => {
     try {
@@ -3919,7 +4183,7 @@ export default function App() {
       // ignore quota errors
     }
 
-    if (!hasHydratedRemoteRef.current) {
+    if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
       return;
     }
 
@@ -3970,8 +4234,20 @@ export default function App() {
     }
     if (changedKeys.length === 0) return;
 
-    // Immediately push to Google Tasks Cloud Vault for sub-second cross-device sync
-    void pushToTasksVaultImmediately(payload);
+    // Only send the granular patch of changed fields to avoid overwriting other devices!
+    const patch: Partial<UserSettingsPayload> = {};
+    for (const key of changedKeys) {
+      (patch as any)[key] = (payload as any)[key];
+    }
+
+    // Update local copy of server fields immediately to prevent bounce loops
+    lastServerFieldsRef.current = {
+      ...lastServerFieldsRef.current,
+      ...localFields,
+    };
+
+    // Immediately push granular patch for sub-second cross-device sync
+    void pushToTasksVaultImmediately(patch);
     setFirestoreSynced(true);
   }, [
     activeTimeZone,
@@ -4107,6 +4383,22 @@ export default function App() {
     showToast('تمت العودة للشعار الافتراضي (أفق الشروق الزجاجي) ومزامنته ✓');
   }, [capsulePrefs, showToast, syncUiPrefsCloud]);
 
+  const handleChangeFastingOverride = useCallback(
+    (next: 'auto' | 'fasting' | 'normal') => {
+      setFastingOverride(next);
+      void pushToTasksVaultImmediately({ fastingOverride: next });
+    },
+    [pushToTasksVaultImmediately]
+  );
+
+  const handleToggleSurfaceTheme = useCallback(
+    (theme: SurfaceTheme) => {
+      setSurfaceTheme(theme);
+      void pushToTasksVaultImmediately({ surfaceTheme: theme });
+    },
+    [pushToTasksVaultImmediately]
+  );
+
   const handleUpdateDeviceSettings = useCallback(
     (patch: Partial<OnePlusDeviceSettings>) => {
       localWriteLockUntilRef.current = Date.now() + 5000;
@@ -4121,58 +4413,49 @@ export default function App() {
 
   const handleUpdateLifeProfile = useCallback(
     (patch: Partial<LifeProfile>) => {
-      let nextProfile: LifeProfile | null = null;
-      updateLifeProfileLocal((prev) => {
-        nextProfile = sanitizeLifeProfile({ ...prev, ...patch });
-        try {
-          const currentRaw = localStorage.getItem(STORAGE_KEY);
-          const current = currentRaw ? JSON.parse(currentRaw) : {};
-          localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify({ ...current, lifeProfile: nextProfile })
-          );
-        } catch {
-          // ignore storage quota
-        }
-        return nextProfile;
-      });
-      showToast('تم حفظ وتحديث «الدستور الشخصي» ومزامنته سحابياً ✓');
-      if (nextProfile) {
-        void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
-        void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
-      } else {
-        void pushFullCloudBackupImmediately();
-        void pushToTasksVaultImmediately();
+      localWriteLockUntilRef.current = Date.now() + 5000;
+      const nextProfile = sanitizeLifeProfile({ ...lifeProfileRef.current, ...patch });
+      lifeProfileRef.current = nextProfile;
+      setLifeProfile(nextProfile);
+      try {
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        const current = currentRaw ? JSON.parse(currentRaw) : {};
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ...current, lifeProfile: nextProfile })
+        );
+      } catch {
+        // ignore storage quota
       }
+      showToast('تم حفظ وتحديث «الدستور الشخصي» ومزامنته سحابياً ✓');
+      void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
+      void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
     },
-    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
+    [showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
   );
 
   const handleQuickUpdateWeight = useCallback(
     (nextWeightKg: number) => {
       const clamped = Math.max(35, Math.min(220, Math.round(nextWeightKg * 2) / 2));
-      let nextProfile: LifeProfile | null = null;
-      updateLifeProfileLocal((prev) => {
-        nextProfile = sanitizeLifeProfile({ ...prev, weightKg: clamped });
-        try {
-          const currentRaw = localStorage.getItem(STORAGE_KEY);
-          const current = currentRaw ? JSON.parse(currentRaw) : {};
-          localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify({ ...current, lifeProfile: nextProfile })
-          );
-        } catch {
-          // ignore storage quota
-        }
-        return nextProfile;
-      });
-      showToast(`⚖️ تم تحديث الوزن إلى ${clamped} كجم وإعادة حساب الماء تلقائياً`);
-      if (nextProfile) {
-        void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
-        void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
+      localWriteLockUntilRef.current = Date.now() + 5000;
+      const nextProfile = sanitizeLifeProfile({ ...lifeProfileRef.current, weightKg: clamped });
+      lifeProfileRef.current = nextProfile;
+      setLifeProfile(nextProfile);
+      try {
+        const currentRaw = localStorage.getItem(STORAGE_KEY);
+        const current = currentRaw ? JSON.parse(currentRaw) : {};
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ...current, lifeProfile: nextProfile })
+        );
+      } catch {
+        // ignore storage quota
       }
+      showToast(`⚖️ تم تحديث الوزن إلى ${clamped} كجم وإعادة حساب الماء تلقائياً`);
+      void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
+      void pushToTasksVaultImmediately({ lifeProfile: nextProfile });
     },
-    [updateLifeProfileLocal, showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
+    [showToast, pushFullCloudBackupImmediately, pushToTasksVaultImmediately]
   );
 
   const handleToggleLowEnergyToday = useCallback(() => {
@@ -5141,6 +5424,7 @@ export default function App() {
     setUndoSnapshot(null);
     setReflowedBlocksOverride(null);
     rebuildOfflineSchedule(effectiveDayMode, travelState, v, includeBiweeklyPcCleanup);
+    void pushToTasksVaultImmediately({ isFridayMode: v });
   };
 
   const handleToggleBiweeklyPcCleanup = (v: boolean) => {
@@ -5148,6 +5432,7 @@ export default function App() {
     setUndoSnapshot(null);
     setReflowedBlocksOverride(null);
     rebuildOfflineSchedule(effectiveDayMode, travelState, isFridayMode, v);
+    void pushToTasksVaultImmediately({ includeBiweeklyPcCleanup: v });
   };
 
   const handleApplyTravel = (nextTravel: TravelState) => {
@@ -5156,6 +5441,7 @@ export default function App() {
     rebuildOfflineSchedule(effectiveDayMode, nextTravel, isFridayMode, includeBiweeklyPcCleanup);
     appendChangelog('Web/PC', `تفعيل وضع السفر (${nextTravel.location.nameAr})`, `Activated Travel Mode`);
     showToast('تم تفعيل وضع السفر وتحديث المواقيت.');
+    void pushToTasksVaultImmediately({ travelState: nextTravel });
   };
 
   const handleDisableTravel = () => {
@@ -5168,6 +5454,7 @@ export default function App() {
     setTravelState(resetTravel);
     setReflowedBlocksOverride(null);
     rebuildOfflineSchedule(effectiveDayMode, resetTravel, isFridayMode, includeBiweeklyPcCleanup);
+    void pushToTasksVaultImmediately({ travelState: resetTravel });
   };
 
   const handleApplyOfflineActions = useCallback(
@@ -5852,15 +6139,17 @@ export default function App() {
   const handleCompletePeriodicRitual = useCallback(
     (id: PeriodicRitualStatus['id']) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
-      setPeriodicRituals((prev) =>
-        prev.map((r) =>
+      setPeriodicRituals((prev) => {
+        const next = prev.map((r) =>
           r.id === id ? { ...r, daysSinceLast: 0, lastCompletedIso: todayIso } : r
-        )
-      );
+        );
+        void pushToTasksVaultImmediately({ periodicRituals: next });
+        return next;
+      });
       appendChangelog('Web/PC', `تسجيل إتمام المهمة الدورية (${id})`, `Completed periodic ritual ${id}`);
       showToast('تم تسجيل إنجاز المهمة الدورية وتصفير العداد ✓');
     },
-    [activeTimeZone, appendChangelog, showToast]
+    [activeTimeZone, appendChangelog, showToast, pushToTasksVaultImmediately]
   );
 
   const handleToggleCreativeToday = useCallback(
@@ -5893,16 +6182,23 @@ export default function App() {
     [activeTimeZone, showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
-  const handleToggleComplete = (id: string) => {
-    if (id.startsWith('creative_')) {
-      handleToggleCreativeToday(id.slice('creative_'.length));
-      return;
-    }
-    setCompletedOverrides((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
-  };
+  const handleToggleComplete = useCallback(
+    (id: string) => {
+      if (id.startsWith('creative_')) {
+        handleToggleCreativeToday(id.slice('creative_'.length));
+        return;
+      }
+      setCompletedOverrides((prev) => {
+        const next = {
+          ...prev,
+          [id]: !prev[id],
+        };
+        void pushToTasksVaultImmediately({ completedOverrides: next });
+        return next;
+      });
+    },
+    [handleToggleCreativeToday, pushToTasksVaultImmediately]
+  );
 
   const handleDeleteBlock = (id: string) => {
     const target = liveBlocks.find((b) => b.id === id) ?? null;
@@ -6190,6 +6486,9 @@ export default function App() {
     setPersistentAlert(null);
     setAlarmRinging(false);
     emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
+    if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+      void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+    }
 
     updateTodayHydration((today) => {
       const nextIdx = today.slots.findIndex((filled) => !filled);
@@ -6209,6 +6508,7 @@ export default function App() {
     stopNativeAlerts,
     emitCrossDeviceSync,
   ]);
+  handleLogWaterCupRef.current = handleLogWaterCup;
 
   const handleToggleWaterSlot = (index: number) => {
     updateTodayHydration((today) => {
@@ -6224,6 +6524,9 @@ export default function App() {
         setPersistentAlert(null);
         setAlarmRinging(false);
         emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
+        if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+          void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+        }
       }
 
       return {
@@ -6605,14 +6908,7 @@ export default function App() {
         lastSentKey = dedupeKey;
       }
 
-      // Instant sub-second relay over WebSocket
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        try {
-          wsRef.current.send(JSON.stringify({ type: 'battery', ...snapshot }));
-        } catch {
-          // ignore ws send errors
-        }
-      }
+
 
       // Persist in Firestore immediately on first sync, on any change, or every 45s while charging
       if (
@@ -6775,9 +7071,18 @@ export default function App() {
           ? '🔌 سيستمر منبّه الشحن بالرنين حتى فصل الموبايل من الشاحن (أو إيقافه يدوياً)'
           : '⏱️ سيتوقف منبّه الشحن تلقائياً بعد دقيقتين إذا لم يتم إيقافه'
       );
+      void pushToTasksVaultImmediately({
+        appSettings: {
+          phoneChargeLimitPct,
+          smartChargeAlertEnabled,
+          smartChargeKeepUntilUnplugged: next,
+          waterRemindersEnabled,
+          sunMode,
+        },
+      });
       return next;
     });
-  }, [showToast]);
+  }, [showToast, pushToTasksVaultImmediately, phoneChargeLimitPct, smartChargeAlertEnabled, waterRemindersEnabled, sunMode]);
 
   const handleToggleSmartChargeAlertEnabled = useCallback(() => {
     setSmartChargeAlertEnabled((prev) => {
@@ -6796,9 +7101,18 @@ export default function App() {
           ? `🔋 تم تفعيل التنبيه الذكي عند اكتمال الشحن (${phoneChargeLimitRef.current}%)`
           : '🔕 تم إيقاف التنبيه الصوتي التلقائي لاكتمال الشحن'
       );
+      void pushToTasksVaultImmediately({
+        appSettings: {
+          phoneChargeLimitPct,
+          smartChargeAlertEnabled: next,
+          smartChargeKeepUntilUnplugged,
+          waterRemindersEnabled,
+          sunMode,
+        },
+      });
       return next;
     });
-  }, [showToast]);
+  }, [showToast, pushToTasksVaultImmediately, phoneChargeLimitPct, smartChargeKeepUntilUnplugged, waterRemindersEnabled, sunMode]);
 
   // Settings changed from the Gemini chat (propose_app_settings). Each field is optional.
   const handleApplyAppSettings = useCallback(
@@ -7110,6 +7424,16 @@ export default function App() {
         }
       }
 
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = prev.map((m) => (m.id === id ? updated : m));
         void pushToTasksVaultImmediately({ medications: next });
@@ -7135,11 +7459,22 @@ export default function App() {
     },
     [activeTimeZone, medications, showToast, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
+  handleToggleMedicationRef.current = handleToggleMedication;
 
   const handleToggleMedicationDate = useCallback(
     (id: string, dateIso: string) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       const cutoff7Iso = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = prev.map((m) => {
           if (m.id !== id) return m;
@@ -7213,6 +7548,16 @@ export default function App() {
         refillAlertDays: nextAlertDays,
       });
 
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = prev.map((m) => (m.id === id ? updated : m));
         void pushToTasksVaultImmediately({ medications: next });
@@ -7276,6 +7621,16 @@ export default function App() {
             ? Math.max(1, Math.min(14, Math.round(input.refillAlertDays)))
             : 3,
       });
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = [...prev, med];
         void pushToTasksVaultImmediately({ medications: next });
@@ -7295,6 +7650,16 @@ export default function App() {
 
   const handleDeleteMedication = useCallback(
     (id: string) => {
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
+
       setMedications((prev) => {
         const next = prev.filter((m) => m.id !== id);
         void pushToTasksVaultImmediately({ medications: next });
@@ -7318,6 +7683,16 @@ export default function App() {
     ): Promise<MedicationExecutionResult[]> => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       const results: MedicationExecutionResult[] = [];
+
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed');
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        void dismissActiveAlarmInCloud(firebaseUser.uid, 'all', clientIdRef.current);
+      }
 
       setMedications((prev) => {
         let next = [...prev];
@@ -8827,7 +9202,27 @@ ${lifeConstitution}
         onCheckAppUpdates={handleCheckAppUpdates}
         isCheckingUpdates={isCheckingUpdates}
         sunMode={sunMode}
-        onToggleSunMode={() => setSunMode((v) => !v)}
+        onToggleSunMode={() => {
+              setSunMode((prev) => {
+                const next = !prev;
+                try {
+                  localStorage.setItem('dayrhythm_sun_mode_v1', next ? '1' : '0');
+                } catch {
+                  // ignore
+                }
+                void pushToTasksVaultRef.current({
+                  appSettings: {
+                    phoneChargeLimitPct,
+                    smartChargeAlertEnabled,
+                    smartChargeKeepUntilUnplugged,
+                    waterRemindersEnabled,
+                    sunMode: next,
+                    includePrayerAnchors,
+                  },
+                });
+                return next;
+              });
+            }}
       />
 
       {toastMessage && (
@@ -8913,11 +9308,11 @@ ${lifeConstitution}
             onToggleAdhanOverrideSilent={() => setAdhanOverrideSilent((v) => !v)}
             onTestAdhanChime={handleTestAdhanChime}
             surfaceTheme={surfaceTheme}
-            onToggleSurfaceTheme={setSurfaceTheme}
+            onToggleSurfaceTheme={handleToggleSurfaceTheme}
             prayers={prayers}
             blocks={liveBlocks}
             includePrayerAnchors={includePrayerAnchors}
-            onToggleIncludePrayerAnchors={() => setIncludePrayerAnchors((v) => !v)}
+            onToggleIncludePrayerAnchors={handleToggleIncludePrayerAnchors}
             useOfflineDemo={useOfflineDemo}
             onToggleOfflineDemo={() => setUseOfflineDemo((v) => !v)}
             onToggleComplete={handleToggleComplete}
@@ -8993,7 +9388,7 @@ ${lifeConstitution}
             lifeProfile={lifeProfile}
             dailyRhythmPlan={dailyRhythmPlan}
             fastingOverride={fastingOverride}
-            onChangeFastingOverride={setFastingOverride}
+            onChangeFastingOverride={handleChangeFastingOverride}
             onOpenLifeProfile={() => setIsLifeProfileModalOpen(true)}
             onQuickUpdateWeight={handleQuickUpdateWeight}
             memoryCount={memories.length}
@@ -9236,11 +9631,11 @@ ${lifeConstitution}
         onDetectGpsLocation={handleDetectGpsLocation}
         isDetectingGps={isDetectingGps}
         includePrayerAnchors={includePrayerAnchors}
-        onToggleIncludePrayerAnchors={() => setIncludePrayerAnchors((v) => !v)}
+        onToggleIncludePrayerAnchors={handleToggleIncludePrayerAnchors}
         isFridayMode={isFridayMode}
-        onToggleFridayMode={setIsFridayMode}
+        onToggleFridayMode={handleToggleFridayMode}
         includeBiweeklyPcCleanup={includeBiweeklyPcCleanup}
-        onToggleBiweeklyPcCleanup={setIncludeBiweeklyPcCleanup}
+        onToggleBiweeklyPcCleanup={handleToggleBiweeklyPcCleanup}
         calendarConnected={!needsAuth}
         onGoogleSignOut={handleGoogleSignOut}
         quietMode={quietMode}
@@ -9296,26 +9691,38 @@ ${lifeConstitution}
         onClose={() => setIsPomodoroModalOpen(false)}
         state={pomodoro}
         onToggleRun={() =>
-          setPomodoro((p) => ({ ...p, isRunning: !p.isRunning }))
+          setPomodoro((p) => {
+            const next = { ...p, isRunning: !p.isRunning };
+            void pushToTasksVaultImmediately({ pomodoro: next });
+            return next;
+          })
         }
         onReset={() =>
-          setPomodoro((p) => ({
-            ...p,
-            phase: 'focus',
-            remainingSeconds: p.presetMinutes * 60,
-            totalSeconds: p.presetMinutes * 60,
-            isRunning: false,
-          }))
+          setPomodoro((p) => {
+            const next: PomodoroState = {
+              ...p,
+              phase: 'focus',
+              remainingSeconds: p.presetMinutes * 60,
+              totalSeconds: p.presetMinutes * 60,
+              isRunning: false,
+            };
+            void pushToTasksVaultImmediately({ pomodoro: next });
+            return next;
+          })
         }
         onSelectPreset={(minutes) =>
-          setPomodoro((p) => ({
-            ...p,
-            phase: minutes === 5 ? 'break' : 'focus',
-            presetMinutes: minutes,
-            remainingSeconds: minutes * 60,
-            totalSeconds: minutes * 60,
-            isRunning: false,
-          }))
+          setPomodoro((p) => {
+            const next: PomodoroState = {
+              ...p,
+              phase: minutes === 5 ? 'break' : 'focus',
+              presetMinutes: minutes,
+              remainingSeconds: minutes * 60,
+              totalSeconds: minutes * 60,
+              isRunning: false,
+            };
+            void pushToTasksVaultImmediately({ pomodoro: next });
+            return next;
+          })
         }
         onFastForwardTest={() =>
           setPomodoro((p) => ({

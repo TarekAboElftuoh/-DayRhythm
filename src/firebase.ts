@@ -20,7 +20,7 @@ import {
   limit,
   onSnapshot,
   persistentLocalCache,
-  persistentMultipleTabManager,
+  persistentSingleTabManager,
   query,
   serverTimestamp,
   setDoc,
@@ -38,13 +38,16 @@ import {
   MemoryCategory,
   MemoryItem,
   PersistedChatMessage,
+  PeriodicRitualStatus,
   PhoneBatteryTelemetry,
+  PomodoroState,
   QuietModeType,
   SleepStrategy,
   SoundRepeatMap,
   SoundRepeatSetting,
   SurfaceTheme,
   TaskSoundCategory,
+  TravelState,
   UiPrefs,
   WorkspaceSyncSignal,
 } from './types/dayrhythm';
@@ -85,9 +88,8 @@ function createResilientFirestore() {
       app,
       {
         localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager(),
+          tabManager: persistentSingleTabManager(undefined),
         }),
-        experimentalAutoDetectLongPolling: true,
       },
       configuredDbId
     );
@@ -437,6 +439,16 @@ export interface SyncedRhythmPayload {
   phoneBattery?: PhoneBatteryTelemetry;
   uiPrefs?: UiPrefs;
   appSettings?: AppSyncSettings;
+  medications?: MedicationItem[];
+  creativeActivities?: CreativeActivityItem[];
+  memories?: MemoryItem[];
+  completedOverrides?: Record<string, boolean>;
+  fastingOverride?: 'auto' | 'fasting' | 'normal';
+  isFridayMode?: boolean;
+  includeBiweeklyPcCleanup?: boolean;
+  periodicRituals?: PeriodicRitualStatus[];
+  travelState?: TravelState;
+  pomodoro?: PomodoroState;
 }
 
 /** App preferences that must match on every device (they used to live only in localStorage). */
@@ -446,6 +458,7 @@ export interface AppSyncSettings {
   smartChargeKeepUntilUnplugged: boolean;
   waterRemindersEnabled: boolean;
   sunMode: boolean;
+  includePrayerAnchors?: boolean;
 }
 
 export function sanitizeAppSyncSettings(raw: unknown): AppSyncSettings | undefined {
@@ -457,6 +470,7 @@ export function sanitizeAppSyncSettings(raw: unknown): AppSyncSettings | undefin
     smartChargeKeepUntilUnplugged: o.smartChargeKeepUntilUnplugged !== false,
     waterRemindersEnabled: o.waterRemindersEnabled !== false,
     sunMode: o.sunMode === true,
+    includePrayerAnchors: o.includePrayerAnchors !== false,
   };
 }
 
@@ -1072,10 +1086,14 @@ export async function publishWorkspaceSyncSignal(
   if (!cleanSignal) return;
   try {
     const docRef = doc(db, 'users', uid);
-    await updateDoc(docRef, {
-      syncSignal: cleanSignal,
-      updatedAt: serverTimestamp(),
-    });
+    await setDoc(
+      docRef,
+      {
+        syncSignal: cleanSignal,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   } catch {
     // Non-blocking: WebSocket + polling still reconcile
   }
