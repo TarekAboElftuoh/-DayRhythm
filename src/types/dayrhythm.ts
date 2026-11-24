@@ -636,6 +636,6 @@ export interface AppSettingsPatch {
 export const APP_VERSION =
   (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_APP_VERSION)
     ? String(import.meta.env.VITE_APP_VERSION)
-    : 'v2.0.54';
+    : 'v2.0.87';
 
 
