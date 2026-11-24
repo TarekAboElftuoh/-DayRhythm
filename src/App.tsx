@@ -956,6 +956,7 @@ export default function App() {
 
   const [googleTaskLists, setGoogleTaskLists] = useState<GoogleTaskList[]>([]);
   const [googleTasks, setGoogleTasks] = useState<GoogleTaskItem[]>([]);
+  const recentlyCreatedTaskIdsRef = useRef<Set<string>>(new Set());
   const [loadingTasks, setLoadingTasks] = useState(false);
 
   // Free Open-Meteo Weather Hydration Sync + Read-Only Smart Gmail Digest
@@ -2291,7 +2292,14 @@ export default function App() {
             )
           : undefined;
         if (nextLists) setGoogleTaskLists(nextLists);
-        if (nextTasks) setGoogleTasks(nextTasks);
+        if (nextTasks) {
+          setGoogleTasks((prev) => {
+            const missingNew = prev.filter(
+              (t) => !nextTasks.some((fresh: GoogleTaskItem) => fresh.id === t.id) && recentlyCreatedTaskIdsRef.current.has(t.id)
+            );
+            return [...nextTasks, ...missingNew];
+          });
+        }
         const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
         if (nextLists || nextTasks) {
           saveOfflineWorkspaceCache(OFFLINE_TASKS_PREFIX, activeUid, {
@@ -2357,7 +2365,12 @@ export default function App() {
           }
         })
       );
-      setGoogleTasks(allTasks);
+      setGoogleTasks((prev) => {
+        const missingNew = prev.filter(
+          (t) => !allTasks.some((fresh) => fresh.id === t.id) && recentlyCreatedTaskIdsRef.current.has(t.id)
+        );
+        return [...allTasks, ...missingNew];
+      });
       const activeUid = localStorage.getItem(ACTIVE_UID_STORAGE_KEY);
       saveOfflineWorkspaceCache(OFFLINE_TASKS_PREFIX, activeUid, {
         taskLists: mappedLists,
@@ -6257,6 +6270,37 @@ export default function App() {
         }
         results = directResults;
       }
+
+      // Optimistically insert newly created tasks directly into local state so Mobile tasks list
+      // updates instantly without waiting for Google Tasks eventual consistency
+      const createdItems: GoogleTaskItem[] = [];
+      for (const act of taskActions) {
+        if (act.operation === 'create') {
+          const resItem = results.find((r) => r.operation === 'create' && r.title === act.title);
+          const createdId = resItem?.id || `task_${Date.now()}`;
+          createdItems.push({
+            id: createdId,
+            taskListId: act.taskListId || '@default',
+            taskListTitle: googleTaskLists.find((l) => l.id === act.taskListId)?.title || 'المهام',
+            title: act.title,
+            notes: act.notes || '',
+            status: 'needsAction',
+            due: act.dueDateIso ? `${act.dueDateIso}T00:00:00.000Z` : undefined,
+          });
+          recentlyCreatedTaskIdsRef.current.add(createdId);
+        }
+      }
+      if (createdItems.length > 0) {
+        setGoogleTasks((prev) => {
+          const newIds = new Set(createdItems.map((c) => c.id));
+          const kept = prev.filter((t) => !newIds.has(t.id));
+          return [...kept, ...createdItems];
+        });
+        setTimeout(() => {
+          createdItems.forEach((c) => recentlyCreatedTaskIdsRef.current.delete(c.id));
+        }, 30_000);
+      }
+
       await fetchGoogleTasks(token);
 
       if (undoSnap) {
