@@ -102,6 +102,7 @@ import {
 import {
   ARABIC_WEEKDAYS,
   checkSmartScheduleConflict,
+  computeMedicationDaysLeft,
   formatDurationAr,
 } from '../engines/lifeRhythmEngine';
 import { cleanCalendarText, resolveBlockDisplayInfo } from '../services/apiClient';
@@ -3982,8 +3983,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         Boolean(med.courseEndDate)) && (
                         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-mono-tabular text-zinc-500">
                           {typeof med.remainingDoses === 'number' && med.remainingDoses >= 0 && (() => {
-                            const dosesPerDay = Math.max(1, doseTimes.length || 1);
-                            const daysLeft = med.remainingDoses / dosesPerDay;
+                            const daysLeft = computeMedicationDaysLeft(
+                              med.remainingDoses,
+                              doseTimes.length || 1,
+                              med.daysOfWeek
+                            );
                             const alertDays = med.refillAlertDays ?? 3;
                             const isLowStock = daysLeft <= alertDays;
                             return (

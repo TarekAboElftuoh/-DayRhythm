@@ -154,59 +154,109 @@ namespace DayRhythm
             {
                 try
                 {
+                    client.ReceiveTimeout = 5000;
+                    client.SendTimeout = 5000;
                     string remoteIp = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
                     _knownMobileIps[remoteIp] = DateTime.UtcNow;
 
                     using NetworkStream stream = client.GetStream();
-                    using StreamReader reader = new StreamReader(stream, Encoding.UTF8);
-                    using StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
 
-                    string firstLine = await reader.ReadLineAsync().ConfigureAwait(false);
-                    if (string.IsNullOrWhiteSpace(firstLine)) return;
+                    // Read raw bytes so HTTP Content-Length is counted in UTF-8 bytes, not chars (avoids deadlock on Arabic text).
+                    byte[] tempBuf = new byte[4096];
+                    using MemoryStream ms = new MemoryStream();
+                    int headerEndIdx = -1;
+                    int newlineIdx = -1;
+                    bool isHttp = false;
 
-                    string body = "";
-                    if (firstLine.StartsWith("POST ", StringComparison.OrdinalIgnoreCase) ||
-                        firstLine.StartsWith("GET ", StringComparison.OrdinalIgnoreCase))
+                    while (ms.Length < 16384)
                     {
-                        // HTTP request handler
-                        int contentLength = 0;
-                        string headerLine;
-                        while (!string.IsNullOrEmpty(headerLine = await reader.ReadLineAsync().ConfigureAwait(false)))
+                        int n = await stream.ReadAsync(tempBuf, 0, tempBuf.Length).ConfigureAwait(false);
+                        if (n <= 0) break;
+                        ms.Write(tempBuf, 0, n);
+
+                        byte[] soFar = ms.GetBuffer();
+                        int len = (int)ms.Length;
+                        if (len >= 5)
                         {
-                            if (headerLine.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                            string prefix = Encoding.ASCII.GetString(soFar, 0, Math.Min(5, len));
+                            isHttp = prefix.StartsWith("POST ", StringComparison.OrdinalIgnoreCase) ||
+                                     prefix.StartsWith("GET ", StringComparison.OrdinalIgnoreCase);
+                        }
+
+                        if (isHttp)
+                        {
+                            for (int i = 0; i <= len - 4; i++)
                             {
-                                int.TryParse(headerLine.Substring(15).Trim(), out contentLength);
+                                if (soFar[i] == '\r' && soFar[i + 1] == '\n' && soFar[i + 2] == '\r' && soFar[i + 3] == '\n')
+                                {
+                                    headerEndIdx = i + 4;
+                                    break;
+                                }
+                            }
+                            if (headerEndIdx >= 0) break;
+                        }
+                        else
+                        {
+                            newlineIdx = Array.IndexOf(soFar, (byte)'\n', 0, len);
+                            if (newlineIdx >= 0) break;
+                        }
+                    }
+
+                    if (ms.Length == 0) return;
+
+                    byte[] initialBytes = ms.GetBuffer();
+                    int initialLen = (int)ms.Length;
+                    string body = "";
+
+                    if (isHttp)
+                    {
+                        int hdrLen = headerEndIdx >= 0 ? headerEndIdx : initialLen;
+                        string headersText = Encoding.UTF8.GetString(initialBytes, 0, hdrLen);
+                        int contentLength = 0;
+                        foreach (string line in headersText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                            {
+                                int.TryParse(line.Substring(15).Trim(), out contentLength);
+                                break;
                             }
                         }
 
-                        if (contentLength > 0)
+                        if (contentLength > 0 && headerEndIdx >= 0)
                         {
                             int cappedLength = Math.Min(contentLength, 65536);
-                            char[] bodyBuffer = new char[cappedLength];
-                            int totalRead = 0;
-                            while (totalRead < cappedLength)
+                            byte[] bodyBytes = new byte[cappedLength];
+                            int alreadyInBuf = Math.Min(cappedLength, initialLen - headerEndIdx);
+                            if (alreadyInBuf > 0)
                             {
-                                int readCount = await reader.ReadAsync(bodyBuffer, totalRead, cappedLength - totalRead).ConfigureAwait(false);
-                                if (readCount <= 0) break;
-                                totalRead += readCount;
+                                Buffer.BlockCopy(initialBytes, headerEndIdx, bodyBytes, 0, alreadyInBuf);
                             }
-                            if (totalRead > 0)
+                            int totalBodyRead = alreadyInBuf;
+                            while (totalBodyRead < cappedLength)
                             {
-                                body = new string(bodyBuffer, 0, totalRead);
+                                int readCount = await stream.ReadAsync(bodyBytes, totalBodyRead, cappedLength - totalBodyRead).ConfigureAwait(false);
+                                if (readCount <= 0) break;
+                                totalBodyRead += readCount;
+                            }
+                            if (totalBodyRead > 0)
+                            {
+                                body = Encoding.UTF8.GetString(bodyBytes, 0, totalBodyRead);
                             }
                         }
 
                         ProcessIncomingMessage(body, remoteIp);
 
-                        string httpResponse = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"ok\":true,\"device\":\"pc\"}";
-                        await writer.WriteAsync(httpResponse).ConfigureAwait(false);
+                        byte[] respBytes = Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"ok\":true,\"device\":\"pc\"}");
+                        await stream.WriteAsync(respBytes, 0, respBytes.Length).ConfigureAwait(false);
                     }
                     else
                     {
-                        // Raw JSON line
-                        body = firstLine;
+                        int lineLen = newlineIdx >= 0 ? newlineIdx : initialLen;
+                        body = Encoding.UTF8.GetString(initialBytes, 0, lineLen).Trim();
+                        if (string.IsNullOrWhiteSpace(body)) return;
                         ProcessIncomingMessage(body, remoteIp);
-                        await writer.WriteLineAsync("{\"ok\":true}").ConfigureAwait(false);
+                        byte[] respBytes = Encoding.UTF8.GetBytes("{\"ok\":true}\n");
+                        await stream.WriteAsync(respBytes, 0, respBytes.Length).ConfigureAwait(false);
                     }
                 }
                 catch (Exception ex)

@@ -174,6 +174,7 @@ import {
   buildLifeProfileGeminiSummary,
   computeCreativePlacements,
   computeDailyRhythmPlan,
+  computeMedicationDaysLeft,
   findFreeTimeSlotsForToday,
 } from './engines/lifeRhythmEngine';
 import { applyTravelMatrix, buildBaseSchedule } from './engines/scheduleEngine';
@@ -7346,7 +7347,11 @@ export default function App() {
         med.times24 && med.times24.length > 0 ? med.times24.length : 1
       );
       const alertLeadDays = Math.max(1, Math.min(14, med.refillAlertDays ?? 3));
-      const daysLeft = med.remainingDoses / dosesPerDay;
+      const daysLeft = computeMedicationDaysLeft(
+        med.remainingDoses,
+        med.times24 && med.times24.length > 0 ? med.times24.length : 1,
+        med.daysOfWeek
+      );
       if (daysLeft <= alertLeadDays) {
         const refillKey = `${todayIso}:med_refill:${med.id}`;
         if (firedReminderKeysRef.current.has(refillKey)) return;

@@ -341,6 +341,19 @@ export function computeDailyRhythmPlan(
     const suhoorCups = Math.min(2, Math.max(1, Math.floor(hydration.activeTargetCups / 4)));
     const eveningCups = Math.max(1, hydration.activeTargetCups - suhoorCups);
 
+    // Suhoor happens before Fajr on the civil calendar day, so place it first to match sequential slot logging.
+    const suhoorBegin = wrap1440(fajr - profile.suhoorLeadMinutes);
+    const suhoorSpan = Math.max(15, profile.suhoorLeadMinutes - 10);
+    for (let s = 0; s < suhoorCups; s++) {
+      const offset = suhoorCups === 1 ? 10 : Math.round((s * suhoorSpan) / (suhoorCups - 1));
+      hydrationSlots.push({
+        cupIndex: s + 1,
+        timeMinutes: wrap1440(suhoorBegin + offset),
+        windowAr: 'السحور',
+        noteAr: '',
+      });
+    }
+
     const eveningStart = maghrib;
     const eveningEnd = wrap1440(bedtimeMin - 45);
     const eveningSpan = Math.max(45, durationForward(eveningStart, eveningEnd));
@@ -352,21 +365,9 @@ export function computeDailyRhythmPlan(
       if (i === 0) windowAr = 'عند الإفطار';
       else if (i === eveningCups - 1) windowAr = 'قبل النوم';
       hydrationSlots.push({
-        cupIndex: i + 1,
+        cupIndex: suhoorCups + i + 1,
         timeMinutes: tMin,
         windowAr,
-        noteAr: '',
-      });
-    }
-
-    const suhoorBegin = wrap1440(fajr - profile.suhoorLeadMinutes);
-    const suhoorSpan = Math.max(15, profile.suhoorLeadMinutes - 10);
-    for (let s = 0; s < suhoorCups; s++) {
-      const offset = suhoorCups === 1 ? 10 : Math.round((s * suhoorSpan) / (suhoorCups - 1));
-      hydrationSlots.push({
-        cupIndex: eveningCups + s + 1,
-        timeMinutes: wrap1440(suhoorBegin + offset),
-        windowAr: 'السحور',
         noteAr: '',
       });
     }
@@ -1078,4 +1079,16 @@ export function buildLifeProfileGeminiSummary(
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/** Shared medication stock runway helper accounting for scheduled daysOfWeek. */
+export function computeMedicationDaysLeft(
+  remainingDoses: number,
+  dosesPerDay: number,
+  daysOfWeek?: number[]
+): number {
+  const safeDosesPerDay = Math.max(1, dosesPerDay);
+  const daysPerWeek = daysOfWeek && daysOfWeek.length > 0 ? daysOfWeek.length : 7;
+  const dailyRate = Math.max(0.14, (safeDosesPerDay * daysPerWeek) / 7);
+  return remainingDoses / dailyRate;
 }

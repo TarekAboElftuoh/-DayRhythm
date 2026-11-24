@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatDurationAr,
   computeScientificHydration,
+  computeMedicationDaysLeft,
   checkSmartScheduleConflict,
   computeDailyRhythmPlan,
   DEFAULT_LIFE_PROFILE,
@@ -66,5 +67,30 @@ describe('Life Rhythm Engine Pure Functions', () => {
     });
     expect(safeResult.hasConflict).toBe(false);
     expect(safeResult.warnings.length).toBe(0);
+  });
+
+  it('orders fasting hydration slots chronologically (Suhoor before evening)', () => {
+    const fastingPrayers: PrayerTimeItem[] = [
+      { id: 'fajr', nameAr: 'الفجر', nameEn: 'Fajr', emojiPair: '🌅', adhanMinutes: 4 * 60 + 30, alarmMinutes: 4 * 60 + 27, isObligatory: true },
+      { id: 'sunrise', nameAr: 'الشروق', nameEn: 'Sunrise', emojiPair: '☀️', adhanMinutes: 6 * 60, alarmMinutes: 6 * 60, isObligatory: false },
+      { id: 'maghrib', nameAr: 'المغرب', nameEn: 'Maghrib', emojiPair: '🌇', adhanMinutes: 18 * 60, alarmMinutes: 17 * 60 + 57, isObligatory: true },
+      { id: 'isha', nameAr: 'العشاء', nameEn: 'Isha', emojiPair: '🌙', adhanMinutes: 19 * 60 + 30, alarmMinutes: 19 * 60 + 27, isObligatory: true },
+    ];
+    const plan = computeDailyRhythmPlan(
+      { ...DEFAULT_LIFE_PROFILE, fastingDays: [1] },
+      fastingPrayers,
+      { todayWeekday: 1, tomorrowWeekday: 2 }
+    );
+    expect(plan.isFastingToday).toBe(true);
+    expect(plan.hydrationSlots[0].windowAr).toBe('السحور');
+    expect(plan.hydrationSlots[0].timeMinutes).toBeLessThan(4 * 60 + 30);
+    const iftarSlot = plan.hydrationSlots.find((s) => s.windowAr === 'عند الإفطار');
+    expect(iftarSlot).toBeDefined();
+    expect(plan.hydrationSlots.indexOf(iftarSlot!)).toBeGreaterThan(0);
+  });
+
+  it('computes medication days left factoring daysOfWeek', () => {
+    expect(computeMedicationDaysLeft(6, 1, [1, 4])).toBeCloseTo(21, 1);
+    expect(computeMedicationDaysLeft(6, 2)).toBeCloseTo(3, 1);
   });
 });

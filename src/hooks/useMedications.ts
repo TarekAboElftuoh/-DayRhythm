@@ -6,6 +6,7 @@ import {
   sanitizeMedicationItem,
 } from '../firebase';
 import { getDateIsoInTimeZone } from '../engines/prayerEngine';
+import { computeMedicationDaysLeft } from '../engines/lifeRhythmEngine';
 import {
   broadcastAlertDismiss,
   dismissActiveAlarmInCloud,
@@ -184,12 +185,8 @@ export function useMedicationActions({
             : 500;
         const nextRem = Math.max(0, Math.min(maxCap, target.remainingDoses + deltaDoses));
         updated = { ...updated, remainingDoses: nextRem };
-        const dosesPerDay = Math.max(1, allTimes.length);
-        const daysPerWeek =
-          target.daysOfWeek && target.daysOfWeek.length > 0 ? target.daysOfWeek.length : 7;
-        const dailyRate = Math.max(0.14, (dosesPerDay * daysPerWeek) / 7);
         const alertLeadDays = Math.max(1, Math.min(14, target.refillAlertDays ?? 3));
-        const daysLeft = nextRem / dailyRate;
+        const daysLeft = computeMedicationDaysLeft(nextRem, allTimes.length, target.daysOfWeek);
         if (deltaDoses < 0 && daysLeft <= alertLeadDays) {
           const roundedDays = Math.ceil(daysLeft);
           lowStockMsg =
