@@ -544,7 +544,7 @@ public class MainActivity extends Activity {
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setSupportMultipleWindows(true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
         // Remove WebView markers ("; wv" & "Version/4.0") so Google OAuth never rejects with 403 disallowed_useragent
@@ -931,7 +931,7 @@ public class MainActivity extends Activity {
                 pSettings.setSupportMultipleWindows(true);
                 pSettings.setJavaScriptCanOpenWindowsAutomatically(true);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    pSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+                    pSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
                 }
                 pSettings.setUserAgentString(sanitizeUserAgent(pSettings.getUserAgentString()));
 

@@ -26,16 +26,30 @@ export function subscribeSocketConnectStatus(listener: ConnectStatusListener): (
   };
 }
 
-export function resolveSocketServerUrl(): string {
+export function isMobileClient(uaOverride?: string): boolean {
+  if (typeof window !== 'undefined' && (window as Window & { DayRhythmNative?: unknown }).DayRhythmNative) {
+    return true;
+  }
+  const ua = uaOverride || (typeof navigator !== 'undefined' ? navigator.userAgent : '') || '';
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+}
+
+export function resolveSocketServerUrl(uaOverride?: string): string {
+  const isMobile = isMobileClient(uaOverride);
+
   // 1. Explicitly saved cloud or LAN IP address (e.g. http://192.168.100.2:3000)
   const saved = getSavedCloudApiUrl();
   if (saved && saved.startsWith('http')) {
     // Filter out unusable virtual adapters (WSL / Hyper-V default switches)
-    if (
-      !saved.includes('172.30.') &&
-      !saved.includes('172.31.') &&
-      !saved.includes('169.254.')
-    ) {
+    const isVirtual =
+      saved.includes('172.30.') ||
+      saved.includes('172.31.') ||
+      saved.includes('169.254.');
+
+    // On mobile, also filter out localhost/127.0.0.1 since node server runs on PC, not phone
+    const isInvalidMobile = isMobile && (saved.includes('localhost') || saved.includes('127.0.0.1'));
+
+    if (!isVirtual && !isInvalidMobile) {
       return saved;
     }
   }
@@ -43,21 +57,24 @@ export function resolveSocketServerUrl(): string {
   // 2. Direct browser navigation on local or remote host
   if (typeof window !== 'undefined' && window.location) {
     const { protocol, hostname, origin } = window.location;
-    const isVirtual =
+    const isVirtualHost =
       hostname.endsWith('.web.app') ||
       hostname.endsWith('.firebaseapp.com') ||
       hostname === 'appassets.androidplatform.net';
-    if (!isVirtual && (protocol === 'http:' || protocol === 'https:')) {
-      return origin;
-    }
+    const isLocalhostOnMobile = isMobile && (hostname === 'localhost' || hostname === '127.0.0.1');
 
-    // Android WebKit fallback to real LAN IP
-    if (hostname === 'appassets.androidplatform.net') {
-      return 'http://192.168.100.2:3000';
+    if (!isVirtualHost && !isLocalhostOnMobile && (protocol === 'http:' || protocol === 'https:')) {
+      return origin;
     }
   }
 
-  // 3. Fallback for Windows desktop or local environment
+  // 3. Fallback based on device type:
+  // Mobile connects to PC LAN IP over home Wi-Fi:
+  if (isMobile) {
+    return 'http://192.168.100.2:3000';
+  }
+
+  // Windows desktop / PC environment connects to local server:
   return 'http://localhost:3000';
 }
 
