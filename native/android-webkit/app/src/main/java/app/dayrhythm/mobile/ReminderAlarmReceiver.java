@@ -266,7 +266,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                         if (activeSoundToken != token) return; // stopped/replaced meanwhile
                     }
                     playSoundOnce(app, soundRes);
-                    vibrateOnce(app);
+                    // Do not vibrate continuously in the repeat loop to prevent relentless phone shaking
                     mainHandler.postDelayed(this, periodMs);
                 }
             };

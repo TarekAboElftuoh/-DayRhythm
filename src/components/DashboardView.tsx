@@ -226,6 +226,7 @@ interface DashboardViewProps {
     category: TaskSoundCategory;
     isContinuous?: boolean;
   } | null;
+  hasPersistentAlert?: boolean;
   onAcknowledgeAudioAlert: () => void;
   onTriggerTaskAlert: (
     title: string,
@@ -371,6 +372,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   silentNotifications,
   onClearSilentNotifications,
   activeAudioAlert,
+  hasPersistentAlert,
   onAcknowledgeAudioAlert,
   onTriggerTaskAlert,
   weatherInfo,
@@ -1427,9 +1429,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* 2. PRIORITY ACTIONAL ALERTS ONLY (Rendered strictly when an urgent action or undo exists) */}
+      {/* 2. PRIORITY ACTIONAL ALERTS ONLY (Rendered strictly when no floating persistent overlay is active to avoid duplicate cards) */}
       <AnimatePresence>
-        {activeAudioAlert && (
+        {activeAudioAlert && !hasPersistentAlert && (
           <motion.div
             initial={{ opacity: 0, y: -10, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
