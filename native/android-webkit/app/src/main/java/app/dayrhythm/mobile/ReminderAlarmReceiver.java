@@ -496,6 +496,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
         if (ACTION_DISMISS.equals(action)) {
             cancelAllActiveAlarms(context);
+            LocalSyncServer.broadcastDismiss(context, "native_dismiss");
             CloudSignalClient.sendAlarmDismiss(context, "native_dismiss");
             return;
         }
@@ -504,7 +505,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             stopRinging();
             cancelNotification(context, notifId);
             closeAlarmUi(context);
-            // Stopping here stops the PC too (and vice versa — see CloudSignalClient).
+            // Stopping here stops the PC too (and vice versa — see LocalSyncServer / CloudSignalClient).
+            LocalSyncServer.broadcastDismiss(context, "native_snooze");
             CloudSignalClient.sendAlarmDismiss(context, "native_snooze");
             long snoozeAtMs = System.currentTimeMillis() + (long) snoozeMin * 60_000L;
             scheduleSingleExactAlarm(
@@ -530,6 +532,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             stopRinging();
             cancelNotification(context, notifId);
             closeAlarmUi(context);
+            LocalSyncServer.broadcastDismiss(context, "native_done");
             CloudSignalClient.sendAlarmDismiss(context, "native_done");
             enqueuePendingQuickAction(context, kind, alarmId, medId, doseTime);
             Intent notifyIntent = new Intent(ACTION_PENDING_QUEUE_UPDATED);
@@ -565,7 +568,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 // Launch desktop-style AlarmActivity card over lock screen
                 launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
 
-                // Tell the PC to show its card at the exact same moment (<100ms)
+                // Spotify Connect: Ultra-low latency LAN broadcast + cloud trigger (<5ms local)
+                LocalSyncServer.broadcastTrigger(context, title, body, kind, snoozeMin);
                 CloudSignalClient.sendAlarmTrigger(context, title, body, kind, snoozeMin);
 
                 // If the PC (or another device) stops this alert, stop it here too.

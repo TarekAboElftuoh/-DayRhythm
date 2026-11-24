@@ -1741,11 +1741,13 @@ export default function App() {
           DayRhythmNative?: {
             dismissActiveAlerts?: () => void;
             stopNativeAlarmSound?: () => void;
+            dismissAlarm?: () => void;
           };
         }
       ).DayRhythmNative;
       androidBridge?.stopNativeAlarmSound?.();
       androidBridge?.dismissActiveAlerts?.();
+      androidBridge?.dismissAlarm?.();
     } catch {
       // ignore Android bridge errors
     }
@@ -4275,13 +4277,13 @@ export default function App() {
             return;
           }
 
-          // STALE CHECK: Never ring if signal is > 60s old!
+          // STALE CHECK: Tolerant to clock skews between PC and Mobile (up to 5m)
           const startTs =
             (signal as unknown as { originTimestampMs?: number }).originTimestampMs ||
             signal.startedAtMs ||
             signal.timestampMs ||
             0;
-          if (!startTs || Math.abs(Date.now() - startTs) > 60_000) {
+          if (!startTs || Math.abs(Date.now() - startTs) > 300_000) {
             return;
           }
 

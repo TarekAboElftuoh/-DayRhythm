@@ -34,7 +34,7 @@ import okhttp3.Response;
 public final class CloudSignalClient {
     private static final String PREFS = "dayrhythm_cloud_auth_prefs";
     private static final String KEY_AUTH = "auth_json";
-    public static final String CLIENT_ID = "device_mobile";
+    public static final String CLIENT_ID = "device_mobile_native";
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
 
     private static final OkHttpClient HTTP = new OkHttpClient.Builder()
@@ -62,9 +62,8 @@ public final class CloudSignalClient {
             if (!directId.isEmpty()) {
                 idToken = directId;
                 idTokenExpiresAtMs = System.currentTimeMillis() + 3500_000L;
-            } else {
-                idToken = null;
             }
+            // Retain existing valid idToken rather than clearing it if directId is not provided
         } catch (Exception ignored) {
         }
     }
@@ -150,6 +149,22 @@ public final class CloudSignalClient {
                                         new JSONObject().put("mapValue", new JSONObject().put("fields", sigFields)))))
                         .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("syncSignal")));
 
+                // Standalone commit for write1 (users/{uid}.syncSignal)
+                try {
+                    JSONObject body1 = new JSONObject().put("writes", new JSONArray().put(write1));
+                    Request req1 = new Request.Builder()
+                            .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
+                                    + "/databases/" + auth.getString("databaseId") + "/documents:commit")
+                            .header("Authorization", "Bearer " + token)
+                            .post(RequestBody.create(body1.toString(), JSON))
+                            .build();
+                    try (Response res1 = HTTP.newCall(req1).execute()) {
+                        android.util.Log.d("CloudSignalClient", "sendAlarmDismiss (syncSignal) status=" + res1.code());
+                    }
+                } catch (Exception ex) {
+                    android.util.Log.w("CloudSignalClient", "write1 error: " + ex.getMessage());
+                }
+
                 JSONObject liveFields = new JSONObject()
                         .put("opId", new JSONObject().put("stringValue", opId))
                         .put("sessionId", new JSONObject().put("stringValue", opId))
@@ -165,22 +180,22 @@ public final class CloudSignalClient {
                 JSONObject write2 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth) + "/sync/live")
-                                .put("fields", liveFields))
-                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray()
-                                .put("opId").put("sessionId").put("clientId").put("status")
-                                .put("dismissedBy").put("dismissedByDeviceId").put("dismissedAtMs")
-                                .put("type").put("action").put("timestampMs").put("updatedAtMs")));
+                                .put("fields", liveFields));
 
-                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
-
-                Request req = new Request.Builder()
-                        .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
-                                + "/databases/" + auth.getString("databaseId") + "/documents:commit")
-                        .header("Authorization", "Bearer " + token)
-                        .post(RequestBody.create(body.toString(), JSON))
-                        .build();
-                try (Response res = HTTP.newCall(req).execute()) {
-                    android.util.Log.d("CloudSignalClient", "sendAlarmDismiss status=" + res.code());
+                // Standalone commit for write2 (users/{uid}/sync/live) - no updateMask so it upserts without 404
+                try {
+                    JSONObject body2 = new JSONObject().put("writes", new JSONArray().put(write2));
+                    Request req2 = new Request.Builder()
+                            .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
+                                    + "/databases/" + auth.getString("databaseId") + "/documents:commit")
+                            .header("Authorization", "Bearer " + token)
+                            .post(RequestBody.create(body2.toString(), JSON))
+                            .build();
+                    try (Response res2 = HTTP.newCall(req2).execute()) {
+                        android.util.Log.d("CloudSignalClient", "sendAlarmDismiss (live) status=" + res2.code());
+                    }
+                } catch (Exception ex) {
+                    android.util.Log.w("CloudSignalClient", "write2 error: " + ex.getMessage());
                 }
 
                 if (MainActivity.activeInstance != null) {
@@ -218,6 +233,17 @@ public final class CloudSignalClient {
                                         new JSONObject().put("mapValue", new JSONObject().put("fields", sigFields)))))
                         .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("syncSignal")));
 
+                try {
+                    JSONObject body1 = new JSONObject().put("writes", new JSONArray().put(write1));
+                    Request req1 = new Request.Builder()
+                            .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
+                                    + "/databases/" + auth.getString("databaseId") + "/documents:commit")
+                            .header("Authorization", "Bearer " + token)
+                            .post(RequestBody.create(body1.toString(), JSON))
+                            .build();
+                    try (Response ignored = HTTP.newCall(req1).execute()) {}
+                } catch (Exception ignored) {}
+
                 JSONObject extraFields = new JSONObject()
                         .put("title", new JSONObject().put("stringValue", title != null ? title : "تنبيه إيقاع اليوم"))
                         .put("body", new JSONObject().put("stringValue", bodyText != null ? bodyText : ""))
@@ -245,26 +271,18 @@ public final class CloudSignalClient {
                 JSONObject write2 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth) + "/sync/live")
-                                .put("fields", liveFields))
-                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray()
-                                .put("opId").put("sessionId").put("clientId")
-                                .put("originClientId").put("originDeviceId")
-                                .put("status").put("title").put("body").put("kind")
-                                .put("snoozeMinutes").put("startedAtMs").put("originTimestampMs")
-                                .put("type").put("action").put("timestampMs").put("updatedAtMs")
-                                .put("extra")));
+                                .put("fields", liveFields));
 
-                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
-
-                Request req = new Request.Builder()
-                        .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
-                                + "/databases/" + auth.getString("databaseId") + "/documents:commit")
-                        .header("Authorization", "Bearer " + token)
-                        .post(RequestBody.create(body.toString(), JSON))
-                        .build();
-                try (Response ignored = HTTP.newCall(req).execute()) {
-                    // best effort
-                }
+                try {
+                    JSONObject body2 = new JSONObject().put("writes", new JSONArray().put(write2));
+                    Request req2 = new Request.Builder()
+                            .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
+                                    + "/databases/" + auth.getString("databaseId") + "/documents:commit")
+                            .header("Authorization", "Bearer " + token)
+                            .post(RequestBody.create(body2.toString(), JSON))
+                            .build();
+                    try (Response ignored = HTTP.newCall(req2).execute()) {}
+                } catch (Exception ignored) {}
             } catch (Exception ignored) {
             }
         });
@@ -333,7 +351,7 @@ public final class CloudSignalClient {
     public static synchronized void watchForRemoteDismiss(Context context, long firedAtMs) {
         final Context app = context.getApplicationContext();
         stopWatching();
-        final long deadline = firedAtMs + 3 * 60_000L;
+        final long deadline = firedAtMs + 30 * 60_000L;
         watchFuture = WATCH_EXEC.scheduleWithFixedDelay(() -> {
             try {
                 if (System.currentTimeMillis() > deadline) {

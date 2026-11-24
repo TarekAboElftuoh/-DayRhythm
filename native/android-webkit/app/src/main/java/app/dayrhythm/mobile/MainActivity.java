@@ -208,6 +208,7 @@ public class MainActivity extends Activity {
         // 2. Start 24/7 Special-Use Foreground Service + schedule hourly WorkManager GitHub update checks
         DayRhythmSyncService.startServiceCompat(this);
         UpdateCheckWorker.schedulePeriodicCheck(this);
+        LocalSyncServer.start(this);
 
         // 3. Request Android 13+ notification permission + OnePlus 12R battery optimization whitelist
         requestEssentialPermissions();
@@ -647,6 +648,7 @@ public class MainActivity extends Activity {
             @JavascriptInterface
             public void stopNativeAlarmSound() {
                 ReminderAlarmReceiver.stopRinging();
+                LocalSyncServer.broadcastDismiss(MainActivity.this, "native_dismiss");
             }
 
             @JavascriptInterface
@@ -656,7 +658,18 @@ public class MainActivity extends Activity {
 
             @JavascriptInterface
             public void dismissActiveAlerts() {
-                executor.execute(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(MainActivity.this));
+                executor.execute(() -> {
+                    ReminderAlarmReceiver.cancelAllActiveAlarms(MainActivity.this);
+                    LocalSyncServer.broadcastDismiss(MainActivity.this, "native_dismiss");
+                });
+            }
+
+            @JavascriptInterface
+            public void dismissAlarm() {
+                executor.execute(() -> {
+                    ReminderAlarmReceiver.cancelAllActiveAlarms(MainActivity.this);
+                    LocalSyncServer.broadcastDismiss(MainActivity.this, "native_dismiss");
+                });
             }
 
             @JavascriptInterface

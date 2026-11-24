@@ -73,14 +73,20 @@ export function getNativeCloudAuthPayload(): string | null {
   if (!user || user.isAnonymous) return null;
   const refreshToken =
     user.refreshToken ||
-    (user as unknown as { stsTokenManager?: { refreshToken?: string } }).stsTokenManager?.refreshToken;
-  if (!refreshToken) return null;
+    (user as unknown as { stsTokenManager?: { refreshToken?: string } }).stsTokenManager?.refreshToken ||
+    '';
+  const idToken =
+    (user as unknown as { accessToken?: string }).accessToken ||
+    (user as unknown as { stsTokenManager?: { accessToken?: string } }).stsTokenManager?.accessToken ||
+    '';
+  if (!refreshToken && !idToken) return null;
   return JSON.stringify({
     apiKey: firebaseConfig.apiKey,
     projectId: firebaseConfig.projectId,
     databaseId: configuredDbId,
     uid: user.uid,
     refreshToken,
+    idToken,
   });
 }
 

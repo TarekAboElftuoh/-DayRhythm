@@ -75,6 +75,22 @@ namespace DayRhythm
                 onNetworkRecovered: () => RunOnUi(DispatchNetworkRecoveredToWebView)
             );
 
+            // Spotify Architecture: Ultra-low latency LAN peer-to-peer synchronization (<5ms)
+            LocalSyncServer.Initialize(
+                onRemoteDismiss: () => RunOnUi(() =>
+                {
+                    if (_activeToastForm != null && !_activeToastForm.IsDisposed)
+                    {
+                        _activeToastForm.Close();
+                        _activeToastForm.Dispose();
+                        _activeToastForm = null;
+                    }
+                    CloseActiveScreenAlert();
+                    DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));");
+                }),
+                onRemoteTrigger: payload => RunOnUi(() => ShowSecondaryMonitorAlert(payload))
+            );
+
             InitializeTray(appIcon);
             InitializeDesktopCapsule();
             InitializeWebViewControl();
@@ -392,22 +408,24 @@ namespace DayRhythm
                                         NativeAlertPayload alertPayload = JsonSerializer.Deserialize<NativeAlertPayload>(msg);
                                         if (alertPayload != null)
                                         {
+                                            LocalSyncServer.Instance?.BroadcastAlertTrigger(alertPayload);
                                             RunOnUi(() => ShowSecondaryMonitorAlert(alertPayload));
                                         }
                                     }
                                     else if (string.Equals(msgType, "stop-alert", StringComparison.OrdinalIgnoreCase))
                                     {
+                                        LocalSyncServer.Instance?.BroadcastAlertDismiss("dismiss");
                                         RunOnUi(() =>
                                         {
                                             if (_activeToastForm != null && !_activeToastForm.IsDisposed)
-                                            {
-                                                _activeToastForm.Close();
-                                                _activeToastForm.Dispose();
-                                                _activeToastForm = null;
-                                            }
-                                            CloseActiveScreenAlert();
-                                        });
-                                    }
+                                             {
+                                                 _activeToastForm.Close();
+                                                 _activeToastForm.Dispose();
+                                                 _activeToastForm = null;
+                                             }
+                                             CloseActiveScreenAlert();
+                                         });
+                                     }
                                 }
                             }
                         }
@@ -754,7 +772,11 @@ namespace DayRhythm
                         });
                         DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:alert-snoozed', {{ detail: {detailJson} }}));");
                     },
-                    onDismissed: () => DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));")
+                    onDismissed: () =>
+                    {
+                        LocalSyncServer.Instance?.BroadcastAlertDismiss("dismiss");
+                        DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));");
+                    }
                 );
                 _activeScreenAlert = form;
                 form.FormClosed += (_, __) => { if (_activeScreenAlert == form) _activeScreenAlert = null; };
@@ -787,6 +809,7 @@ namespace DayRhythm
                     preferSecondaryScreen: _settings.AlertsOnSecondaryScreen,
                     onWaterConfirmed: () => RunOnUi(() =>
                     {
+                        LocalSyncServer.Instance?.BroadcastAlertDismiss("water_confirmed");
                         if (_webView?.CoreWebView2 != null)
                         {
                             _ = _webView.CoreWebView2.ExecuteScriptAsync(
@@ -796,6 +819,7 @@ namespace DayRhythm
                     }),
                     onMedicationConfirmed: (medId, doseTime24) => RunOnUi(() =>
                     {
+                        LocalSyncServer.Instance?.BroadcastAlertDismiss("medication_confirmed");
                         if (_webView?.CoreWebView2 != null)
                         {
                             string detailJson = JsonSerializer.Serialize(new { medicationId = medId ?? "", doseTime24 = doseTime24 ?? "" });
@@ -806,6 +830,7 @@ namespace DayRhythm
                     }),
                     onSnoozed: (alertPayload, minutes) => RunOnUi(() =>
                     {
+                        LocalSyncServer.Instance?.BroadcastAlertDismiss("snooze");
                         if (_webView?.CoreWebView2 != null)
                         {
                             string detailJson = JsonSerializer.Serialize(new
@@ -827,6 +852,7 @@ namespace DayRhythm
                     }),
                     onDismissed: () => RunOnUi(() =>
                     {
+                        LocalSyncServer.Instance?.BroadcastAlertDismiss("dismiss");
                         if (_webView?.CoreWebView2 != null)
                         {
                             _ = _webView.CoreWebView2.ExecuteScriptAsync(
@@ -849,6 +875,8 @@ namespace DayRhythm
                 ShowInTaskbar = false;
                 return;
             }
+
+            LocalSyncServer.Instance?.Dispose();
 
             if (_activeToastForm != null && !_activeToastForm.IsDisposed)
             {
