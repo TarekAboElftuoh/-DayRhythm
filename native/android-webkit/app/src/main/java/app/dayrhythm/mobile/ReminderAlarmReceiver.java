@@ -490,11 +490,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         int snoozeMin = sanitizeSnoozeMinutes(intent.getIntExtra(EXTRA_SNOOZE_MIN, 5));
 
         if (ACTION_DISMISS.equals(action)) {
-            stopRinging();
-            cancelNotification(context, notifId);
-            closeAlarmUi(context);
+            cancelAllActiveAlarms(context);
             CloudSignalClient.sendAlarmDismiss(context, "native_dismiss");
-            DayRhythmSyncService.advanceScheduleIfExpired(context);
             return;
         }
 
@@ -860,10 +857,11 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 .setVibrate(VIBRATION_PATTERN)
                 .setAutoCancel(true)
                 .setFullScreenIntent(fullScreenPi, true)
-                .setContentIntent(contentPi)
+                .setContentIntent(dismissPi)
                 .setDeleteIntent(dismissPi)
+                .addAction(0, "🔕 إيقاف", dismissPi)
                 .addAction(0, doneLabel, donePi)
-                .addAction(0, "تأجيل " + snoozeMin + " د", snoozePi);
+                .addAction(0, "⏰ تأجيل " + snoozeMin + " د", snoozePi);
 
         try {
             // Its own id, never the service's 1001: the service rewrites 1001 with the countdown
