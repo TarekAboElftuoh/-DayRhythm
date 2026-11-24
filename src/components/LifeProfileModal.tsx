@@ -171,9 +171,18 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
 }) => {
   const [draft, setDraft] = useState<LifeProfile>(profile);
   const isDirtyRef = React.useRef(false);
+  const touchedKeysRef = React.useRef<Set<keyof LifeProfile>>(new Set());
   const updateDraft = (updater: (prev: LifeProfile) => LifeProfile) => {
     isDirtyRef.current = true;
-    setDraft(updater);
+    setDraft((prev) => {
+      const next = updater(prev);
+      for (const k of Object.keys(next) as Array<keyof LifeProfile>) {
+        if (next[k] !== prev[k]) {
+          touchedKeysRef.current.add(k);
+        }
+      }
+      return next;
+    });
   };
   const [unlockHeight, setUnlockHeight] = useState(false);
   const [newMemoryCategory, setNewMemoryCategory] = useState<MemoryCategory>('priority');
@@ -283,10 +292,24 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
       // Modal just opened: initialize draft and clear dirty status
       setDraft(profile);
       isDirtyRef.current = false;
+      touchedKeysRef.current.clear();
       setUnlockHeight(false);
-    } else if (isOpen && !isDirtyRef.current) {
-      // Modal open and not modified by user: keep in sync with external live updates
-      setDraft(profile);
+    } else if (isOpen) {
+      if (!isDirtyRef.current) {
+        // Modal open and not modified by user: keep in sync with external live updates
+        setDraft(profile);
+      } else {
+        // User modified some fields: keep untouched fields synced with incoming remote updates!
+        setDraft((prev) => {
+          const merged = { ...prev };
+          for (const key of Object.keys(profile) as Array<keyof LifeProfile>) {
+            if (!touchedKeysRef.current.has(key)) {
+              (merged as any)[key] = profile[key];
+            }
+          }
+          return merged;
+        });
+      }
     }
     prevIsOpenRef.current = isOpen;
   }, [isOpen, profile]);
@@ -317,6 +340,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   const handleSave = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     isDirtyRef.current = false;
+    touchedKeysRef.current.clear();
     onSaveProfile({ ...draft, sleepStrategy: draft.sleepStrategy || 'night_only_strict' });
     onClose();
   };
@@ -325,6 +349,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     // If the user modified any setting without explicitly clicking save, auto-save so nothing is lost!
     if (isDirtyRef.current) {
       isDirtyRef.current = false;
+      touchedKeysRef.current.clear();
       onSaveProfile({ ...draft, sleepStrategy: draft.sleepStrategy || 'night_only_strict' });
     }
     onClose();

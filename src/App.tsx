@@ -127,6 +127,7 @@ import {
   sanitizeRhythmPayload,
   sanitizeSoundRepeats,
   sanitizeUiPrefs,
+  sanitizeAppSyncSettings,
   getCloudQuotaPausedUntil,
   type AppSyncSettings,
   type SyncedRhythmPayload,
@@ -921,7 +922,7 @@ export default function App() {
   // and others did not, which is why clicking them could appear to silently "undo itself".
   const updateLifeProfileLocal = useCallback(
     (updater: Parameters<typeof setLifeProfile>[0]) => {
-      localWriteLockUntilRef.current = Date.now() + 5000;
+      localWriteLockUntilRef.current = Date.now() + 300;
       const prev = lifeProfileRef.current;
       const next = sanitizeLifeProfile(typeof updater === 'function' ? updater(prev) : updater);
       lifeProfileRef.current = next;
@@ -1295,27 +1296,81 @@ export default function App() {
     }
   });
 
-  const handleToggleIncludePrayerAnchors = useCallback(() => {
-    setIncludePrayerAnchors((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem('dayrhythm_include_prayer_anchors', String(next));
-      } catch {
-        // ignore
+  const appSettingsRef = useRef<AppSyncSettings>({
+    phoneChargeLimitPct,
+    smartChargeAlertEnabled,
+    smartChargeKeepUntilUnplugged,
+    waterRemindersEnabled,
+    sunMode,
+    includePrayerAnchors,
+  });
+  appSettingsRef.current = {
+    phoneChargeLimitPct,
+    smartChargeAlertEnabled,
+    smartChargeKeepUntilUnplugged,
+    waterRemindersEnabled,
+    sunMode,
+    includePrayerAnchors,
+  };
+
+  const updateAppSettings = useCallback(
+    (patch: Partial<AppSyncSettings>) => {
+      const prev = appSettingsRef.current;
+      const next: AppSyncSettings = {
+        ...prev,
+        ...patch,
+      };
+      appSettingsRef.current = next;
+
+      if (typeof patch.phoneChargeLimitPct === 'number') {
+        const clamped = Math.max(60, Math.min(100, Math.round(patch.phoneChargeLimitPct)));
+        next.phoneChargeLimitPct = clamped;
+        setPhoneChargeLimitPct(clamped);
+        phoneChargeLimitRef.current = clamped;
+        try {
+          localStorage.setItem('dayrhythm_phone_charge_limit', String(clamped));
+        } catch {}
       }
-      void pushToTasksVaultRef.current({
-        appSettings: {
-          phoneChargeLimitPct,
-          smartChargeAlertEnabled,
-          smartChargeKeepUntilUnplugged,
-          waterRemindersEnabled,
-          sunMode,
-          includePrayerAnchors: next,
-        },
-      });
+      if (typeof patch.smartChargeAlertEnabled === 'boolean') {
+        setSmartChargeAlertEnabled(patch.smartChargeAlertEnabled);
+        try {
+          localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(patch.smartChargeAlertEnabled));
+        } catch {}
+      }
+      if (typeof patch.smartChargeKeepUntilUnplugged === 'boolean') {
+        setSmartChargeKeepUntilUnplugged(patch.smartChargeKeepUntilUnplugged);
+        try {
+          localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(patch.smartChargeKeepUntilUnplugged));
+        } catch {}
+      }
+      if (typeof patch.waterRemindersEnabled === 'boolean') {
+        setWaterRemindersEnabled(patch.waterRemindersEnabled);
+        try {
+          localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(patch.waterRemindersEnabled));
+        } catch {}
+      }
+      if (typeof patch.sunMode === 'boolean') {
+        setSunMode(patch.sunMode);
+        try {
+          localStorage.setItem('dayrhythm_sun_mode_v1', patch.sunMode ? '1' : '0');
+        } catch {}
+      }
+      if (typeof patch.includePrayerAnchors === 'boolean') {
+        setIncludePrayerAnchors(patch.includePrayerAnchors);
+        try {
+          localStorage.setItem('dayrhythm_include_prayer_anchors', String(patch.includePrayerAnchors));
+        } catch {}
+      }
+
+      void pushToTasksVaultRef.current({ appSettings: next });
       return next;
-    });
-  }, [phoneChargeLimitPct, smartChargeAlertEnabled, smartChargeKeepUntilUnplugged, waterRemindersEnabled, sunMode]);
+    },
+    []
+  );
+
+  const handleToggleIncludePrayerAnchors = useCallback(() => {
+    updateAppSettings({ includePrayerAnchors: !appSettingsRef.current.includePrayerAnchors });
+  }, [updateAppSettings]);
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | 'unsupported'
   >(() =>
@@ -1416,14 +1471,9 @@ export default function App() {
   const handleUpdatePhoneChargeLimit = useCallback(
     (nextLimit: number) => {
       const clamped = Math.max(60, Math.min(100, Math.round(nextLimit)));
-      setPhoneChargeLimitPct(clamped);
       phoneChargeNotifiedCycleRef.current = false;
       setPhoneChargeAlertDismissed(false);
-      try {
-        localStorage.setItem('dayrhythm_phone_charge_limit', String(clamped));
-      } catch {
-        // ignore storage errors
-      }
+      updateAppSettings({ phoneChargeLimitPct: clamped });
       setPhoneBattery((prev) => {
         if (!prev) return prev;
         const updated: PhoneBatteryTelemetry = {
@@ -1438,17 +1488,8 @@ export default function App() {
         return updated;
       });
       showToast(`🔋 تم ضبط حد تنبيه شحن الموبايل على ${clamped}%`);
-      void pushToTasksVaultRef.current({
-        appSettings: {
-          phoneChargeLimitPct: clamped,
-          smartChargeAlertEnabled,
-          smartChargeKeepUntilUnplugged,
-          waterRemindersEnabled,
-          sunMode,
-        },
-      });
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, showToast, smartChargeAlertEnabled, smartChargeKeepUntilUnplugged, waterRemindersEnabled, sunMode]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, showToast, updateAppSettings]
   );
 
   const appendChangelog = useCallback(
@@ -1953,7 +1994,8 @@ export default function App() {
 
   const handleSetQuietMode = useCallback(
     (mode: QuietModeType, durationMinutes: number) => {
-      localWriteLockUntilRef.current = Date.now() + 5000;
+      localWriteLockUntilRef.current = Date.now() + 300;
+      quietModeRef.current = mode;
       setQuietMode(mode);
       if (mode === 'normal') {
         setQuietRemainingSec(0);
@@ -1970,10 +2012,10 @@ export default function App() {
 
       void pushToTasksVaultRef.current({
         quietMode: mode,
-        adhanOverrideSilent,
+        adhanOverrideSilent: adhanOverrideSilentRef.current,
       });
     },
-    [appendChangelog, showToast, adhanOverrideSilent]
+    [appendChangelog, showToast]
   );
 
   const handleCycleQuietMode = useCallback(() => {
@@ -2683,29 +2725,22 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [cloudPausedUntil]);
 
-  // App settings that used to be per-device only: change it on one device, it changes on the other.
+  // Synchronize appSettings with server whenever any setting changes
   useEffect(() => {
     if (isLoadingSettingsRef.current || !hasHydratedRemoteRef.current) {
       return;
     }
-    // Same key order as sanitizeAppSyncSettings, so equal settings serialize identically.
-    const next: AppSyncSettings = {
-      phoneChargeLimitPct,
-      smartChargeAlertEnabled,
-      smartChargeKeepUntilUnplugged,
-      waterRemindersEnabled,
-      sunMode,
-    };
-    const json = JSON.stringify(next);
+    const json = JSON.stringify(appSettingsRef.current);
     if (json === lastServerAppSettingsRef.current) return;
     lastServerAppSettingsRef.current = json;
-    void pushToTasksVaultRef.current({ appSettings: next });
+    void pushToTasksVaultRef.current({ appSettings: appSettingsRef.current });
   }, [
     phoneChargeLimitPct,
     smartChargeAlertEnabled,
     smartChargeKeepUntilUnplugged,
     waterRemindersEnabled,
     sunMode,
+    includePrayerAnchors,
   ]);
 
   // Reactive cross-device sync for Creative Activities & Hobbies
@@ -3326,20 +3361,30 @@ export default function App() {
       }
     }
     if (remote.appSettings) {
-      const a = remote.appSettings;
-      const json = JSON.stringify(a);
-      if (json !== lastServerAppSettingsRef.current) {
-        lastServerAppSettingsRef.current = json;
-        if (typeof a.phoneChargeLimitPct === 'number') setPhoneChargeLimitPct(a.phoneChargeLimitPct);
-        if (typeof a.smartChargeAlertEnabled === 'boolean') setSmartChargeAlertEnabled(a.smartChargeAlertEnabled);
-        if (typeof a.smartChargeKeepUntilUnplugged === 'boolean') setSmartChargeKeepUntilUnplugged(a.smartChargeKeepUntilUnplugged);
-        if (typeof a.waterRemindersEnabled === 'boolean') setWaterRemindersEnabled(a.waterRemindersEnabled);
-        if (typeof a.sunMode === 'boolean') setSunMode(a.sunMode);
+      const a = sanitizeAppSyncSettings(remote.appSettings);
+      if (a) {
+        const merged: AppSyncSettings = {
+          ...appSettingsRef.current,
+          ...a,
+        };
+        appSettingsRef.current = merged;
+        setPhoneChargeLimitPct(merged.phoneChargeLimitPct);
+        phoneChargeLimitRef.current = merged.phoneChargeLimitPct;
+        setSmartChargeAlertEnabled(merged.smartChargeAlertEnabled);
+        setSmartChargeKeepUntilUnplugged(merged.smartChargeKeepUntilUnplugged);
+        setWaterRemindersEnabled(merged.waterRemindersEnabled);
+        setSunMode(merged.sunMode);
+        if (typeof a.includePrayerAnchors === 'boolean') {
+          setIncludePrayerAnchors(a.includePrayerAnchors);
+        }
         try {
-          if (typeof a.phoneChargeLimitPct === 'number') localStorage.setItem('dayrhythm_phone_charge_limit', String(a.phoneChargeLimitPct));
-          if (typeof a.smartChargeAlertEnabled === 'boolean') localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(a.smartChargeAlertEnabled));
-          if (typeof a.smartChargeKeepUntilUnplugged === 'boolean') localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(a.smartChargeKeepUntilUnplugged));
-          if (typeof a.waterRemindersEnabled === 'boolean') localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(a.waterRemindersEnabled));
+          localStorage.setItem('dayrhythm_phone_charge_limit', String(merged.phoneChargeLimitPct));
+          localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(merged.smartChargeAlertEnabled));
+          localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(merged.smartChargeKeepUntilUnplugged));
+          localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(merged.waterRemindersEnabled));
+          if (typeof a.includePrayerAnchors === 'boolean') {
+            localStorage.setItem('dayrhythm_include_prayer_anchors', String(a.includePrayerAnchors));
+          }
         } catch {
           // ignore storage errors
         }
@@ -3588,6 +3633,34 @@ export default function App() {
   }, []);
   applyRemoteRef.current = applyRemote;
 
+  function mergeSyncedRhythmPayloads(
+    base: SyncedRhythmPayload | null,
+    incoming: SyncedRhythmPayload
+  ): SyncedRhythmPayload {
+    if (!base) return incoming;
+    const mergedDeviceSettings = incoming.deviceSettings
+      ? ({ ...(base.deviceSettings || {}), ...incoming.deviceSettings } as OnePlusDeviceSettings)
+      : base.deviceSettings;
+    const mergedLifeProfile = incoming.lifeProfile
+      ? ({ ...(base.lifeProfile || {}), ...incoming.lifeProfile } as LifeProfile)
+      : base.lifeProfile;
+    const mergedAppSettings = incoming.appSettings
+      ? ({ ...(base.appSettings || {}), ...incoming.appSettings } as AppSyncSettings)
+      : base.appSettings;
+    const mergedUiPrefs = incoming.uiPrefs
+      ? ({ ...(base.uiPrefs || {}), ...incoming.uiPrefs } as UiPrefs)
+      : base.uiPrefs;
+
+    return {
+      ...base,
+      ...incoming,
+      appSettings: mergedAppSettings,
+      deviceSettings: mergedDeviceSettings,
+      uiPrefs: mergedUiPrefs,
+      lifeProfile: mergedLifeProfile,
+    };
+  }
+
   const applyOrDefer = useCallback(
     (remote: SyncedRhythmPayload & {
       medications?: MedicationItem[];
@@ -3596,7 +3669,10 @@ export default function App() {
     }) => {
       const waitMs = localWriteLockUntilRef.current - Date.now();
       if (waitMs > 0) {
-        pendingRemoteRef.current = remote as SyncedRhythmPayload;
+        pendingRemoteRef.current = mergeSyncedRhythmPayloads(
+          pendingRemoteRef.current,
+          remote as SyncedRhythmPayload
+        );
         if (pendingRemoteTimerRef.current !== null) {
           window.clearTimeout(pendingRemoteTimerRef.current);
         }
@@ -3604,8 +3680,8 @@ export default function App() {
           pendingRemoteTimerRef.current = null;
           const latest = pendingRemoteRef.current;
           pendingRemoteRef.current = null;
-          if (latest) applyOrDefer(latest);
-        }, waitMs + 50);
+          if (latest) applyOrDefer(latest as any);
+        }, waitMs + 20);
         return;
       }
       applyRemote(remote);
@@ -3716,11 +3792,7 @@ export default function App() {
           pomodoro,
           periodicRituals,
           appSettings: {
-            phoneChargeLimitPct,
-            smartChargeAlertEnabled,
-            smartChargeKeepUntilUnplugged,
-            waterRemindersEnabled,
-            sunMode,
+            ...appSettingsRef.current,
           },
           uiPrefs: sanitizeUiPrefs({
             selectedLogoId,
@@ -4073,16 +4145,14 @@ export default function App() {
   }, [waterRemindersEnabled]);
 
   const handleToggleWaterReminders = useCallback(() => {
-    setWaterRemindersEnabled((prev) => {
-      const next = !prev;
-      showToast(
-        next
-          ? '🔔 تم تفعيل تنبيهات كل كوب ماء تلقائياً حسب جدولك العلمي'
-          : '🔕 تم إيقاف تنبيهات أكواب الماء مؤقتاً'
-      );
-      return next;
-    });
-  }, [showToast]);
+    const next = !appSettingsRef.current.waterRemindersEnabled;
+    showToast(
+      next
+        ? '🔔 تم تفعيل تنبيهات كل كوب ماء تلقائياً حسب جدولك العلمي'
+        : '🔕 تم إيقاف تنبيهات أكواب الماء مؤقتاً'
+    );
+    updateAppSettings({ waterRemindersEnabled: next });
+  }, [showToast, updateAppSettings]);
 
   const handleRequestNotificationPermission = useCallback(async () => {
     if (typeof window === 'undefined' || !('Notification' in window)) {
@@ -4208,11 +4278,7 @@ export default function App() {
       creativeActivities,
       memories,
       appSettings: {
-        phoneChargeLimitPct,
-        smartChargeAlertEnabled,
-        smartChargeKeepUntilUnplugged,
-        waterRemindersEnabled,
-        sunMode,
+        ...appSettingsRef.current,
       },
       uiPrefs: sanitizeUiPrefs({
         selectedLogoId,
@@ -4266,6 +4332,7 @@ export default function App() {
     smartChargeKeepUntilUnplugged,
     waterRemindersEnabled,
     sunMode,
+    includePrayerAnchors,
     selectedLogoId,
     capsulePrefs.orientation,
     capsulePrefs.size,
@@ -4274,18 +4341,28 @@ export default function App() {
   ]);
 
   const syncUiPrefsCloud = useCallback(
-    (nextLogoId: string, nextCapsule: CapsulePrefs, cloudApiUrlOverride?: string) => {
+    (nextLogoId?: string, nextCapsule?: Partial<CapsulePrefs>, cloudApiUrlOverride?: string) => {
+      const effectiveLogo = nextLogoId || selectedLogoIdRef.current;
+      const effectiveCapsule: CapsulePrefs = {
+        ...capsulePrefsRef.current,
+        ...(nextCapsule || {}),
+      };
       const effectiveUrl =
         cloudApiUrlOverride !== undefined ? cloudApiUrlOverride : getSavedCloudApiUrl();
       const clean: UiPrefs = sanitizeUiPrefs({
-        selectedLogoId: nextLogoId,
-        capsuleOrientation: nextCapsule.orientation,
-        capsuleSize: nextCapsule.size,
+        selectedLogoId: effectiveLogo,
+        capsuleOrientation: effectiveCapsule.orientation,
+        capsuleSize: effectiveCapsule.size,
         cloudApiUrl: effectiveUrl || undefined,
       }) ?? {
         selectedLogoId: DEFAULT_LOGO_ID,
         capsuleOrientation: 'horizontal',
         capsuleSize: 'md',
+      };
+      selectedLogoIdRef.current = clean.selectedLogoId;
+      capsulePrefsRef.current = {
+        orientation: clean.capsuleOrientation,
+        size: clean.capsuleSize,
       };
       void pushToTasksVaultImmediately({ uiPrefs: clean });
     },
@@ -4294,9 +4371,9 @@ export default function App() {
 
   const handleSaveCloudApiUrl = useCallback(
     (url: string) => {
-      syncUiPrefsCloud(selectedLogoId, capsulePrefs, url);
+      syncUiPrefsCloud(selectedLogoIdRef.current, capsulePrefsRef.current, url);
     },
-    [capsulePrefs, selectedLogoId, syncUiPrefsCloud]
+    [syncUiPrefsCloud]
   );
 
   // One-time migration from legacy Cairo default (30.0444, 31.2357) to user's home (الضهرية · شربين · الدقهلية)
@@ -4330,14 +4407,15 @@ export default function App() {
   const handleUpdateCapsulePrefs = useCallback(
     (next: CapsulePrefs) => {
       setCapsulePrefs(next);
+      capsulePrefsRef.current = next;
       try {
         window.localStorage.setItem(CAPSULE_PREFS_STORAGE_KEY, JSON.stringify(next));
       } catch {
         // ignore storage errors
       }
-      syncUiPrefsCloud(selectedLogoId, next);
+      syncUiPrefsCloud(undefined, next);
     },
-    [selectedLogoId, syncUiPrefsCloud]
+    [syncUiPrefsCloud]
   );
 
   // Right-click menu on the Windows desktop capsule (DesktopCapsuleForm.cs).
@@ -4356,30 +4434,32 @@ export default function App() {
   const handleSelectBrandLogo = useCallback(
     (id: string) => {
       setSelectedLogoId(id);
+      selectedLogoIdRef.current = id;
       try {
         window.localStorage.setItem(SELECTED_LOGO_STORAGE_KEY, id);
       } catch {
         // ignore storage errors
       }
-      syncUiPrefsCloud(id, capsulePrefs);
+      syncUiPrefsCloud(id);
       const picked = getLogoConceptById(id);
       if (picked) {
         showToast(`تم تفعيل ومزامنة شعار «${picked.titleAr}» على أجهزتك ✓`);
       }
     },
-    [capsulePrefs, showToast, syncUiPrefsCloud]
+    [showToast, syncUiPrefsCloud]
   );
 
   const handleResetBrandLogo = useCallback(() => {
     setSelectedLogoId(DEFAULT_LOGO_ID);
+    selectedLogoIdRef.current = DEFAULT_LOGO_ID;
     try {
       window.localStorage.setItem(SELECTED_LOGO_STORAGE_KEY, DEFAULT_LOGO_ID);
     } catch {
       // ignore storage errors
     }
-    syncUiPrefsCloud(DEFAULT_LOGO_ID, capsulePrefs);
+    syncUiPrefsCloud(DEFAULT_LOGO_ID);
     showToast('تمت العودة للشعار الافتراضي (أفق الشروق الزجاجي) ومزامنته ✓');
-  }, [capsulePrefs, showToast, syncUiPrefsCloud]);
+  }, [showToast, syncUiPrefsCloud]);
 
   const handleChangeFastingOverride = useCallback(
     (next: 'auto' | 'fasting' | 'normal') => {
@@ -4391,6 +4471,7 @@ export default function App() {
 
   const handleToggleSurfaceTheme = useCallback(
     (theme: SurfaceTheme) => {
+      surfaceThemeRef.current = theme;
       setSurfaceTheme(theme);
       void pushToTasksVaultImmediately({ surfaceTheme: theme });
     },
@@ -4399,19 +4480,25 @@ export default function App() {
 
   const handleUpdateDeviceSettings = useCallback(
     (patch: Partial<OnePlusDeviceSettings>) => {
-      localWriteLockUntilRef.current = Date.now() + 5000;
-      setDeviceSettings((prev) => {
-        const next = sanitizeDeviceSettings({ ...prev, ...patch });
-        void pushToTasksVaultImmediately({ deviceSettings: next });
-        return next;
-      });
+      localWriteLockUntilRef.current = Date.now() + 300;
+      const next = sanitizeDeviceSettings({ ...deviceSettingsRef.current, ...patch });
+      deviceSettingsRef.current = next;
+      setDeviceSettings(next);
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: next }));
+      } catch {
+        // ignore
+      }
+      void pushToTasksVaultImmediately({ deviceSettings: next });
     },
     [pushToTasksVaultImmediately]
   );
 
   const handleUpdateLifeProfile = useCallback(
     (patch: Partial<LifeProfile>) => {
-      localWriteLockUntilRef.current = Date.now() + 5000;
+      localWriteLockUntilRef.current = Date.now() + 300;
       const nextProfile = sanitizeLifeProfile({ ...lifeProfileRef.current, ...patch });
       lifeProfileRef.current = nextProfile;
       setLifeProfile(nextProfile);
@@ -4435,7 +4522,7 @@ export default function App() {
   const handleQuickUpdateWeight = useCallback(
     (nextWeightKg: number) => {
       const clamped = Math.max(35, Math.min(220, Math.round(nextWeightKg * 2) / 2));
-      localWriteLockUntilRef.current = Date.now() + 5000;
+      localWriteLockUntilRef.current = Date.now() + 300;
       const nextProfile = sanitizeLifeProfile({ ...lifeProfileRef.current, weightKg: clamped });
       lifeProfileRef.current = nextProfile;
       setLifeProfile(nextProfile);
@@ -5418,6 +5505,7 @@ export default function App() {
   }, [pomodoro.isRunning, quietMode, activeSanctuary]);
 
   const handleToggleFridayMode = (v: boolean) => {
+    isFridayModeRef.current = v;
     setIsFridayMode(v);
     setUndoSnapshot(null);
     setReflowedBlocksOverride(null);
@@ -5426,12 +5514,22 @@ export default function App() {
   };
 
   const handleToggleBiweeklyPcCleanup = (v: boolean) => {
+    includeBiweeklyPcCleanupRef.current = v;
     setIncludeBiweeklyPcCleanup(v);
     setUndoSnapshot(null);
     setReflowedBlocksOverride(null);
     rebuildOfflineSchedule(effectiveDayMode, travelState, isFridayMode, v);
     void pushToTasksVaultImmediately({ includeBiweeklyPcCleanup: v });
   };
+
+  const handleToggleAdhanOverrideSilent = useCallback(() => {
+    setAdhanOverrideSilent((prev) => {
+      const next = !prev;
+      adhanOverrideSilentRef.current = next;
+      void pushToTasksVaultRef.current({ adhanOverrideSilent: next });
+      return next;
+    });
+  }, []);
 
   const handleApplyTravel = (nextTravel: TravelState) => {
     setTravelState(nextTravel);
@@ -6401,7 +6499,7 @@ export default function App() {
       updater: (today: HydrationDayLog) => HydrationDayLog,
       dismissSignal?: { scope: 'alarm_dismiss'; action: string }
     ) => {
-      localWriteLockUntilRef.current = Date.now() + 6000;
+      localWriteLockUntilRef.current = Date.now() + 500;
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
 
       setHydrationHistory((prev) => {
@@ -7057,90 +7155,50 @@ export default function App() {
   }, [emitCrossDeviceSync, showToast, stopNativeAlerts]);
 
   const handleToggleSmartChargeKeepUntilUnplugged = useCallback(() => {
-    setSmartChargeKeepUntilUnplugged((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(next));
-      } catch {
-        // ignore storage errors
-      }
-      showToast(
-        next
-          ? '🔌 سيستمر منبّه الشحن بالرنين حتى فصل الموبايل من الشاحن (أو إيقافه يدوياً)'
-          : '⏱️ سيتوقف منبّه الشحن تلقائياً بعد دقيقتين إذا لم يتم إيقافه'
-      );
-      void pushToTasksVaultImmediately({
-        appSettings: {
-          phoneChargeLimitPct,
-          smartChargeAlertEnabled,
-          smartChargeKeepUntilUnplugged: next,
-          waterRemindersEnabled,
-          sunMode,
-        },
-      });
-      return next;
-    });
-  }, [showToast, pushToTasksVaultImmediately, phoneChargeLimitPct, smartChargeAlertEnabled, waterRemindersEnabled, sunMode]);
+    const next = !appSettingsRef.current.smartChargeKeepUntilUnplugged;
+    showToast(
+      next
+        ? '🔌 سيستمر منبّه الشحن بالرنين حتى فصل الموبايل من الشاحن (أو إيقافه يدوياً)'
+        : '⏱️ سيتوقف منبّه الشحن تلقائياً بعد دقيقتين إذا لم يتم إيقافه'
+    );
+    updateAppSettings({ smartChargeKeepUntilUnplugged: next });
+  }, [showToast, updateAppSettings]);
 
   const handleToggleSmartChargeAlertEnabled = useCallback(() => {
-    setSmartChargeAlertEnabled((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(next));
-      } catch {
-        // ignore storage errors
-      }
-      if (!next) {
-        stopSmartChargeCompleteAlert();
-        setSmartChargeAudioActive(false);
-      }
-      showToast(
-        next
-          ? `🔋 تم تفعيل التنبيه الذكي عند اكتمال الشحن (${phoneChargeLimitRef.current}%)`
-          : '🔕 تم إيقاف التنبيه الصوتي التلقائي لاكتمال الشحن'
-      );
-      void pushToTasksVaultImmediately({
-        appSettings: {
-          phoneChargeLimitPct,
-          smartChargeAlertEnabled: next,
-          smartChargeKeepUntilUnplugged,
-          waterRemindersEnabled,
-          sunMode,
-        },
-      });
-      return next;
-    });
-  }, [showToast, pushToTasksVaultImmediately, phoneChargeLimitPct, smartChargeKeepUntilUnplugged, waterRemindersEnabled, sunMode]);
+    const next = !appSettingsRef.current.smartChargeAlertEnabled;
+    if (!next) {
+      stopSmartChargeCompleteAlert();
+      setSmartChargeAudioActive(false);
+    }
+    showToast(
+      next
+        ? `🔋 تم تفعيل التنبيه الذكي عند اكتمال الشحن (${appSettingsRef.current.phoneChargeLimitPct}%)`
+        : '🔕 تم إيقاف التنبيه الصوتي التلقائي لاكتمال الشحن'
+    );
+    updateAppSettings({ smartChargeAlertEnabled: next });
+  }, [showToast, updateAppSettings, stopSmartChargeCompleteAlert]);
 
   // Settings changed from the Gemini chat (propose_app_settings). Each field is optional.
   const handleApplyAppSettings = useCallback(
     (patch: AppSettingsPatch) => {
-      const persist = (key: string, value: string) => {
-        try {
-          localStorage.setItem(key, value);
-        } catch {
-          // ignore storage errors
-        }
-      };
-      if (typeof patch.phoneChargeLimitPct === 'number') handleUpdatePhoneChargeLimit(patch.phoneChargeLimitPct);
+      const appPatch: Partial<AppSyncSettings> = {};
+      if (typeof patch.phoneChargeLimitPct === 'number') appPatch.phoneChargeLimitPct = patch.phoneChargeLimitPct;
       if (typeof patch.chargeAlertEnabled === 'boolean') {
-        setSmartChargeAlertEnabled(patch.chargeAlertEnabled);
-        persist('dayrhythm_smart_charge_alert_enabled', String(patch.chargeAlertEnabled));
+        appPatch.smartChargeAlertEnabled = patch.chargeAlertEnabled;
         if (!patch.chargeAlertEnabled) {
           stopSmartChargeCompleteAlert();
           setSmartChargeAudioActive(false);
         }
       }
-      if (typeof patch.chargeAlertKeepUntilUnplugged === 'boolean') {
-        setSmartChargeKeepUntilUnplugged(patch.chargeAlertKeepUntilUnplugged);
-        persist(SMART_CHARGE_KEEP_KEY, String(patch.chargeAlertKeepUntilUnplugged));
-      }
-      if (typeof patch.waterRemindersEnabled === 'boolean') setWaterRemindersEnabled(patch.waterRemindersEnabled);
+      if (typeof patch.chargeAlertKeepUntilUnplugged === 'boolean') appPatch.smartChargeKeepUntilUnplugged = patch.chargeAlertKeepUntilUnplugged;
+      if (typeof patch.waterRemindersEnabled === 'boolean') appPatch.waterRemindersEnabled = patch.waterRemindersEnabled;
+      if (typeof patch.sunMode === 'boolean') appPatch.sunMode = patch.sunMode;
+      if (Object.keys(appPatch).length > 0) updateAppSettings(appPatch);
+
       if (patch.quietMode) {
         handleSetQuietMode(patch.quietMode, patch.quietMode === 'normal' ? 0 : Math.max(0, patch.quietModeMinutes ?? 0));
       }
-      if (typeof patch.adhanSoundInSilent === 'boolean') setAdhanOverrideSilent(patch.adhanSoundInSilent);
-      if (typeof patch.sunMode === 'boolean') setSunMode(patch.sunMode);
+      if (typeof patch.adhanSoundInSilent === 'boolean') handleToggleAdhanOverrideSilent();
       if (patch.language === 'ar' || patch.language === 'en') setLanguage(patch.language);
       if (patch.capsuleOrientation || patch.capsuleSize) {
         handleUpdateCapsulePrefs({
@@ -7169,11 +7227,13 @@ export default function App() {
       capsulePrefs.orientation,
       capsulePrefs.size,
       handleSetQuietMode,
+      handleToggleAdhanOverrideSilent,
       handleUpdateCapsulePrefs,
       handleUpdateDeviceSettings,
-      handleUpdatePhoneChargeLimit,
       handleUpdateSoundRepeat,
       showToast,
+      stopSmartChargeCompleteAlert,
+      updateAppSettings,
     ]
   );
 
@@ -8072,7 +8132,7 @@ export default function App() {
   );
 
   const handleToggleDailyCommitmentStreak = () => {
-    localWriteLockUntilRef.current = Date.now() + 5000;
+    localWriteLockUntilRef.current = Date.now() + 300;
 
     setStreaks((s) => {
       const nextDone = !s.dailyCommitmentDoneToday;
@@ -8261,7 +8321,7 @@ export default function App() {
               )
             : hydrationHistory;
 
-        localWriteLockUntilRef.current = Date.now() + 5000;
+        localWriteLockUntilRef.current = Date.now() + 800;
         setLifeProfile(nextProfile);
         setDeviceSettings(nextDevice);
         setMedications(nextMeds);
@@ -9200,27 +9260,7 @@ ${lifeConstitution}
         onCheckAppUpdates={handleCheckAppUpdates}
         isCheckingUpdates={isCheckingUpdates}
         sunMode={sunMode}
-        onToggleSunMode={() => {
-              setSunMode((prev) => {
-                const next = !prev;
-                try {
-                  localStorage.setItem('dayrhythm_sun_mode_v1', next ? '1' : '0');
-                } catch {
-                  // ignore
-                }
-                void pushToTasksVaultRef.current({
-                  appSettings: {
-                    phoneChargeLimitPct,
-                    smartChargeAlertEnabled,
-                    smartChargeKeepUntilUnplugged,
-                    waterRemindersEnabled,
-                    sunMode: next,
-                    includePrayerAnchors,
-                  },
-                });
-                return next;
-              });
-            }}
+        onToggleSunMode={() => updateAppSettings({ sunMode: !appSettingsRef.current.sunMode })}
       />
 
       {toastMessage && (
@@ -9303,7 +9343,7 @@ ${lifeConstitution}
             includeBiweeklyPcCleanup={includeBiweeklyPcCleanup}
             onToggleBiweeklyPcCleanup={handleToggleBiweeklyPcCleanup}
             adhanOverrideSilent={adhanOverrideSilent}
-            onToggleAdhanOverrideSilent={() => setAdhanOverrideSilent((v) => !v)}
+            onToggleAdhanOverrideSilent={handleToggleAdhanOverrideSilent}
             onTestAdhanChime={handleTestAdhanChime}
             surfaceTheme={surfaceTheme}
             onToggleSurfaceTheme={handleToggleSurfaceTheme}
