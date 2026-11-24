@@ -90,6 +90,7 @@ namespace DayRhythm
                 }),
                 onRemoteTrigger: payload => RunOnUi(() => ShowSecondaryMonitorAlert(payload))
             );
+            LocalSyncServer.Instance?.SetUid(_settings.SyncUid);
 
             InitializeTray(appIcon);
             InitializeDesktopCapsule();
@@ -426,6 +427,16 @@ namespace DayRhythm
                                              CloseActiveScreenAlert();
                                          });
                                      }
+                                    else if (string.Equals(msgType, "sync-uid", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        string uid = doc.RootElement.TryGetProperty("uid", out JsonElement uidProp) ? (uidProp.GetString() ?? "") : "";
+                                        if (!string.Equals(_settings.SyncUid, uid, StringComparison.Ordinal))
+                                        {
+                                            _settings.SyncUid = uid;
+                                            AppConfig.SaveSettings(_settings);
+                                        }
+                                        LocalSyncServer.Instance?.SetUid(uid);
+                                    }
                                 }
                             }
                         }

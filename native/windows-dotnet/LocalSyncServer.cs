@@ -5,6 +5,7 @@ using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -32,7 +33,19 @@ namespace DayRhythm
 
         private UdpClient _udpListener;
         private TcpListener _tcpListener;
+        private volatile string _authToken = "";
         private bool _disposed;
+
+        public void SetUid(string uid)
+        {
+            if (string.IsNullOrWhiteSpace(uid))
+            {
+                _authToken = "";
+                return;
+            }
+            byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(uid.Trim() + ":dayrhythm_lan_v2"));
+            _authToken = Convert.ToHexString(hash).ToLowerInvariant();
+        }
 
         public static void Initialize(Action onRemoteDismiss, Action<NativeAlertPayload> onRemoteTrigger)
         {
@@ -227,6 +240,20 @@ namespace DayRhythm
                     return;
                 }
 
+                // Verify account-scoped LAN authToken when configured
+                string expectedToken = _authToken;
+                if (!string.IsNullOrEmpty(expectedToken))
+                {
+                    string incomingToken = root.TryGetProperty("authToken", out var authProp) ? (authProp.GetString() ?? "") : "";
+                    byte[] expectedBytes = Encoding.UTF8.GetBytes(expectedToken);
+                    byte[] incomingBytes = Encoding.UTF8.GetBytes(incomingToken);
+                    if (incomingBytes.Length != expectedBytes.Length || !CryptographicOperations.FixedTimeEquals(expectedBytes, incomingBytes))
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[LocalSyncServer] Rejected unauthenticated/mismatched LAN packet from {sourceIp}");
+                        return;
+                    }
+                }
+
                 if (string.Equals(action, "dismiss", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(action, "native_done", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(action, "native_dismiss", StringComparison.OrdinalIgnoreCase) ||
@@ -262,6 +289,7 @@ namespace DayRhythm
                 type = "dayrhythm_sync",
                 action = actionName ?? "dismiss",
                 source = "device_pc",
+                authToken = _authToken,
                 timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
             };
             string json = JsonSerializer.Serialize(packet);
@@ -287,6 +315,7 @@ namespace DayRhythm
                 type = "dayrhythm_sync",
                 action = "trigger",
                 source = "device_pc",
+                authToken = _authToken,
                 title = payload.title,
                 body = payload.description,
                 category = payload.category,

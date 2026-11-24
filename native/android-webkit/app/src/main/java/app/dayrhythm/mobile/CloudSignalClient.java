@@ -68,6 +68,12 @@ public final class CloudSignalClient {
         }
     }
 
+    public static String getSavedUid(Context context) {
+        if (context == null) return "";
+        JSONObject auth = readAuth(context.getApplicationContext());
+        return auth != null ? auth.optString("uid", "") : "";
+    }
+
     private static JSONObject readAuth(Context context) {
         try {
             String raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_AUTH, null);

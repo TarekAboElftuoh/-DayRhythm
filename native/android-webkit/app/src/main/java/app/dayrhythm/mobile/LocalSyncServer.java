@@ -21,6 +21,7 @@ import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.concurrent.ConcurrentHashMap;
@@ -177,13 +178,41 @@ public final class LocalSyncServer {
         }
     }
 
+    private static String deriveAuthToken(Context context) {
+        try {
+            String uid = CloudSignalClient.getSavedUid(context);
+            if (uid == null || uid.trim().isEmpty()) return "";
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest((uid.trim() + ":dayrhythm_lan_v2").getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     private static void processIncomingMessage(String json, String remoteIp) {
         if (json == null || json.trim().isEmpty()) return;
         try {
             JSONObject obj = new JSONObject(json);
             String source = obj.optString("source", obj.optString("clientId", ""));
-            if ("device_mobile".equalsIgnoreCase(source)) {
+            if ("device_mobile".equalsIgnoreCase(source) || "device_mobile_native".equalsIgnoreCase(source)) {
                 return; // Ignore echo
+            }
+
+            // Verify account-scoped LAN authToken when configured
+            String expectedToken = deriveAuthToken(appContext);
+            if (!expectedToken.isEmpty()) {
+                String incomingToken = obj.optString("authToken", "");
+                if (incomingToken.isEmpty() || !MessageDigest.isEqual(
+                        expectedToken.getBytes(StandardCharsets.UTF_8),
+                        incomingToken.getBytes(StandardCharsets.UTF_8))) {
+                    Log.w(TAG, "Rejected unauthenticated/mismatched LAN packet from " + remoteIp);
+                    return;
+                }
             }
 
             String action = obj.optString("action", "");
@@ -253,7 +282,9 @@ public final class LocalSyncServer {
                 JSONObject packet = new JSONObject();
                 packet.put("type", "dayrhythm_sync");
                 packet.put("action", action != null && !action.isEmpty() ? action : "dismiss");
-                packet.put("source", "device_mobile");
+                packet.put("source", "device_mobile_native");
+                String authToken = deriveAuthToken(ctx);
+                if (!authToken.isEmpty()) packet.put("authToken", authToken);
                 packet.put("timestamp", System.currentTimeMillis());
 
                 byte[] bytes = packet.toString().getBytes(StandardCharsets.UTF_8);
@@ -286,7 +317,9 @@ public final class LocalSyncServer {
                 JSONObject packet = new JSONObject();
                 packet.put("type", "dayrhythm_sync");
                 packet.put("action", "trigger");
-                packet.put("source", "device_mobile");
+                packet.put("source", "device_mobile_native");
+                String authToken = deriveAuthToken(ctx);
+                if (!authToken.isEmpty()) packet.put("authToken", authToken);
                 packet.put("title", title != null ? title : "تنبيه إيقاع اليوم");
                 packet.put("body", body != null ? body : "");
                 packet.put("category", kind != null ? kind : "general");

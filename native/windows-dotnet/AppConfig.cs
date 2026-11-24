@@ -16,6 +16,7 @@ namespace DayRhythm
         public string CapsuleSize { get; set; } = "md";
         public int? CapsuleX { get; set; }
         public int? CapsuleY { get; set; }
+        public string SyncUid { get; set; } = "";
     }
 
     internal static class AppConfig
