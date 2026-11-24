@@ -131,7 +131,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         if (key == null || key.isEmpty()) return false;
         long now = System.currentTimeMillis();
         Long prev = RECENT_FIRED_KEYS.get(key);
-        if (prev != null && (now - prev) < 12_000L) {
+        if (prev != null && (now - prev) < 4_000L) {
             return true;
         }
         RECENT_FIRED_KEYS.put(key, now);
@@ -535,7 +535,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
 
         if (ACTION_FIRE_ALARM.equals(action)) {
-            String dedupeKey = (title != null ? title : "") + ":" + (kind != null ? kind : "");
+            String dedupeKey = (alarmId != null && !alarmId.isEmpty() ? alarmId : (title != null ? title : "")) + ":" + (kind != null ? kind : "");
             if (isRecentlyFired(dedupeKey)) return;
 
             try {

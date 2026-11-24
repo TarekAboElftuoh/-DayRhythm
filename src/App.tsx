@@ -3298,9 +3298,6 @@ export default function App() {
               blockId?: string;
             }
           | undefined;
-        if (extra?.blockId && acknowledgedBlockIdsRef.current.has(extra.blockId)) {
-          return;
-        }
         const emoji = extra?.privacyEmoji || '🔔';
         const title = extra?.title || 'تنبيه متزامن (الموبايل ↔ الكمبيوتر)';
         const source = extra?.sourceLabel || 'مزامنة سحابية فورية';
@@ -3312,6 +3309,7 @@ export default function App() {
           description: extra?.body,
           blockId: extra?.blockId,
           isRemoteSignal: true,
+          bypassSanctuary: true,
         });
         return;
       }
@@ -3323,6 +3321,7 @@ export default function App() {
       }
 
       if (payload.scope === 'calendar') {
+        acknowledgedBlockIdsRef.current.clear();
         void fetchCalendarEvents();
       } else if (payload.scope === 'tasks') {
         void fetchGoogleTasks();
@@ -5970,6 +5969,18 @@ export default function App() {
         if (serverHandled) {
           googleSynced = true;
           setReflowedBlocksOverride(null);
+          for (const act of actions) {
+            if (act.eventId) {
+              const bId = `gcal_${act.calendarId || 'primary'}_${act.eventId}`;
+              acknowledgedBlockIdsRef.current.delete(bId);
+              setCompletedOverrides((prev) => {
+                if (!prev[bId]) return prev;
+                const next = { ...prev };
+                delete next[bId];
+                return next;
+              });
+            }
+          }
           await fetchCalendarEvents(token);
         }
 
