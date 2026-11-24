@@ -27,10 +27,17 @@ export function subscribeSocketConnectStatus(listener: ConnectStatusListener): (
 }
 
 export function resolveSocketServerUrl(): string {
-  // 1. Explicitly saved cloud or LAN IP address (e.g. http://192.168.1.15:3000)
+  // 1. Explicitly saved cloud or LAN IP address (e.g. http://192.168.100.2:3000)
   const saved = getSavedCloudApiUrl();
   if (saved && saved.startsWith('http')) {
-    return saved;
+    // Filter out unusable virtual adapters (WSL / Hyper-V default switches)
+    if (
+      !saved.includes('172.30.') &&
+      !saved.includes('172.31.') &&
+      !saved.includes('169.254.')
+    ) {
+      return saved;
+    }
   }
 
   // 2. Direct browser navigation on local or remote host
@@ -42,6 +49,11 @@ export function resolveSocketServerUrl(): string {
       hostname === 'appassets.androidplatform.net';
     if (!isVirtual && (protocol === 'http:' || protocol === 'https:')) {
       return origin;
+    }
+
+    // Android WebKit fallback to real LAN IP
+    if (hostname === 'appassets.androidplatform.net') {
+      return 'http://192.168.100.2:3000';
     }
   }
 
@@ -160,13 +172,14 @@ export function initSocketClient(
 }
 
 export function emitSocketSettings(uid: string, clientId: string, settings: unknown): void {
-  if (!uid || !settings) return;
+  const effectiveUid = uid || currentJoinedUid || 'local_user';
+  if (!settings) return;
   if (!activeSocket) {
-    initSocketClient(uid, clientId);
+    initSocketClient(effectiveUid, clientId);
   }
   if (activeSocket?.connected) {
     activeSocket.emit('settings_update', {
-      uid,
+      uid: effectiveUid,
       clientId,
       settings,
       timestampMs: Date.now(),
@@ -174,7 +187,7 @@ export function emitSocketSettings(uid: string, clientId: string, settings: unkn
   } else if (activeSocket) {
     activeSocket.once('connect', () => {
       activeSocket?.emit('settings_update', {
-        uid,
+        uid: effectiveUid,
         clientId,
         settings,
         timestampMs: Date.now(),
@@ -184,36 +197,74 @@ export function emitSocketSettings(uid: string, clientId: string, settings: unkn
 }
 
 export function emitSocketAlarmSignal(uid: string, clientId: string, signal: unknown): void {
-  if (!uid || !signal) return;
+  const effectiveUid = uid || currentJoinedUid || 'local_user';
+  if (!signal) return;
+  if (!activeSocket) {
+    initSocketClient(effectiveUid, clientId);
+  }
   if (activeSocket?.connected) {
     activeSocket.emit('alarm_signal', {
-      uid,
+      uid: effectiveUid,
       clientId,
       signal,
       timestampMs: Date.now(),
+    });
+  } else if (activeSocket) {
+    activeSocket.once('connect', () => {
+      activeSocket?.emit('alarm_signal', {
+        uid: effectiveUid,
+        clientId,
+        signal,
+        timestampMs: Date.now(),
+      });
     });
   }
 }
 
 export function emitSocketBattery(uid: string, clientId: string, battery: unknown): void {
-  if (!uid || !battery) return;
+  const effectiveUid = uid || currentJoinedUid || 'local_user';
+  if (!battery) return;
+  if (!activeSocket) {
+    initSocketClient(effectiveUid, clientId);
+  }
   if (activeSocket?.connected) {
     activeSocket.emit('battery', {
-      uid,
+      uid: effectiveUid,
       clientId,
       battery,
+    });
+  } else if (activeSocket) {
+    activeSocket.once('connect', () => {
+      activeSocket?.emit('battery', {
+        uid: effectiveUid,
+        clientId,
+        battery,
+      });
     });
   }
 }
 
 export function emitSocketSyncEvent(uid: string, clientId: string, event: unknown): void {
-  if (!uid || !event) return;
+  const effectiveUid = uid || currentJoinedUid || 'local_user';
+  if (!event) return;
+  if (!activeSocket) {
+    initSocketClient(effectiveUid, clientId);
+  }
   if (activeSocket?.connected) {
     activeSocket.emit('sync_event', {
-      uid,
+      uid: effectiveUid,
       clientId,
       event,
       timestampMs: Date.now(),
+    });
+  } else if (activeSocket) {
+    activeSocket.once('connect', () => {
+      activeSocket?.emit('sync_event', {
+        uid: effectiveUid,
+        clientId,
+        event,
+        timestampMs: Date.now(),
+      });
     });
   }
 }
@@ -230,7 +281,7 @@ export function disconnectSocketClient(): void {
 
 export function reconnectSocket(): void {
   disconnectSocketClient();
-  if (currentJoinedUid) {
-    initSocketClient(currentJoinedUid, currentClientId, registeredCallbacks);
-  }
+  const targetUid = currentJoinedUid || 'local_user';
+  const targetClientId = currentClientId || 'client_' + Math.random().toString(36).substring(2, 9);
+  initSocketClient(targetUid, targetClientId, registeredCallbacks);
 }

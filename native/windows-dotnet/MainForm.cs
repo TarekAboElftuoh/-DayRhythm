@@ -310,6 +310,7 @@ namespace DayRhythm
         private async Task OnFormLoadedAsync()
         {
             ApplyDarkObsidianTitleBar(Handle);
+            EnsureLocalServerRunning();
 
             if (_startHidden)
             {
@@ -870,7 +871,65 @@ namespace DayRhythm
                 _trayIcon.Dispose();
                 _trayIcon = null;
             }
+            try
+            {
+                if (_localServerProcess != null && !_localServerProcess.HasExited)
+                {
+                    _localServerProcess.Kill(true);
+                    _localServerProcess.Dispose();
+                    _localServerProcess = null;
+                }
+            }
+            catch { }
             _bgServices.Dispose();
+        }
+
+        private static Process _localServerProcess;
+
+        private static void EnsureLocalServerRunning()
+        {
+            try
+            {
+                using (var client = new System.Net.Sockets.TcpClient())
+                {
+                    var result = client.BeginConnect("127.0.0.1", 3000, null, null);
+                    bool success = result.AsyncWaitHandle.WaitOne(400);
+                    if (success && client.Connected)
+                    {
+                        client.EndConnect(result);
+                        return;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                string[] candidates = new[]
+                {
+                    Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..")),
+                    @"C:\Users\Administrator\.gemini\antigravity\scratch\DayRhythm"
+                };
+
+                foreach (var dir in candidates)
+                {
+                    if (File.Exists(Path.Combine(dir, "server.ts")))
+                    {
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = "cmd.exe",
+                            Arguments = "/c npx tsx server.ts",
+                            WorkingDirectory = dir,
+                            CreateNoWindow = true,
+                            WindowStyle = ProcessWindowStyle.Hidden,
+                            UseShellExecute = false
+                        };
+                        _localServerProcess = Process.Start(psi);
+                        break;
+                    }
+                }
+            }
+            catch { }
         }
 
         private void RunOnUi(Action action)

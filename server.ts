@@ -29,13 +29,38 @@ export function getLocalLanIps(): string[] {
   const interfaces = os.networkInterfaces();
   const ips: string[] = [];
   for (const name of Object.keys(interfaces)) {
+    const lower = name.toLowerCase();
+    if (
+      lower.includes('vethernet') ||
+      lower.includes('vgate') ||
+      lower.includes('wsl') ||
+      lower.includes('tailscale') ||
+      lower.includes('docker')
+    ) {
+      continue;
+    }
     for (const net of interfaces[name] ?? []) {
       if (net.family === 'IPv4' && !net.internal) {
-        ips.push(net.address);
+        if (!net.address.startsWith('169.254.')) {
+          ips.push(net.address);
+        }
       }
     }
   }
-  return ips;
+
+  ips.sort((a, b) => {
+    const aIs192 = a.startsWith('192.168.');
+    const bIs192 = b.startsWith('192.168.');
+    if (aIs192 && !bIs192) return -1;
+    if (!aIs192 && bIs192) return 1;
+    const aIs10 = a.startsWith('10.');
+    const bIs10 = b.startsWith('10.');
+    if (aIs10 && !bIs10) return -1;
+    if (!aIs10 && bIs10) return 1;
+    return 0;
+  });
+
+  return ips.length > 0 ? ips : ['127.0.0.1'];
 }
 
 interface SyncClientEntry {

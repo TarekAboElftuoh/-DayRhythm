@@ -1619,12 +1619,11 @@ export default function App() {
         timestampMs,
       };
 
-      if (firebaseUser?.uid) {
-        if (scope === 'alarm_dismiss' || action?.includes('dismiss')) {
-          emitSocketAlarmSignal(firebaseUser.uid, clientIdRef.current, packet);
-        } else {
-          emitSocketSyncEvent(firebaseUser.uid, clientIdRef.current, packet);
-        }
+      const activeSocketUid = firebaseUser?.uid || 'local_user';
+      if (scope === 'alarm_dismiss' || action?.includes('dismiss')) {
+        emitSocketAlarmSignal(activeSocketUid, clientIdRef.current, packet);
+      } else {
+        emitSocketSyncEvent(activeSocketUid, clientIdRef.current, packet);
       }
 
       if (typeof BroadcastChannel !== 'undefined') {
@@ -3845,9 +3844,8 @@ export default function App() {
       };
 
       const uid = firebaseUser?.uid;
-      if (uid) {
-        emitSocketSettings(uid, clientIdRef.current, payload);
-      }
+      const activeSocketUid = uid || 'local_user';
+      emitSocketSettings(activeSocketUid, clientIdRef.current, payload);
 
       if (typeof BroadcastChannel !== 'undefined') {
         try {
@@ -4077,8 +4075,6 @@ export default function App() {
 
   // ── Auto-Detect PC LAN IP on local server and publish to Firestore for Mobile Auto-Discovery ──
   useEffect(() => {
-    const uid = firebaseUser?.uid;
-    if (!uid || firebaseUser?.isAnonymous) return;
     if (detectIsMobileDeviceClient()) return;
 
     fetch('http://localhost:3000/api/lan-server-info', { signal: AbortSignal.timeout(3000) })
@@ -4087,9 +4083,12 @@ export default function App() {
         if (info?.primaryUrl && info.primaryUrl.startsWith('http')) {
           console.info('[LAN Hub] PC LAN Hub auto-detected at:', info.primaryUrl);
           syncSavedCloudApiUrlFromRemote(info.primaryUrl);
-          void saveCloudUserSettings(uid, {
-            lanSocketUrl: info.primaryUrl,
-          });
+          const uid = firebaseUser?.uid;
+          if (uid && !firebaseUser.isAnonymous) {
+            void saveCloudUserSettings(uid, {
+              lanSocketUrl: info.primaryUrl,
+            });
+          }
         }
       })
       .catch(() => {});
@@ -4097,10 +4096,9 @@ export default function App() {
 
   // ── Ultra-Low-Latency Real-Time Sync Hub via Socket.io (<50ms) ──
   useEffect(() => {
-    const uid = firebaseUser?.uid;
-    if (!uid || firebaseUser?.isAnonymous) return;
+    const effectiveUid = firebaseUser?.uid || 'local_user';
 
-    initSocketClient(uid, clientIdRef.current, {
+    initSocketClient(effectiveUid, clientIdRef.current, {
       onSettingsUpdate: (remoteSettings) => {
         if (!remoteSettings) return;
         console.info('[Socket.io] Instant remote settings received — applying now');
@@ -7136,8 +7134,8 @@ export default function App() {
         lastSentKey = dedupeKey;
       }
 
-      if (changed && firebaseUser?.uid) {
-        emitSocketBattery(firebaseUser.uid, clientIdRef.current, snapshot);
+      if (changed) {
+        emitSocketBattery(firebaseUser?.uid || 'local_user', clientIdRef.current, snapshot);
       }
 
       // Persist in Firestore immediately on first sync, on any change, or every 45s while charging
