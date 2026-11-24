@@ -1,0 +1,28 @@
+{
+  "rules": {
+    "clusters": {
+      "$clusterId": {
+        ".read": "auth != null && ($clusterId === 'cluster_' + auth.uid || auth.uid === 'BLzoZhXVNXQv8nQEvaQItWDqDmJ2')",
+        ".write": "auth != null && ($clusterId === 'cluster_' + auth.uid || auth.uid === 'BLzoZhXVNXQv8nQEvaQItWDqDmJ2')",
+        "state_seq": {
+          ".validate": "newData.isNumber()"
+        },
+        "last_action": {
+          ".validate": "newData.isString()"
+        },
+        "active_alert": {
+          ".validate": "newData.hasChildren(['alert_id', 'action'])"
+        }
+      }
+    },
+    "presence": {
+      "$clusterId": {
+        "$deviceId": {
+          ".read": "auth != null",
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren(['device_type', 'last_seen_epoch_ms'])"
+        }
+      }
+    }
+  }
+}
