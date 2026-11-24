@@ -1382,6 +1382,7 @@ export default function App() {
       : 'unsupported'
   );
   const firedReminderKeysRef = useRef<Set<string>>(new Set());
+  const acknowledgedBlockIdsRef = useRef<Set<string>>(new Set());
 
   const [memories, setMemories] = useState<MemoryItem[]>(loadSavedMemories);
   const seededDefaultMemoriesRef = useRef(false);
@@ -1703,11 +1704,24 @@ export default function App() {
     const hadAlert = Boolean(activeAudioAlert || persistentAlert || alarmRinging);
     const title = activeAudioAlert?.title || persistentAlert?.title || 'التنبيه';
     const alertId = activeAudioAlert?.id || persistentAlert?.id || 'all';
+    const dismissedBlockId = persistentAlert?.blockId;
+
+    if (dismissedBlockId) {
+      acknowledgedBlockIdsRef.current.add(dismissedBlockId);
+      setCompletedOverrides((prev) => ({
+        ...prev,
+        [dismissedBlockId]: true,
+      }));
+    }
+
     setActiveAudioAlert(null);
     setPersistentAlert(null);
     setAlarmRinging(false);
     triggerHapticWaveform('shake_undo');
-    emitCrossDeviceSync('alarm_dismiss', 'dismiss');
+    emitCrossDeviceSync('alarm_dismiss', 'dismiss', undefined, {
+      blockId: dismissedBlockId,
+      alertId,
+    });
 
     // Requirement 3: Real-time cloud alarm dismissal across all connected devices
     if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
@@ -1771,6 +1785,7 @@ export default function App() {
         durationMs?: number;
         description?: string;
         isRemoteSignal?: boolean;
+        blockId?: string;
       }
     ) => {
       const meta = TASK_SOUND_META[category];
@@ -1892,6 +1907,7 @@ export default function App() {
           medicationDoseTime24: options?.medicationDoseTime24,
           taskId: options?.taskId,
           taskListId: options?.taskListId,
+          blockId: options?.blockId,
         });
       }
 
@@ -1948,6 +1964,7 @@ export default function App() {
           sourceLabel: visibleSource,
           snoozeMinutes: defaultSnooze,
           alertId,
+          blockId: options?.blockId,
         });
       }
 
@@ -3256,6 +3273,14 @@ export default function App() {
         setActiveAudioAlert(null);
         setPersistentAlert(null);
         setAlarmRinging(false);
+        const extraDismiss = payload.extra as { blockId?: string } | undefined;
+        if (extraDismiss?.blockId) {
+          acknowledgedBlockIdsRef.current.add(extraDismiss.blockId);
+          setCompletedOverrides((prev) => ({
+            ...prev,
+            [extraDismiss.blockId!]: true,
+          }));
+        }
         showToast('🔕 تم إيقاف التنبيه تلقائياً من جهازك الآخر ✓');
         return;
       }
@@ -3270,8 +3295,12 @@ export default function App() {
               privacyEmoji?: string;
               sourceLabel?: string;
               snoozeMinutes?: number;
+              blockId?: string;
             }
           | undefined;
+        if (extra?.blockId && acknowledgedBlockIdsRef.current.has(extra.blockId)) {
+          return;
+        }
         const emoji = extra?.privacyEmoji || '🔔';
         const title = extra?.title || 'تنبيه متزامن (الموبايل ↔ الكمبيوتر)';
         const source = extra?.sourceLabel || 'مزامنة سحابية فورية';
@@ -3281,6 +3310,7 @@ export default function App() {
           displayTitle: title,
           sourceLabel: source,
           description: extra?.body,
+          blockId: extra?.blockId,
           isRemoteSignal: true,
         });
         return;
@@ -4102,6 +4132,15 @@ export default function App() {
           setActiveAudioAlert(null);
           setPersistentAlert(null);
           setAlarmRinging(false);
+          const extraDismiss = (signal.extra as { blockId?: string; extra?: { blockId?: string } } | undefined);
+          const blockId = extraDismiss?.blockId || extraDismiss?.extra?.blockId;
+          if (blockId) {
+            acknowledgedBlockIdsRef.current.add(blockId);
+            setCompletedOverrides((prev) => ({
+              ...prev,
+              [blockId]: true,
+            }));
+          }
           showToast('🔕 تم إيقاف التنبيه فورياً من جهازك الآخر ✓');
           return;
         }
@@ -5539,7 +5578,7 @@ export default function App() {
         isAnchor: false,
         travelGroup: 'B_WORK' as const,
         canShiftEvening: true,
-        completed: false,
+        completed: completedOverrides[`creative_${p.activity.id}`] ?? false,
         deleted: false,
         dateIso: todayCairoIso,
         source: 'creative' as const,
@@ -6941,7 +6980,7 @@ export default function App() {
 
     // 3. Live Google Calendar event reminders (5-min high-visibility alert on Secondary Screen / Side Dock / Mobile)
     liveBlocks.forEach((block) => {
-      if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer') return;
+      if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer' || acknowledgedBlockIdsRef.current.has(block.id)) return;
       const diff = nowTickMin - block.startMin;
       if (diff >= 0 && diff <= 2) {
         const key = `${todayIso}:event:${block.id}:${block.startMin}`;
@@ -6956,6 +6995,7 @@ export default function App() {
           displayTitle: cleanTitle,
           sourceLabel: 'تقويم Google',
           description: block.description,
+          blockId: block.id,
         });
         sendSystemNotification(emojiOnly, `${cleanTitle} · ${time12}`, key);
       }
@@ -8826,12 +8866,13 @@ export default function App() {
 
     // 1. Remaining / active timed Google Calendar & Prayer blocks today
     for (const block of liveBlocks) {
-      if (block.completed || block.deleted || block.isAllDay) continue;
+      if (block.completed || block.deleted || block.isAllDay || acknowledgedBlockIdsRef.current.has(block.id)) continue;
       const startSec = block.startMin * 60;
-      const durationSec = Math.max(60, block.durationMin * 60);
+      const isZeroDuration = (block.durationMin ?? 0) === 0;
+      const durationSec = isZeroDuration ? 0 : Math.max(60, block.durationMin * 60);
       const endSec = startSec + durationSec;
-      if (endSec <= nowSecOfDay) continue;
-      const isNow = nowSecOfDay >= startSec && nowSecOfDay < endSec;
+      if (isZeroDuration ? nowSecOfDay > startSec : endSec <= nowSecOfDay) continue;
+      const isNow = isZeroDuration ? nowSecOfDay === startSec : nowSecOfDay >= startSec && nowSecOfDay < endSec;
       const bDisplay = resolveBlockDisplayInfo(block);
       const prayerEffectiveMin =
         block.source === 'prayer' ? block.startMin + lifeProfile.adhanLeadMinutes : block.startMin;
@@ -8842,7 +8883,7 @@ export default function App() {
         clockLabel: formatMinutes12h(prayerEffectiveMin, 'ar'),
         startSec,
         endSec,
-        targetSec: isNow ? endSec : startSec,
+        targetSec: isZeroDuration ? startSec : (isNow ? endSec : startSec),
         isNow,
         durationSec,
       });
@@ -8952,11 +8993,13 @@ export default function App() {
       const m = Math.floor((remSec % 3600) / 60);
       const s = remSec % 60;
       const countdownText =
-        c.sourceKind === 'water' && c.isNow && remSec === 0
+        c.isNow && (remSec === 0 || c.durationSec === 0)
           ? 'الآن'
-          : h > 0
-            ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-            : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+          : c.isNow && remSec <= 60
+            ? 'الآن'
+            : h > 0
+              ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+              : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
       const statusLabel =
         c.sourceKind === 'water'
           ? c.isNow
@@ -9055,7 +9098,9 @@ export default function App() {
         isUrgent: winnerTrack.isUrgent,
         progressRatio,
         targetEpochMs:
-          remainingSec > 0 ? capsuleNowMs - (capsuleNowMs % 1000) + remainingSec * 1000 : 0,
+          winner.isNow && winner.durationSec === 0
+            ? 0
+            : remainingSec > 0 ? capsuleNowMs - (capsuleNowMs % 1000) + remainingSec * 1000 : 0,
         durationSeconds: winner.durationSec,
         calendarTrack,
         taskTrack,

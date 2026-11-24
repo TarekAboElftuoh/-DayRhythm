@@ -17,6 +17,7 @@ export interface PersistentAlertItem {
   medicationDoseTime24?: string;
   taskId?: string;
   taskListId?: string;
+  blockId?: string;
 }
 
 interface PersistentAlertOverlayProps {

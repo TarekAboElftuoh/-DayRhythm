@@ -103,7 +103,7 @@ public final class CloudSignalClient {
                 + "/documents/users/" + auth.getString("uid");
     }
 
-    /** Phone stopped/snoozed the alert → tell the PC. */
+    /** Phone stopped/snoozed the alert → tell the PC instantly (<100ms). */
     public static void sendAlarmDismiss(Context context, String action) {
         final Context app = context.getApplicationContext();
         stopWatching();
@@ -113,14 +113,15 @@ public final class CloudSignalClient {
                 if (auth == null) return;
                 String token = getIdToken(app, auth);
                 long now = System.currentTimeMillis();
+                String opId = "nat_dism_" + Long.toString(now, 36);
 
                 JSONObject sigFields = new JSONObject()
-                        .put("opId", new JSONObject().put("stringValue", "nat_" + Long.toString(now, 36)))
+                        .put("opId", new JSONObject().put("stringValue", opId))
                         .put("clientId", new JSONObject().put("stringValue", CLIENT_ID))
                         .put("scope", new JSONObject().put("stringValue", "alarm_dismiss"))
                         .put("action", new JSONObject().put("stringValue", action == null || action.isEmpty() ? "native_dismiss" : action))
                         .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)));
-                JSONObject write = new JSONObject()
+                JSONObject write1 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth))
                                 .put("fields", new JSONObject().put("syncSignal",
@@ -129,7 +130,77 @@ public final class CloudSignalClient {
                         .put("updateTransforms", new JSONArray().put(new JSONObject()
                                 .put("fieldPath", "updatedAt")
                                 .put("setToServerValue", "REQUEST_TIME")));
-                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write));
+
+                JSONObject liveFields = new JSONObject()
+                        .put("opId", new JSONObject().put("stringValue", opId))
+                        .put("clientId", new JSONObject().put("stringValue", CLIENT_ID))
+                        .put("type", new JSONObject().put("stringValue", "alarm_dismiss"))
+                        .put("action", new JSONObject().put("stringValue", action == null || action.isEmpty() ? "native_dismiss" : action))
+                        .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)));
+                JSONObject write2 = new JSONObject()
+                        .put("update", new JSONObject()
+                                .put("name", docName(auth) + "/sync/live")
+                                .put("fields", liveFields));
+
+                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
+
+                Request req = new Request.Builder()
+                        .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
+                                + "/databases/" + auth.getString("databaseId") + "/documents:commit")
+                        .header("Authorization", "Bearer " + token)
+                        .post(RequestBody.create(body.toString(), JSON))
+                        .build();
+                try (Response ignored = HTTP.newCall(req).execute()) {
+                    // best effort
+                }
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    /** Phone fired an exact native alarm → tell the PC to show its card in the exact same millisecond (<100ms). */
+    public static void sendAlarmTrigger(Context context, String title, String bodyText, String kind, int snoozeMinutes) {
+        final Context app = context.getApplicationContext();
+        EXEC.execute(() -> {
+            try {
+                JSONObject auth = readAuth(app);
+                if (auth == null) return;
+                String token = getIdToken(app, auth);
+                long now = System.currentTimeMillis();
+                String opId = "nat_trig_" + Long.toString(now, 36);
+
+                JSONObject sigFields = new JSONObject()
+                        .put("opId", new JSONObject().put("stringValue", opId))
+                        .put("clientId", new JSONObject().put("stringValue", CLIENT_ID))
+                        .put("scope", new JSONObject().put("stringValue", "alarm_trigger"))
+                        .put("action", new JSONObject().put("stringValue", "trigger"))
+                        .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)));
+                JSONObject write1 = new JSONObject()
+                        .put("update", new JSONObject()
+                                .put("name", docName(auth))
+                                .put("fields", new JSONObject().put("syncSignal",
+                                        new JSONObject().put("mapValue", new JSONObject().put("fields", sigFields)))))
+                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("syncSignal")));
+
+                JSONObject extraFields = new JSONObject()
+                        .put("title", new JSONObject().put("stringValue", title != null ? title : "تنبيه إيقاع اليوم"))
+                        .put("body", new JSONObject().put("stringValue", bodyText != null ? bodyText : ""))
+                        .put("kind", new JSONObject().put("stringValue", kind != null ? kind : "general"))
+                        .put("snoozeMinutes", new JSONObject().put("integerValue", String.valueOf(snoozeMinutes)));
+
+                JSONObject liveFields = new JSONObject()
+                        .put("opId", new JSONObject().put("stringValue", opId))
+                        .put("clientId", new JSONObject().put("stringValue", CLIENT_ID))
+                        .put("type", new JSONObject().put("stringValue", "alarm_trigger"))
+                        .put("action", new JSONObject().put("stringValue", "trigger"))
+                        .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)))
+                        .put("extra", new JSONObject().put("mapValue", new JSONObject().put("fields", extraFields)));
+                JSONObject write2 = new JSONObject()
+                        .put("update", new JSONObject()
+                                .put("name", docName(auth) + "/sync/live")
+                                .put("fields", liveFields));
+
+                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
 
                 Request req = new Request.Builder()
                         .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")

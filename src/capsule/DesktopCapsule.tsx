@@ -71,8 +71,10 @@ function post(msg: Record<string, unknown>) {
 
 /** Live clock from the target time; falls back to the app's text when there's no target. */
 function liveClock(targetEpochMs: number, fallback: string, baseUrgent: boolean, nowMs: number) {
+  if (fallback === 'الآن') return { text: 'الآن', urgent: true };
   if (!targetEpochMs || targetEpochMs <= 0) return { text: fallback || '--:--', urgent: baseUrgent };
   const remaining = Math.max(0, Math.round((targetEpochMs - nowMs) / 1000));
+  if (remaining === 0) return { text: 'الآن', urgent: true };
   const urgent = baseUrgent || (remaining > 0 && remaining <= 60);
   const h = Math.floor(remaining / 3600);
   const m = Math.floor((remaining % 3600) / 60);
@@ -151,9 +153,13 @@ export const DesktopCapsule: React.FC = () => {
     lg: { pad: vertical ? 'px-4 py-3' : 'px-4 py-2.5', gap: 'gap-3', emoji: 'text-lg', clock: 'text-[15px]', chip: 'text-xs' },
   }[size];
 
-  const primary = liveClock(state.targetEpochMs, state.countdownText, state.isUrgent, nowMs);
+  const primary = state.isNow
+    ? { text: 'الآن', urgent: true }
+    : liveClock(state.targetEpochMs, state.countdownText, state.isUrgent, nowMs);
   const secondary = state.hasSecondaryTimer
-    ? liveClock(state.secondaryTargetEpochMs, state.secondaryCountdownText, state.secondaryIsUrgent, nowMs)
+    ? (state.secondaryIsNow
+        ? { text: 'الآن', urgent: true }
+        : liveClock(state.secondaryTargetEpochMs, state.secondaryCountdownText, state.secondaryIsUrgent, nowMs))
     : null;
   const showBattery = state.phoneCharging && state.phoneBatteryPct >= 0;
   const batteryFull = showBattery && state.phoneBatteryPct >= state.phoneChargeLimitPct;

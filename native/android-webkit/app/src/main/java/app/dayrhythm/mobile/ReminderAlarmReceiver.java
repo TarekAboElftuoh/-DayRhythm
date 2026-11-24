@@ -560,6 +560,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 // Launch desktop-style AlarmActivity card over lock screen
                 launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
 
+                // Tell the PC to show its card at the exact same moment (<100ms)
+                CloudSignalClient.sendAlarmTrigger(context, title, body, kind, snoozeMin);
 
                 // If the PC (or another device) stops this alert, stop it here too.
                 CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
@@ -583,18 +585,6 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             int snoozeMin
     ) {
         if (context == null) return;
-        // Phone in use → the heads-up banner from showInteractiveNotification is enough; taking over
-        // the whole screen mid-use is exactly what the full-screen card must not do. Only when the
-        // phone is locked or the screen is off does the card cover the screen.
-        try {
-            android.app.KeyguardManager km =
-                    (android.app.KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
-            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-            boolean locked = km != null && km.isKeyguardLocked();
-            boolean screenOff = pm != null && !pm.isInteractive();
-            if (!locked && !screenOff) return;
-        } catch (Exception ignored) {
-        }
         try {
             Intent fsIntent = new Intent(context, AlarmActivity.class);
             fsIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
