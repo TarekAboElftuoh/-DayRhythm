@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Bell, BellOff, Check, Clock, Droplets, Pill, X } from 'lucide-react';
 import { TaskSoundCategory } from '../types/dayrhythm';
 
@@ -41,26 +41,58 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
 }) => {
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const snoozeMin = defaultSnoozeMinutes === 10 || defaultSnoozeMinutes === 15 ? defaultSnoozeMinutes : 5;
+  const lastVibratedAlertIdRef = useRef<string | null>(null);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
 
   useEffect(() => {
-    if (!alert) return;
+    if (!alert) {
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate(0);
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
     setNowMs(Date.now());
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate([0, 180, 90, 260, 90, 180]);
-      } catch {
-        // ignore vibrate errors
+
+    // Only vibrate ONCE per new alert ID, and ONLY if NOT running in Android native APK
+    // (Android native APK already uses hardware Vibrator on STREAM_ALARM channel)
+    const isAndroidNative =
+      typeof window !== 'undefined' &&
+      Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative);
+    if (!isAndroidNative && lastVibratedAlertIdRef.current !== alert.id) {
+      lastVibratedAlertIdRef.current = alert.id;
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate([0, 180, 90, 260, 90, 180]);
+        } catch {
+          // ignore vibrate errors
+        }
       }
     }
+
     const id = window.setInterval(() => {
       const t = Date.now();
       setNowMs(t);
       if (!alert.isContinuous && t - alert.createdAtMs >= alert.durationMs) {
-        onDismiss();
+        onDismissRef.current();
       }
     }, 1000);
-    return () => window.clearInterval(id);
-  }, [alert, onDismiss]);
+
+    return () => {
+      window.clearInterval(id);
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate(0);
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, [alert?.id, alert?.createdAtMs, alert?.durationMs, alert?.isContinuous]);
 
   if (!alert) return null;
 

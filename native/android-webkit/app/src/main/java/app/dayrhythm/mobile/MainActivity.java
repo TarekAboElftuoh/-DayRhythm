@@ -198,6 +198,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         activeInstance = this;
         super.onCreate(savedInstanceState);
+        ReminderAlarmReceiver.stopRinging();
         setVolumeControlStream(android.media.AudioManager.STREAM_ALARM);
 
         // 1. Clean stale OTA folders & configure official AndroidX WebViewAssetLoader

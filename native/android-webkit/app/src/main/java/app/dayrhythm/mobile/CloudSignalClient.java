@@ -34,7 +34,7 @@ import okhttp3.Response;
 public final class CloudSignalClient {
     private static final String PREFS = "dayrhythm_cloud_auth_prefs";
     private static final String KEY_AUTH = "auth_json";
-    public static final String CLIENT_ID = "android-native";
+    public static final String CLIENT_ID = "device_mobile";
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
 
     private static final OkHttpClient HTTP = new OkHttpClient.Builder()
@@ -152,13 +152,16 @@ public final class CloudSignalClient {
 
                 JSONObject liveFields = new JSONObject()
                         .put("opId", new JSONObject().put("stringValue", opId))
+                        .put("sessionId", new JSONObject().put("stringValue", opId))
                         .put("clientId", new JSONObject().put("stringValue", CLIENT_ID))
                         .put("status", new JSONObject().put("stringValue", "dismissed"))
                         .put("dismissedBy", new JSONObject().put("stringValue", CLIENT_ID))
+                        .put("dismissedByDeviceId", new JSONObject().put("stringValue", CLIENT_ID))
                         .put("dismissedAtMs", new JSONObject().put("integerValue", String.valueOf(now)))
                         .put("type", new JSONObject().put("stringValue", "alarm_dismiss"))
                         .put("action", new JSONObject().put("stringValue", action == null || action.isEmpty() ? "native_dismiss" : action))
-                        .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)));
+                        .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)))
+                        .put("updatedAtMs", new JSONObject().put("integerValue", String.valueOf(now)));
                 JSONObject write2 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth) + "/sync/live")
@@ -230,14 +233,18 @@ public final class CloudSignalClient {
                         .put("sessionId", new JSONObject().put("stringValue", opId))
                         .put("clientId", new JSONObject().put("stringValue", CLIENT_ID))
                         .put("originClientId", new JSONObject().put("stringValue", CLIENT_ID))
+                        .put("originDeviceId", new JSONObject().put("stringValue", CLIENT_ID))
                         .put("status", new JSONObject().put("stringValue", "ringing"))
                         .put("title", new JSONObject().put("stringValue", title != null ? title : "تنبيه إيقاع اليوم"))
                         .put("body", new JSONObject().put("stringValue", bodyText != null ? bodyText : ""))
                         .put("kind", new JSONObject().put("stringValue", kind != null ? kind : "general"))
+                        .put("snoozeMinutes", new JSONObject().put("integerValue", String.valueOf(snoozeMinutes)))
                         .put("startedAtMs", new JSONObject().put("integerValue", String.valueOf(now)))
+                        .put("originTimestampMs", new JSONObject().put("integerValue", String.valueOf(now)))
                         .put("type", new JSONObject().put("stringValue", "alarm_trigger"))
                         .put("action", new JSONObject().put("stringValue", "trigger"))
                         .put("timestampMs", new JSONObject().put("integerValue", String.valueOf(now)))
+                        .put("updatedAtMs", new JSONObject().put("integerValue", String.valueOf(now)))
                         .put("extra", new JSONObject().put("mapValue", new JSONObject().put("fields", extraFields)));
                 JSONObject write2 = new JSONObject()
                         .put("update", new JSONObject()
@@ -351,20 +358,17 @@ public final class CloudSignalClient {
                             String status = getFirestoreString(docFields, "status", "");
                             String type = getFirestoreString(docFields, "type", "");
                             String client = getFirestoreString(docFields, "clientId", "");
-                            String dismissedBy = getFirestoreString(docFields, "dismissedBy", "");
-                            long ts = getFirestoreLong(docFields, "timestampMs", 0L);
-                            if (ts == 0L) ts = getFirestoreLong(docFields, "dismissedAtMs", 0L);
+                            String dismissedBy = getFirestoreString(docFields, "dismissedByDeviceId", getFirestoreString(docFields, "dismissedBy", client));
+                            long ts = getFirestoreLong(docFields, "dismissedAtMs", getFirestoreLong(docFields, "timestampMs", 0L));
 
                             boolean isDismissed = "dismissed".equals(status) || "alarm_dismiss".equals(type);
-                            boolean isFromRemote = !CLIENT_ID.equals(client) && !CLIENT_ID.equals(dismissedBy);
+                            boolean isFromRemote = !CLIENT_ID.equals(dismissedBy);
 
                             if (isDismissed && isFromRemote) {
-                                if (ts == 0L || Math.abs(now - ts) <= 300_000L || Math.abs(ts - firedAtMs) <= 300_000L) {
-                                    android.util.Log.d("CloudSignalClient", "Spotify Connect: Remote dismiss received from live bus, stopping phone alarm");
-                                    stopWatching();
-                                    MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
-                                    return;
-                                }
+                                android.util.Log.d("CloudSignalClient", "Spotify Connect: Remote dismiss received from PC, stopping phone alarm");
+                                stopWatching();
+                                MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                return;
                             }
                         }
                     }
@@ -494,66 +498,65 @@ public final class CloudSignalClient {
                             String status = getFirestoreString(docFields, "status", "");
                             String type = getFirestoreString(docFields, "type", "");
                             String client = getFirestoreString(docFields, "clientId", "");
-                            String originClientId = getFirestoreString(docFields, "originClientId", client);
-                            String dismissedBy = getFirestoreString(docFields, "dismissedBy", client);
+                            String originDeviceId = getFirestoreString(docFields, "originDeviceId", getFirestoreString(docFields, "originClientId", client));
+                            String dismissedBy = getFirestoreString(docFields, "dismissedByDeviceId", getFirestoreString(docFields, "dismissedBy", client));
                             String opId = getFirestoreString(docFields, "opId", "");
                             String sessionId = getFirestoreString(docFields, "sessionId", opId);
-                            long ts = getFirestoreLong(docFields, "timestampMs", 0L);
-                            if (ts == 0L) ts = getFirestoreLong(docFields, "startedAtMs", 0L);
-                            if (ts == 0L) ts = getFirestoreLong(docFields, "dismissedAtMs", 0L);
+                            long startTs = getFirestoreLong(docFields, "originTimestampMs", getFirestoreLong(docFields, "startedAtMs", getFirestoreLong(docFields, "timestampMs", 0L)));
 
                             boolean isDismissed = "dismissed".equals(status) || "alarm_dismiss".equals(type);
                             boolean isRinging = "ringing".equals(status) || "alarm_trigger".equals(type);
-                            boolean isFromRemote = !CLIENT_ID.equals(client) && !CLIENT_ID.equals(originClientId) && !CLIENT_ID.equals(dismissedBy);
 
-                            if (isFromRemote) {
-                                if (isRinging) {
-                                    handledFromLive = true;
-                                    boolean isRecent = (ts == 0L || Math.abs(now - ts) <= 300_000L);
-                                    if (isRecent && !sessionId.equals(lastHandledOpId)) {
-                                        lastHandledOpId = sessionId;
-                                        lastHandledTriggerMs = ts > 0L ? ts : now;
-
-                                        String rawTitle = getFirestoreString(docFields, "title", "");
-                                        String emoji = getFirestoreString(docFields, "privacyEmoji", "");
-                                        String body = getFirestoreString(docFields, "body", "");
-                                        String kind = getFirestoreString(docFields, "kind", "general");
-                                        int snoozeMin = getFirestoreInt(docFields, "snoozeMinutes", 5);
-
-                                        if (rawTitle.isEmpty()) {
-                                            JSONObject extraMap = docFields.optJSONObject("extra");
-                                            JSONObject packetFields = extraMap != null && extraMap.optJSONObject("mapValue") != null
-                                                    ? extraMap.optJSONObject("mapValue").optJSONObject("fields") : null;
-                                            JSONObject payloadFields = packetFields;
-                                            if (packetFields != null && packetFields.optJSONObject("extra") != null
-                                                    && packetFields.optJSONObject("extra").optJSONObject("mapValue") != null) {
-                                                payloadFields = packetFields.optJSONObject("extra").optJSONObject("mapValue").optJSONObject("fields");
-                                            }
-                                            rawTitle = getFirestoreString(payloadFields, "title", "تنبيه إيقاع اليوم");
-                                            emoji = getFirestoreString(payloadFields, "privacyEmoji", "");
-                                            body = getFirestoreString(payloadFields, "body", "");
-                                            kind = getFirestoreString(payloadFields, "kind", "general");
-                                            snoozeMin = getFirestoreInt(payloadFields, "snoozeMinutes", 5);
-                                        }
-
-                                        String title = !emoji.isEmpty() && !rawTitle.contains(emoji) ? emoji + " " + rawTitle : rawTitle;
-
-                                        final String fTitle = title;
-                                        final String fBody = body;
-                                        final String fKind = kind;
-                                        final int fSnooze = snoozeMin;
-                                        MAIN.post(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
-                                                app,
-                                                fTitle,
-                                                fBody,
-                                                fKind,
-                                                true,
-                                                fSnooze
-                                        ));
-                                    }
-                                } else if (isDismissed) {
-                                    handledFromLive = true;
+                            if (isDismissed) {
+                                handledFromLive = true;
+                                if (!CLIENT_ID.equals(dismissedBy)) {
+                                    android.util.Log.d("CloudSignalClient", "Spotify Connect: Poll found remote dismiss from " + dismissedBy);
                                     MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                }
+                            } else if (isRinging) {
+                                handledFromLive = true;
+                                boolean isFromRemote = !CLIENT_ID.equals(originDeviceId);
+                                boolean isFresh = (startTs > 0L && Math.abs(now - startTs) <= 60_000L);
+                                if (isFromRemote && isFresh && !sessionId.equals(lastHandledOpId)) {
+                                    lastHandledOpId = sessionId;
+                                    lastHandledTriggerMs = startTs > 0L ? startTs : now;
+
+                                    String rawTitle = getFirestoreString(docFields, "title", "");
+                                    String emoji = getFirestoreString(docFields, "privacyEmoji", "");
+                                    String body = getFirestoreString(docFields, "body", "");
+                                    String kind = getFirestoreString(docFields, "kind", "general");
+                                    int snoozeMin = getFirestoreInt(docFields, "snoozeMinutes", 5);
+
+                                    if (rawTitle.isEmpty()) {
+                                        JSONObject extraMap = docFields.optJSONObject("extra");
+                                        JSONObject packetFields = extraMap != null && extraMap.optJSONObject("mapValue") != null
+                                                ? extraMap.optJSONObject("mapValue").optJSONObject("fields") : null;
+                                        JSONObject payloadFields = packetFields;
+                                        if (packetFields != null && packetFields.optJSONObject("extra") != null
+                                                && packetFields.optJSONObject("extra").optJSONObject("mapValue") != null) {
+                                            payloadFields = packetFields.optJSONObject("extra").optJSONObject("mapValue").optJSONObject("fields");
+                                        }
+                                        rawTitle = getFirestoreString(payloadFields, "title", "تنبيه إيقاع اليوم");
+                                        emoji = getFirestoreString(payloadFields, "privacyEmoji", "");
+                                        body = getFirestoreString(payloadFields, "body", "");
+                                        kind = getFirestoreString(payloadFields, "kind", "general");
+                                        snoozeMin = getFirestoreInt(payloadFields, "snoozeMinutes", 5);
+                                    }
+
+                                    String title = !emoji.isEmpty() && !rawTitle.contains(emoji) ? emoji + " " + rawTitle : rawTitle;
+
+                                    final String fTitle = title;
+                                    final String fBody = body;
+                                    final String fKind = kind;
+                                    final int fSnooze = snoozeMin;
+                                    MAIN.post(() -> ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                                            app,
+                                            fTitle,
+                                            fBody,
+                                            fKind,
+                                            true,
+                                            fSnooze
+                                    ));
                                 }
                             }
                         }
@@ -583,7 +586,7 @@ public final class CloudSignalClient {
 
                                 if (!CLIENT_ID.equals(client)) {
                                     if ("alarm_trigger".equals(scope)) {
-                                        boolean isRecent = (ts == 0L || Math.abs(now - ts) <= 300_000L);
+                                        boolean isRecent = (ts > 0L && Math.abs(now - ts) <= 60_000L);
                                         if (isRecent && !opId.equals(lastHandledOpId)) {
                                             lastHandledOpId = opId;
                                             lastHandledTriggerMs = ts > 0L ? ts : now;
@@ -597,9 +600,7 @@ public final class CloudSignalClient {
                                             ));
                                         }
                                     } else if ("alarm_dismiss".equals(scope)) {
-                                        if (ts == 0L || Math.abs(now - ts) <= 300_000L) {
-                                            MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
-                                        }
+                                        MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
                                     }
                                 }
                             }

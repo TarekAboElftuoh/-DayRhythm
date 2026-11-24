@@ -895,8 +895,26 @@ export default function App() {
   }, [persistentAlert]);
 
   const clientIdRef = useRef<string>(
-    `dr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+    typeof window !== 'undefined' &&
+    Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative)
+      ? 'device_mobile'
+      : typeof window !== 'undefined' &&
+        Boolean((window as Window & { chrome?: { webview?: { postMessage?: unknown } } }).chrome?.webview?.postMessage)
+      ? 'device_pc'
+      : `device_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
   );
+
+  useEffect(() => {
+    // Kill any leftover continuous alarm or vibration on app launch
+    stopContinuousAlert();
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(0);
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
   const wsRef = useRef<WebSocket | null>(null);
   const wsConnected = firestoreSynced;
   const seenSyncOpIdsRef = useRef<Set<string>>(new Set());
@@ -1987,10 +2005,16 @@ export default function App() {
           alertId,
           blockId: options?.blockId,
         });
-        if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-          void setCloudAlertSession(firebaseUser.uid, {
+        const effectiveUid =
+          firebaseUser?.uid ||
+          authUser?.uid ||
+          auth.currentUser?.uid ||
+          localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+          '';
+        if (effectiveUid) {
+          void setCloudAlertSession(effectiveUid, {
             status: 'ringing',
-            sessionId: `ses_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            sessionId: alertId,
             alertId,
             title: visibleTitle,
             body: visibleDescription,
@@ -2028,12 +2052,29 @@ export default function App() {
       const safeMin = Math.max(1, Math.min(60, Math.round(minutes ?? configuredDefault)));
       stopContinuousAlert();
       stopNativeAlerts();
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate(0);
+        } catch {}
+      }
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
       emitCrossDeviceSync('alarm_dismiss', 'snooze');
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void dismissActiveAlarmInCloud(firebaseUser.uid, alertItem.id, clientIdRef.current);
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void setCloudAlertSession(effectiveUid, {
+          status: 'dismissed',
+          alertId: alertItem.id,
+          dismissedBy: clientIdRef.current,
+          dismissedAtMs: Date.now(),
+        });
+        void dismissActiveAlarmInCloud(effectiveUid, alertItem.id, clientIdRef.current);
       }
       const timerId = window.setTimeout(() => {
         snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);
@@ -4184,25 +4225,29 @@ export default function App() {
     const unsubscribeLive = subscribeToCloudLiveSignals(
       uid,
       (signal) => {
-        if (!signal || !signal.clientId || signal.clientId === clientIdRef.current) {
+        if (!signal) {
           return;
-        }
-
-        // Avoid re-processing same live operation
-        if (signal.opId) {
-          if (seenSyncOpIdsRef.current.has(signal.opId)) return;
-          seenSyncOpIdsRef.current.add(signal.opId);
-          if (seenSyncOpIdsRef.current.size > 150) {
-            const oldest = seenSyncOpIdsRef.current.values().next().value;
-            if (oldest) seenSyncOpIdsRef.current.delete(oldest);
-          }
         }
 
         // 1. Alarm dismissal fast-path (<100ms) — Spotify Connect Session Status
         if (signal.status === 'dismissed' || signal.type === 'alarm_dismiss') {
+          const dismissedBy =
+            (signal as unknown as { dismissedByDeviceId?: string }).dismissedByDeviceId ||
+            signal.dismissedBy ||
+            signal.clientId;
+          if (dismissedBy === clientIdRef.current) {
+            return;
+          }
           stopContinuousAlert();
           stopSmartChargeCompleteAlert();
           stopNativeAlerts();
+          if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+            try {
+              navigator.vibrate(0);
+            } catch {
+              // ignore
+            }
+          }
           setSmartChargeAudioActive(false);
           setActiveAudioAlert(null);
           setPersistentAlert(null);
@@ -4222,6 +4267,34 @@ export default function App() {
 
         // 2. Alarm trigger fast-path (<100ms) — Spotify Connect Session Status
         if (signal.status === 'ringing' || signal.type === 'alarm_trigger') {
+          const origin =
+            (signal as unknown as { originDeviceId?: string }).originDeviceId ||
+            signal.originClientId ||
+            signal.clientId;
+          if (origin === clientIdRef.current) {
+            return;
+          }
+
+          // STALE CHECK: Never ring if signal is > 60s old!
+          const startTs =
+            (signal as unknown as { originTimestampMs?: number }).originTimestampMs ||
+            signal.startedAtMs ||
+            signal.timestampMs ||
+            0;
+          if (!startTs || Math.abs(Date.now() - startTs) > 60_000) {
+            return;
+          }
+
+          const opId = signal.opId || signal.sessionId;
+          if (opId) {
+            if (seenSyncOpIdsRef.current.has(opId)) return;
+            seenSyncOpIdsRef.current.add(opId);
+            if (seenSyncOpIdsRef.current.size > 150) {
+              const oldest = seenSyncOpIdsRef.current.values().next().value;
+              if (oldest) seenSyncOpIdsRef.current.delete(oldest);
+            }
+          }
+
           const extra = (signal.extra as { extra?: Record<string, unknown> })?.extra || signal.extra || {};
           const title = signal.title || (extra as Record<string, unknown>).title as string || 'تنبيه إيقاع اليوم';
           const body = signal.body || (extra as Record<string, unknown>).body as string || '';
@@ -4239,7 +4312,7 @@ export default function App() {
               ...(extra as Record<string, unknown>),
             },
             clientId: signal.clientId,
-            opId: signal.opId || signal.sessionId,
+            opId,
           });
           return;
         }

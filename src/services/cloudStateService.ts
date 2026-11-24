@@ -560,9 +560,19 @@ export async function setCloudAlertSession(
       // Map to legacy type for backwards compatibility with native Java / older clients
       type: session.status === 'dismissed' ? 'alarm_dismiss' : session.status === 'ringing' ? 'alarm_trigger' : 'settings_patch',
       timestampMs: session.status === 'dismissed' ? (session.dismissedAtMs || nowMs) : (session.startedAtMs || nowMs),
-      clientId: session.originClientId || session.dismissedBy || 'unknown',
+      clientId: session.status === 'dismissed' ? (session.dismissedBy || session.originClientId || 'unknown') : (session.originClientId || 'unknown'),
+      dismissedBy: session.dismissedBy || '',
+      dismissedByDeviceId: session.dismissedBy || '',
+      originClientId: session.originClientId || '',
+      originDeviceId: session.originClientId || '',
+      startedAtMs: session.startedAtMs || nowMs,
+      originTimestampMs: session.startedAtMs || nowMs,
+      updatedAtMs: nowMs,
       serverTime: serverTimestamp(),
     };
+    if (session.status === 'dismissed') {
+      payload.dismissedAtMs = session.dismissedAtMs || nowMs;
+    }
     await setDoc(liveDocRef, payload, { merge: true });
 
     // Also update users/{uid}.syncSignal immediately so any client watching syncSignal catches it

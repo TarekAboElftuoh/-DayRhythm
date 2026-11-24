@@ -377,7 +377,10 @@ export function playTaskSignature(
     activeContinuousInterval = window.setInterval(() => {
       const c = getCtx();
       if (c) playSingleBurst(c, category);
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      const isAndroidNative =
+        typeof window !== 'undefined' &&
+        Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative);
+      if (!isAndroidNative && typeof navigator !== 'undefined' && navigator.vibrate) {
         try {
           navigator.vibrate([120, 80, 120]);
         } catch {
