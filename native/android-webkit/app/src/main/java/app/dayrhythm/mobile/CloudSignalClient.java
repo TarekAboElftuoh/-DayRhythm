@@ -583,9 +583,19 @@ public final class CloudSignalClient {
                                     final int fSnooze = snoozeMin;
                                     MAIN.post(() -> {
                                         if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
-                                            MainActivity.activeInstance.evaluateJavascriptInWebView(
-                                                    "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger'));"
-                                            );
+                                            try {
+                                                JSONObject detail = new JSONObject()
+                                                        .put("title", fTitle)
+                                                        .put("body", fBody)
+                                                        .put("kind", fKind);
+                                                MainActivity.activeInstance.evaluateJavascriptInWebView(
+                                                        "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: " + detail.toString() + " }));"
+                                                );
+                                            } catch (Exception ignored) {
+                                                MainActivity.activeInstance.evaluateJavascriptInWebView(
+                                                        "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger'));"
+                                                );
+                                            }
                                         } else {
                                             ReminderAlarmReceiver.triggerImmediateNativeAlarm(
                                                     app,
@@ -649,7 +659,11 @@ public final class CloudSignalClient {
                                             });
                                         }
                                     } else if ("alarm_dismiss".equals(scope)) {
-                                        MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                        boolean isRecent = (ts > 0L && Math.abs(now - ts) <= 300_000L);
+                                        if (isRecent && !opId.equals(lastHandledOpId)) {
+                                            lastHandledOpId = opId;
+                                            MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                        }
                                     }
                                 }
                             }

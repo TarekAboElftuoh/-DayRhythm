@@ -183,10 +183,16 @@ namespace DayRhythm
                         {
                             int cappedLength = Math.Min(contentLength, 65536);
                             char[] bodyBuffer = new char[cappedLength];
-                            int readCount = await reader.ReadAsync(bodyBuffer, 0, cappedLength).ConfigureAwait(false);
-                            if (readCount > 0)
+                            int totalRead = 0;
+                            while (totalRead < cappedLength)
                             {
-                                body = new string(bodyBuffer, 0, readCount);
+                                int readCount = await reader.ReadAsync(bodyBuffer, totalRead, cappedLength - totalRead).ConfigureAwait(false);
+                                if (readCount <= 0) break;
+                                totalRead += readCount;
+                            }
+                            if (totalRead > 0)
+                            {
+                                body = new string(bodyBuffer, 0, totalRead);
                             }
                         }
 
@@ -257,8 +263,11 @@ namespace DayRhythm
                 if (string.Equals(action, "dismiss", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(action, "native_done", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(action, "native_dismiss", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(action, "snooze", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(action, "native_snooze", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(action, "water_confirmed", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(action, "medication_confirmed", StringComparison.OrdinalIgnoreCase))
+                    string.Equals(action, "medication_confirmed", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(action, "med_confirmed", StringComparison.OrdinalIgnoreCase))
                 {
                     System.Diagnostics.Debug.WriteLine($"[LocalSyncServer] Received instant dismiss from mobile ({sourceIp})");
                     _onRemoteDismiss?.Invoke();

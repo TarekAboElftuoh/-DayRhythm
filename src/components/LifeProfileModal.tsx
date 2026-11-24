@@ -475,7 +475,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={0.5}
                 value={draft.weightKg}
                 onChange={(e) =>
-                  updateDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 69 }))
+                  updateDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 70 }))
                 }
                 className="w-full rounded-lg border border-[#7FFFD4]/45 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
@@ -501,7 +501,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 disabled={!unlockHeight}
                 value={draft.heightCm}
                 onChange={(e) =>
-                  updateDraft((p) => ({ ...p, heightCm: Number(e.target.value) || 175 }))
+                  updateDraft((p) => ({ ...p, heightCm: Number(e.target.value) || 177 }))
                 }
                 className={`w-full rounded-lg border px-3 py-2 font-mono-tabular focus:outline-none ${
                   unlockHeight
@@ -520,7 +520,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={1}
                 value={draft.cupSizeMl}
                 onChange={(e) =>
-                  updateDraft((p) => ({ ...p, cupSizeMl: Number(e.target.value) || 177 }))
+                  updateDraft((p) => ({ ...p, cupSizeMl: Number(e.target.value) || 250 }))
                 }
                 className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />

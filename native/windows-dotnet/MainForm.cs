@@ -86,7 +86,7 @@ namespace DayRhythm
                         _activeToastForm = null;
                     }
                     CloseActiveScreenAlert();
-                    DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));");
+                    DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true } }));");
                 }),
                 onRemoteTrigger: payload => RunOnUi(() => ShowSecondaryMonitorAlert(payload))
             );
@@ -761,14 +761,20 @@ namespace DayRhythm
                 var form = new SecondaryScreenAlertForm(
                     payload,
                     secondary,
-                    onWaterConfirmed: () => DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));"),
+                    onWaterConfirmed: () =>
+                    {
+                        LocalSyncServer.Instance?.BroadcastAlertDismiss("water_confirmed");
+                        DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));");
+                    },
                     onMedicationConfirmed: (medId, doseTime24) =>
                     {
+                        LocalSyncServer.Instance?.BroadcastAlertDismiss("medication_confirmed");
                         string detailJson = JsonSerializer.Serialize(new { medicationId = medId ?? "", doseTime24 = doseTime24 ?? "" });
                         DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:medication-confirmed', {{ detail: {detailJson} }}));");
                     },
                     onSnoozed: (alertPayload, minutes) =>
                     {
+                        LocalSyncServer.Instance?.BroadcastAlertDismiss("snooze");
                         string detailJson = JsonSerializer.Serialize(new
                         {
                             id = alertPayload?.id ?? "",

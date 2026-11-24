@@ -23,6 +23,7 @@ export interface PersistentAlertItem {
 interface PersistentAlertOverlayProps {
   alert: PersistentAlertItem | null;
   defaultSnoozeMinutes?: number;
+  allowVibration?: boolean;
   onDismiss: () => void;
   onConfirmWater?: () => void;
   onConfirmMedication?: (medicationId: string, doseTime24?: string) => void;
@@ -33,6 +34,7 @@ interface PersistentAlertOverlayProps {
 export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
   alert,
   defaultSnoozeMinutes = 5,
+  allowVibration = true,
   onDismiss,
   onConfirmWater,
   onConfirmMedication,
@@ -63,7 +65,7 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
     const isAndroidNative =
       typeof window !== 'undefined' &&
       Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative);
-    if (!isAndroidNative && lastVibratedAlertIdRef.current !== alert.id) {
+    if (allowVibration && !isAndroidNative && lastVibratedAlertIdRef.current !== alert.id) {
       lastVibratedAlertIdRef.current = alert.id;
       if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
         try {

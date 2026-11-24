@@ -1306,6 +1306,21 @@ export default function App() {
     });
   }, [targetCups]);
 
+  // Live midnight rollover for hydrationHistory when the app stays open across 00:00
+  useEffect(() => {
+    const tz = lifeProfile.currentTimeZone || 'Africa/Cairo';
+    const checkRollover = () => {
+      const todayIso = getDateIsoInTimeZone(tz);
+      setHydrationHistory((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || last.dateKey === todayIso) return prev;
+        return rollOverHydrationHistoryIfNeeded(prev, targetCups, tz);
+      });
+    };
+    const timerId = window.setInterval(checkRollover, 60_000);
+    return () => window.clearInterval(timerId);
+  }, [lifeProfile.currentTimeZone, targetCups]);
+
   const [medications, setMedications] = useState<MedicationItem[]>(loadSavedMedications);
   const seededDefaultMedRef = useRef(false);
 
@@ -1881,7 +1896,7 @@ export default function App() {
               ? 'وقت النوم'
               : 'وضع الاجتماع';
         const item: SilentNotificationItem = {
-          id: `sn_${Date.now().toString(36)}`,
+          id: `sn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
           title: privacyBadge,
           reasonAr,
           time12h: formatNow12hInTimeZone(activeTimeZone, 'ar'),
@@ -1906,7 +1921,7 @@ export default function App() {
         });
       }
       const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
-      const alertId = `alert_${Date.now().toString(36)}`;
+      const alertId = `alert_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
       const defaultSnooze =
         lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15
           ? lifeProfile.defaultSnoozeMinutes
@@ -3446,7 +3461,7 @@ export default function App() {
           description: extra?.body,
           blockId: extra?.blockId,
           isRemoteSignal: true,
-          bypassSanctuary: true,
+          bypassSanctuary: false,
         });
         return;
       }
@@ -4169,21 +4184,29 @@ export default function App() {
         const sig = remote.syncSignal;
         if (sig && sig.clientId !== clientIdRef.current) {
           if (sig.scope === 'alarm_dismiss') {
-            console.info('[CloudSync] Remote alarm dismiss signal received:', sig.action);
-            stopContinuousAlert();
-            stopNativeAlerts();
-            setActiveAudioAlert(null);
-            setPersistentAlert(null);
-            setAlarmRinging(false);
+            const sigTs = sig.timestampMs || 0;
+            const isFresh = sigTs > 0 && Math.abs(Date.now() - sigTs) <= 300_000;
+            const sigOpId = sig.opId || `dism_${sigTs}_${sig.clientId}`;
+            if (isFresh && !seenSyncOpIdsRef.current.has(sigOpId)) {
+              seenSyncOpIdsRef.current.add(sigOpId);
+              if (seenSyncOpIdsRef.current.size > 200) seenSyncOpIdsRef.current.clear();
+              console.info('[CloudSync] Remote alarm dismiss signal received:', sig.action);
+              stopContinuousAlert();
+              stopSmartChargeCompleteAlert();
+              setSmartChargeAudioActive(false);
+              setActiveAudioAlert(null);
+              setPersistentAlert(null);
+              setAlarmRinging(false);
 
-            if (sig.action === 'water_confirmed' || (sig.extra as any)?.kind === 'water') {
-              handleLogWaterCupRef.current();
-            } else if (sig.action === 'medication_confirmed' || (sig.extra as any)?.kind === 'medication') {
-              const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string; medicationId?: string; doseTime24?: string } | undefined;
-              const medId = extra?.medId || extra?.medicationId;
-              const doseTime = extra?.doseTime || extra?.doseTime24;
-              if (medId) {
-                handleToggleMedicationRef.current(medId, doseTime);
+              if (sig.action === 'water_confirmed' || (sig.extra as any)?.kind === 'water') {
+                handleLogWaterCupRef.current();
+              } else if (sig.action === 'medication_confirmed' || sig.action === 'med_confirmed' || (sig.extra as any)?.kind === 'medication') {
+                const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string; medicationId?: string; doseTime24?: string } | undefined;
+                const medId = extra?.medId || extra?.medicationId;
+                const doseTime = extra?.doseTime || extra?.doseTime24;
+                if (medId) {
+                  handleToggleMedicationRef.current(medId, doseTime);
+                }
               }
             }
           } else {
@@ -4226,9 +4249,21 @@ export default function App() {
           if (dismissedBy === clientIdRef.current) {
             return;
           }
+          const dismissTs =
+            (signal as unknown as { dismissedAtMs?: number }).dismissedAtMs ||
+            signal.timestampMs ||
+            0;
+          if (!dismissTs || Math.abs(Date.now() - dismissTs) > 300_000) {
+            return;
+          }
+          const dismissOpId = signal.opId || `live_dism_${dismissTs}_${dismissedBy}`;
+          if (seenSyncOpIdsRef.current.has(dismissOpId)) {
+            return;
+          }
+          seenSyncOpIdsRef.current.add(dismissOpId);
+          if (seenSyncOpIdsRef.current.size > 200) seenSyncOpIdsRef.current.clear();
           stopContinuousAlert();
           stopSmartChargeCompleteAlert();
-          stopNativeAlerts();
           if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
             try {
               navigator.vibrate(0);
@@ -4844,11 +4879,7 @@ export default function App() {
   );
 
   // Auto-migrate user profile from old 170cm to new 177cm
-  useEffect(() => {
-    if (lifeProfile.heightCm === 170) {
-      handleUpdateLifeProfile({ heightCm: 177 });
-    }
-  }, [lifeProfile.heightCm, handleUpdateLifeProfile]);
+  // Legitimate user heightCm values (including 170 cm) are preserved without forced overrides.
 
   const handleQuickUpdateWeight = useCallback(
     (nextWeightKg: number) => {
@@ -5810,7 +5841,9 @@ export default function App() {
           if (quietMode === 'normal') {
             playSoftChime('focus_done', activeSanctuary);
           }
-          triggerHapticWaveform('pomodoro');
+          if (quietMode !== 'silent_all' && quietMode !== 'mute_audio') {
+            triggerHapticWaveform('pomodoro');
+          }
           return {
             ...prev,
             phase: 'break',
@@ -5823,7 +5856,9 @@ export default function App() {
         if (quietMode === 'normal') {
           playSoftChime('break_done', activeSanctuary);
         }
-        triggerHapticWaveform('pomodoro');
+        if (quietMode !== 'silent_all' && quietMode !== 'mute_audio') {
+          triggerHapticWaveform('pomodoro');
+        }
         return {
           ...prev,
           phase: 'focus',
@@ -7747,6 +7782,12 @@ export default function App() {
       }
 
       const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
+      if (quietMode === 'silent_all' || activeSanctuary) {
+        showToast(
+          `🔋 اكتمل شحن ${phoneBattery.deviceLabel || 'الموبايل'} (${phoneBattery.levelPct}%)`
+        );
+        return;
+      }
       setPersistentAlert({
         id: `charge_${Date.now().toString(36)}`,
         emoji: `🔋 ${phoneBattery.levelPct}%`,
@@ -8483,8 +8524,34 @@ export default function App() {
         flushAndroidPendingActions();
       }
     };
-    const onAlertDismissed = () => {
+    const onAlertDismissed = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ remote?: boolean; snooze?: boolean }>).detail;
+      if (detail?.remote) {
+        stopContinuousAlert();
+        stopSmartChargeCompleteAlert();
+        setSmartChargeAudioActive(false);
+        setActiveAudioAlert(null);
+        setPersistentAlert(null);
+        setAlarmRinging(false);
+        return;
+      }
       handleAcknowledgeAudioAlert();
+    };
+    const onCloudAlertTrigger = (ev: Event) => {
+      const detail = (ev as CustomEvent<{
+        title?: string;
+        body?: string;
+        kind?: TaskSoundCategory;
+        emoji?: string;
+        blockId?: string;
+      }>).detail;
+      triggerTaskAlert(detail?.emoji || '🔔', detail?.kind || 'general', {
+        displayTitle: detail?.title || 'تنبيه متزامن',
+        description: detail?.body,
+        blockId: detail?.blockId,
+        isRemoteSignal: true,
+        bypassSanctuary: false,
+      });
     };
     const onVisible = () => {
       if (document.visibilityState === 'visible') flushAndroidPendingActions();
@@ -8496,6 +8563,7 @@ export default function App() {
     window.addEventListener('dayrhythm:alert-snoozed', onAlertSnoozed);
     window.addEventListener('dayrhythm:native-quick-actions', onNativeQuickActions);
     window.addEventListener('dayrhythm:alert-dismissed', onAlertDismissed);
+    window.addEventListener('dayrhythm:cloud-alert-trigger', onCloudAlertTrigger);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
       window.removeEventListener('dayrhythm:water-confirmed', onWaterConfirmed);
@@ -8504,6 +8572,7 @@ export default function App() {
       window.removeEventListener('dayrhythm:alert-snoozed', onAlertSnoozed);
       window.removeEventListener('dayrhythm:native-quick-actions', onNativeQuickActions);
       window.removeEventListener('dayrhythm:alert-dismissed', onAlertDismissed);
+      window.removeEventListener('dayrhythm:cloud-alert-trigger', onCloudAlertTrigger);
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [
@@ -9609,6 +9678,7 @@ ${lifeConstitution}
             : persistentAlert
         }
         defaultSnoozeMinutes={lifeProfile.defaultSnoozeMinutes ?? 5}
+        allowVibration={quietMode !== 'silent_all'}
         onDismiss={() => {
           if (persistentAlert?.id.startsWith('charge_')) {
             handleStopSmartChargeAlert();

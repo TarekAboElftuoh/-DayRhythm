@@ -739,7 +739,7 @@ export async function emitCloudLiveSignal(
     await setDoc(liveDocRef, {
       ...signal,
       serverTime: serverTimestamp(),
-    });
+    }, { merge: true });
     return true;
   } catch (err) {
     console.warn('[CloudLiveSync] Failed emitting live signal:', err);

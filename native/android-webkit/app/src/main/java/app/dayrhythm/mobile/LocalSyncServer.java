@@ -221,8 +221,11 @@ public final class LocalSyncServer {
             if ("dismiss".equalsIgnoreCase(action) ||
                 "native_done".equalsIgnoreCase(action) ||
                 "native_dismiss".equalsIgnoreCase(action) ||
+                "snooze".equalsIgnoreCase(action) ||
+                "native_snooze".equalsIgnoreCase(action) ||
                 "water_confirmed".equalsIgnoreCase(action) ||
                 "medication_confirmed".equalsIgnoreCase(action) ||
+                "med_confirmed".equalsIgnoreCase(action) ||
                 "stop-alert".equalsIgnoreCase(type) ||
                 "alarm_dismiss".equalsIgnoreCase(type)) {
 
@@ -234,7 +237,7 @@ public final class LocalSyncServer {
                         }
                         if (MainActivity.activeInstance != null) {
                             MainActivity.activeInstance.evaluateJavascriptInWebView(
-                                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+                                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true } }));"
                             );
                         }
                     } catch (Exception e) {

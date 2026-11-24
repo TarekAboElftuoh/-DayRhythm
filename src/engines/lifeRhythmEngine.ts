@@ -113,6 +113,7 @@ export function computeScientificHydration(
   normalTargetCups: number;
   fastingTargetCups: number;
   activeTargetCups: number;
+  cupMl: number;
 } {
   const safeHeatBonus = Math.max(0, Math.min(800, Math.round(heatBonusMl)));
   // Drinking water target (excluding ~20% fluid from food):
@@ -153,6 +154,7 @@ export function computeScientificHydration(
     normalTargetCups,
     fastingTargetCups,
     activeTargetCups,
+    cupMl,
   };
 }
 
@@ -399,7 +401,7 @@ export function computeDailyRhythmPlan(
     normalTargetCups: hydration.normalTargetCups,
     fastingTargetCups: hydration.fastingTargetCups,
     activeTargetCups: hydration.activeTargetCups,
-    cupSizeMl: profile.cupSizeMl,
+    cupSizeMl: hydration.cupMl,
     hydrationSlots,
     bedtimeMin,
     wakeMin,

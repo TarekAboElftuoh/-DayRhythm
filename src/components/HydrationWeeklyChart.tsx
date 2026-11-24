@@ -93,7 +93,7 @@ const WeeklyHydrationTooltip: React.FC<CustomTooltipProps> = ({ active, payload 
 export const HydrationWeeklyChart: React.FC<HydrationWeeklyChartProps> = ({
   hydrationHistory,
   weatherInfo,
-  cupSizeMl = 177,
+  cupSizeMl = 250,
 }) => {
   const { data, avgCups, avgCommitmentPct, daysMetTarget, heatComparison, peakTempC, hasTempData } =
     useMemo(() => {

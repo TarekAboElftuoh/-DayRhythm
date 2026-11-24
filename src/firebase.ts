@@ -670,10 +670,9 @@ export function sanitizeLifeProfile(
 
   return {
     weightKg: clampFloat(raw?.weightKg, 30, 250, DEFAULT_LIFE_PROFILE.weightKg),
-    heightCm:
-      raw?.heightCm === 170 || !raw?.heightCm
-        ? 177
-        : clampFloat(raw?.heightCm, 100, 240, DEFAULT_LIFE_PROFILE.heightCm),
+    heightCm: !raw?.heightCm
+      ? DEFAULT_LIFE_PROFILE.heightCm
+      : clampFloat(raw?.heightCm, 100, 240, DEFAULT_LIFE_PROFILE.heightCm),
     cupSizeMl: clampInt(raw?.cupSizeMl, 50, 2000, DEFAULT_LIFE_PROFILE.cupSizeMl),
     fastingDays: sanitizeWeekdayList(raw?.fastingDays, DEFAULT_LIFE_PROFILE.fastingDays),
     suhoorLeadMinutes: clampInt(

@@ -161,16 +161,19 @@ export function useMedicationActions({
         updated.takenDateKey === todayIso &&
         (allTimes.length <= 1 ||
           allTimes.every((t) => (updated.takenDosesToday ?? []).includes(t)));
-      const cutoff7Iso = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+      const cutoff31Iso = getDateIsoInTimeZone(
+        activeTimeZone,
+        new Date(Date.now() - 30 * 86_400_000)
+      );
       const existingDates = Array.isArray(target.takenDates) ? target.takenDates : [];
       const nextTakenDates = (
         isFullyTakenAfter
           ? Array.from(new Set([...existingDates, todayIso]))
           : existingDates.filter((d) => d !== todayIso)
       )
-        .filter((d) => d >= cutoff7Iso)
+        .filter((d) => d >= cutoff31Iso)
         .sort()
-        .slice(-7);
+        .slice(-31);
       updated = { ...updated, takenDates: nextTakenDates };
 
       let lowStockMsg = '';
@@ -182,8 +185,11 @@ export function useMedicationActions({
         const nextRem = Math.max(0, Math.min(maxCap, target.remainingDoses + deltaDoses));
         updated = { ...updated, remainingDoses: nextRem };
         const dosesPerDay = Math.max(1, allTimes.length);
+        const daysPerWeek =
+          target.daysOfWeek && target.daysOfWeek.length > 0 ? target.daysOfWeek.length : 7;
+        const dailyRate = Math.max(0.14, (dosesPerDay * daysPerWeek) / 7);
         const alertLeadDays = Math.max(1, Math.min(14, target.refillAlertDays ?? 3));
-        const daysLeft = nextRem / dosesPerDay;
+        const daysLeft = nextRem / dailyRate;
         if (deltaDoses < 0 && daysLeft <= alertLeadDays) {
           const roundedDays = Math.ceil(daysLeft);
           lowStockMsg =
@@ -233,7 +239,10 @@ export function useMedicationActions({
   const handleToggleMedicationDate = useCallback(
     (id: string, dateIso: string) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
-      const cutoff7Iso = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+      const cutoff31Iso = getDateIsoInTimeZone(
+        activeTimeZone,
+        new Date(Date.now() - 30 * 86_400_000)
+      );
 
       setMedications((prev) => {
         const next = prev.map((m) => {
@@ -247,9 +256,9 @@ export function useMedicationActions({
               ? existingDates.filter((d) => d !== dateIso)
               : Array.from(new Set([...existingDates, dateIso]))
           )
-            .filter((d) => d >= cutoff7Iso)
+            .filter((d) => d >= cutoff31Iso)
             .sort()
-            .slice(-7);
+            .slice(-31);
 
           const dosesPerDay = Math.max(1, allTimes.length);
           let nextRemaining = m.remainingDoses;
@@ -433,11 +442,12 @@ export function useMedicationActions({
                     ? [target.time24]
                     : [];
               const alreadyTakenToday = target.takenDateKey === todayIso;
+              const dosesCount = Math.max(1, allTimes.length);
               const nextRem =
                 !alreadyTakenToday &&
                 typeof target.remainingDoses === 'number' &&
-                target.remainingDoses > 0
-                  ? target.remainingDoses - 1
+                target.remainingDoses >= 0
+                  ? Math.max(0, target.remainingDoses - dosesCount)
                   : target.remainingDoses;
               const updated: MedicationItem = {
                 ...target,
