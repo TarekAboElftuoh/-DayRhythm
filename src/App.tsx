@@ -105,6 +105,8 @@ import {
   subscribeToCloudLiveSignals,
   syncScheduledAlarmsToCloud,
   setCloudAlertSession,
+  broadcastAlertTrigger,
+  broadcastAlertDismiss,
   type DayRhythmAlertSession,
   type LiveSyncSignal,
   type UserSettingsPayload,
@@ -894,15 +896,34 @@ export default function App() {
     persistentAlertRef.current = persistentAlert ? { id: persistentAlert.id, createdAtMs: persistentAlert.createdAtMs } : null;
   }, [persistentAlert]);
 
-  const clientIdRef = useRef<string>(
-    typeof window !== 'undefined' &&
-    Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative)
-      ? 'device_mobile'
-      : typeof window !== 'undefined' &&
-        Boolean((window as Window & { chrome?: { webview?: { postMessage?: unknown } } }).chrome?.webview?.postMessage)
-      ? 'device_pc'
-      : `device_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
-  );
+  const alarmRingingRef = useRef<boolean>(alarmRinging);
+  useEffect(() => {
+    alarmRingingRef.current = alarmRinging;
+  }, [alarmRinging]);
+
+  const resolveMyDeviceId = (): string => {
+    if (typeof window === 'undefined') return 'device_unknown';
+    if ((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative) {
+      return 'device_mobile';
+    }
+    if ((window as Window & { chrome?: { webview?: { postMessage?: unknown } } }).chrome?.webview?.postMessage) {
+      return 'device_pc';
+    }
+    try {
+      const stored = localStorage.getItem('dayrhythm_device_id');
+      if (stored) return stored;
+      const gen = `device_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      localStorage.setItem('dayrhythm_device_id', gen);
+      return gen;
+    } catch {
+      return 'device_web';
+    }
+  };
+
+  const clientIdRef = useRef<string>(resolveMyDeviceId());
+  useEffect(() => {
+    clientIdRef.current = resolveMyDeviceId();
+  });
 
   useEffect(() => {
     // Kill any leftover continuous alarm or vibration on app launch
@@ -1658,8 +1679,14 @@ export default function App() {
         }
       }
 
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void publishWorkspaceSyncSignal(firebaseUser.uid, {
+      const effectiveSyncUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveSyncUid) {
+        void publishWorkspaceSyncSignal(effectiveSyncUid, {
           opId,
           clientId: clientIdRef.current,
           scope,
@@ -1667,7 +1694,7 @@ export default function App() {
           timestampMs,
           extra: extraPayload,
         });
-        void emitCloudLiveSignal(firebaseUser.uid, {
+        void emitCloudLiveSignal(effectiveSyncUid, {
           opId,
           clientId: clientIdRef.current,
           timestampMs,
@@ -1749,7 +1776,7 @@ export default function App() {
       alertId,
     });
 
-    // Requirement 3 & Spotify Connect: Real-time cloud alarm dismissal across all connected devices
+    // Spotify Connect: Real-time cloud alarm dismissal across all connected devices (<100ms)
     const effectiveUid =
       firebaseUser?.uid ||
       authUser?.uid ||
@@ -1757,14 +1784,7 @@ export default function App() {
       localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
       '';
     if (effectiveUid) {
-      void setCloudAlertSession(effectiveUid, {
-        status: 'dismissed',
-        alertId,
-        blockId: dismissedBlockId,
-        dismissedBy: clientIdRef.current,
-        dismissedAtMs: Date.now(),
-      });
-      void dismissActiveAlarmInCloud(effectiveUid, alertId, clientIdRef.current);
+      void broadcastAlertDismiss(effectiveUid, clientIdRef.current, alertId, 'dismiss');
     }
 
     if (hadAlert) {
@@ -2012,17 +2032,13 @@ export default function App() {
           localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
           '';
         if (effectiveUid) {
-          void setCloudAlertSession(effectiveUid, {
-            status: 'ringing',
-            sessionId: alertId,
+          void broadcastAlertTrigger(effectiveUid, clientIdRef.current, {
             alertId,
             title: visibleTitle,
             body: visibleDescription,
             kind: category,
             snoozeMinutes: defaultSnooze,
             blockId: options?.blockId,
-            startedAtMs: Date.now(),
-            originClientId: clientIdRef.current,
           });
         }
       }
@@ -2068,13 +2084,7 @@ export default function App() {
         localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
         '';
       if (effectiveUid) {
-        void setCloudAlertSession(effectiveUid, {
-          status: 'dismissed',
-          alertId: alertItem.id,
-          dismissedBy: clientIdRef.current,
-          dismissedAtMs: Date.now(),
-        });
-        void dismissActiveAlarmInCloud(effectiveUid, alertItem.id, clientIdRef.current);
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, alertItem.id, 'snooze');
       }
       const timerId = window.setTimeout(() => {
         snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);
@@ -4088,10 +4098,25 @@ export default function App() {
     pushToTasksVaultRef.current = saveCloudUserSettingsImmediately;
   }, [saveCloudUserSettingsImmediately]);
 
-  // Requirement 3 & Finding 1: Real-time active_alarms listener with poison-pill prevention
+  const applyOrDeferRef = useRef(applyOrDefer);
   useEffect(() => {
-    const uid = firebaseUser?.uid;
-    if (!uid || firebaseUser?.isAnonymous) return;
+    applyOrDeferRef.current = applyOrDefer;
+  }, [applyOrDefer]);
+
+  const showToastRef = useRef(showToast);
+  useEffect(() => {
+    showToastRef.current = showToast;
+  }, [showToast]);
+
+  // Requirement 3 & Spotify Connect: Real-time active_alarms listener with poison-pill prevention
+  useEffect(() => {
+    const uid =
+      firebaseUser?.uid ||
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+      '';
+    if (!uid) return;
 
     void cleanupExpiredActiveAlarms(uid);
 
@@ -4100,8 +4125,7 @@ export default function App() {
       (alarms) => {
         // Is an alert currently ringing on THIS device?
         const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
-        const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
-        const isCurrentlyRinging = Boolean(currentAlertId || alarmRinging);
+        const isCurrentlyRinging = Boolean(currentAlertId || alarmRingingRef.current);
 
         if (!isCurrentlyRinging) {
           return;
@@ -4123,20 +4147,6 @@ export default function App() {
           setActiveAudioAlert(null);
           setPersistentAlert(null);
           setAlarmRinging(false);
-          try {
-            const bridge = (
-              window as Window & {
-                DayRhythmNative?: {
-                  dismissActiveAlerts?: () => void;
-                  stopNativeAlarmSound?: () => void;
-                };
-              }
-            ).DayRhythmNative;
-            bridge?.stopNativeAlarmSound?.();
-            bridge?.dismissActiveAlerts?.();
-          } catch {
-            // ignore bridge
-          }
         }
       },
       (err) => {
@@ -4147,14 +4157,19 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging]);
+  }, [firebaseUser?.uid, authUser?.uid, stopNativeAlerts]);
 
-  // Requirement 2 & Finding 2, 6: Real-time listener for users/{uid} root document
+  // Requirement 2 & Spotify Connect: Real-time listener for users/{uid} root document and live bus
   // 1) Catches Android background lock-screen alarm dismissals via syncSignal.
-  // 2) Streams live settings/rhythm updates across devices live.
+  // 2) Streams live settings/rhythm updates across devices live (<100ms).
   useEffect(() => {
-    const uid = firebaseUser?.uid;
-    if (!uid || firebaseUser?.isAnonymous) return;
+    const uid =
+      firebaseUser?.uid ||
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+      '';
+    if (!uid) return;
 
     const unsubscribe = subscribeToUserDocument(
       uid,
@@ -4165,29 +4180,15 @@ export default function App() {
           if (sig.scope === 'alarm_dismiss') {
             const currentAlertId = activeAudioAlertRef.current?.id || persistentAlertRef.current?.id;
             const currentFiredAtMs = activeAudioAlertRef.current?.firedAtMs || persistentAlertRef.current?.createdAtMs || 0;
-            const isCurrentlyRinging = Boolean(currentAlertId || alarmRinging);
+            const isCurrentlyRinging = Boolean(currentAlertId || alarmRingingRef.current);
 
-            if (isCurrentlyRinging && sig.timestampMs && sig.timestampMs >= (currentFiredAtMs - 5000)) {
+            if (isCurrentlyRinging && sig.timestampMs && sig.timestampMs >= (currentFiredAtMs - 15000)) {
               console.info('[CloudSync] Remote alarm dismiss signal received:', sig.action);
               stopContinuousAlert();
               stopNativeAlerts();
               setActiveAudioAlert(null);
               setPersistentAlert(null);
               setAlarmRinging(false);
-              try {
-                const bridge = (
-                  window as Window & {
-                    DayRhythmNative?: {
-                      dismissActiveAlerts?: () => void;
-                      stopNativeAlarmSound?: () => void;
-                    };
-                  }
-                ).DayRhythmNative;
-                bridge?.stopNativeAlarmSound?.();
-                bridge?.dismissActiveAlerts?.();
-              } catch {
-                // ignore bridge
-              }
             }
 
             if (sig.action === 'native_done' && sig.extra) {
@@ -4210,7 +4211,7 @@ export default function App() {
           // Never re-apply our own writes!
           return;
         }
-        applyOrDefer(remote as SyncedRhythmPayload & {
+        applyOrDeferRef.current(remote as SyncedRhythmPayload & {
           medications?: MedicationItem[];
           creativeActivities?: CreativeActivityItem[];
           memories?: MemoryItem[];
@@ -4261,7 +4262,7 @@ export default function App() {
               [blockId]: true,
             }));
           }
-          showToast('🔕 تم إيقاف التنبيه فورياً من جهازك الآخر ✓');
+          showToastRef.current('🔕 تم إيقاف التنبيه فورياً من جهازك الآخر ✓');
           return;
         }
 
@@ -4319,7 +4320,7 @@ export default function App() {
 
         // 3. Settings / Button changes patch (<100ms)
         if (signal.patch && Object.keys(signal.patch).length > 0) {
-          applyOrDefer(signal.patch as SyncedRhythmPayload & {
+          applyOrDeferRef.current(signal.patch as SyncedRhythmPayload & {
             medications?: MedicationItem[];
             creativeActivities?: CreativeActivityItem[];
             memories?: MemoryItem[];
@@ -4355,7 +4356,7 @@ export default function App() {
       unsubscribe();
       unsubscribeLive();
     };
-  }, [firebaseUser?.uid, firebaseUser?.isAnonymous, stopNativeAlerts, alarmRinging, applyOrDefer, showToast]);
+  }, [firebaseUser?.uid, authUser?.uid, stopNativeAlerts]);
 
   // Requirement 1 & Finding 3: Load user settings from cloud with strict priority over defaults & offline protection
   useEffect(() => {
@@ -8889,6 +8890,15 @@ export default function App() {
       setPersistentAlert(null);
       setAlarmRinging(false);
       emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, 'water', 'water_confirmed');
+      }
     };
     const onMedicationConfirmed = (ev: Event) => {
       const detail = (
@@ -8903,6 +8913,15 @@ export default function App() {
       setPersistentAlert(null);
       setAlarmRinging(false);
       emitCrossDeviceSync('alarm_dismiss', 'med_confirmed');
+      const effectiveUid =
+        firebaseUser?.uid ||
+        authUser?.uid ||
+        auth.currentUser?.uid ||
+        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+        '';
+      if (effectiveUid) {
+        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, detail?.medicationId || 'medication', 'med_confirmed');
+      }
     };
     const onQuickMedConfirm = () => {
       if (nextMedicationQuick) {

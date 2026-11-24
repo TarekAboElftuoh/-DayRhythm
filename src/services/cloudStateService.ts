@@ -583,7 +583,7 @@ export async function setCloudAlertSession(
         {
           syncSignal: {
             scope: 'alarm_dismiss',
-            action: 'dismiss',
+            action: session.kind || 'dismiss',
             clientId: session.dismissedBy || 'unknown',
             timestampMs: session.dismissedAtMs || nowMs,
             opId: `ses_dism_${nowMs}`,
@@ -596,6 +596,131 @@ export async function setCloudAlertSession(
     return true;
   } catch (err) {
     console.warn('[CloudAlertSession] Failed setting alert session:', err);
+    return false;
+  }
+}
+
+/**
+ * Spotify-Connect Unified Protocol: Broadcast an alert trigger from any device (Mobile or PC).
+ * Atomically writes to users/{uid}/sync/live AND users/{uid}.syncSignal.
+ */
+export async function broadcastAlertTrigger(
+  uid: string,
+  senderDeviceId: string,
+  alertData: {
+    alertId: string;
+    title: string;
+    body?: string;
+    kind?: TaskSoundCategory | string;
+    snoozeMinutes?: number;
+    blockId?: string;
+  }
+): Promise<boolean> {
+  if (!uid) return false;
+  try {
+    const nowMs = Date.now();
+    const liveDocRef = doc(db, 'users', uid, 'sync', 'live');
+    const userDocRef = doc(db, 'users', uid);
+
+    const payload: Record<string, unknown> = {
+      status: 'ringing',
+      type: 'alarm_trigger',
+      action: 'trigger',
+      sessionId: alertData.alertId,
+      alertId: alertData.alertId,
+      title: alertData.title,
+      body: alertData.body || '',
+      kind: alertData.kind || 'general',
+      snoozeMinutes: alertData.snoozeMinutes ?? 5,
+      blockId: alertData.blockId || '',
+      clientId: senderDeviceId,
+      originClientId: senderDeviceId,
+      originDeviceId: senderDeviceId,
+      dismissedBy: '',
+      dismissedByDeviceId: '',
+      startedAtMs: nowMs,
+      originTimestampMs: nowMs,
+      timestampMs: nowMs,
+      updatedAtMs: nowMs,
+      serverTime: serverTimestamp(),
+    };
+
+    const syncSignal = {
+      scope: 'alarm_trigger',
+      action: 'trigger',
+      clientId: senderDeviceId,
+      timestampMs: nowMs,
+      opId: `trig_${nowMs}_${senderDeviceId}`,
+      extra: {
+        title: alertData.title,
+        body: alertData.body || '',
+        kind: alertData.kind || 'general',
+        snoozeMinutes: alertData.snoozeMinutes ?? 5,
+        blockId: alertData.blockId,
+        alertId: alertData.alertId,
+      },
+    };
+
+    await Promise.all([
+      setDoc(liveDocRef, payload, { merge: true }),
+      setDoc(userDocRef, { syncSignal, updatedAt: serverTimestamp() }, { merge: true }),
+    ]);
+
+    return true;
+  } catch (err) {
+    console.error('[CloudSync] broadcastAlertTrigger failed:', err);
+    return false;
+  }
+}
+
+/**
+ * Spotify-Connect Unified Protocol: Broadcast an alert dismissal from any device (Mobile or PC).
+ * Stops sound and closes cards across all devices in <100ms.
+ */
+export async function broadcastAlertDismiss(
+  uid: string,
+  senderDeviceId: string,
+  alertId?: string,
+  action?: string
+): Promise<boolean> {
+  if (!uid) return false;
+  try {
+    const nowMs = Date.now();
+    const liveDocRef = doc(db, 'users', uid, 'sync', 'live');
+    const userDocRef = doc(db, 'users', uid);
+
+    const payload: Record<string, unknown> = {
+      status: 'dismissed',
+      type: 'alarm_dismiss',
+      action: action || 'dismiss',
+      alertId: alertId || 'all',
+      sessionId: alertId || 'all',
+      dismissedBy: senderDeviceId,
+      dismissedByDeviceId: senderDeviceId,
+      clientId: senderDeviceId,
+      dismissedAtMs: nowMs,
+      timestampMs: nowMs,
+      updatedAtMs: nowMs,
+      serverTime: serverTimestamp(),
+    };
+
+    const syncSignal = {
+      scope: 'alarm_dismiss',
+      action: action || 'dismiss',
+      clientId: senderDeviceId,
+      timestampMs: nowMs,
+      opId: `dism_${nowMs}_${senderDeviceId}`,
+    };
+
+    await Promise.all([
+      setDoc(liveDocRef, payload, { merge: true }),
+      setDoc(userDocRef, { syncSignal, updatedAt: serverTimestamp() }, { merge: true }),
+      dismissActiveAlarmInCloud(uid, alertId || 'all', senderDeviceId),
+    ]);
+
+    return true;
+  } catch (err) {
+    console.error('[CloudSync] broadcastAlertDismiss failed:', err);
     return false;
   }
 }

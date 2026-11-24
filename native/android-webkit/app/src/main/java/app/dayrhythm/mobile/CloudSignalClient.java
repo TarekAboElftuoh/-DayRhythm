@@ -165,17 +165,13 @@ public final class CloudSignalClient {
                 JSONObject write2 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth) + "/sync/live")
-                                .put("fields", liveFields));
+                                .put("fields", liveFields))
+                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray()
+                                .put("opId").put("sessionId").put("clientId").put("status")
+                                .put("dismissedBy").put("dismissedByDeviceId").put("dismissedAtMs")
+                                .put("type").put("action").put("timestampMs").put("updatedAtMs")));
 
-                JSONObject write3 = new JSONObject()
-                        .put("update", new JSONObject()
-                                .put("name", docName(auth) + "/active_alarms/all")
-                                .put("fields", new JSONObject()
-                                        .put("status", new JSONObject().put("stringValue", "dismissed"))
-                                        .put("dismissedByClientId", new JSONObject().put("stringValue", CLIENT_ID))
-                                        .put("dismissedAtMs", new JSONObject().put("integerValue", String.valueOf(now)))));
-
-                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2).put(write3));
+                JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
 
                 Request req = new Request.Builder()
                         .url("https://firestore.googleapis.com/v1/projects/" + auth.getString("projectId")
@@ -249,7 +245,14 @@ public final class CloudSignalClient {
                 JSONObject write2 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth) + "/sync/live")
-                                .put("fields", liveFields));
+                                .put("fields", liveFields))
+                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray()
+                                .put("opId").put("sessionId").put("clientId")
+                                .put("originClientId").put("originDeviceId")
+                                .put("status").put("title").put("body").put("kind")
+                                .put("snoozeMinutes").put("startedAtMs").put("originTimestampMs")
+                                .put("type").put("action").put("timestampMs").put("updatedAtMs")
+                                .put("extra")));
 
                 JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
 
@@ -365,10 +368,12 @@ public final class CloudSignalClient {
                             boolean isFromRemote = !CLIENT_ID.equals(dismissedBy);
 
                             if (isDismissed && isFromRemote) {
-                                android.util.Log.d("CloudSignalClient", "Spotify Connect: Remote dismiss received from PC, stopping phone alarm");
-                                stopWatching();
-                                MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
-                                return;
+                                if (ts == 0L || Math.abs(now - ts) <= 300_000L) {
+                                    android.util.Log.d("CloudSignalClient", "Spotify Connect: Remote dismiss received from PC, stopping phone alarm");
+                                    stopWatching();
+                                    MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                    return;
+                                }
                             }
                         }
                     }
@@ -510,8 +515,11 @@ public final class CloudSignalClient {
                             if (isDismissed) {
                                 handledFromLive = true;
                                 if (!CLIENT_ID.equals(dismissedBy)) {
-                                    android.util.Log.d("CloudSignalClient", "Spotify Connect: Poll found remote dismiss from " + dismissedBy);
-                                    MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                    long dTs = getFirestoreLong(docFields, "dismissedAtMs", getFirestoreLong(docFields, "timestampMs", 0L));
+                                    if (dTs == 0L || Math.abs(now - dTs) <= 300_000L) {
+                                        android.util.Log.d("CloudSignalClient", "Spotify Connect: Poll found remote dismiss from " + dismissedBy);
+                                        MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                    }
                                 }
                             } else if (isRinging) {
                                 handledFromLive = true;
