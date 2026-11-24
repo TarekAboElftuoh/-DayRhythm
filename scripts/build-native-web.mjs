@@ -29,3 +29,17 @@ if (assetFiles.length === 0) {
 }
 
 console.log(`[DayRhythm] Native web bundle verified (${assetFiles.length} assets in dist/assets).`);
+
+const androidWwwDir = path.join(rootDir, 'native', 'android-webkit', 'app', 'src', 'main', 'assets', 'www');
+if (fs.existsSync(path.dirname(androidWwwDir))) {
+  fs.mkdirSync(androidWwwDir, { recursive: true });
+  fs.cpSync(distDir, androidWwwDir, { recursive: true });
+  console.log(`[DayRhythm] Synced dist to Android assets: ${androidWwwDir}`);
+}
+
+const winWwwDir = path.join(rootDir, 'native', 'windows-dotnet', 'www');
+if (fs.existsSync(path.dirname(winWwwDir))) {
+  fs.mkdirSync(winWwwDir, { recursive: true });
+  fs.cpSync(distDir, winWwwDir, { recursive: true });
+  console.log(`[DayRhythm] Synced dist to Windows native www: ${winWwwDir}`);
+}

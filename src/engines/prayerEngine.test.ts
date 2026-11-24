@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   calculateEgyptianPrayerTimes,
+  computeEventRangeInTimeZone,
   formatMinutes12h,
   formatMinutes24h,
+  getTimeZoneOffsetString,
   haversineDistanceKm,
 } from './prayerEngine';
 import { GeoLocation } from '../types/dayrhythm';
@@ -58,5 +60,32 @@ describe('prayerEngine', () => {
     // Cairo to Alexandria is ~180 km
     expect(distanceKm).toBeGreaterThan(170);
     expect(distanceKm).toBeLessThan(190);
+  });
+
+  it('formats timezone offset strings accurately for ISO/RFC3339 timestamps', () => {
+    const cairoOffset = getTimeZoneOffsetString('Africa/Cairo', new Date('2026-01-15T12:00:00Z'));
+    expect(cairoOffset).toMatch(/^[+-]\d{2}:\d{2}$/);
+    expect(cairoOffset).toBe('+02:00');
+
+    const utcOffset = getTimeZoneOffsetString('UTC', new Date('2026-01-15T12:00:00Z'));
+    expect(utcOffset).toBe('+00:00');
+  });
+
+  it('computes symmetric start and end times for Google Calendar events without mixing Z and offset', () => {
+    // Normal 30-min event
+    const range30 = computeEventRangeInTimeZone('2026-11-24', '15:30', 30, 'Africa/Cairo');
+    expect(range30.startDateTime).toBe('2026-11-24T15:30:00+02:00');
+    expect(range30.endDateTime).toBe('2026-11-24T16:00:00+02:00');
+
+    // 0-duration event stored with 1-min window for API validity while preserving local offset
+    const range0 = computeEventRangeInTimeZone('2026-11-24', '10:00', 0, 'Africa/Cairo');
+    expect(range0.startDateTime).toBe('2026-11-24T10:00:00+02:00');
+    expect(range0.endDateTime).toBe('2026-11-24T10:01:00+02:00');
+    expect(range0.endDateTime).not.toContain('Z');
+
+    // Midnight crossing
+    const rangeCrossing = computeEventRangeInTimeZone('2026-11-24', '23:45', 30, 'Africa/Cairo');
+    expect(rangeCrossing.startDateTime).toBe('2026-11-24T23:45:00+02:00');
+    expect(rangeCrossing.endDateTime).toBe('2026-11-25T00:15:00+02:00');
   });
 });

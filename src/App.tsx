@@ -140,11 +140,13 @@ import {
   HOME_LOCATION,
   PRESET_LOCATIONS,
   calculateEgyptianPrayerTimes,
+  computeEventRangeInTimeZone,
   formatIsoTo12h,
   formatMinutes12h,
   formatNow12hInTimeZone,
   getDateIsoInTimeZone,
   getNowMinutesInTimeZone,
+  getTimeZoneOffsetString,
   getTimeZoneUtcOffsetHours,
   getTodayCalendarMeta,
   getSpecialFastDay,
@@ -233,12 +235,7 @@ function loadSavedCapsulePrefs(): CapsulePrefs {
 }
 
 function formatUtcOffsetForIso(timeZone: string): string {
-  const offsetHours = getTimeZoneUtcOffsetHours(timeZone);
-  const sign = offsetHours >= 0 ? '+' : '-';
-  const absTotalMin = Math.round(Math.abs(offsetHours) * 60);
-  const hh = String(Math.floor(absTotalMin / 60)).padStart(2, '0');
-  const mm = String(absTotalMin % 60).padStart(2, '0');
-  return `${sign}${hh}:${mm}`;
+  return getTimeZoneOffsetString(timeZone);
 }
 
 function saveOfflineWorkspaceCache<T>(prefix: string, uid: string | null | undefined, data: T): void {
@@ -523,7 +520,10 @@ function resolveRelativeCalendarStarts(
       ...act,
       dateIso: getDateIsoInTimeZone(timeZone, target),
       startTime24: `${hh}:${mm}`,
-      durationMinutes: act.durationMinutes && act.durationMinutes > 0 ? act.durationMinutes : 15,
+      durationMinutes:
+        typeof act.durationMinutes === 'number' && act.durationMinutes >= 0
+          ? act.durationMinutes
+          : 15,
     };
   });
 }
@@ -5741,12 +5741,12 @@ export default function App() {
         const startInfo = existingEv?.start
           ? parseIsoToTimeZoneInfo(existingEv.start, activeTimeZone)
           : null;
-        let durationMinutes = 30;
+        let durationMinutes = 0;
         if (existingEv?.start && existingEv?.end && !existingEv.isAllDay) {
           const diff = Math.round(
             (new Date(existingEv.end).getTime() - new Date(existingEv.start).getTime()) / 60_000
           );
-          if (diff >= 15 && diff <= 720) durationMinutes = diff;
+          durationMinutes = diff <= 1 ? 0 : Math.min(720, Math.max(0, diff));
         }
         const h24 = startInfo ? Math.floor(startInfo.minutesSinceMidnight / 60) : 9;
         const m24 = startInfo ? startInfo.minutesSinceMidnight % 60 : 0;
@@ -5797,7 +5797,6 @@ export default function App() {
           serverHandled = true;
         } catch (proxyErr: unknown) {
           // If running standalone APK/EXE without backend proxy, execute directly via Google Calendar API v3
-          const tzOffsetStr = formatUtcOffsetForIso(activeTimeZone);
           const directResults: CalendarExecutionResult[] = [];
           for (const act of actions) {
             const calId = encodeURIComponent(act.calendarId || 'primary');
@@ -5821,10 +5820,12 @@ export default function App() {
                 id: act.eventId,
               });
             } else if (act.operation === 'create' && act.dateIso && act.startTime24) {
-              const startDt = `${act.dateIso}T${act.startTime24}:00${tzOffsetStr}`;
-              const startMs = new Date(startDt).getTime();
-              const duration = typeof act.durationMinutes === 'number' ? act.durationMinutes : 0;
-              const endDt = new Date(startMs + (duration === 0 ? 60_000 : duration * 60_000)).toISOString();
+              const { startDateTime, endDateTime } = computeEventRangeInTimeZone(
+                act.dateIso,
+                act.startTime24,
+                act.durationMinutes,
+                activeTimeZone
+              );
               const validByDays = Array.isArray(act.byDays)
                 ? act.byDays.filter((d) => ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].includes(d))
                 : [];
@@ -5849,8 +5850,8 @@ export default function App() {
                   body: JSON.stringify({
                     summary: act.title,
                     description: act.description || '',
-                    start: { dateTime: startDt, timeZone: activeTimeZone },
-                    end: { dateTime: endDt, timeZone: activeTimeZone },
+                    start: { dateTime: startDateTime, timeZone: activeTimeZone },
+                    end: { dateTime: endDateTime, timeZone: activeTimeZone },
                     ...(recurrence ? { recurrence } : {}),
                   }),
                 }
@@ -5873,11 +5874,14 @@ export default function App() {
               const body: Record<string, unknown> = { summary: act.title };
               if (act.description !== undefined) body.description = act.description;
               if (act.dateIso && act.startTime24) {
-                const startDt = `${act.dateIso}T${act.startTime24}:00${tzOffsetStr}`;
-                const startMs = new Date(startDt).getTime();
-                const endDt = new Date(startMs + (act.durationMinutes || 30) * 60_000).toISOString();
-                body.start = { dateTime: startDt, timeZone: activeTimeZone };
-                body.end = { dateTime: endDt, timeZone: activeTimeZone };
+                const { startDateTime, endDateTime } = computeEventRangeInTimeZone(
+                  act.dateIso,
+                  act.startTime24,
+                  act.durationMinutes,
+                  activeTimeZone
+                );
+                body.start = { dateTime: startDateTime, timeZone: activeTimeZone };
+                body.end = { dateTime: endDateTime, timeZone: activeTimeZone };
               }
               const r = await fetch(
                 `https://www.googleapis.com/calendar/v3/calendars/${calId}/events/${encodeURIComponent(act.eventId)}`,
@@ -6173,16 +6177,19 @@ export default function App() {
           const created = resolved
             .filter((a) => a.operation === 'create' && a.dateIso && a.startTime24)
             .map((a, i) => {
-              const start = `${a.dateIso}T${a.startTime24}:00${formatUtcOffsetForIso(activeTimeZone)}`;
-              const duration = typeof a.durationMinutes === 'number' ? a.durationMinutes : 0;
-              const end = new Date(new Date(start).getTime() + (duration === 0 ? 60_000 : duration * 60_000)).toISOString();
+              const { startDateTime, endDateTime } = computeEventRangeInTimeZone(
+                a.dateIso,
+                a.startTime24,
+                a.durationMinutes,
+                activeTimeZone
+              );
               return {
                 id: `queued-${Date.now()}-${i}`,
                 calendarId: a.calendarId || 'primary',
                 summary: a.title,
                 description: a.description || '',
-                start,
-                end,
+                start: startDateTime,
+                end: endDateTime,
                 isAllDay: false,
               } as GoogleCalendarEventItem;
             });
@@ -6310,7 +6317,7 @@ export default function App() {
               title: snap.title,
               dateIso: snap.dateIso || getDateIsoInTimeZone(activeTimeZone),
               startTime24: snap.startTime24 || '09:00',
-              durationMinutes: snap.durationMinutes || 30,
+              durationMinutes: typeof snap.durationMinutes === 'number' ? snap.durationMinutes : 30,
               description: snap.description,
             },
           ],
@@ -6919,7 +6926,7 @@ export default function App() {
 
     // 3. Live Google Calendar event reminders (5-min high-visibility alert on Secondary Screen / Side Dock / Mobile)
     liveBlocks.forEach((block) => {
-      if (block.deleted || block.completed || block.isAllDay) return;
+      if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer') return;
       const diff = nowTickMin - block.startMin;
       if (diff >= 0 && diff <= 2) {
         const key = `${todayIso}:event:${block.id}:${block.startMin}`;
@@ -8713,7 +8720,7 @@ export default function App() {
         (b) =>
           !b.completed &&
           !b.deleted &&
-          (b.isAllDay || b.startMin + b.durationMin > nowMin)
+          (b.isAllDay || b.startMin + Math.max(1, b.durationMin) > nowMin)
       ) ?? null
     );
   }, [needsAuth, useOfflineDemo, liveBlocks, activeTimeZone, capsuleNowMs]);
@@ -8811,11 +8818,13 @@ export default function App() {
       if (endSec <= nowSecOfDay) continue;
       const isNow = nowSecOfDay >= startSec && nowSecOfDay < endSec;
       const bDisplay = resolveBlockDisplayInfo(block);
+      const prayerEffectiveMin =
+        block.source === 'prayer' ? block.startMin + lifeProfile.adhanLeadMinutes : block.startMin;
       candidates.push({
         sourceKind: 'calendar',
         emoji: (block.emojiPair || '📅').split(' ')[0] || '📅',
         title: bDisplay.title,
-        clockLabel: formatMinutes12h(block.startMin, 'ar'),
+        clockLabel: formatMinutes12h(prayerEffectiveMin, 'ar'),
         startSec,
         endSec,
         targetSec: isNow ? endSec : startSec,
@@ -8957,7 +8966,8 @@ export default function App() {
         countdownText,
         isNow: c.isNow,
         isUrgent: remSec > 0 && remSec <= 60,
-        targetEpochMs: remSec > 0 ? capsuleNowMs + remSec * 1000 : 0,
+        targetEpochMs:
+          remSec > 0 ? capsuleNowMs - (capsuleNowMs % 1000) + remSec * 1000 : 0,
         durationSeconds: c.durationSec,
       };
     };
@@ -9029,7 +9039,8 @@ export default function App() {
         isNow: winnerTrack.isNow,
         isUrgent: winnerTrack.isUrgent,
         progressRatio,
-        targetEpochMs: remainingSec > 0 ? capsuleNowMs + remainingSec * 1000 : 0,
+        targetEpochMs:
+          remainingSec > 0 ? capsuleNowMs - (capsuleNowMs % 1000) + remainingSec * 1000 : 0,
         durationSeconds: winner.durationSec,
         calendarTrack,
         taskTrack,
@@ -9256,7 +9267,7 @@ export default function App() {
 
     // 4. Upcoming Google Calendar Events today (exact simultaneous firing with PC)
     for (const block of liveBlocks) {
-      if (block.deleted || block.completed || block.isAllDay) continue;
+      if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer') continue;
       const triggerAtMs = msForMinuteToday(block.startMin);
       if (triggerAtMs > nowMs + 1_000) {
         const emoji = (block.emojiPair || '📅').trim();

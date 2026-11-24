@@ -660,7 +660,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const isBlockFinishedOrPassed = (b: ScheduleBlock): boolean => {
     if (b.completed) return true;
     if (b.isAllDay) return false;
-    return b.startMin + b.durationMin <= nowMinutes;
+    const effectiveDuration = Math.max(1, b.durationMin);
+    return b.startMin + effectiveDuration <= nowMinutes;
   };
 
   const remainingTodayBlocks = useMemo(
@@ -812,7 +813,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     nextAlarmBlock &&
       !nextAlarmBlock.isAllDay &&
       nextAlarmBlock.startMin <= nowMinutes &&
-      nextAlarmBlock.startMin + nextAlarmBlock.durationMin > nowMinutes
+      nextAlarmBlock.startMin + Math.max(1, nextAlarmBlock.durationMin) > nowMinutes
   );
 
   const nextAlarmDisplay = useMemo(
@@ -869,7 +870,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
 
     if (isNextBlockHappeningNow) {
-      const endSec = (nextAlarmBlock.startMin + nextAlarmBlock.durationMin) * 60;
+      const endSec = (nextAlarmBlock.startMin + Math.max(1, nextAlarmBlock.durationMin)) * 60;
       const remSec = Math.max(1, endSec - liveClockParts.nowSecOfDay);
       const remMin = Math.ceil(remSec / 60);
       const h = Math.floor(remMin / 60);
@@ -2377,7 +2378,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       !block.completed &&
                       !block.isAllDay &&
                       block.startMin <= nowMinutes &&
-                      block.startMin + block.durationMin > nowMinutes;
+                      block.startMin + Math.max(1, block.durationMin) > nowMinutes;
                     const display = resolveBlockDisplayInfo(block);
                     const showSecondaryCalendarLabel =
                       block.calendarTitle && block.calendarTitle !== calendarUserEmail;

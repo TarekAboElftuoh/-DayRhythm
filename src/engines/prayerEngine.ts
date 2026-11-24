@@ -297,6 +297,84 @@ export function getCairoUtcOffsetHours(date: Date = new Date()): number {
   return getTimeZoneUtcOffsetHours('Africa/Cairo', date);
 }
 
+export function getTimeZoneOffsetString(
+  timeZone: string = 'Africa/Cairo',
+  date: Date = new Date()
+): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      timeZoneName: 'shortOffset',
+    }).formatToParts(date);
+    const tzPart = parts.find((p) => p.type === 'timeZoneName')?.value ?? 'GMT+2';
+    if (tzPart === 'GMT' || tzPart === 'UTC') return '+00:00';
+    const match = tzPart.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+    if (match) {
+      const sign = match[1];
+      const hrs = match[2].padStart(2, '0');
+      const mins = (match[3] ?? '00').padStart(2, '0');
+      return `${sign}${hrs}:${mins}`;
+    }
+  } catch {
+    // fallback below
+  }
+  const offsetHours = getTimeZoneUtcOffsetHours(timeZone, date);
+  const sign = offsetHours >= 0 ? '+' : '-';
+  const absTotalMin = Math.round(Math.abs(offsetHours) * 60);
+  const hh = String(Math.floor(absTotalMin / 60)).padStart(2, '0');
+  const mm = String(absTotalMin % 60).padStart(2, '0');
+  return `${sign}${hh}:${mm}`;
+}
+
+export function computeEventRangeInTimeZone(
+  dateIso?: string,
+  startTime24?: string,
+  durationMinutes?: number,
+  timeZone: string = 'Africa/Cairo'
+): { startDateTime: string; endDateTime: string } {
+  const safeTz = timeZone || 'Africa/Cairo';
+  const baseDate = dateIso && /^\d{4}-\d{2}-\d{2}$/.test(dateIso) ? dateIso : getDateIsoInTimeZone(safeTz);
+  const timeMatch = startTime24?.match(/^(\d{1,2}):(\d{2})$/);
+  const hh = timeMatch ? Math.min(23, Math.max(0, Number(timeMatch[1]))) : 9;
+  const mm = timeMatch ? Math.min(59, Math.max(0, Number(timeMatch[2]))) : 0;
+  // Google Calendar API requires end > start: 0-min events are stored with 1 min window (durationMin = 0 on read)
+  const duration =
+    durationMinutes === 0
+      ? 1
+      : typeof durationMinutes === 'number' && durationMinutes > 0
+        ? Math.round(durationMinutes)
+        : 30;
+
+  const startOffset = getTimeZoneOffsetString(safeTz, new Date(`${baseDate}T12:00:00Z`));
+  const startStr = `${baseDate}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00${startOffset}`;
+  const startMs = new Date(startStr).getTime();
+  const endMs = startMs + duration * 60_000;
+
+  // Format end in safeTz local wall-clock with its offset
+  const endParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: safeTz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(endMs));
+
+  const ey = endParts.find((p) => p.type === 'year')?.value ?? baseDate.slice(0, 4);
+  const em = endParts.find((p) => p.type === 'month')?.value ?? baseDate.slice(5, 7);
+  const ed = endParts.find((p) => p.type === 'day')?.value ?? baseDate.slice(8, 10);
+  const ehhRaw = endParts.find((p) => p.type === 'hour')?.value ?? '10';
+  const ehh = ehhRaw === '24' ? '00' : ehhRaw;
+  const emm = endParts.find((p) => p.type === 'minute')?.value ?? '00';
+  const endDateIso = `${ey}-${em}-${ed}`;
+  const endOffset = getTimeZoneOffsetString(safeTz, new Date(`${endDateIso}T12:00:00Z`));
+  const endStr = `${endDateIso}T${ehh}:${emm}:00${endOffset}`;
+
+  return { startDateTime: startStr, endDateTime: endStr };
+}
+
 /**
  * Offline Global Astronomical Prayer Engine
  * Default Authority: Egyptian General Authority of Survey (Fajr 19.5°, Isha 17.5°).
