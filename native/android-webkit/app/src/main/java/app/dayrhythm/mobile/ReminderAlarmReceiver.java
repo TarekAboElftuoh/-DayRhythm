@@ -470,6 +470,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     "",
                     snoozeMinutes
             );
+            CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
         } catch (Exception ignored) {
         }
     }

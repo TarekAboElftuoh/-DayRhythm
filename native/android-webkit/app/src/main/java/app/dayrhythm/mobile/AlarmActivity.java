@@ -372,9 +372,13 @@ public class AlarmActivity extends Activity {
         } else {
             registerReceiver(closeReceiver, f);
         }
+
+        // Actively watch for remote dismissals from PC (<600ms latency)
+        CloudSignalClient.watchForRemoteDismiss(this, System.currentTimeMillis());
     }
 
     private void sendDoneAction() {
+        CloudSignalClient.sendAlarmDismiss(this, "native_done");
         Intent src = getIntent();
         Intent i = new Intent(this, ReminderAlarmReceiver.class);
         i.setAction(ReminderAlarmReceiver.ACTION_MARK_DONE);
@@ -384,6 +388,7 @@ public class AlarmActivity extends Activity {
     }
 
     private void sendSnoozeAction(int minutes) {
+        CloudSignalClient.sendAlarmDismiss(this, "native_snooze");
         Intent src = getIntent();
         Intent i = new Intent(this, ReminderAlarmReceiver.class);
         i.setAction(ReminderAlarmReceiver.ACTION_SNOOZE);
@@ -394,6 +399,7 @@ public class AlarmActivity extends Activity {
     }
 
     private void sendDismissAction() {
+        CloudSignalClient.sendAlarmDismiss(this, "native_dismiss");
         Intent src = getIntent();
         Intent i = new Intent(this, ReminderAlarmReceiver.class);
         i.setAction(ReminderAlarmReceiver.ACTION_DISMISS);
@@ -435,6 +441,7 @@ public class AlarmActivity extends Activity {
             unregisterReceiver(closeReceiver);
         } catch (Exception ignored) {
         }
+        CloudSignalClient.stopWatching();
         super.onDestroy();
     }
 }

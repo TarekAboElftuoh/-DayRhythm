@@ -126,10 +126,7 @@ public final class CloudSignalClient {
                                 .put("name", docName(auth))
                                 .put("fields", new JSONObject().put("syncSignal",
                                         new JSONObject().put("mapValue", new JSONObject().put("fields", sigFields)))))
-                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("syncSignal")))
-                        .put("updateTransforms", new JSONArray().put(new JSONObject()
-                                .put("fieldPath", "updatedAt")
-                                .put("setToServerValue", "REQUEST_TIME")));
+                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray().put("syncSignal")));
 
                 JSONObject liveFields = new JSONObject()
                         .put("opId", new JSONObject().put("stringValue", opId))
@@ -140,7 +137,9 @@ public final class CloudSignalClient {
                 JSONObject write2 = new JSONObject()
                         .put("update", new JSONObject()
                                 .put("name", docName(auth) + "/sync/live")
-                                .put("fields", liveFields));
+                                .put("fields", liveFields))
+                        .put("updateMask", new JSONObject().put("fieldPaths", new JSONArray()
+                                .put("opId").put("clientId").put("type").put("action").put("timestampMs")));
 
                 JSONObject body = new JSONObject().put("writes", new JSONArray().put(write1).put(write2));
 
@@ -150,10 +149,11 @@ public final class CloudSignalClient {
                         .header("Authorization", "Bearer " + token)
                         .post(RequestBody.create(body.toString(), JSON))
                         .build();
-                try (Response ignored = HTTP.newCall(req).execute()) {
-                    // best effort
+                try (Response res = HTTP.newCall(req).execute()) {
+                    android.util.Log.d("CloudSignalClient", "sendAlarmDismiss status=" + res.code());
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                android.util.Log.e("CloudSignalClient", "sendAlarmDismiss error", e);
             }
         });
     }
@@ -279,7 +279,7 @@ public final class CloudSignalClient {
     public static synchronized void watchForRemoteDismiss(Context context, long firedAtMs) {
         final Context app = context.getApplicationContext();
         stopWatching();
-        final long deadline = firedAtMs + 2 * 60_000L;
+        final long deadline = firedAtMs + 3 * 60_000L;
         watchFuture = EXEC.scheduleWithFixedDelay(() -> {
             if (System.currentTimeMillis() > deadline) {
                 stopWatching();
@@ -292,6 +292,35 @@ public final class CloudSignalClient {
                     return;
                 }
                 String token = getIdToken(app, auth);
+                long now = System.currentTimeMillis();
+
+                // 1. Fast-path check users/{uid}/sync/live (<100ms dismissal)
+                Request reqLive = new Request.Builder()
+                        .url("https://firestore.googleapis.com/v1/" + docName(auth) + "/sync/live")
+                        .header("Authorization", "Bearer " + token)
+                        .get()
+                        .build();
+                try (Response res = HTTP.newCall(reqLive).execute()) {
+                    if (res.isSuccessful() && res.body() != null) {
+                        JSONObject doc = new JSONObject(res.body().string());
+                        JSONObject docFields = doc.optJSONObject("fields");
+                        if (docFields != null) {
+                            String type = getFirestoreString(docFields, "type", "");
+                            String client = getFirestoreString(docFields, "clientId", "");
+                            long ts = getFirestoreLong(docFields, "timestampMs", 0L);
+                            if ("alarm_dismiss".equals(type) && !CLIENT_ID.equals(client)) {
+                                if (now - ts <= 90_000L || Math.abs(ts - firedAtMs) <= 180_000L) {
+                                    stopWatching();
+                                    MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+
+                // 2. Secondary check users/{uid}?mask.fieldPaths=syncSignal
                 Request req = new Request.Builder()
                         .url("https://firestore.googleapis.com/v1/" + docName(auth) + "?mask.fieldPaths=syncSignal")
                         .header("Authorization", "Bearer " + token)
@@ -305,18 +334,9 @@ public final class CloudSignalClient {
                     JSONObject sf = sig == null ? null
                             : (sig.optJSONObject("mapValue") == null ? null : sig.optJSONObject("mapValue").optJSONObject("fields"));
                     if (sf == null) return;
-                    String scope = sf.optJSONObject("scope") == null ? "" : sf.optJSONObject("scope").optString("stringValue");
-                    String client = sf.optJSONObject("clientId") == null ? "" : sf.optJSONObject("clientId").optString("stringValue");
-                    long ts = 0L;
-                    JSONObject tsObj = sf.optJSONObject("timestampMs");
-                    if (tsObj != null) {
-                        try {
-                            ts = Long.parseLong(tsObj.optString("integerValue", "0"));
-                        } catch (NumberFormatException ignored) {
-                        }
-                    }
-                    long now = System.currentTimeMillis();
-                    // Tolerant clock-skew window (up to 3 minutes or 90s future/past) to account for phone/PC clock drift
+                    String scope = getFirestoreString(sf, "scope", "");
+                    String client = getFirestoreString(sf, "clientId", "");
+                    long ts = getFirestoreLong(sf, "timestampMs", 0L);
                     boolean isRecentDismiss = (ts >= firedAtMs - 90_000L && ts <= now + 90_000L) || Math.abs(ts - firedAtMs) <= 180_000L;
                     if ("alarm_dismiss".equals(scope) && !CLIENT_ID.equals(client) && isRecentDismiss) {
                         stopWatching();
@@ -325,7 +345,7 @@ public final class CloudSignalClient {
                 }
             } catch (Exception ignored) {
             }
-        }, 1, 2, TimeUnit.SECONDS);
+        }, 200, 600, TimeUnit.MILLISECONDS);
     }
 
     public static synchronized void stopWatching() {
@@ -350,12 +370,20 @@ public final class CloudSignalClient {
         JSONObject v = fields.optJSONObject(key);
         if (v == null) return fallback;
         String s = v.optString("integerValue", null);
-        if (s == null) return fallback;
-        try {
-            return Integer.parseInt(s);
-        } catch (Exception e) {
-            return fallback;
+        if (s != null && !s.isEmpty()) {
+            try {
+                return Integer.parseInt(s);
+            } catch (Exception ignored) {}
         }
+        if (v.has("doubleValue")) {
+            return (int) v.optDouble("doubleValue", fallback);
+        }
+        if (v.has("stringValue")) {
+            try {
+                return Integer.parseInt(v.optString("stringValue"));
+            } catch (Exception ignored) {}
+        }
+        return fallback;
     }
 
     private static long getFirestoreLong(JSONObject fields, String key, long fallback) {
@@ -363,12 +391,20 @@ public final class CloudSignalClient {
         JSONObject v = fields.optJSONObject(key);
         if (v == null) return fallback;
         String s = v.optString("integerValue", null);
-        if (s == null) return fallback;
-        try {
-            return Long.parseLong(s);
-        } catch (Exception e) {
-            return fallback;
+        if (s != null && !s.isEmpty()) {
+            try {
+                return Long.parseLong(s);
+            } catch (Exception ignored) {}
         }
+        if (v.has("doubleValue")) {
+            return (long) v.optDouble("doubleValue", fallback);
+        }
+        if (v.has("stringValue")) {
+            try {
+                return Long.parseLong(v.optString("stringValue"));
+            } catch (Exception ignored) {}
+        }
+        return fallback;
     }
 
     /**
