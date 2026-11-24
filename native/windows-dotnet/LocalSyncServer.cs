@@ -36,6 +36,7 @@ namespace DayRhythm
 
         public static void Initialize(Action onRemoteDismiss, Action<NativeAlertPayload> onRemoteTrigger)
         {
+            _instance?.Dispose();
             _instance = new LocalSyncServer(onRemoteDismiss, onRemoteTrigger);
             _instance.Start();
         }
@@ -85,6 +86,10 @@ namespace DayRhythm
                         buffer = result.Buffer;
                         string json = Encoding.UTF8.GetString(buffer);
                         string remoteIp = result.RemoteEndPoint.Address.ToString();
+                        if (_knownMobileIps.Count > 32)
+                        {
+                            _knownMobileIps.Clear();
+                        }
                         _knownMobileIps[remoteIp] = DateTime.UtcNow;
 
                         ProcessIncomingMessage(json, remoteIp);
@@ -163,9 +168,13 @@ namespace DayRhythm
 
                         if (contentLength > 0)
                         {
-                            char[] bodyBuffer = new char[contentLength];
-                            await reader.ReadBlockAsync(bodyBuffer, 0, contentLength).ConfigureAwait(false);
-                            body = new string(bodyBuffer);
+                            int cappedLength = Math.Min(contentLength, 65536);
+                            char[] bodyBuffer = new char[cappedLength];
+                            int readCount = await reader.ReadAsync(bodyBuffer, 0, cappedLength).ConfigureAwait(false);
+                            if (readCount > 0)
+                            {
+                                body = new string(bodyBuffer, 0, readCount);
+                            }
                         }
 
                         ProcessIncomingMessage(body, remoteIp);

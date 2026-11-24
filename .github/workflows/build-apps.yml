@@ -36,6 +36,8 @@ jobs:
         run: |
           rm -f bun.lock package-lock.json
           npm install --no-package-lock --legacy-peer-deps --no-audit --no-fund
+          npm run lint
+          npm test
           npm run build:native
           node scripts/png-to-ico.mjs public/pwa-512x512.png dist-icons/app.ico
 

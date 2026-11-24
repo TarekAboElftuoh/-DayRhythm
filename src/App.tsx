@@ -7986,22 +7986,6 @@ export default function App() {
     (id: string, dateIso: string) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       const cutoff7Iso = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
-      stopContinuousAlert();
-      stopNativeAlerts();
-      setActiveAudioAlert(null);
-      setPersistentAlert(null);
-      setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
-        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
-      }
 
       setMedications((prev) => {
         const next = prev.map((m) => {
@@ -8076,23 +8060,6 @@ export default function App() {
         refillAlertDays: nextAlertDays,
       });
 
-      stopContinuousAlert();
-      stopNativeAlerts();
-      setActiveAudioAlert(null);
-      setPersistentAlert(null);
-      setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
-        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
-      }
-
       setMedications((prev) => {
         const next = prev.map((m) => (m.id === id ? updated : m));
         void pushToTasksVaultImmediately({ medications: next });
@@ -8156,22 +8123,6 @@ export default function App() {
             ? Math.max(1, Math.min(14, Math.round(input.refillAlertDays)))
             : 3,
       });
-      stopContinuousAlert();
-      stopNativeAlerts();
-      setActiveAudioAlert(null);
-      setPersistentAlert(null);
-      setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
-        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
-      }
 
       setMedications((prev) => {
         const next = [...prev, med];
@@ -8192,23 +8143,6 @@ export default function App() {
 
   const handleDeleteMedication = useCallback(
     (id: string) => {
-      stopContinuousAlert();
-      stopNativeAlerts();
-      setActiveAudioAlert(null);
-      setPersistentAlert(null);
-      setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
-        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
-      }
-
       setMedications((prev) => {
         const next = prev.filter((m) => m.id !== id);
         void pushToTasksVaultImmediately({ medications: next });
@@ -8232,23 +8166,6 @@ export default function App() {
     ): Promise<MedicationExecutionResult[]> => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       const results: MedicationExecutionResult[] = [];
-
-      stopContinuousAlert();
-      stopNativeAlerts();
-      setActiveAudioAlert(null);
-      setPersistentAlert(null);
-      setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, { medicationId: id, doseTime24 });
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
-        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
-      }
 
       setMedications((prev) => {
         let next = [...prev];

@@ -73,7 +73,7 @@ public final class LocalSyncServer {
             WifiManager wifi = (WifiManager) context.getSystemService(Context.WIFI_SERVICE);
             if (wifi != null) {
                 multicastLock = wifi.createMulticastLock("DayRhythmMulticastLock");
-                multicastLock.setReferenceCounted(true);
+                multicastLock.setReferenceCounted(false);
                 multicastLock.acquire();
             }
         } catch (Exception e) {
@@ -159,8 +159,9 @@ public final class LocalSyncServer {
                     }
                 }
                 if (contentLength > 0) {
-                    char[] cbuf = new char[contentLength];
-                    int read = reader.read(cbuf, 0, contentLength);
+                    int cappedLength = Math.min(contentLength, 65536);
+                    char[] cbuf = new char[cappedLength];
+                    int read = reader.read(cbuf, 0, cappedLength);
                     if (read > 0) body = new String(cbuf, 0, read);
                 }
                 processIncomingMessage(body, remoteIp);
@@ -306,8 +307,7 @@ public final class LocalSyncServer {
     }
 
     private static void sendUdpBroadcast(byte[] bytes, int port) {
-        try {
-            DatagramSocket socket = new DatagramSocket();
+        try (DatagramSocket socket = new DatagramSocket()) {
             socket.setBroadcast(true);
 
             // Global LAN broadcast
@@ -334,21 +334,17 @@ public final class LocalSyncServer {
                     }
                 }
             } catch (Exception ignored) {}
-
-            socket.close();
         } catch (Exception e) {
             Log.w(TAG, "UDP broadcast error: " + e.getMessage());
         }
     }
 
     private static void sendDirectTcp(String ip, int port, String json) {
-        try {
-            Socket socket = new Socket();
+        try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(ip, port), 1200);
             try (PrintWriter writer = new PrintWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true)) {
                 writer.println(json);
             }
-            socket.close();
         } catch (Exception ignored) {
             // Unreachable or offline host
         }
