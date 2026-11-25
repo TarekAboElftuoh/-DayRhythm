@@ -16,6 +16,7 @@ namespace DayRhythm
         public string CapsuleSize { get; set; } = "md";
         public int? CapsuleX { get; set; }
         public int? CapsuleY { get; set; }
+        public string SyncUid { get; set; } = "";
     }
 
     internal static class AppConfig
@@ -31,7 +32,7 @@ namespace DayRhythm
         {
             if (string.IsNullOrWhiteSpace(AppVersion) || AppVersion.StartsWith("DAYRHYTHM_", StringComparison.Ordinal))
             {
-                return "2.0.87";
+                return "2.0.126";
             }
             return AppVersion.Trim();
         }

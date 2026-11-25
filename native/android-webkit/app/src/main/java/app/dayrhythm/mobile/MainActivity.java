@@ -449,6 +449,7 @@ public class MainActivity extends Activity {
         super.onResume();
         // Immediately silence any background looping ringtone/vibration when the user opens/resumes the app
         ReminderAlarmReceiver.stopRinging();
+        ReminderAlarmReceiver.cancelAllActiveAlarms(this);
         if (webView != null) {
             webView.evaluateJavascript(
                     "window.dispatchEvent(new CustomEvent('dayrhythm:permissions-changed'));",
@@ -655,7 +656,16 @@ public class MainActivity extends Activity {
 
             @JavascriptInterface
             public void dismissActiveAlerts() {
-                executor.execute(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(MainActivity.this));
+                executor.execute(() -> {
+                    ReminderAlarmReceiver.cancelAllActiveAlarms(MainActivity.this);
+                });
+            }
+
+            @JavascriptInterface
+            public void dismissAlarm() {
+                executor.execute(() -> {
+                    ReminderAlarmReceiver.cancelAllActiveAlarms(MainActivity.this);
+                });
             }
 
             @JavascriptInterface

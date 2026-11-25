@@ -73,14 +73,20 @@ export function getNativeCloudAuthPayload(): string | null {
   if (!user || user.isAnonymous) return null;
   const refreshToken =
     user.refreshToken ||
-    (user as unknown as { stsTokenManager?: { refreshToken?: string } }).stsTokenManager?.refreshToken;
-  if (!refreshToken) return null;
+    (user as unknown as { stsTokenManager?: { refreshToken?: string } }).stsTokenManager?.refreshToken ||
+    '';
+  const idToken =
+    (user as unknown as { accessToken?: string }).accessToken ||
+    (user as unknown as { stsTokenManager?: { accessToken?: string } }).stsTokenManager?.accessToken ||
+    '';
+  if (!refreshToken && !idToken) return null;
   return JSON.stringify({
     apiKey: firebaseConfig.apiKey,
     projectId: firebaseConfig.projectId,
     databaseId: configuredDbId,
     uid: user.uid,
     refreshToken,
+    idToken,
   });
 }
 
@@ -664,7 +670,9 @@ export function sanitizeLifeProfile(
 
   return {
     weightKg: clampFloat(raw?.weightKg, 30, 250, DEFAULT_LIFE_PROFILE.weightKg),
-    heightCm: clampFloat(raw?.heightCm, 100, 240, DEFAULT_LIFE_PROFILE.heightCm),
+    heightCm: !raw?.heightCm
+      ? DEFAULT_LIFE_PROFILE.heightCm
+      : clampFloat(raw?.heightCm, 100, 240, DEFAULT_LIFE_PROFILE.heightCm),
     cupSizeMl: clampInt(raw?.cupSizeMl, 50, 2000, DEFAULT_LIFE_PROFILE.cupSizeMl),
     fastingDays: sanitizeWeekdayList(raw?.fastingDays, DEFAULT_LIFE_PROFILE.fastingDays),
     suhoorLeadMinutes: clampInt(

@@ -661,7 +661,7 @@ export async function broadcastAlertTrigger(
       },
     };
 
-    await Promise.all([
+    await Promise.allSettled([
       setDoc(liveDocRef, payload, { merge: true }),
       setDoc(userDocRef, { syncSignal, updatedAt: serverTimestamp() }, { merge: true }),
     ]);
@@ -712,7 +712,7 @@ export async function broadcastAlertDismiss(
       opId: `dism_${nowMs}_${senderDeviceId}`,
     };
 
-    await Promise.all([
+    await Promise.allSettled([
       setDoc(liveDocRef, payload, { merge: true }),
       setDoc(userDocRef, { syncSignal, updatedAt: serverTimestamp() }, { merge: true }),
       dismissActiveAlarmInCloud(uid, alertId || 'all', senderDeviceId),
@@ -739,7 +739,7 @@ export async function emitCloudLiveSignal(
     await setDoc(liveDocRef, {
       ...signal,
       serverTime: serverTimestamp(),
-    });
+    }, { merge: true });
     return true;
   } catch (err) {
     console.warn('[CloudLiveSync] Failed emitting live signal:', err);

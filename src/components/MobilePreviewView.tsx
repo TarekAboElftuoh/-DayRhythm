@@ -114,7 +114,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
 
         <div className="flex items-center gap-2 text-xs text-zinc-400">
           <Cloud className={`w-4 h-4 ${firestoreSynced ? 'text-[#7FFFD4]' : 'text-zinc-500'}`} />
-          <span>{firestoreSynced ? 'متزامن لحظياً مع الكمبيوتر' : 'وضع محلي'}</span>
+          <span>{firestoreSynced ? 'متزامن لحظياً مع الكمبيوتر' : 'غير متصل'}</span>
         </div>
       </header>
 

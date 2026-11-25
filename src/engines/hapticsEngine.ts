@@ -41,6 +41,11 @@ export const HAPTIC_WAVEFORMS: Record<
 };
 
 export function triggerHapticWaveform(kind: HapticWaveformKind): boolean {
+  // Inside Android Native APK, hardware vibration is owned by ReminderAlarmReceiver on STREAM_ALARM.
+  // Calling WebView navigator.vibrate causes erratic shaking on app open/UI interactions.
+  if (typeof window !== 'undefined' && (window as Window & { DayRhythmNative?: unknown }).DayRhythmNative) {
+    return false;
+  }
   const wf = HAPTIC_WAVEFORMS[kind];
   if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
     try {

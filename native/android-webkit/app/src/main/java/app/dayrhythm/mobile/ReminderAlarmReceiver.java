@@ -131,7 +131,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         if (key == null || key.isEmpty()) return false;
         long now = System.currentTimeMillis();
         Long prev = RECENT_FIRED_KEYS.get(key);
-        if (prev != null && (now - prev) < 4_000L) {
+        if (prev != null && (now - prev) < 60_000L) {
             return true;
         }
         RECENT_FIRED_KEYS.put(key, now);
@@ -226,6 +226,10 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
     private static void vibrateOnce(Context context) {
         if (context == null) return;
+        // Never vibrate if MainActivity is in foreground and user is looking at the screen
+        if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
+            return;
+        }
         try {
             Vibrator vib = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
             if (vib != null && vib.hasVibrator()) {
@@ -500,7 +504,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             stopRinging();
             cancelNotification(context, notifId);
             closeAlarmUi(context);
-            // Stopping here stops the PC too (and vice versa — see CloudSignalClient).
+            // Stopping here stops the PC too via CloudSignalClient.
             CloudSignalClient.sendAlarmDismiss(context, "native_snooze");
             long snoozeAtMs = System.currentTimeMillis() + (long) snoozeMin * 60_000L;
             scheduleSingleExactAlarm(
@@ -561,7 +565,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 // Launch desktop-style AlarmActivity card over lock screen
                 launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
 
-                // Tell the PC to show its card at the exact same moment (<100ms)
+                // Spotify Connect: Ultra-low latency LAN broadcast + cloud trigger (<5ms local)
                 CloudSignalClient.sendAlarmTrigger(context, title, body, kind, snoozeMin);
 
                 // If the PC (or another device) stops this alert, stop it here too.

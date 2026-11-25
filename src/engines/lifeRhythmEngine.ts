@@ -46,7 +46,7 @@ export const MEMORY_CATEGORY_LABELS: Record<MemoryCategory, string> = {
 
 export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   weightKg: 70,
-  heightCm: 170,
+  heightCm: 177,
   cupSizeMl: 250,
   fastingDays: [],
   suhoorLeadMinutes: 45,
@@ -113,18 +113,19 @@ export function computeScientificHydration(
   normalTargetCups: number;
   fastingTargetCups: number;
   activeTargetCups: number;
+  cupMl: number;
 } {
   const safeHeatBonus = Math.max(0, Math.min(800, Math.round(heatBonusMl)));
   // Drinking water target (excluding ~20% fluid from food):
-  // ~31 ml/kg + fixed-height BSA adjustment (+6 ml per cm above 170cm) + weather heat bonus
+  // ~31 ml/kg + fixed-height BSA adjustment (+6 ml per cm above baseline 177cm) + weather heat bonus
   const rawNormalMl = Math.round(
-    profile.weightKg * 31 + (profile.heightCm - 170) * 6 + safeHeatBonus
+    profile.weightKg * 31 + (profile.heightCm - 177) * 6 + safeHeatBonus
   );
   const normalTargetMl = clamp(rawNormalMl, 1800, 4800);
 
   // Fasting day minimum physiological floor (~72% of base normal target + modest 35% heat buffer)
   const baseNoHeatMl = clamp(
-    Math.round(profile.weightKg * 31 + (profile.heightCm - 170) * 6),
+    Math.round(profile.weightKg * 31 + (profile.heightCm - 177) * 6),
     1800,
     4500
   );
@@ -153,6 +154,7 @@ export function computeScientificHydration(
     normalTargetCups,
     fastingTargetCups,
     activeTargetCups,
+    cupMl,
   };
 }
 
@@ -339,6 +341,19 @@ export function computeDailyRhythmPlan(
     const suhoorCups = Math.min(2, Math.max(1, Math.floor(hydration.activeTargetCups / 4)));
     const eveningCups = Math.max(1, hydration.activeTargetCups - suhoorCups);
 
+    // Suhoor happens before Fajr on the civil calendar day, so place it first to match sequential slot logging.
+    const suhoorBegin = wrap1440(fajr - profile.suhoorLeadMinutes);
+    const suhoorSpan = Math.max(15, profile.suhoorLeadMinutes - 10);
+    for (let s = 0; s < suhoorCups; s++) {
+      const offset = suhoorCups === 1 ? 10 : Math.round((s * suhoorSpan) / (suhoorCups - 1));
+      hydrationSlots.push({
+        cupIndex: s + 1,
+        timeMinutes: wrap1440(suhoorBegin + offset),
+        windowAr: 'السحور',
+        noteAr: '',
+      });
+    }
+
     const eveningStart = maghrib;
     const eveningEnd = wrap1440(bedtimeMin - 45);
     const eveningSpan = Math.max(45, durationForward(eveningStart, eveningEnd));
@@ -350,21 +365,9 @@ export function computeDailyRhythmPlan(
       if (i === 0) windowAr = 'عند الإفطار';
       else if (i === eveningCups - 1) windowAr = 'قبل النوم';
       hydrationSlots.push({
-        cupIndex: i + 1,
+        cupIndex: suhoorCups + i + 1,
         timeMinutes: tMin,
         windowAr,
-        noteAr: '',
-      });
-    }
-
-    const suhoorBegin = wrap1440(fajr - profile.suhoorLeadMinutes);
-    const suhoorSpan = Math.max(15, profile.suhoorLeadMinutes - 10);
-    for (let s = 0; s < suhoorCups; s++) {
-      const offset = suhoorCups === 1 ? 10 : Math.round((s * suhoorSpan) / (suhoorCups - 1));
-      hydrationSlots.push({
-        cupIndex: eveningCups + s + 1,
-        timeMinutes: wrap1440(suhoorBegin + offset),
-        windowAr: 'السحور',
         noteAr: '',
       });
     }
@@ -399,7 +402,7 @@ export function computeDailyRhythmPlan(
     normalTargetCups: hydration.normalTargetCups,
     fastingTargetCups: hydration.fastingTargetCups,
     activeTargetCups: hydration.activeTargetCups,
-    cupSizeMl: profile.cupSizeMl,
+    cupSizeMl: hydration.cupMl,
     hydrationSlots,
     bedtimeMin,
     wakeMin,
@@ -1076,4 +1079,16 @@ export function buildLifeProfileGeminiSummary(
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/** Shared medication stock runway helper accounting for scheduled daysOfWeek. */
+export function computeMedicationDaysLeft(
+  remainingDoses: number,
+  dosesPerDay: number,
+  daysOfWeek?: number[]
+): number {
+  const safeDosesPerDay = Math.max(1, dosesPerDay);
+  const daysPerWeek = daysOfWeek && daysOfWeek.length > 0 ? daysOfWeek.length : 7;
+  const dailyRate = Math.max(0.14, (safeDosesPerDay * daysPerWeek) / 7);
+  return remainingDoses / dailyRate;
 }
