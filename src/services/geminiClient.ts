@@ -991,14 +991,29 @@ export async function apiStreamGeminiChatClient(
       throw new DOMException('Aborted', 'AbortError');
     }
 
+    let reqTimeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+      // Per-request 28-second timeout — prevents indefinite hang when model server stalls.
+      const reqTimeoutCtrl = new AbortController();
+      reqTimeoutId = setTimeout(() => reqTimeoutCtrl.abort(), 28_000);
+      const composedSignal = (() => {
+        if (!handlers.signal) return reqTimeoutCtrl.signal;
+        if (typeof AbortSignal.any === 'function') {
+          return AbortSignal.any([handlers.signal, reqTimeoutCtrl.signal]);
+        }
+        const composed = new AbortController();
+        const abort = () => composed.abort();
+        handlers.signal.addEventListener('abort', abort, { once: true });
+        reqTimeoutCtrl.signal.addEventListener('abort', abort, { once: true });
+        return composed.signal;
+      })();
       const send = (includeThinking: boolean) =>
         fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(withModelConfig(requestBody, modelCandidate, route, includeThinking)),
-          signal: handlers.signal,
+          signal: composedSignal,
         });
       let res = await send(true);
       // A model that rejects the thinking level (HTTP 400 "Thinking level ... not supported") is retried without it.
@@ -1098,11 +1113,17 @@ export async function apiStreamGeminiChatClient(
       }
 
       succeeded = true;
+      if (reqTimeoutId) clearTimeout(reqTimeoutId);
       rememberWorkingModel(route, modelCandidate);
       break;
     } catch (modelErr: unknown) {
+      if (reqTimeoutId) clearTimeout(reqTimeoutId);
       if (modelErr instanceof DOMException && modelErr.name === 'AbortError') {
-        throw modelErr;
+        // If the user explicitly aborted, propagate. If the per-request timeout fired, try next model.
+        if (handlers.signal?.aborted) throw modelErr;
+        lastErr = modelErr;
+        if (fullText) break;
+        continue; // timeout — try next model candidate
       }
       lastErr = modelErr;
       if (fullText) {

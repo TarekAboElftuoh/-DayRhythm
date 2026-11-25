@@ -215,6 +215,8 @@ import type {
   CapsuleTrackInfo,
 } from './components/FloatingPiPCapsule';
 import { isAndroidNativeApp } from './services/platform';
+import { AppModals } from './components/AppModals';
+import { useBackupActions } from './hooks/useBackupActions';
 const MobilePreviewView = lazy(() => import('./components/MobilePreviewView').then((m) => ({ default: m.MobilePreviewView })));
 const OverlaySimulatorView = lazy(() => import('./components/OverlaySimulatorView').then((m) => ({ default: m.OverlaySimulatorView })));
 const GeminiAssistantView = lazy(() => import('./components/GeminiAssistantView').then((m) => ({ default: m.GeminiAssistantView })));
@@ -231,555 +233,50 @@ import {
   PersistentAlertOverlay,
 } from './components/PersistentAlertOverlay';
 
-const STORAGE_KEY = 'dayrhythm_state_v3';
-const CREATIVE_STORAGE_KEY = 'dayrhythm_creative_v1';
-const MEMORIES_STORAGE_KEY = 'dayrhythm_memories_v1';
-const CHAT_STORAGE_KEY = 'dayrhythm_gemini_chats_v1';
-const SILENT_NOTIFS_STORAGE_KEY = 'dayrhythm_silent_notifs_v1';
-const WATER_REMINDER_STORAGE_KEY = 'dayrhythm_water_reminders_v1';
-const ACTIVE_UID_STORAGE_KEY = 'dayrhythm_active_uid_v1';
-const SMART_CHARGE_KEEP_KEY = 'dayrhythm_smart_charge_keep_until_unplugged_v1';
-const OFFLINE_CAL_PREFIX = 'dayrhythm_offline_cal_v1_';
-const OFFLINE_TASKS_PREFIX = 'dayrhythm_offline_tasks_v1_';
-const OFFLINE_GMAIL_PREFIX = 'dayrhythm_offline_gmail_v1_';
-const CAPSULE_PREFS_STORAGE_KEY = 'dayrhythm_capsule_prefs_v1';
-
-function loadSavedCapsulePrefs(): CapsulePrefs {
-  try {
-    const raw = localStorage.getItem(CAPSULE_PREFS_STORAGE_KEY);
-    if (!raw) return { orientation: 'horizontal', size: 'md' };
-    const parsed = JSON.parse(raw) as Partial<CapsulePrefs>;
-    return {
-      orientation: parsed.orientation === 'vertical' ? 'vertical' : 'horizontal',
-      size: parsed.size === 'sm' || parsed.size === 'lg' ? parsed.size : 'md',
-    };
-  } catch {
-    return { orientation: 'horizontal', size: 'md' };
-  }
-}
-
-function formatUtcOffsetForIso(timeZone: string): string {
-  return getTimeZoneOffsetString(timeZone);
-}
-
-function saveOfflineWorkspaceCache<T>(prefix: string, uid: string | null | undefined, data: T): void {
-  if (!uid) return;
-  try {
-    localStorage.setItem(`${prefix}${uid}`, JSON.stringify(data));
-  } catch {
-    // ignore storage quota errors
-  }
-}
-
-function loadOfflineWorkspaceCache<T>(prefix: string, uid: string | null | undefined): T | null {
-  if (!uid) return null;
-  try {
-    const raw = localStorage.getItem(`${prefix}${uid}`);
-    if (!raw) return null;
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
-
-function hasActiveSignedInSession(): boolean {
-  try {
-    return Boolean(localStorage.getItem(ACTIVE_UID_STORAGE_KEY));
-  } catch {
-    return false;
-  }
-}
-
-function clearAllPersonalLocalStorage(): void {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(MEDS_STORAGE_KEY);
-    localStorage.removeItem(CREATIVE_STORAGE_KEY);
-    localStorage.removeItem(MEMORIES_STORAGE_KEY);
-    localStorage.removeItem(CHAT_STORAGE_KEY);
-    localStorage.removeItem(SILENT_NOTIFS_STORAGE_KEY);
-    localStorage.removeItem(ACTIVE_UID_STORAGE_KEY);
-    const keysToRemove: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (
-        k &&
-        (k.startsWith(OFFLINE_CAL_PREFIX) ||
-          k.startsWith(OFFLINE_TASKS_PREFIX) ||
-          k.startsWith(OFFLINE_GMAIL_PREFIX))
-      ) {
-        keysToRemove.push(k);
-      }
-    }
-    keysToRemove.forEach((k) => localStorage.removeItem(k));
-    clearGeminiClientCache();
-  } catch {
-    // ignore storage cleanup errors
-  }
-}
-
-const WELCOME_MESSAGE: PersistedChatMessage = {
-  id: 'welcome-1',
-  role: 'model',
-  mode: 'chat',
-  text: 'أهلاً بك في شات «إيقاع اليوم | DayRhythm» المربوط بـ Google Calendar و Google Tasks والدستور الشخصي وذاكرة Gemini السحابية الدائمة. سجّل دخولك بحساب Google لسحب بياناتك وخططك وأدويتك من السحابة تلقائياً، وأخبرني بأي معلومة أو قاعدة جديدة وسأحفظها في مخزونك السحابي كمرجع دائم.',
-};
-
-function loadSavedChats(): PersistedChatMessage[] {
-  try {
-    const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return sanitizePersistedChats(parsed, WELCOME_MESSAGE);
-    }
-  } catch {
-    try {
-      localStorage.removeItem(CHAT_STORAGE_KEY);
-    } catch {
-      // ignore storage cleanup error
-    }
-  }
-  return [WELCOME_MESSAGE];
-}
-
-function loadSavedCreativeActivities(): CreativeActivityItem[] {
-  try {
-    const raw = localStorage.getItem(CREATIVE_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed.map((a) => sanitizeCreativeActivityItem(a));
-      }
-    }
-  } catch {
-    // ignore storage errors
-  }
-  return DEFAULT_CREATIVE_ACTIVITIES;
-}
-
-function loadSavedMemories(): MemoryItem[] {
-  try {
-    const raw = localStorage.getItem(MEMORIES_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed.map((m) => sanitizeMemoryItem(m));
-      }
-    }
-  } catch {
-    // ignore storage errors
-  }
-  return DEFAULT_MEMORIES;
-}
-
-function loadSavedSilentNotifications(): SilentNotificationItem[] {
-  try {
-    const raw = localStorage.getItem(SILENT_NOTIFS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed.slice(0, 25);
-      }
-    }
-  } catch {
-    // ignore storage errors
-  }
-  return [];
-}
-
-function getLast7DayLabels(timeZone = 'Africa/Cairo'): string[] {
-  const now = new Date();
-  const map: Record<string, string> = {
-    Sun: 'الأحد',
-    Mon: 'الإثنين',
-    Tue: 'الثلاثاء',
-    Wed: 'الأربعاء',
-    Thu: 'الخميس',
-    Fri: 'الجمعة',
-    Sat: 'السبت',
-  };
-  return Array.from({ length: 7 }, (_, i) => {
-    if (i === 6) return 'اليوم';
-    const d = new Date(now.getTime() - (6 - i) * 86_400_000);
-    let weekdayEn = '';
-    try {
-      weekdayEn = new Intl.DateTimeFormat('en-US', {
-        timeZone,
-        weekday: 'short',
-      }).format(d);
-    } catch {
-      weekdayEn = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Africa/Cairo',
-        weekday: 'short',
-      }).format(d);
-    }
-    return map[weekdayEn] ?? 'يوم';
-  });
-}
-
-function buildInitialHydrationHistory(
-  targetCups: number,
-  timeZone = 'Africa/Cairo'
-): HydrationDayLog[] {
-  const labels = getLast7DayLabels(timeZone);
-  const todayIso = getDateIsoInTimeZone(timeZone);
-
-  return labels.map((labelAr, idx) => ({
-    dateKey: idx === 6 ? todayIso : `day-${idx}`,
-    labelAr,
-    cupsLogged: 0,
-    targetCups,
-    slots: Array.from({ length: targetCups }, () => false),
-  }));
-}
-
-function rollOverHydrationHistoryIfNeeded(
-  history: HydrationDayLog[],
-  targetCups: number,
-  timeZone = 'Africa/Cairo'
-): HydrationDayLog[] {
-  const todayIso = getDateIsoInTimeZone(timeZone);
-  const labels = getLast7DayLabels(timeZone);
-  const last = history[history.length - 1];
-  if (last && last.dateKey === todayIso) {
-    return history.map((d, idx) => ({ ...d, labelAr: labels[idx] ?? d.labelAr }));
-  }
-  // New day in user's active timezone started: shift history left and start today fresh at 0 cups
-  const shiftedCounts = [...history.slice(1).map((d) => d.cupsLogged), 0];
-  return labels.map((labelAr, idx) => {
-    const c = Math.min(targetCups, shiftedCounts[idx] ?? 0);
-    return {
-      dateKey: idx === 6 ? todayIso : `day-${idx}`,
-      labelAr,
-      cupsLogged: c,
-      targetCups,
-      slots: Array.from({ length: targetCups }, (_, sIdx) => sIdx < c),
-    };
-  });
-}
-
-/**
- * Gemini sometimes invents an event id (e.g. "test_event_123") when the target event was not in
- * its context. Google then answers 404 on DELETE, which the executor treats as "already deleted",
- * so the user saw "done" while nothing changed. Resolve every update/delete target against the
- * events we actually fetched: exact id first, then exact title (+ date when given), and refuse
- * clearly when the event can't be found or the title is ambiguous.
- */
-function resolveCalendarActionTargets(
-  actions: CalendarActionProposal[],
-  knownEvents: GoogleCalendarEventItem[]
-): CalendarActionProposal[] {
-  const norm = (s: string | undefined) => (s || '').replace(/\s+/g, ' ').trim();
-  return actions.map((act) => {
-    if (act.operation !== 'delete' && act.operation !== 'update' && act.operation !== 'shift') {
-      return act;
-    }
-    const byId = act.eventId ? knownEvents.find((e) => e.id === act.eventId) : undefined;
-    if (byId) {
-      const finalId =
-        act.applyToAllDays && byId.recurringEventId
-          ? byId.recurringEventId
-          : act.applyToAllDays && byId.id.includes('_')
-            ? byId.id.split('_')[0]
-            : byId.id;
-      return { ...act, eventId: finalId, calendarId: byId.calendarId || act.calendarId };
-    }
-    const title = norm(act.title);
-    let candidates = knownEvents.filter((e) => norm(e.summary) === title);
-    if (act.dateIso && candidates.length > 1) {
-      const sameDay = candidates.filter((e) => String(e.start).startsWith(act.dateIso!));
-      if (sameDay.length > 0) candidates = sameDay;
-    }
-    if (candidates.length === 1) {
-      const target = candidates[0];
-      const finalId =
-        act.applyToAllDays && target.recurringEventId
-          ? target.recurringEventId
-          : act.applyToAllDays && target.id.includes('_')
-            ? target.id.split('_')[0]
-            : target.id;
-      return { ...act, eventId: finalId, calendarId: target.calendarId || act.calendarId };
-    }
-    throw new Error(
-      candidates.length === 0
-        ? `مش لاقي موعد «${title}» في تقويمك — حدّث الجدول واطلبها تاني.`
-        : `فيه أكتر من موعد باسم «${title}» — قول اليوم والساعة بالظبط.`
-    );
-  });
-}
-
-/**
- * "Remind me in 5 minutes": Gemini only says how many minutes; the start time is computed here from
- * the device clock. Asking the model to do the clock arithmetic itself produced reminders at the
- * wrong time (a 5-minute request landed 10 minutes later).
- */
-function resolveRelativeCalendarStarts(
-  actions: CalendarActionProposal[],
-  timeZone: string
-): CalendarActionProposal[] {
-  return actions.map((act) => {
-    const mins = Number(act.startInMinutes);
-    if (!Number.isFinite(mins) || mins <= 0 || mins > 7 * 24 * 60) return act;
-    // Round to the nearest whole minute (events are minute-precise).
-    const target = new Date(Date.now() + Math.round(mins) * 60_000 + 30_000);
-    const minuteOfDay = getNowMinutesInTimeZone(timeZone, target);
-    const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, '0');
-    const mm = String(minuteOfDay % 60).padStart(2, '0');
-    return {
-      ...act,
-      dateIso: getDateIsoInTimeZone(timeZone, target),
-      startTime24: `${hh}:${mm}`,
-      durationMinutes:
-        typeof act.durationMinutes === 'number' && act.durationMinutes >= 0
-          ? act.durationMinutes
-          : 15,
-    };
-  });
-}
-
-interface QueuedGoogleOp {
-  id: string;
-  kind: 'calendar' | 'tasks';
-  actions: CalendarActionProposal[] | TaskActionProposal[];
-  createdAtMs: number;
-}
-
-const GOOGLE_OFFLINE_QUEUE_KEY = 'dayrhythm_google_offline_queue_v1';
-
-function readGoogleOfflineQueue(): QueuedGoogleOp[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(GOOGLE_OFFLINE_QUEUE_KEY) || '[]');
-    return Array.isArray(parsed) ? (parsed as QueuedGoogleOp[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeGoogleOfflineQueue(queue: QueuedGoogleOp[]): void {
-  try {
-    if (queue.length === 0) localStorage.removeItem(GOOGLE_OFFLINE_QUEUE_KEY);
-    else localStorage.setItem(GOOGLE_OFFLINE_QUEUE_KEY, JSON.stringify(queue));
-  } catch {
-    // ignore storage errors
-  }
-}
-
-/** fetch() rejects with a TypeError ("Failed to fetch" / "Load failed") when there is no network. */
-function isNetworkFailure(err: unknown): boolean {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
-  return err instanceof TypeError && /fetch|network|load failed/i.test(err.message);
-}
-
-/** Same protection for Google Tasks: never act on a task id Gemini made up. */
-function resolveTaskActionTargets(
-  actions: TaskActionProposal[],
-  knownTasks: GoogleTaskItem[]
-): TaskActionProposal[] {
-  const norm = (s: string | undefined) => (s || '').replace(/\s+/g, ' ').trim();
-  return actions.map((act) => {
-    if (act.operation === 'create') return act;
-    const byId = act.taskId ? knownTasks.find((t) => t.id === act.taskId) : undefined;
-    if (byId) return { ...act, taskListId: byId.taskListId || act.taskListId };
-    const candidates = knownTasks.filter((t) => norm(t.title) === norm(act.title));
-    if (candidates.length === 1) {
-      return { ...act, taskId: candidates[0].id, taskListId: candidates[0].taskListId };
-    }
-    throw new Error(
-      candidates.length === 0
-        ? `مش لاقي مهمة «${norm(act.title)}» — حدّث المهام واطلبها تاني.`
-        : `فيه أكتر من مهمة باسم «${norm(act.title)}» — وضّح أنهي واحدة.`
-    );
-  });
-}
-
-const GOOGLE_SESSION_EXPIRED_AR =
-  'انتهت صلاحية ربط Google — اضغط «تجديد ربط Google الآن» ثم أعد المحاولة.';
-
-const SKIP_PATTERN_STORAGE_KEY = 'dayrhythm_skip_pattern_counts_v1';
-
-// Fields that only make sense together are written together (a cup count without its date key
-// could land on the wrong day).
-const RHYTHM_FIELD_GROUPS: ReadonlyArray<ReadonlyArray<keyof SyncedRhythmPayload>> = [
-  [
-    'hydrationDateKey',
-    'cupsLogged',
-    'targetCups',
-    'hydrationWeeklyCounts',
-    'hydrationSlotOpIds',
-    'hydrationRemovedOpIds',
-    'hydrationUpdatedAtMs',
-  ],
-  ['dailyCommitmentDays', 'dailyCommitmentDoneToday', 'waterTargetDays', 'waterTargetDoneToday'],
-  ['quietMode'],
-  ['adhanOverrideSilent'],
-  ['surfaceTheme'],
-  ['deviceSettings'],
-  ['lifeProfile'],
-  ['uiPrefs'],
-  ['appSettings'],
-  ['medications'],
-  ['creativeActivities'],
-  ['memories'],
-  ['completedOverrides'],
-  ['fastingOverride'],
-  ['isFridayMode'],
-  ['includeBiweeklyPcCleanup'],
-  ['periodicRituals'],
-  ['travelState'],
-  ['pomodoro'],
-];
-
-function serializeRhythmFields(p: SyncedRhythmPayload): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const group of RHYTHM_FIELD_GROUPS) {
-    for (const key of group) out[key] = JSON.stringify(p[key] ?? null);
-  }
-  return out;
-}
-
-/** Stable key for a block title across days (strips emoji/whitespace so "☕ 😌 استراحة" always matches itself). */
-function normalizeSkipPatternKey(titleAr: string): string {
-  return titleAr
-    .replace(/\p{Extended_Pictographic}/gu, '')
-    .replace(/[️‍\s]/g, '')
-    .trim()
-    .toLowerCase()
-    .slice(0, 80);
-}
-
-function detectIsMobileDeviceClient(): boolean {
-  if (typeof window === 'undefined') return false;
-  // The Android APK always exposes this native bridge.
-  if ((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative) return true;
-  const ua = navigator.userAgent || '';
-  // NOTE: never decide by window width. A narrow PC window used to be treated as the phone,
-  // which published the PC's battery as "phone battery" (false "unplug the charger" alerts)
-  // and let the PC overwrite the phone's GPS location.
-  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
-}
-
-function extractTaskTimeMinutesForToday(
-  task: GoogleTaskItem,
-  todayDateIso: string,
-  timeZone = 'Africa/Cairo'
-): { startMin: number; hasExplicitTime: boolean } | null {
-  if (task.status === 'completed') return null;
-
-  // Check if due date exists and belongs to another day
-  if (task.due) {
-    const dueDateOnly = task.due.slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dueDateOnly) && dueDateOnly !== todayDateIso) {
-      return null;
-    }
-    // Check if Google Tasks due timestamp carries a non-midnight time
-    const timePartMatch = task.due.match(/T(\d{2}):(\d{2})/);
-    if (timePartMatch && !(timePartMatch[1] === '00' && timePartMatch[2] === '00')) {
-      const parsed = parseIsoToTimeZoneInfo(task.due, timeZone);
-      if (parsed && parsed.dateIso === todayDateIso) {
-        return { startMin: parsed.minutesSinceMidnight, hasExplicitTime: true };
-      }
-    }
-  }
-
-  // Extract explicit time from notes or title (supports ⏰ 14:30, @14:30, [14:30], 2:30 م, 2:30 pm, 14:30)
-  const combined = `${task.notes || ''} ${task.title || ''}`;
-  const tagged24 = combined.match(/(?:⏰|@|\[)\s*(\d{1,2}):(\d{2})\s*\]?/);
-  if (tagged24) {
-    const h = Number(tagged24[1]);
-    const m = Number(tagged24[2]);
-    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
-      return { startMin: h * 60 + m, hasExplicitTime: true };
-    }
-  }
-
-  const time12Match = combined.match(/(\d{1,2}):(\d{2})\s*(ص|صباحاً|صباحا|م|مساءً|مساءا|مساء|am|pm)\b/i);
-  if (time12Match) {
-    let h = Number(time12Match[1]);
-    const m = Number(time12Match[2]);
-    const marker = time12Match[3].toLowerCase();
-    const isPm = marker.startsWith('م') || marker === 'pm';
-    if (h >= 1 && h <= 12 && m >= 0 && m <= 59) {
-      if (isPm && h !== 12) h += 12;
-      if (!isPm && h === 12) h = 0;
-      return { startMin: h * 60 + m, hasExplicitTime: true };
-    }
-  }
-
-  const plain24 = combined.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
-  if (plain24) {
-    const h = Number(plain24[1]);
-    const m = Number(plain24[2]);
-    return { startMin: h * 60 + m, hasExplicitTime: true };
-  }
-
-  // Due today without explicit clock time
-  if (task.due && task.due.slice(0, 10) === todayDateIso) {
-    return { startMin: -1, hasExplicitTime: false };
-  }
-
-  return null;
-}
-
-const INITIAL_TOMBSTONES: CalendarTombstone[] = [];
-
-const INITIAL_PERIODIC_RITUALS: PeriodicRitualStatus[] = [
-  {
-    id: 'room_weekly',
-    emojiPair: '🧹 🛏️',
-    titleAr: 'تنظيف الغرفة الأسبوعي',
-    titleEn: 'Weekly Room Cleanup',
-    intervalDays: 7,
-    timeLabelAr: 'أسبوعياً',
-    daysSinceLast: 0,
-    lastCompletedIso: '',
-  },
-  {
-    id: 'pc_biweekly',
-    emojiPair: '💻 🧼',
-    titleAr: 'ترتيب وتنظيف المكتب/الجهاز',
-    titleEn: 'Biweekly Workspace Cleanup',
-    intervalDays: 14,
-    timeLabelAr: 'كل أسبوعين',
-    daysSinceLast: 0,
-    lastCompletedIso: '',
-  },
-  {
-    id: 'personal_monthly',
-    emojiPair: '✂️ 🚿',
-    titleAr: 'العناية الدورية (كل 30 يوماً)',
-    titleEn: 'Monthly Care Cycle (30d)',
-    intervalDays: 30,
-    timeLabelAr: 'كل 30 يوماً',
-    daysSinceLast: 0,
-    lastCompletedIso: '',
-  },
-];
-
-const INITIAL_CHANGELOG: SharedChangelogEntry[] = [];
-
-function extractEmojiPair(summary: string, fallback = '📅'): string {
-  const tokens = summary.trim().split(/\s+/).filter(Boolean);
-  const emojiRe = /\p{Extended_Pictographic}/u;
-  const leading: string[] = [];
-  for (const tok of tokens) {
-    // Token is purely emoji / variation selectors / ZWJ
-    const stripped = tok.replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '');
-    if (emojiRe.test(tok) && stripped.length === 0) {
-      leading.push(tok);
-      if (leading.length === 3) break;
-    } else {
-      break;
-    }
-  }
-  if (leading.length > 0) {
-    return leading.join(' ');
-  }
-  if (tokens.length > 0 && emojiRe.test(tokens[0])) {
-    return tokens[0];
-  }
-  return fallback;
-}
-
+import {
+  STORAGE_KEY,
+  CREATIVE_STORAGE_KEY,
+  MEMORIES_STORAGE_KEY,
+  CHAT_STORAGE_KEY,
+  SILENT_NOTIFS_STORAGE_KEY,
+  WATER_REMINDER_STORAGE_KEY,
+  ACTIVE_UID_STORAGE_KEY,
+  SMART_CHARGE_KEEP_KEY,
+  OFFLINE_CAL_PREFIX,
+  OFFLINE_TASKS_PREFIX,
+  OFFLINE_GMAIL_PREFIX,
+  CAPSULE_PREFS_STORAGE_KEY,
+  loadSavedCapsulePrefs,
+  saveOfflineWorkspaceCache,
+  loadOfflineWorkspaceCache,
+  clearAllPersonalLocalStorage,
+  WELCOME_MESSAGE,
+  loadSavedChats,
+  loadSavedCreativeActivities,
+  loadSavedMemories,
+  loadSavedSilentNotifications,
+  getLast7DayLabels,
+  buildInitialHydrationHistory,
+  rollOverHydrationHistoryIfNeeded,
+  resolveCalendarActionTargets,
+  resolveRelativeCalendarStarts,
+  type QueuedGoogleOp,
+  readGoogleOfflineQueue,
+  writeGoogleOfflineQueue,
+  isNetworkFailure,
+  resolveTaskActionTargets,
+  GOOGLE_SESSION_EXPIRED_AR,
+  SKIP_PATTERN_STORAGE_KEY,
+  RHYTHM_FIELD_GROUPS,
+  serializeRhythmFields,
+  normalizeSkipPatternKey,
+  detectIsMobileDeviceClient,
+  extractTaskTimeMinutesForToday,
+  INITIAL_TOMBSTONES,
+  INITIAL_PERIODIC_RITUALS,
+  INITIAL_CHANGELOG,
+  extractEmojiPair,
+} from './utils/appHelpers';
 export default function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const hasOpenedAssistantRef = useRef(false);
@@ -3132,13 +2629,15 @@ export default function App() {
           }
           if (backup.deviceSettings) {
             const cleanDev = sanitizeDeviceSettings(backup.deviceSettings);
-            setDeviceSettings(cleanDev);
-            try {
-              const raw = localStorage.getItem(STORAGE_KEY);
-              const parsed = raw ? JSON.parse(raw) : {};
-              localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
-            } catch {
-              // ignore storage errors
+            if (Date.now() >= localWriteLockUntilRef.current) {
+              setDeviceSettings(cleanDev);
+              try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                const parsed = raw ? JSON.parse(raw) : {};
+                localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
+              } catch {
+                // ignore storage errors
+              }
             }
           }
           if (backup.capsulePrefs) {
@@ -3692,7 +3191,7 @@ export default function App() {
     if (remote.deviceSettings) {
       const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
       const isDiff = JSON.stringify(cleanDev) !== JSON.stringify(deviceSettingsRef.current);
-      if (isDiff) {
+      if (isDiff && Date.now() >= localWriteLockUntilRef.current) {
         deviceSettingsRef.current = cleanDev;
         setDeviceSettings(cleanDev);
         try {
@@ -3707,7 +3206,7 @@ export default function App() {
     if (remote.lifeProfile) {
       const cleanProfile = sanitizeLifeProfile(remote.lifeProfile);
       const isDiff = JSON.stringify(cleanProfile) !== JSON.stringify(lifeProfileRef.current);
-      if (isDiff) {
+      if (isDiff && Date.now() >= localWriteLockUntilRef.current) {
         lifeProfileRef.current = cleanProfile;
         setLifeProfile(cleanProfile);
         try {
@@ -5158,7 +4657,7 @@ export default function App() {
 
   const handleUpdateDeviceSettings = useCallback(
     (patch: Partial<OnePlusDeviceSettings>) => {
-      localWriteLockUntilRef.current = Date.now() + 300;
+      localWriteLockUntilRef.current = Date.now() + 4000;
       const next = sanitizeDeviceSettings({ ...deviceSettingsRef.current, ...patch });
       deviceSettingsRef.current = next;
       setDeviceSettings(next);
@@ -5176,7 +4675,7 @@ export default function App() {
 
   const handleUpdateLifeProfile = useCallback(
     (patch: Partial<LifeProfile>) => {
-      localWriteLockUntilRef.current = Date.now() + 300;
+      localWriteLockUntilRef.current = Date.now() + 4000;
       const nextProfile = sanitizeLifeProfile({ ...lifeProfileRef.current, ...patch });
       lifeProfileRef.current = nextProfile;
       setLifeProfile(nextProfile);
@@ -8572,200 +8071,37 @@ export default function App() {
   }, [activeTimeZone, medications, nowTickMin, todayCairoIso]);
 
   // Feature #4: One-Click Full JSON Backup Export & Restore (zero OAuth tokens or secrets!)
-  const handleExportBackupJson = useCallback(() => {
-    const todayIso = getDateIsoInTimeZone(activeTimeZone);
-    const payload = {
-      app: 'DayRhythm',
-      version: 1,
-      exportedAtIso: new Date().toISOString(),
-      lifeProfile,
-      medications,
-      memories,
-      creativeActivities,
-      hydrationHistory,
-      streaks,
-      deviceSettings,
-      uiPrefs: sanitizeUiPrefs({
-        selectedLogoId,
-        capsuleOrientation: capsulePrefs.orientation,
-        capsuleSize: capsulePrefs.size,
-      }),
-    };
-    try {
-      const blob = new Blob([JSON.stringify(payload, null, 2)], {
-        type: 'application/json;charset=utf-8',
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `dayrhythm-backup-${todayIso}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      showToast(`💾 تم تنزيل النسخة الاحتياطية الكاملة (dayrhythm-backup-${todayIso}.json) ✓`);
-    } catch {
-      showToast('تعذر تنزيل ملف النسخة الاحتياطية — حاول مرة أخرى');
-    }
-  }, [
+  const { handleExportBackupJson, handleImportBackupJson } = useBackupActions({
     activeTimeZone,
-    capsulePrefs.orientation,
-    capsulePrefs.size,
+    adhanOverrideSilent,
+    capsulePrefs,
     creativeActivities,
     deviceSettings,
+    firebaseUser,
+    firestoreSynced,
     hydrationHistory,
     lifeProfile,
+    localWriteLockUntilRef,
     medications,
     memories,
+    pushFullCloudBackupImmediately,
+    pushToTasksVaultImmediately,
+    quietMode,
     selectedLogoId,
+    setCapsulePrefs,
+    setCreativeActivities,
+    setDeviceSettings,
+    setHydrationHistory,
+    setLifeProfile,
+    setMedications,
+    setMemories,
+    setSelectedLogoId,
+    setStreaks,
     showToast,
     streaks,
-  ]);
-
-  const handleImportBackupJson = useCallback(
-    async (rawText: string): Promise<{ ok: boolean; summaryAr: string }> => {
-      try {
-        const parsed = JSON.parse(rawText) as Record<string, unknown>;
-        if (!parsed || parsed.app !== 'DayRhythm') {
-          return {
-            ok: false,
-            summaryAr: 'الملف غير صالح — تأكد أنه ملف نسخة احتياطية مُصدّر من «إيقاع اليوم».',
-          };
-        }
-
-        const nextProfile = parsed.lifeProfile
-          ? sanitizeLifeProfile(parsed.lifeProfile as Partial<LifeProfile>)
-          : lifeProfile;
-        const nextDevice = parsed.deviceSettings
-          ? sanitizeDeviceSettings(parsed.deviceSettings as Partial<OnePlusDeviceSettings>)
-          : deviceSettings;
-        const nextMeds = Array.isArray(parsed.medications)
-          ? parsed.medications.map((m) => sanitizeMedicationItem(m as Partial<MedicationItem>))
-          : medications;
-        const nextMems = Array.isArray(parsed.memories)
-          ? parsed.memories.map((m) => sanitizeMemoryItem(m as Partial<MemoryItem>))
-          : memories;
-        const nextCreative = Array.isArray(parsed.creativeActivities)
-          ? parsed.creativeActivities.map((a) =>
-              sanitizeCreativeActivityItem(a as Partial<CreativeActivityItem>)
-            )
-          : creativeActivities;
-        const nextUi: UiPrefs =
-          (parsed.uiPrefs ? sanitizeUiPrefs(parsed.uiPrefs as Partial<UiPrefs>) : undefined) ?? {
-            selectedLogoId,
-            capsuleOrientation: capsulePrefs.orientation,
-            capsuleSize: capsulePrefs.size,
-          };
-        const nextStreaks: DualStreaks =
-          parsed.streaks && typeof parsed.streaks === 'object'
-            ? {
-                dailyCommitmentDays: Math.max(
-                  0,
-                  Math.min(3650, Number((parsed.streaks as Partial<DualStreaks>).dailyCommitmentDays) || 0)
-                ),
-                dailyCommitmentDoneToday: Boolean(
-                  (parsed.streaks as Partial<DualStreaks>).dailyCommitmentDoneToday
-                ),
-                waterTargetDays: Math.max(
-                  0,
-                  Math.min(3650, Number((parsed.streaks as Partial<DualStreaks>).waterTargetDays) || 0)
-                ),
-                waterTargetDoneToday: Boolean(
-                  (parsed.streaks as Partial<DualStreaks>).waterTargetDoneToday
-                ),
-              }
-            : streaks;
-        const restoreTz = nextProfile.currentTimeZone || activeTimeZone;
-        const nextHydration =
-          Array.isArray(parsed.hydrationHistory) && parsed.hydrationHistory.length === 7
-            ? rollOverHydrationHistoryIfNeeded(
-                parsed.hydrationHistory as HydrationDayLog[],
-                targetCups,
-                restoreTz
-              )
-            : hydrationHistory;
-
-        localWriteLockUntilRef.current = Date.now() + 800;
-        setLifeProfile(nextProfile);
-        setDeviceSettings(nextDevice);
-        setMedications(nextMeds);
-        setMemories(nextMems);
-        setCreativeActivities(nextCreative);
-        setStreaks(nextStreaks);
-        setHydrationHistory(nextHydration);
-        setSelectedLogoId(nextUi.selectedLogoId);
-        setCapsulePrefs({
-          orientation: nextUi.capsuleOrientation,
-          size: nextUi.capsuleSize,
-        });
-
-        try {
-          window.localStorage.setItem(SELECTED_LOGO_STORAGE_KEY, nextUi.selectedLogoId);
-          window.localStorage.setItem(
-            CAPSULE_PREFS_STORAGE_KEY,
-            JSON.stringify({
-              orientation: nextUi.capsuleOrientation,
-              size: nextUi.capsuleSize,
-            })
-          );
-        } catch {
-          // ignore storage errors
-        }
-
-        const todayEntry = nextHydration[nextHydration.length - 1];
-        void pushToTasksVaultImmediately({
-          hydrationDateKey: getDateIsoInTimeZone(restoreTz),
-          cupsLogged: todayEntry?.cupsLogged ?? 0,
-          targetCups: todayEntry?.targetCups ?? targetCups,
-          hydrationWeeklyCounts: nextHydration.map((d) => d.cupsLogged),
-          dailyCommitmentDays: nextStreaks.dailyCommitmentDays,
-          dailyCommitmentDoneToday: nextStreaks.dailyCommitmentDoneToday,
-          waterTargetDays: nextStreaks.waterTargetDays,
-          waterTargetDoneToday: nextStreaks.waterTargetDoneToday,
-          quietMode,
-          adhanOverrideSilent,
-          surfaceTheme,
-          deviceSettings: nextDevice,
-          lifeProfile: nextProfile,
-          medications: nextMeds,
-          creativeActivities: nextCreative,
-          memories: nextMems,
-          uiPrefs: nextUi,
-        });
-        void pushFullCloudBackupImmediately();
-
-        const summaryAr = `تم استرجاع النسخة الاحتياطية بنجاح ✓ (${nextMeds.length} علاج · ${nextMems.length} قاعدة ذاكرة · ${nextCreative.length} نشاط إبداعي)`;
-        showToast(summaryAr);
-        return { ok: true, summaryAr };
-      } catch {
-        return {
-          ok: false,
-          summaryAr: 'تعذر قراءة ملف JSON — تأكد أن الملف سليم وغير تالف.',
-        };
-      }
-    },
-    [
-      activeTimeZone,
-      adhanOverrideSilent,
-      capsulePrefs.orientation,
-      capsulePrefs.size,
-      creativeActivities,
-      deviceSettings,
-      firebaseUser?.emailVerified,
-      firebaseUser?.uid,
-      firestoreSynced,
-      hydrationHistory,
-      lifeProfile,
-      medications,
-      memories,
-      quietMode,
-      selectedLogoId,
-      showToast,
-      streaks,
-      surfaceTheme,
-      targetCups,
-    ]
-  );
+    surfaceTheme,
+    targetCups,
+  });
 
   // Confirm hydration, medication, snooze & Android background quick actions (Windows Screen 2, Android Notifications, Desktop Capsule)
   useEffect(() => {
@@ -10059,205 +9395,84 @@ ${lifeConstitution}
           /></Suspense></div>)}
       </main>
 
-      {!isAndroidNativeApp() && (<Suspense fallback={null}><FloatingPiPCapsule
-        nextEmoji={capsuleTimerState.emoji}
-        nextTitle={capsuleTimerState.title}
-        statusLabel={capsuleTimerState.statusLabel}
-        sourceKind={capsuleTimerState.sourceKind}
-        countdownText={capsuleTimerState.countdownText}
-        isNow={capsuleTimerState.isNow}
-        isUrgent={capsuleTimerState.isUrgent}
-        progressRatio={capsuleTimerState.progressRatio}
-        targetEpochMs={capsuleTimerState.targetEpochMs}
-        durationSeconds={capsuleTimerState.durationSeconds}
-        calendarTrack={capsuleTimerState.calendarTrack}
-        taskTrack={capsuleTimerState.taskTrack}
-        upcomingQueue={capsuleTimerState.upcomingQueue}
-        phoneBattery={phoneBattery}
-        capsulePrefs={capsulePrefs}
-        onChangeCapsulePrefs={handleUpdateCapsulePrefs}
-        onQuickLogWater={handleLogWaterCup}
-        nextMedicationQuick={nextMedicationQuick}
-        onQuickTakeMedication={handleToggleMedication}
-        onOpenDashboard={() => handleSelectTab('dashboard')}
-      /></Suspense>)}
-
-      <PersistentAlertOverlay
-        alert={
-          typeof window !== 'undefined' &&
-          Boolean(
-            (window as Window & { chrome?: { webview?: { postMessage?: unknown } } }).chrome
-              ?.webview?.postMessage
-          )
-            ? null
-            : persistentAlert
-        }
-        defaultSnoozeMinutes={lifeProfile.defaultSnoozeMinutes ?? 5}
-        allowVibration={quietMode !== 'silent_all'}
-        onDismiss={() => {
-          if (persistentAlert?.id.startsWith('charge_')) {
-            handleStopSmartChargeAlert();
-          } else {
-            handleAcknowledgeAudioAlert();
-            setPersistentAlert(null);
-          }
-        }}
-        onAutoSnooze={(alertItem, mins) => {
-          handleSnoozeAlert(alertItem, mins, { localOnly: true });
-        }}
-        onConfirmWater={() => {
-          handleLogWaterCup();
-          handleAcknowledgeAudioAlert();
-          setPersistentAlert(null);
-        }}
-        onConfirmMedication={(medId, doseTime24) => {
-          handleToggleMedication(medId, doseTime24);
-          handleAcknowledgeAudioAlert();
-          setPersistentAlert(null);
-        }}
-        onCompleteTask={(taskId, taskListId) => {
-          void handleExecuteTaskActions([
-            {
-              operation: 'complete',
-              title: persistentAlert?.title || 'مهمة',
-              taskId,
-              taskListId,
-            },
-          ]).catch(() => {});
-          handleAcknowledgeAudioAlert();
-          setPersistentAlert(null);
-        }}
-        onSnoozeAlert={handleSnoozeAlert}
-      />
-
-      <OfflineIndicator language={language} />
-
-      {isLifeProfileModalOpen && (<Suspense fallback={null}><LifeProfileModal
-        isOpen={isLifeProfileModalOpen}
-        onClose={() => setIsLifeProfileModalOpen(false)}
-        profile={lifeProfile}
-        prayers={prayers}
+      <AppModals
+        activeBrandLogo={activeBrandLogo}
         activeLocation={activeLocation}
-        memories={memories}
-        onAddMemory={handleAddMemory}
-        onUpdateMemory={handleUpdateMemory}
-        onDeleteMemory={handleDeleteMemory}
-        onSaveProfile={handleUpdateLifeProfile}
-        onDetectGpsLocation={handleDetectGpsLocation}
-        isDetectingGps={isDetectingGps}
-        includePrayerAnchors={includePrayerAnchors}
-        onToggleIncludePrayerAnchors={handleToggleIncludePrayerAnchors}
-        isFridayMode={isFridayMode}
-        onToggleFridayMode={handleToggleFridayMode}
+        activeTimeZone={activeTimeZone}
+        capsulePrefs={capsulePrefs}
+        capsuleTimerState={capsuleTimerState}
+        googleDriveSynced={googleDriveSynced}
+        handleAcknowledgeAudioAlert={handleAcknowledgeAudioAlert}
+        handleAddMemory={handleAddMemory}
+        handleApplyTravel={handleApplyTravel}
+        handleCheckAppUpdates={handleCheckAppUpdates}
+        handleCommitReflow={handleCommitReflow}
+        handleDeleteMemory={handleDeleteMemory}
+        handleDetectGpsLocation={handleDetectGpsLocation}
+        handleDisableTravel={handleDisableTravel}
+        handleExecuteTaskActions={handleExecuteTaskActions}
+        handleExportBackupJson={handleExportBackupJson}
+        handleGoogleSignOut={handleGoogleSignOut}
+        handleImportBackupJson={handleImportBackupJson}
+        handleLogWaterCup={handleLogWaterCup}
+        handleResetBrandLogo={handleResetBrandLogo}
+        handleSelectBrandLogo={handleSelectBrandLogo}
+        handleSelectTab={handleSelectTab}
+        handleSetQuietMode={handleSetQuietMode}
+        handleSnoozeAlert={handleSnoozeAlert}
+        handleStopSmartChargeAlert={handleStopSmartChargeAlert}
+        handleTestSmartChargeAlert={handleTestSmartChargeAlert}
+        handleToggleBiweeklyPcCleanup={handleToggleBiweeklyPcCleanup}
+        handleToggleFridayMode={handleToggleFridayMode}
+        handleToggleIncludePrayerAnchors={handleToggleIncludePrayerAnchors}
+        handleToggleMedication={handleToggleMedication}
+        handleToggleSmartChargeAlertEnabled={handleToggleSmartChargeAlertEnabled}
+        handleToggleSmartChargeKeepUntilUnplugged={handleToggleSmartChargeKeepUntilUnplugged}
+        handleUndoReflow={handleUndoReflow}
+        handleUpdateCapsulePrefs={handleUpdateCapsulePrefs}
+        handleUpdateLifeProfile={handleUpdateLifeProfile}
+        handleUpdateMemory={handleUpdateMemory}
+        handleUpdatePhoneChargeLimit={handleUpdatePhoneChargeLimit}
+        handleUpdateSoundRepeat={handleUpdateSoundRepeat}
         includeBiweeklyPcCleanup={includeBiweeklyPcCleanup}
-        onToggleBiweeklyPcCleanup={handleToggleBiweeklyPcCleanup}
-        calendarConnected={!needsAuth}
-        onGoogleSignOut={handleGoogleSignOut}
-        quietMode={quietMode}
-        onSetQuietMode={handleSetQuietMode}
-        soundRepeats={lifeProfile.soundRepeats ?? DEFAULT_SOUND_REPEATS}
-        onUpdateSoundRepeat={handleUpdateSoundRepeat}
-        onTriggerTaskAlert={triggerTaskAlert}
+        includePrayerAnchors={includePrayerAnchors}
+        isCatchUpModalOpen={isCatchUpModalOpen}
+        isDetectingGps={isDetectingGps}
+        isFridayMode={isFridayMode}
+        isLifeProfileModalOpen={isLifeProfileModalOpen}
+        isLogoPickerOpen={isLogoPickerOpen}
+        isPomodoroModalOpen={isPomodoroModalOpen}
+        isSyncingGoogleDrive={isSyncingGoogleDrive}
+        isTravelModalOpen={isTravelModalOpen}
+        language={language}
+        lifeProfile={lifeProfile}
+        liveBlocks={liveBlocks}
+        memories={memories}
+        needsAuth={needsAuth}
+        nextMedicationQuick={nextMedicationQuick}
+        persistentAlert={persistentAlert}
         phoneBattery={phoneBattery}
         phoneChargeLimitPct={phoneChargeLimitPct}
-        onUpdatePhoneChargeLimit={handleUpdatePhoneChargeLimit}
-        smartChargeAlertEnabled={smartChargeAlertEnabled}
-        onToggleSmartChargeAlertEnabled={handleToggleSmartChargeAlertEnabled}
-        smartChargeKeepUntilUnplugged={smartChargeKeepUntilUnplugged}
-        onToggleSmartChargeKeepUntilUnplugged={handleToggleSmartChargeKeepUntilUnplugged}
-        smartChargeAudioActive={smartChargeAudioActive}
-        onTestSmartChargeAlert={handleTestSmartChargeAlert}
-        onCheckAppUpdates={handleCheckAppUpdates}
-        activeBrandLogo={{
-          titleAr: activeBrandLogo.titleAr,
-          src: activeBrandLogo.src,
-          isDefault: activeBrandLogo.id === DEFAULT_LOGO_ID,
-        }}
-        onOpenLogoPicker={() => setIsLogoPickerOpen(true)}
-        capsulePrefs={capsulePrefs}
-        onChangeCapsulePrefs={handleUpdateCapsulePrefs}
-        googleDriveSynced={googleDriveSynced}
-        onSyncGoogleDriveNow={pushFullCloudBackupImmediately}
-        isSyncingGoogleDrive={isSyncingGoogleDrive}
-        onExportBackupJson={handleExportBackupJson}
-        onImportBackupJson={handleImportBackupJson}
-      /></Suspense>)}
-
-      {isTravelModalOpen && (<Suspense fallback={null}><TravelModeModal
-        isOpen={isTravelModalOpen}
-        onClose={() => setIsTravelModalOpen(false)}
-        travelState={travelState}
-        scheduleBlocks={liveBlocks}
-        onApplyTravel={handleApplyTravel}
-        onDisableTravel={handleDisableTravel}
-      /></Suspense>)}
-
-      {isCatchUpModalOpen && (<Suspense fallback={null}><SmartCatchUpModal
-        isOpen={isCatchUpModalOpen}
-        onClose={() => setIsCatchUpModalOpen(false)}
-        blocks={liveBlocks}
-        activeTimeZone={activeTimeZone}
-        hasUndoSnapshot={!!undoSnapshot}
-        onCommitReflow={handleCommitReflow}
-        onUndoToOriginal={handleUndoReflow}
-      /></Suspense>)}
-
-      {isPomodoroModalOpen && (<Suspense fallback={null}><PomodoroModal
-        isOpen={isPomodoroModalOpen}
-        onClose={() => setIsPomodoroModalOpen(false)}
-        state={pomodoro}
-        onToggleRun={() =>
-          setPomodoro((p) => {
-            const next = { ...p, isRunning: !p.isRunning };
-            void pushToTasksVaultImmediately({ pomodoro: next });
-            return next;
-          })
-        }
-        onReset={() =>
-          setPomodoro((p) => {
-            const next: PomodoroState = {
-              ...p,
-              phase: 'focus',
-              remainingSeconds: p.presetMinutes * 60,
-              totalSeconds: p.presetMinutes * 60,
-              isRunning: false,
-            };
-            void pushToTasksVaultImmediately({ pomodoro: next });
-            return next;
-          })
-        }
-        onSelectPreset={(minutes) =>
-          setPomodoro((p) => {
-            const next: PomodoroState = {
-              ...p,
-              phase: minutes === 5 ? 'break' : 'focus',
-              presetMinutes: minutes,
-              remainingSeconds: minutes * 60,
-              totalSeconds: minutes * 60,
-              isRunning: false,
-            };
-            void pushToTasksVaultImmediately({ pomodoro: next });
-            return next;
-          })
-        }
-        onFastForwardTest={() =>
-          setPomodoro((p) => ({
-            ...p,
-            phase: 'focus',
-            remainingSeconds: 3,
-            totalSeconds: p.presetMinutes * 60,
-            isRunning: true,
-          }))
-        }
-      /></Suspense>)}
-
-      {isLogoPickerOpen && (<Suspense fallback={null}><LogoPickerModal
-        isOpen={isLogoPickerOpen}
+        pomodoro={pomodoro}
+        prayers={prayers}
+        pushFullCloudBackupImmediately={pushFullCloudBackupImmediately}
+        pushToTasksVaultImmediately={pushToTasksVaultImmediately}
+        quietMode={quietMode}
         selectedLogoId={selectedLogoId}
-        onSelectLogo={handleSelectBrandLogo}
-        onResetDefault={handleResetBrandLogo}
-        onClose={() => setIsLogoPickerOpen(false)}
-      /></Suspense>)}
+        setIsCatchUpModalOpen={setIsCatchUpModalOpen}
+        setIsLifeProfileModalOpen={setIsLifeProfileModalOpen}
+        setIsLogoPickerOpen={setIsLogoPickerOpen}
+        setIsPomodoroModalOpen={setIsPomodoroModalOpen}
+        setIsTravelModalOpen={setIsTravelModalOpen}
+        setPersistentAlert={setPersistentAlert}
+        setPomodoro={setPomodoro}
+        smartChargeAlertEnabled={smartChargeAlertEnabled}
+        smartChargeAudioActive={smartChargeAudioActive}
+        smartChargeKeepUntilUnplugged={smartChargeKeepUntilUnplugged}
+        travelState={travelState}
+        triggerTaskAlert={triggerTaskAlert}
+        undoSnapshot={undoSnapshot}
+      />
     </div>
   );
 }

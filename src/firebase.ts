@@ -18,8 +18,8 @@ import {
   getFirestore,
   initializeFirestore,
   limit,
-  memoryLocalCache,
   onSnapshot,
+  persistentLocalCache,
   query,
   serverTimestamp,
   setDoc,
@@ -94,7 +94,7 @@ function createResilientFirestore() {
     return initializeFirestore(
       app,
       {
-        localCache: memoryLocalCache(),
+        localCache: persistentLocalCache(),
       },
       configuredDbId
     );
