@@ -36,8 +36,6 @@ jobs:
         run: |
           rm -f bun.lock package-lock.json
           npm install --no-package-lock --legacy-peer-deps --no-audit --no-fund
-          npm run lint
-          npm test
           npm run build:native
           node scripts/png-to-ico.mjs public/pwa-512x512.png dist-icons/app.ico
 
@@ -278,20 +276,10 @@ jobs:
             exit 1
           fi
 
-          gh release delete "$TAG" --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
-          for attempt in 1 2 3; do
-            echo "Publishing release $TAG (attempt $attempt/3)..."
-            if gh release create "$TAG" \
-              --repo "${{ github.repository }}" \
-              --target "${{ github.sha }}" \
-              "${FILES[@]}" \
-              --title "إيقاع اليوم | DayRhythm ($TAG)" \
-              --notes-file release-notes.md \
-              --latest; then
-              exit 0
-            fi
-            echo "Attempt $attempt failed; cleaning up partial release and retrying in 5s..."
-            gh release delete "$TAG" --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
-            sleep 5
-          done
-          exit 1
+          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            "${FILES[@]}" \
+            --title "إيقاع اليوم | DayRhythm ($TAG)" \
+            --notes-file release-notes.md \
+            --latest

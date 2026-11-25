@@ -400,22 +400,13 @@ namespace DayRhythm
                                         RunOnUi(() =>
                                         {
                                             if (_activeToastForm != null && !_activeToastForm.IsDisposed)
-                                             {
-                                                 _activeToastForm.Close();
-                                                 _activeToastForm.Dispose();
-                                                 _activeToastForm = null;
-                                             }
-                                             CloseActiveScreenAlert();
-                                         });
-                                     }
-                                    else if (string.Equals(msgType, "sync-uid", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        string uid = doc.RootElement.TryGetProperty("uid", out JsonElement uidProp) ? (uidProp.GetString() ?? "") : "";
-                                        if (!string.Equals(_settings.SyncUid, uid, StringComparison.Ordinal))
-                                        {
-                                            _settings.SyncUid = uid;
-                                            AppConfig.SaveSettings(_settings);
-                                        }
+                                            {
+                                                _activeToastForm.Close();
+                                                _activeToastForm.Dispose();
+                                                _activeToastForm = null;
+                                            }
+                                            CloseActiveScreenAlert();
+                                        });
                                     }
                                 }
                             }
@@ -741,10 +732,7 @@ namespace DayRhythm
                 var form = new SecondaryScreenAlertForm(
                     payload,
                     secondary,
-                    onWaterConfirmed: () =>
-                    {
-                        DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));");
-                    },
+                    onWaterConfirmed: () => DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:water-confirmed'));"),
                     onMedicationConfirmed: (medId, doseTime24) =>
                     {
                         string detailJson = JsonSerializer.Serialize(new { medicationId = medId ?? "", doseTime24 = doseTime24 ?? "" });
@@ -766,10 +754,7 @@ namespace DayRhythm
                         });
                         DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:alert-snoozed', {{ detail: {detailJson} }}));");
                     },
-                    onDismissed: () =>
-                    {
-                        DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));");
-                    }
+                    onDismissed: () => DispatchToWeb("window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));")
                 );
                 _activeScreenAlert = form;
                 form.FormClosed += (_, __) => { if (_activeScreenAlert == form) _activeScreenAlert = null; };

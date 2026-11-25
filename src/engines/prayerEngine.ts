@@ -248,21 +248,10 @@ export async function reverseGeocodeCityName(
   }
 }
 
-function julianDay(date: Date, timeZone?: string): number {
-  let y = date.getFullYear();
-  let m = date.getMonth() + 1;
-  let d = date.getDate();
-  if (timeZone) {
-    try {
-      const iso = getDateIsoInTimeZone(timeZone, date);
-      const parts = iso.split('-').map(Number);
-      if (parts.length === 3 && parts.every(Number.isFinite)) {
-        [y, m, d] = parts;
-      }
-    } catch {
-      // fallback to local calendar date
-    }
-  }
+function julianDay(date: Date): number {
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  const d = date.getDate();
   let yr = y;
   let mo = m;
   if (mo <= 2) {
@@ -399,7 +388,7 @@ export function calculateEgyptianPrayerTimes(
   adhanLeadMinutes = 3
 ): PrayerTimeItem[] {
   const lead = Math.max(0, Math.min(30, Math.round(adhanLeadMinutes)));
-  const jd = julianDay(date, location.timeZone) - location.lng / (15 * 24);
+  const jd = julianDay(date) - location.lng / (15 * 24);
   const D = jd - 2451545.0;
 
   const g = fixAngle(357.529 + 0.98560028 * D);

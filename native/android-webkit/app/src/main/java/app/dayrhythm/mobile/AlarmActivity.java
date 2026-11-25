@@ -383,7 +383,7 @@ public class AlarmActivity extends Activity {
         CloudSignalClient.sendAlarmDismiss(this, "native_done");
         if (MainActivity.activeInstance != null) {
             MainActivity.activeInstance.evaluateJavascriptInWebView(
-                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true } }));"
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
             );
         }
         Intent src = getIntent();
@@ -398,7 +398,7 @@ public class AlarmActivity extends Activity {
         CloudSignalClient.sendAlarmDismiss(this, "native_snooze");
         if (MainActivity.activeInstance != null) {
             MainActivity.activeInstance.evaluateJavascriptInWebView(
-                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true, snooze: true } }));"
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
             );
         }
         Intent src = getIntent();
@@ -414,7 +414,7 @@ public class AlarmActivity extends Activity {
         CloudSignalClient.sendAlarmDismiss(this, "native_dismiss");
         if (MainActivity.activeInstance != null) {
             MainActivity.activeInstance.evaluateJavascriptInWebView(
-                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true } }));"
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
             );
         }
         Intent src = getIntent();

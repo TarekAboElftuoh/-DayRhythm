@@ -1,4 +1,15 @@
 import React, { useMemo, useState } from 'react';
+import {
+  ResponsiveContainer,
+  ComposedChart,
+  Bar,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Cell,
+} from 'recharts';
 import { TrendingUp, ShoppingBag, CalendarClock } from 'lucide-react';
 import { MedicationItem } from '../types/dayrhythm';
 
@@ -105,13 +116,20 @@ function getDosesTakenOnDate(med: MedicationItem, dateIso: string, todayCairoIso
   return (med.takenDates ?? []).includes(dateIso) ? fullDayDoses : 0;
 }
 
-const ConsumptionTooltip: React.FC<{ point: DayConsumptionPoint | null }> = ({ point }) => {
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload?: DayConsumptionPoint }>;
+}
+
+const ConsumptionTooltip: React.FC<CustomTooltipProps> = ({ active, payload }) => {
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0]?.payload;
   if (!point) return null;
 
   return (
     <div
       dir="rtl"
-      className="rounded-xl border border-white/15 bg-[#0A0A0A] px-3 py-2 text-xs shadow-xl"
+      className="rounded-xl border border-white/15 bg-black/95 px-3 py-2 text-xs shadow-xl backdrop-blur-md"
     >
       <div className="font-bold text-white mb-1">
         {point.fullDateAr}
@@ -137,7 +155,6 @@ export const MedicationConsumptionChart: React.FC<MedicationConsumptionChartProp
   todayCairoIso,
 }) => {
   const [selectedMedId, setSelectedMedId] = useState<string>('all');
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   const effectiveMedId = useMemo(() => {
     if (selectedMedId === 'all') return 'all';
@@ -341,101 +358,57 @@ export const MedicationConsumptionChart: React.FC<MedicationConsumptionChartProp
         </div>
       )}
 
-      {/* Pure SVG 30-Day Consumption & Rolling Trend Chart */}
+      {/* Recharts 30-Day Consumption & Rolling Trend Chart */}
       <div className="rounded-xl border border-white/[0.08] bg-black/45 p-2.5">
-        <div className="h-[175px] w-full relative" dir="ltr" onMouseLeave={() => setHoveredIdx(null)}>
-          {hoveredIdx !== null && series[hoveredIdx] && (
-            <div className="absolute top-1 left-2 z-20 pointer-events-none">
-              <ConsumptionTooltip point={series[hoveredIdx]} />
-            </div>
-          )}
-          {(() => {
-            const maxY = Math.max(
-              2,
-              ...series.map((s) => Math.max(s.taken, Math.ceil(s.trend7d)))
-            );
-            const plotLeft = 28;
-            const plotRight = 410;
-            const step = (plotRight - plotLeft) / Math.max(1, series.length);
-            const barW = Math.min(11, step * 0.65);
-
-            return (
-              <svg viewBox="0 0 420 170" className="w-full h-full overflow-visible" preserveAspectRatio="xMidYMid meet">
-                {[0, 0.5, 1].map((ratio, idx) => {
-                  const y = 144 - ratio * 128;
-                  const val = Math.round(ratio * maxY);
-                  return (
-                    <g key={idx}>
-                      <line x1={plotLeft} x2={plotRight} y1={y} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
-                      <text x={22} y={y + 3} textAnchor="end" fill="#71717a" fontSize={10}>
-                        {val}
-                      </text>
-                    </g>
-                  );
-                })}
-
-                {series.map((entry, idx) => {
-                  const cx = plotLeft + step * idx + step / 2;
-                  const barH = entry.taken > 0 ? Math.max(3, (entry.taken / maxY) * 128) : 2;
+        <div className="h-[175px] w-full" dir="ltr">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={series} margin={{ top: 8, right: 6, left: -18, bottom: 0 }}>
+              <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+              <XAxis
+                dataKey="shortLabel"
+                tick={{ fill: '#71717a', fontSize: 10 }}
+                axisLine={{ stroke: 'rgba(255,255,255,0.1)' }}
+                tickLine={false}
+                interval={5}
+                minTickGap={16}
+              />
+              <YAxis
+                allowDecimals={false}
+                tick={{ fill: '#71717a', fontSize: 10 }}
+                axisLine={false}
+                tickLine={false}
+                width={34}
+              />
+              <Tooltip
+                content={<ConsumptionTooltip />}
+                cursor={{ fill: 'rgba(127, 255, 212, 0.06)' }}
+              />
+              <Bar
+                dataKey="taken"
+                name="جرعات اليوم"
+                radius={[3, 3, 0, 0]}
+                maxBarSize={14}
+                isAnimationActive={false}
+              >
+                {series.map((entry) => {
                   const fullHit = entry.scheduled > 0 && entry.taken >= entry.scheduled;
                   const fill = fullHit ? '#4ADE80' : '#7FFFD4';
                   const opacity = entry.isToday ? 1 : entry.taken > 0 ? 0.72 : 0.15;
-                  const showLabel = idx % 6 === 0 || idx === series.length - 1;
-                  return (
-                    <g
-                      key={entry.dateIso}
-                      className="cursor-pointer"
-                      onMouseEnter={() => setHoveredIdx(idx)}
-                      onClick={() => setHoveredIdx(hoveredIdx === idx ? null : idx)}
-                    >
-                      {hoveredIdx === idx && (
-                        <rect x={cx - step * 0.5} y={12} width={step} height={132} fill="rgba(127, 255, 212, 0.06)" rx={2} />
-                      )}
-                      <rect
-                        x={cx - barW / 2}
-                        y={144 - barH}
-                        width={barW}
-                        height={barH}
-                        rx={2.5}
-                        fill={fill}
-                        fillOpacity={opacity}
-                      />
-                      {showLabel && (
-                        <text x={cx} y={160} textAnchor="middle" fill="#71717a" fontSize={9}>
-                          {entry.shortLabel}
-                        </text>
-                      )}
-                    </g>
-                  );
+                  return <Cell key={entry.dateIso} fill={fill} fillOpacity={opacity} />;
                 })}
-
-                {series.length > 1 && (
-                  <polyline
-                    fill="none"
-                    stroke="#7FFFD4"
-                    strokeWidth={2}
-                    points={series
-                      .map((entry, idx) => {
-                        const cx = plotLeft + step * idx + step / 2;
-                        const cy = 144 - (entry.trend7d / maxY) * 128;
-                        return `${cx.toFixed(1)},${cy.toFixed(1)}`;
-                      })
-                      .join(' ')}
-                  />
-                )}
-                {hoveredIdx !== null && series[hoveredIdx] && (
-                  <circle
-                    cx={plotLeft + step * hoveredIdx + step / 2}
-                    cy={144 - (series[hoveredIdx].trend7d / maxY) * 128}
-                    r={3.5}
-                    fill="#7FFFD4"
-                    stroke="#000000"
-                    strokeWidth={1.5}
-                  />
-                )}
-              </svg>
-            );
-          })()}
+              </Bar>
+              <Line
+                type="monotone"
+                dataKey="trend7d"
+                name="متوسط 7 أيام"
+                stroke="#7FFFD4"
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 3.5, fill: '#7FFFD4', stroke: '#000000', strokeWidth: 1.5 }}
+                isAnimationActive={false}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
         </div>
 
         {/* Compact Chart Legend */}

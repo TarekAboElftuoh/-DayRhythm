@@ -598,7 +598,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       <div className="hidden md:block fixed bottom-4 left-4 z-40">
         <div className="relative inline-block">
           {menuOpen && (
-            <div className="absolute bottom-[calc(100%+8px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">
+            <div className="absolute bottom-[calc(100%+8px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 backdrop-blur-xl p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">
               {renderShapeControls()}
               <button
                 type="button"
@@ -715,7 +715,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       <div
         className={`flex ${
           isVertical ? 'flex-col items-center rounded-2xl' : 'flex-row items-center rounded-full'
-        } ${sizeTokens.shellGap} ${sizeTokens.shellPad} border border-white/[0.14] bg-gradient-to-b from-[#10151E]/95 to-[#07080B]/95 shadow-[0_12px_36px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-[#7FFFD4]/40 transition-colors cursor-grab active:cursor-grabbing`}
+        } ${sizeTokens.shellGap} ${sizeTokens.shellPad} border border-white/[0.14] bg-gradient-to-b from-[#10151E]/95 to-[#07080B]/95 backdrop-blur-xl shadow-[0_12px_36px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-[#7FFFD4]/40 transition-colors cursor-grab active:cursor-grabbing`}
         title={
           hasDualTimers && calendarTrack && taskTrack
             ? `${calendarTrack.title} (${calendarTrack.countdownText}) · ${taskTrack.title} (${taskTrack.countdownText})`
@@ -817,7 +817,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
 
       {/* Sleek Obsidian Popover Menu anchored cleanly ABOVE the capsule so the pill NEVER shifts horizontally */}
       {menuOpen && (
-        <div className="absolute bottom-[calc(100%+10px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">
+        <div className="absolute bottom-[calc(100%+10px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 backdrop-blur-xl p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">
           {renderQuickCheckIn()}
           {renderShapeControls()}
 

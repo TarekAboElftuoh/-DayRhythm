@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Send,
   MapPin,
@@ -2357,7 +2358,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       {/* Modal for Client-Side Google Gemini API Key Settings */}
       {showApiKeyModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
           role="dialog"
           aria-modal="true"
         >
@@ -2505,8 +2506,11 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
               const isStreamingThis = streamingMsgId === m.id;
               const displayProposal = m.pendingProposal;
               return (
-                <div
+                <motion.div
                   key={m.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.22, ease: 'easeOut' }}
                   className={`flex ${m.role === 'user' ? 'justify-start' : 'justify-end'}`}
                 >
                   <article
@@ -2920,7 +2924,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                       </div>
                     )}
                   </article>
-                </div>
+                </motion.div>
               );
             })}
 
@@ -2937,51 +2941,62 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             <div ref={threadEndRef} />
           </div>
 
-          {/* Quick Action Chips & Suggestions */}
+          {/* Quick Action Chips & Suggestions with Motion Spring Physics */}
           {!loading && (
             <div className="px-3 sm:px-4 py-2 border-t border-white/10 flex items-center gap-1.5 overflow-x-auto bg-[#090C12] no-scrollbar">
               {mode === 'chat'
                 ? QUICK_ACTION_CHIPS.map((chip, idx) => (
-                    <button
+                    <motion.button
                       key={idx}
+                      whileHover={{ scale: 1.05, y: -1 }}
+                      whileTap={{ scale: 0.94 }}
+                      transition={{ type: 'spring', stiffness: 480, damping: 26 }}
                       type="button"
                       onClick={() => void sendMessage(chip.prompt)}
-                      className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/60 hover:bg-[#7FFFD4]/10 hover:text-[#7FFFD4] whitespace-nowrap shrink-0 cursor-pointer transition-all active:scale-95 flex items-center gap-1 select-none"
+                      className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/60 hover:bg-[#7FFFD4]/10 hover:text-[#7FFFD4] whitespace-nowrap shrink-0 cursor-pointer transition-colors flex items-center gap-1 select-none"
                     >
                       <span>{chip.emoji}</span>
                       <span>{chip.label}</span>
-                    </button>
+                    </motion.button>
                   ))
                 : SUGGESTED_PROMPTS[mode].map((prompt, idx) => (
-                    <button
+                    <motion.button
                       key={idx}
+                      whileHover={{ scale: 1.03 }}
+                      whileTap={{ scale: 0.95 }}
+                      transition={{ type: 'spring', stiffness: 480, damping: 26 }}
                       type="button"
                       onClick={() => void sendMessage(prompt)}
-                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.02] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/50 hover:text-white whitespace-nowrap shrink-0 cursor-pointer transition-all active:scale-95 select-none"
+                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.02] text-[11px] text-zinc-300 hover:border-[#7FFFD4]/50 hover:text-white whitespace-nowrap shrink-0 cursor-pointer transition-colors select-none"
                     >
                       {prompt}
-                    </button>
+                    </motion.button>
                   ))}
             </div>
           )}
 
           {/* Voice Status Notice */}
-          {voiceNote && (
-            <div
-              className="px-4 py-1.5 border-t border-white/10 bg-[#7FFFD4]/[0.06] text-xs text-[#7FFFD4] flex items-center justify-between gap-2 overflow-hidden"
-            >
-              <span>{voiceNote}</span>
-              {isListeningVoice && (
-                <button
-                  type="button"
-                  onClick={toggleVoiceInput}
-                  className="text-rose-300 hover:underline font-semibold cursor-pointer whitespace-nowrap"
-                >
-                  إيقاف
-                </button>
-              )}
-            </div>
-          )}
+          <AnimatePresence>
+            {voiceNote && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="px-4 py-1.5 border-t border-white/10 bg-[#7FFFD4]/[0.06] text-xs text-[#7FFFD4] flex items-center justify-between gap-2 overflow-hidden"
+              >
+                <span>{voiceNote}</span>
+                {isListeningVoice && (
+                  <button
+                    type="button"
+                    onClick={toggleVoiceInput}
+                    className="text-rose-300 hover:underline font-semibold cursor-pointer whitespace-nowrap"
+                  >
+                    إيقاف
+                  </button>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Fast Responsive Composer */}
           <form
@@ -2995,20 +3010,21 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             }}
             className="p-3 border-t border-white/10 bg-[#07090D] flex items-end gap-2"
           >
-            <button
+            <motion.button
+              whileTap={{ scale: 0.92 }}
               type="button"
               onClick={toggleVoiceInput}
               disabled={loading}
               aria-label={isListeningVoice ? 'إيقاف التسجيل الصوتي' : 'تحدث بالصوت'}
               title={isListeningVoice ? 'اضغط لإيقاف الاستماع' : 'إدخال صوتي'}
-              className={`min-h-[44px] min-w-[44px] rounded-xl border flex items-center justify-center cursor-pointer transition-all active:scale-95 shrink-0 ${
+              className={`min-h-[44px] min-w-[44px] rounded-xl border flex items-center justify-center cursor-pointer transition-colors shrink-0 ${
                 isListeningVoice
                   ? 'border-rose-400 bg-rose-500/20 text-rose-300'
                   : 'border-white/15 bg-black text-zinc-300 hover:border-[#7FFFD4]/60 hover:text-[#7FFFD4]'
               }`}
             >
               {isListeningVoice ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            </button>
+            </motion.button>
 
             <textarea
               ref={textareaRef}
@@ -3042,25 +3058,28 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             />
 
             {loading ? (
-              <button
+              <motion.button
+                whileTap={{ scale: 0.93 }}
                 type="button"
                 onClick={() => stopGeneration(mode)}
                 aria-label="إيقاف التوليد"
-                className="min-h-[44px] px-4 rounded-xl border border-rose-400/50 bg-rose-500/15 text-rose-200 text-xs font-bold hover:bg-rose-500/25 flex items-center gap-1.5 cursor-pointer active:scale-95 transition-transform whitespace-nowrap shrink-0"
+                className="min-h-[44px] px-4 rounded-xl border border-rose-400/50 bg-rose-500/15 text-rose-200 text-xs font-bold hover:bg-rose-500/25 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Square className="w-3.5 h-3.5 fill-current" />
                 <span className="max-sm:hidden">إيقاف</span>
-              </button>
+              </motion.button>
             ) : (
-              <button
+              <motion.button
+                whileHover={{ scale: input.trim() ? 1.03 : 1 }}
+                whileTap={{ scale: input.trim() ? 0.94 : 1 }}
                 type="submit"
                 disabled={!input.trim()}
                 aria-label="إرسال"
-                className="min-h-[44px] px-4 max-sm:px-3.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1.5 cursor-pointer active:scale-95 transition-transform whitespace-nowrap shrink-0"
+                className="min-h-[44px] px-4 max-sm:px-3.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Send className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
                 <span className="max-sm:hidden">إرسال</span>
-              </button>
+              </motion.button>
             )}
           </form>
         </section>

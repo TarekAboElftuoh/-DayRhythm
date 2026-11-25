@@ -420,7 +420,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-0 sm:p-4"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="الدستور الشخصي وذاكرة Gemini الدائمة"
@@ -475,7 +475,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={0.5}
                 value={draft.weightKg}
                 onChange={(e) =>
-                  updateDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 70 }))
+                  updateDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 69 }))
                 }
                 className="w-full rounded-lg border border-[#7FFFD4]/45 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
@@ -501,7 +501,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 disabled={!unlockHeight}
                 value={draft.heightCm}
                 onChange={(e) =>
-                  updateDraft((p) => ({ ...p, heightCm: Number(e.target.value) || 177 }))
+                  updateDraft((p) => ({ ...p, heightCm: Number(e.target.value) || 175 }))
                 }
                 className={`w-full rounded-lg border px-3 py-2 font-mono-tabular focus:outline-none ${
                   unlockHeight
@@ -520,7 +520,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 step={1}
                 value={draft.cupSizeMl}
                 onChange={(e) =>
-                  updateDraft((p) => ({ ...p, cupSizeMl: Number(e.target.value) || 250 }))
+                  updateDraft((p) => ({ ...p, cupSizeMl: Number(e.target.value) || 177 }))
                 }
                 className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />

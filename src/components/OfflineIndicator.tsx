@@ -16,7 +16,7 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({ language }) 
     <div
       role="status"
       aria-live="polite"
-      className="fixed bottom-16 md:bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-xl border border-amber-400/45 bg-black/95 px-4 py-2 text-xs font-semibold text-amber-200 shadow-2xl"
+      className="fixed bottom-16 md:bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 rounded-xl border border-amber-400/45 bg-black/95 px-4 py-2 text-xs font-semibold text-amber-200 shadow-2xl backdrop-blur-md"
     >
       <WifiOff className="w-3.5 h-3.5 text-amber-300 shrink-0" />
       <span>
