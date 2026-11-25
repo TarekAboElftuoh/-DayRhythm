@@ -305,8 +305,21 @@ export default function App() {
   // 4 Smart Timed Quiet Modes + Auto-Revert Timer
   const [quietMode, setQuietMode] = useState<QuietModeType>('normal');
   const [quietRemainingSec, setQuietRemainingSec] = useState<number>(0);
-  const [stealthAudioOnly, setStealthAudioOnly] = useState<boolean>(false);
-  const [adhanOverrideSilent, setAdhanOverrideSilent] = useState<boolean>(true);
+  const [stealthAudioOnly, setStealthAudioOnly] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('dayrhythm_stealth_audio_only_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [adhanOverrideSilent, setAdhanOverrideSilent] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('dayrhythm_adhan_override_silent_v1');
+      return saved === null ? true : saved === '1';
+    } catch {
+      return true;
+    }
+  });
   const [alarmRinging, setAlarmRinging] = useState<boolean>(false);
 
   const [syncTier, setSyncTier] = useState<SyncTierMode>('google_calendar_api');
@@ -2798,7 +2811,8 @@ export default function App() {
       }
     };
     if (workspaceTokenExpired) void renewIfNeeded(true);
-    const id = window.setInterval(() => void renewIfNeeded(false), 60_000);
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.innerWidth < 768;
+    const id = isMobile ? window.setInterval(() => void renewIfNeeded(false), 60_000) : undefined;
     const onVisible = () => {
       if (document.visibilityState === 'visible') void renewIfNeeded(false);
     };
@@ -9335,7 +9349,17 @@ ${lifeConstitution}
             batteryGuard={batteryGuard}
             quietMode={quietMode}
             stealthAudioOnly={stealthAudioOnly}
-            onToggleStealthAudioOnly={() => setStealthAudioOnly((v) => !v)}
+            onToggleStealthAudioOnly={() =>
+              setStealthAudioOnly((v) => {
+                const next = !v;
+                try {
+                  localStorage.setItem('dayrhythm_stealth_audio_only_v1', next ? '1' : '0');
+                } catch {
+                  // ignore
+                }
+                return next;
+              })
+            }
             alarmRinging={alarmRinging}
             onTriggerRing={handleTriggerRing}
             onDismissTwoWay={handleDismissTwoWay}
