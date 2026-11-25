@@ -4176,7 +4176,14 @@ export default function App() {
 
     const handle = connectSpircCluster(workerUrl, uid, clientIdRef.current, (entityId, entityKind, payload) => {
       if (entityId === 'state_v3' || entityKind === SPIRC_ENTITY.STATE_V3) {
-        applyOrDeferRef.current(payload as unknown as SyncedRhythmPayload);
+        isLoadingSettingsRef.current = true;
+        try {
+          applyOrDeferRef.current(payload as unknown as SyncedRhythmPayload);
+        } finally {
+          window.setTimeout(() => {
+            isLoadingSettingsRef.current = false;
+          }, 150);
+        }
       }
     });
     spircClusterRef.current = handle;

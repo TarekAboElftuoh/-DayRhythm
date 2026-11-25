@@ -42,7 +42,7 @@
         android:theme="@style/Theme.DayRhythm">
 
         <activity
-            android:name=".compose.ComposeMainActivity"
+            android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
             android:exported="true"
             android:hardwareAccelerated="true"
@@ -59,7 +59,7 @@
         </activity>
 
         <activity
-            android:name=".MainActivity"
+            android:name=".compose.ComposeMainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
             android:exported="false"
             android:hardwareAccelerated="true"

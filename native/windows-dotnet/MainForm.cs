@@ -324,7 +324,7 @@ namespace DayRhythm
                 // The app lives in the tray most of the time: stop Chromium from throttling timers in a
                 // hidden/minimized window, otherwise alerts could fire up to a minute late.
                 var envOptions = new CoreWebView2EnvironmentOptions(
-                    "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --js-flags=--max-old-space-size=256"
+                    "--disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows"
                 );
                 _webViewEnv = await CoreWebView2Environment.CreateAsync(null, userDataDir, envOptions);
                 await _webView.EnsureCoreWebView2Async(_webViewEnv);
