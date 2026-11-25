@@ -3174,7 +3174,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             {/* Tactile Interactive Cup Progress Strip (Wraps comfortably on narrow phones, compact single-row on desktop) */}
             <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-1">
-              {hydrationToday.slots.slice(0, hydrationToday.targetCups).map((filled, idx) => {
+              {hydrationToday.slots.map((filled, idx) => {
                 const slotPlan = dailyRhythmPlan.hydrationSlots[idx];
                 return (
                   <button

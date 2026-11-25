@@ -170,7 +170,7 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
                           : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]'
                       }`}
                     >
-                      ✓ ابدأ الآن
+                      ابدأ الآن
                     </button>
                     <button
                       type="button"
@@ -184,7 +184,7 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
                             : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] cursor-pointer'
                       }`}
                     >
-                      {task.canShiftEvening ? '🌙 للمساء' : '🔒 وقت ثابت'}
+                      {task.canShiftEvening ? 'للمساء' : 'وقت ثابت'}
                     </button>
                     <button
                       type="button"
@@ -195,7 +195,7 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
                           : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]'
                       }`}
                     >
-                      ⏭️ تخطّ اليوم
+                      تخطّ اليوم
                     </button>
                   </div>
                 </div>

@@ -3132,15 +3132,13 @@ export default function App() {
           }
           if (backup.deviceSettings) {
             const cleanDev = sanitizeDeviceSettings(backup.deviceSettings);
-            if (Date.now() >= localWriteLockUntilRef.current) {
-              setDeviceSettings(cleanDev);
-              try {
-                const raw = localStorage.getItem(STORAGE_KEY);
-                const parsed = raw ? JSON.parse(raw) : {};
-                localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
-              } catch {
-                // ignore storage errors
-              }
+            setDeviceSettings(cleanDev);
+            try {
+              const raw = localStorage.getItem(STORAGE_KEY);
+              const parsed = raw ? JSON.parse(raw) : {};
+              localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, deviceSettings: cleanDev }));
+            } catch {
+              // ignore storage errors
             }
           }
           if (backup.capsulePrefs) {
@@ -3694,7 +3692,7 @@ export default function App() {
     if (remote.deviceSettings) {
       const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
       const isDiff = JSON.stringify(cleanDev) !== JSON.stringify(deviceSettingsRef.current);
-      if (isDiff && Date.now() >= localWriteLockUntilRef.current) {
+      if (isDiff) {
         deviceSettingsRef.current = cleanDev;
         setDeviceSettings(cleanDev);
         try {
@@ -3709,7 +3707,7 @@ export default function App() {
     if (remote.lifeProfile) {
       const cleanProfile = sanitizeLifeProfile(remote.lifeProfile);
       const isDiff = JSON.stringify(cleanProfile) !== JSON.stringify(lifeProfileRef.current);
-      if (isDiff && Date.now() >= localWriteLockUntilRef.current) {
+      if (isDiff) {
         lifeProfileRef.current = cleanProfile;
         setLifeProfile(cleanProfile);
         try {
@@ -5160,7 +5158,7 @@ export default function App() {
 
   const handleUpdateDeviceSettings = useCallback(
     (patch: Partial<OnePlusDeviceSettings>) => {
-      localWriteLockUntilRef.current = Date.now() + 4000;
+      localWriteLockUntilRef.current = Date.now() + 300;
       const next = sanitizeDeviceSettings({ ...deviceSettingsRef.current, ...patch });
       deviceSettingsRef.current = next;
       setDeviceSettings(next);
@@ -5178,7 +5176,7 @@ export default function App() {
 
   const handleUpdateLifeProfile = useCallback(
     (patch: Partial<LifeProfile>) => {
-      localWriteLockUntilRef.current = Date.now() + 4000;
+      localWriteLockUntilRef.current = Date.now() + 300;
       const nextProfile = sanitizeLifeProfile({ ...lifeProfileRef.current, ...patch });
       lifeProfileRef.current = nextProfile;
       setLifeProfile(nextProfile);
