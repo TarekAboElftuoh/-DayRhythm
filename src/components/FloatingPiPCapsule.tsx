@@ -209,6 +209,8 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
             clockCls: 'font-digits text-xs font-bold tracking-tight shrink-0',
           };
 
+  const lastPostedCapsuleJsonRef = useRef<string>('');
+
   // Keep native Windows free-floating DesktopCapsuleForm synced live outside the EXE window
   useEffect(() => {
     if (!isNativeWindowsExe || !webviewBridge?.postMessage) return;
@@ -223,36 +225,37 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
         targetEpochMs,
         durationSeconds,
       };
-      webviewBridge.postMessage(
-        JSON.stringify({
-          type: 'capsule-state',
-          emoji: primary.emoji,
-          title: primary.title,
-          statusLabel: primary.statusLabel,
-          sourceKind: calendarTrack ? 'calendar' : sourceKind,
-          countdownText: primary.countdownText,
-          isNow: primary.isNow,
-          isUrgent: primary.isUrgent,
-          targetEpochMs: primary.targetEpochMs,
-          durationSeconds: primary.durationSeconds,
-          hasSecondaryTimer: Boolean(calendarTrack && taskTrack),
-          secondaryEmoji: taskTrack?.emoji ?? '💧',
-          secondaryTitle: taskTrack?.title ?? '',
-          secondaryCountdownText: taskTrack?.countdownText ?? '',
-          secondaryTargetEpochMs: taskTrack?.targetEpochMs ?? 0,
-          secondaryIsNow: taskTrack?.isNow ?? false,
-          secondaryIsUrgent: taskTrack?.isUrgent ?? false,
-          phoneBatteryPct: showPhoneChargingBadge && phoneBattery ? phoneBattery.levelPct : -1,
-          phoneCharging: showPhoneChargingBadge,
-          phoneChargeLimitPct: phoneBattery?.chargeLimitPct ?? 90,
-          phoneChargeEtaMin:
-            showPhoneChargingBadge && typeof phoneBattery?.chargeTimeRemainingMin === 'number'
-              ? phoneBattery.chargeTimeRemainingMin
-              : -1,
-          orientation: prefs.orientation,
-          size: prefs.size,
-        })
-      );
+      const payloadJson = JSON.stringify({
+        type: 'capsule-state',
+        emoji: primary.emoji,
+        title: primary.title,
+        statusLabel: primary.statusLabel,
+        sourceKind: calendarTrack ? 'calendar' : sourceKind,
+        countdownText: primary.countdownText,
+        isNow: primary.isNow,
+        isUrgent: primary.isUrgent,
+        targetEpochMs: primary.targetEpochMs,
+        durationSeconds: primary.durationSeconds,
+        hasSecondaryTimer: Boolean(calendarTrack && taskTrack),
+        secondaryEmoji: taskTrack?.emoji ?? '💧',
+        secondaryTitle: taskTrack?.title ?? '',
+        secondaryCountdownText: taskTrack?.countdownText ?? '',
+        secondaryTargetEpochMs: taskTrack?.targetEpochMs ?? 0,
+        secondaryIsNow: taskTrack?.isNow ?? false,
+        secondaryIsUrgent: taskTrack?.isUrgent ?? false,
+        phoneBatteryPct: showPhoneChargingBadge && phoneBattery ? phoneBattery.levelPct : -1,
+        phoneCharging: showPhoneChargingBadge,
+        phoneChargeLimitPct: phoneBattery?.chargeLimitPct ?? 90,
+        phoneChargeEtaMin:
+          showPhoneChargingBadge && typeof phoneBattery?.chargeTimeRemainingMin === 'number'
+            ? phoneBattery.chargeTimeRemainingMin
+            : -1,
+        orientation: prefs.orientation,
+        size: prefs.size,
+      });
+      if (lastPostedCapsuleJsonRef.current === payloadJson) return;
+      lastPostedCapsuleJsonRef.current = payloadJson;
+      webviewBridge.postMessage(payloadJson);
     } catch {
       // ignore WebView2 postMessage issues
     }

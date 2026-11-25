@@ -1634,7 +1634,7 @@ export default function App() {
       }, msToNextMinute);
     };
     scheduleNextBoundary();
-    const id = window.setInterval(syncClockNow, 5_000);
+    const id = window.setInterval(syncClockNow, 30_000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') syncClockNow();
     };
@@ -4583,7 +4583,7 @@ export default function App() {
       } finally {
         isSavingGoogleDriveRef.current = false;
       }
-    }, 2500);
+    }, 60_000);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -5791,11 +5791,12 @@ export default function App() {
 
 
   useEffect(() => {
+    if (!simulateUnder60s) return;
     const id = window.setInterval(() => {
       setLiveCountdownSec((s) => (s <= 1 ? 59 : s - 1));
     }, 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [simulateUnder60s]);
 
   useEffect(() => {
     if (shakeUndoSecondsLeft <= 0) return;
@@ -7493,22 +7494,21 @@ export default function App() {
         updatedAtMs: nowMs,
         deviceLabel: deviceLabel || 'OnePlus 12R',
       };
-      setPhoneBattery(snapshot);
-
       const dedupeKey = `${clampedLevel}:${charging ? 1 : 0}:${limit}:${snapshot.chargeTimeRemainingMin}`;
       const changed = dedupeKey !== lastSentKey;
       if (changed) {
         lastSentKey = dedupeKey;
+        setPhoneBattery(snapshot);
       }
 
-
-
-      // Persist in Firestore immediately on first sync, on any change, or every 45s while charging
+      // On Android APK, native DayRhythmSyncService already publishes battery telemetry to Firestore.
+      // Only publish from JS on mobile web browsers, and throttle unchanged charging updates to 3 minutes.
       if (
+        !nativeWindow.DayRhythmNative &&
         firebaseUser?.uid &&
         firebaseUser.emailVerified &&
         firestoreSynced &&
-        (!pushedToFirestoreOnce || changed || (charging && nowMs - lastFirestorePushMs > 45_000))
+        (!pushedToFirestoreOnce || changed || (charging && nowMs - lastFirestorePushMs > 180_000))
       ) {
         pushedToFirestoreOnce = true;
         lastFirestorePushMs = nowMs;
@@ -8600,7 +8600,7 @@ export default function App() {
 
   useEffect(() => {
     const syncNow = () => setCapsuleNowMs(Date.now());
-    const timer = window.setInterval(syncNow, 15_000);
+    const timer = window.setInterval(syncNow, 60_000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') syncNow();
     };

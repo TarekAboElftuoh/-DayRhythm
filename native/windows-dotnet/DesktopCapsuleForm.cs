@@ -190,7 +190,7 @@ namespace DayRhythm
                 wwwDir,
                 CoreWebView2HostResourceAccessKind.Allow
             );
-            _web.CoreWebView2.Navigate(CapsuleUrl + "?v=" + DateTime.UtcNow.Ticks);
+            _web.CoreWebView2.Navigate(CapsuleUrl);
         }
 
         private void OnWebMessage(object sender, CoreWebView2WebMessageReceivedEventArgs args)

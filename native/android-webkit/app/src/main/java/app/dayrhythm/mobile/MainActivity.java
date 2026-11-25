@@ -238,7 +238,18 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        if (webView != null) {
+            webView.onPause();
+        }
         CookieManager.getInstance().flush();
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (webView != null && level >= TRIM_MEMORY_RUNNING_LOW) {
+            webView.clearCache(false);
+        }
     }
 
     private WebViewAssetLoader buildSpaAssetLoader() {
@@ -451,6 +462,7 @@ public class MainActivity extends Activity {
         ReminderAlarmReceiver.stopRinging();
         ReminderAlarmReceiver.cancelAllActiveAlarms(this);
         if (webView != null) {
+            webView.onResume();
             webView.evaluateJavascript(
                     "window.dispatchEvent(new CustomEvent('dayrhythm:permissions-changed'));",
                     null
@@ -462,6 +474,7 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (webView != null) {
+            webView.onResume();
             webView.evaluateJavascript(
                     "window.dispatchEvent(new CustomEvent('dayrhythm:permissions-changed'));",
                     null

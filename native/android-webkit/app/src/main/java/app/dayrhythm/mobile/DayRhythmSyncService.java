@@ -230,11 +230,24 @@ public class DayRhythmSyncService extends Service {
         @Override
         public void run() {
             if (isDestroyed) return;
+            boolean hasWs = activeWebSocket != null;
+            boolean screenOn = true;
             try {
-                CloudSignalClient.pollRemoteSignals(DayRhythmSyncService.this);
+                android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+                if (pm != null) screenOn = pm.isInteractive();
             } catch (Exception ignored) {
             }
-            handler.postDelayed(this, 5000L);
+
+            // When WebSocket push is active, avoid spamming Firestore REST (safety poll every 5m only).
+            // When offline from WS, poll every 30s with screen on or 120s with screen off.
+            if (!hasWs) {
+                try {
+                    CloudSignalClient.pollRemoteSignals(DayRhythmSyncService.this);
+                } catch (Exception ignored) {
+                }
+            }
+            long nextDelay = hasWs ? 300_000L : (screenOn ? 30_000L : 120_000L);
+            handler.postDelayed(this, nextDelay);
         }
     };
 
@@ -608,6 +621,7 @@ public class DayRhythmSyncService extends Service {
                         lastBroadcastBatteryLevel = pct;
                         lastBroadcastEtaMinutes = -1;
                         broadcastBatteryTelemetry(pct, false, 0, limit);
+                        refreshPersistentNotification();
                     }
                     return;
                 }
@@ -1078,6 +1092,13 @@ public class DayRhythmSyncService extends Service {
                 .setContentIntent(pi);
 
         Bundle liveExtras = new Bundle();
+        String chargeTag = "";
+        if (lastBroadcastCharging && lastBroadcastBatteryLevel >= 0) {
+            String etaStr = lastBroadcastEtaMinutes > 0
+                    ? (" ~" + lastBroadcastEtaMinutes + "د")
+                    : (lastBroadcastBatteryLevel >= lastBroadcastLimit ? " ✓ افصل الشاحن" : "");
+            chargeTag = "⚡ " + lastBroadcastBatteryLevel + "%/" + lastBroadcastLimit + "%" + etaStr;
+        }
 
         if (inLeadWindow) {
             // ── Live Alerts Capsule active (OnePlus 12R punch hole & Android Promoted Ongoing) ──
@@ -1113,10 +1134,11 @@ public class DayRhythmSyncService extends Service {
             String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
             String cleanTitle = cleanDisplayTitle(rawTitle);
             String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
+            String sub = chargeTag.isEmpty() ? liveStatusLabel : (liveStatusLabel + " • " + chargeTag);
 
             builder.setContentTitle(compactPill)
                     .setContentText(displayTitle)
-                    .setSubText(liveStatusLabel)
+                    .setSubText(sub)
                     .setShowWhen(true)
                     .setWhen(liveTargetEpochMs)
                     .setUsesChronometer(true)
@@ -1128,8 +1150,54 @@ public class DayRhythmSyncService extends Service {
                     .addExtras(liveExtras);
 
             applyProgressStyleCompat(builder, progressPermille, categoryColor);
+        } else if (lastBroadcastCharging && lastBroadcastBatteryLevel >= 0 && liveAlertsEnabled) {
+            // ── Charging Live Capsule: show charger progress + next schedule/water task ──
+            String compactPill = "⚡ " + lastBroadcastBatteryLevel + "%";
+            int chargeColor = lastBroadcastBatteryLevel >= lastBroadcastLimit ? 0xFF4ADE80 : 0xFF7FFFD4;
+            int chargePermille = (int) Math.max(0, Math.min(1000, (lastBroadcastBatteryLevel * 1000L) / Math.max(1, lastBroadcastLimit)));
+
+            liveExtras.putBoolean("android.requestPromotedOngoing", true);
+            liveExtras.putBoolean("android.promotedOngoing", true);
+            liveExtras.putBoolean("oplus.live_alert.enable", true);
+            liveExtras.putBoolean("oplus.livealert.enable", true);
+            liveExtras.putInt("oplus.live_alert_state", 1);
+            liveExtras.putString("android.shortCriticalText", compactPill);
+            liveExtras.putCharSequence("android.shortCriticalText", compactPill);
+            liveExtras.putString("oplus.live_alert.text", compactPill);
+
+            try {
+                Method setShortTextMethod = builder.getClass().getMethod("setShortCriticalText", CharSequence.class);
+                setShortTextMethod.invoke(builder, compactPill);
+            } catch (Throwable ignored) {
+            }
+
+            try {
+                Method setReqPromoted = builder.getClass().getMethod("setRequestPromotedOngoing", boolean.class);
+                setReqPromoted.invoke(builder, true);
+            } catch (Throwable ignored) {
+            }
+
+            String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
+            String cleanTitle = cleanDisplayTitle(rawTitle);
+            String nextLine = hasUpcoming && !cleanTitle.isEmpty()
+                    ? ((liveEmoji.isEmpty() ? "" : liveEmoji + " ") + cleanTitle + " (" + formatChipText("", remainingMs).trim() + ")")
+                    : syncSubtitle;
+
+            builder.setContentTitle(chargeTag)
+                    .setContentText(nextLine)
+                    .setShowWhen(hasUpcoming)
+                    .setWhen(hasUpcoming ? liveTargetEpochMs : nowMs)
+                    .setUsesChronometer(hasUpcoming)
+                    .setChronometerCountDown(hasUpcoming)
+                    .setColor(chargeColor)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+                    .setProgress(1000, chargePermille, false)
+                    .addExtras(liveExtras);
+
+            applyProgressStyleCompat(builder, chargePermille, chargeColor);
         } else if (hasUpcoming && persistentCountdownEnabled) {
-            // ── Waiting for explicit tag window: ongoing silent countdown ──
+            // ── Ongoing silent schedule/water/meds countdown ──
             String compactPill = formatChipText(liveEmoji, remainingMs);
             String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
             String cleanTitle = cleanDisplayTitle(rawTitle);
@@ -1154,7 +1222,7 @@ public class DayRhythmSyncService extends Service {
             liveExtras.putBoolean("android.requestPromotedOngoing", false);
 
             builder.setContentTitle("إيقاع اليوم | DayRhythm")
-                    .setContentText(syncSubtitle)
+                    .setContentText(chargeTag.isEmpty() ? syncSubtitle : (chargeTag + " • " + syncSubtitle))
                     .setShowWhen(false)
                     .setUsesChronometer(false)
                     .setColor(0xFF7FFFD4)

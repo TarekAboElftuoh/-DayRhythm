@@ -305,9 +305,11 @@ public final class CloudSignalClient {
         final Context app = context.getApplicationContext();
         final long now = System.currentTimeMillis();
         final String dedupeKey = level + ":" + (charging ? "1" : "0") + ":" + limit + ":" + (etaMinutes > 0 ? etaMinutes : 0);
-        if (dedupeKey.equals(lastSentBatteryKey) && now - lastBatteryCommitMs < 45_000L) {
+        if (dedupeKey.equals(lastSentBatteryKey) && now - lastBatteryCommitMs < 180_000L) {
             return;
         }
+        lastSentBatteryKey = dedupeKey;
+        lastBatteryCommitMs = now;
 
         EXEC.execute(() -> {
             try {
