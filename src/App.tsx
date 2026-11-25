@@ -146,6 +146,7 @@ import {
   sanitizeSoundRepeats,
   sanitizeUiPrefs,
   sanitizeAppSyncSettings,
+  sanitizePhoneBattery,
   getCloudQuotaPausedUntil,
   type AppSyncSettings,
   type SyncedRhythmPayload,
@@ -211,7 +212,7 @@ import type {
   CapsulePrefs,
   CapsuleTrackInfo,
 } from './components/FloatingPiPCapsule';
-import { isAndroidNativeApp, isWindowsNative } from './services/platform';
+import { isAndroidNativeApp } from './services/platform';
 const MobilePreviewView = lazy(() => import('./components/MobilePreviewView').then((m) => ({ default: m.MobilePreviewView })));
 const OverlaySimulatorView = lazy(() => import('./components/OverlaySimulatorView').then((m) => ({ default: m.OverlaySimulatorView })));
 const GeminiAssistantView = lazy(() => import('./components/GeminiAssistantView').then((m) => ({ default: m.GeminiAssistantView })));
@@ -3881,6 +3882,33 @@ export default function App() {
         setPeriodicRituals(remote.periodicRituals);
       }
     }
+    if (!detectIsMobileDeviceClient() && remote.phoneBattery) {
+      const incomingBat = sanitizePhoneBattery(remote.phoneBattery);
+      if (incomingBat) {
+        setPhoneBattery((prev) => {
+          if (
+            prev &&
+            prev.levelPct === incomingBat.levelPct &&
+            prev.charging === incomingBat.charging &&
+            prev.chargeLimitPct === incomingBat.chargeLimitPct &&
+            prev.chargeTimeRemainingMin === incomingBat.chargeTimeRemainingMin
+          ) {
+            return prev;
+          }
+          return incomingBat;
+        });
+        setBatteryGuard((prev) => ({
+          ...prev,
+          levelPct: incomingBat.levelPct,
+          cableConnected: incomingBat.charging,
+          pcAlertActive:
+            incomingBat.charging &&
+            incomingBat.levelPct >= incomingBat.chargeLimitPct &&
+            prev.bypassChargingLimitPct === null,
+          autoSilencedByDisconnect: !incomingBat.charging && prev.cableConnected,
+        }));
+      }
+    }
 
     try {
       // Only update keys that actually arrived on `remote` — never wipe omitted keys in lastServerFieldsRef!
@@ -3952,7 +3980,16 @@ export default function App() {
           pendingRemoteTimerRef.current = null;
           const latest = pendingRemoteRef.current;
           pendingRemoteRef.current = null;
-          if (latest) applyOrDefer(latest as any);
+          if (latest) {
+            isLoadingSettingsRef.current = true;
+            try {
+              applyOrDefer(latest as any);
+            } finally {
+              window.setTimeout(() => {
+                isLoadingSettingsRef.current = false;
+              }, 150);
+            }
+          }
         }, waitMs + 20);
         return;
       }
@@ -9218,6 +9255,9 @@ export default function App() {
     deviceSettings.persistentCountdownNotif,
   ]);
 
+  const lastScheduledAlarmsJsonRef = useRef<string>('');
+  const lastSyncedCloudAlarmsJsonRef = useRef<string>('');
+
   // Schedule Native Android Exact Alarms (AlarmManager) for Prayers, Water, Medications, Calendar Events & Timed Tasks
   useEffect(() => {
     const androidBridge = (
@@ -9228,166 +9268,172 @@ export default function App() {
       }
     ).DayRhythmNative;
 
-    const nowMs = trueNowMs();
-    const nowMinInTz = getNowMinutesInTimeZone(activeTimeZone, new Date(nowMs));
-    // Anchor on the start of the current minute. `nowMs + (target - nowMin) * 60s` kept the
-    // current seconds: scheduling at 10:04:45 made a 10:10 reminder ring at 10:10:45, so the phone
-    // rang a random 0–59 s after the PC (which fires on the minute).
-    const minuteStartMs = nowMs - (nowMs % 60_000);
-    const msForMinuteToday = (targetMin: number) => minuteStartMs + (targetMin - nowMinInTz) * 60_000;
-    const todayW = getWeekdayInTimeZone(activeTimeZone);
+    const timerId = window.setTimeout(() => {
+      const nowMs = trueNowMs();
+      const nowMinInTz = getNowMinutesInTimeZone(activeTimeZone, new Date(nowMs));
+      // Anchor on the start of the current minute. `nowMs + (target - nowMin) * 60s` kept the
+      // current seconds: scheduling at 10:04:45 made a 10:10 reminder ring at 10:10:45, so the phone
+      // rang a random 0–59 s after the PC (which fires on the minute).
+      const minuteStartMs = nowMs - (nowMs % 60_000);
+      const msForMinuteToday = (targetMin: number) => minuteStartMs + (targetMin - nowMinInTz) * 60_000;
+      const todayW = getWeekdayInTimeZone(activeTimeZone);
 
-    const snoozeMinutes =
-      lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15
-        ? lifeProfile.defaultSnoozeMinutes
-        : 5;
+      const snoozeMinutes =
+        lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15
+          ? lifeProfile.defaultSnoozeMinutes
+          : 5;
 
-    const alarms: Array<{
-      id: string;
-      kind: 'prayer' | 'water' | 'medication' | 'event' | 'task';
-      title: string;
-      body: string;
-      triggerAtMs: number;
-      snoozeMinutes: number;
-      medicationId?: string;
-      doseTime24?: string;
-    }> = [];
+      const alarms: Array<{
+        id: string;
+        kind: 'prayer' | 'water' | 'medication' | 'event' | 'task';
+        title: string;
+        body: string;
+        triggerAtMs: number;
+        snoozeMinutes: number;
+        medicationId?: string;
+        doseTime24?: string;
+      }> = [];
 
-    // 1. Obligatory Prayers (-adhanLeadMinutes)
-    if (includePrayerAnchors) {
-      for (const p of prayers) {
-        if (!p.isObligatory) continue;
-        const triggerAtMs = msForMinuteToday(p.alarmMinutes);
-        if (triggerAtMs > nowMs + 1_000) {
-          alarms.push({
-            id: `prayer_${todayCairoIso}_${p.id}`,
-            kind: 'prayer',
-            title: `${p.emojiPair} ${p.nameAr}`,
-            body: `متبقي ${lifeProfile.adhanLeadMinutes} د على أذان ${p.nameAr} (${formatMinutes12h(p.adhanMinutes, 'ar')})`,
-            triggerAtMs,
-            snoozeMinutes,
-          });
+      // 1. Obligatory Prayers (-adhanLeadMinutes)
+      if (includePrayerAnchors) {
+        for (const p of prayers) {
+          if (!p.isObligatory) continue;
+          const triggerAtMs = msForMinuteToday(p.alarmMinutes);
+          if (triggerAtMs > nowMs + 1_000) {
+            alarms.push({
+              id: `prayer_${todayCairoIso}_${p.id}`,
+              kind: 'prayer',
+              title: `${p.emojiPair} ${p.nameAr}`,
+              body: `متبقي ${lifeProfile.adhanLeadMinutes} د على أذان ${p.nameAr} (${formatMinutes12h(p.adhanMinutes, 'ar')})`,
+              triggerAtMs,
+              snoozeMinutes,
+            });
+          }
         }
       }
-    }
 
-    const sleepDurMin = (dailyRhythmPlan.wakeMin - dailyRhythmPlan.bedtimeMin + 1440) % 1440;
-    const isFullMuteMode = quietMode === 'silent_all' || quietMode === 'mute_audio';
-    const isSilencedAtMinute = (minOfDay: number) => {
-      if (isFullMuteMode) return true;
-      if (sleepDurMin > 0 && sleepDurMin < 900) {
-        const m = ((minOfDay % 1440) + 1440) % 1440;
-        if (((m - dailyRhythmPlan.bedtimeMin + 1440) % 1440) < sleepDurMin) return true;
-      }
-      return false;
-    };
-
-    // 2. Remaining Water Cups today
-    if (waterRemindersEnabled && hydrationToday) {
-      dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
-        if (hydrationToday.slots[idx] || isSilencedAtMinute(slot.timeMinutes)) return;
-        const triggerAtMs = msForMinuteToday(slot.timeMinutes);
-        if (triggerAtMs > nowMs + 1_000) {
-          alarms.push({
-            id: `water_${todayCairoIso}_${slot.cupIndex}`,
-            kind: 'water',
-            title: `💧 كوب ماء #${slot.cupIndex}`,
-            body: `موعد شرب ${dailyRhythmPlan.cupSizeMl} مل (${formatMinutes12h(slot.timeMinutes, 'ar')})`,
-            triggerAtMs,
-            snoozeMinutes,
-          });
+      const sleepDurMin = (dailyRhythmPlan.wakeMin - dailyRhythmPlan.bedtimeMin + 1440) % 1440;
+      const isFullMuteMode = quietMode === 'silent_all' || quietMode === 'mute_audio';
+      const isSilencedAtMinute = (minOfDay: number) => {
+        if (isFullMuteMode) return true;
+        if (sleepDurMin > 0 && sleepDurMin < 900) {
+          const m = ((minOfDay % 1440) + 1440) % 1440;
+          if (((m - dailyRhythmPlan.bedtimeMin + 1440) % 1440) < sleepDurMin) return true;
         }
-      });
-    }
+        return false;
+      };
 
-    // 3. Remaining Medication Doses today
-    for (const med of medications) {
-      if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayW)) {
-        continue;
-      }
-      const times =
-        med.times24 && med.times24.length > 0 ? med.times24 : med.time24 ? [med.time24] : [];
-      const takenDoses = med.takenDateKey === todayCairoIso ? med.takenDosesToday ?? [] : [];
-      for (const t24 of times) {
-        const alreadyTaken =
-          times.length > 1 ? takenDoses.includes(t24) : med.takenDateKey === todayCairoIso;
-        if (alreadyTaken) continue;
-        const m = t24.match(/^(\d{1,2}):(\d{2})$/);
-        if (!m) continue;
-        const medMin = Number(m[1]) * 60 + Number(m[2]);
-        if (isSilencedAtMinute(medMin)) continue;
-        const triggerAtMs = msForMinuteToday(medMin);
-        if (triggerAtMs > nowMs + 1_000) {
-          alarms.push({
-            id: `med_${todayCairoIso}_${med.id}_${t24}`,
-            kind: 'medication',
-            title: `💊 موعد الجرعة: ${med.name}`,
-            body: `${med.doseNote ? `${med.doseNote} · ` : ''}${formatMinutes12h(medMin, 'ar')}`,
-            triggerAtMs,
-            snoozeMinutes,
-            medicationId: med.id,
-            doseTime24: times.length > 1 ? t24 : '',
-          });
-        }
-      }
-    }
-
-    // 4. Upcoming Google Calendar Events today (exact simultaneous firing with PC)
-    for (const block of liveBlocks) {
-      if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer' || isSilencedAtMinute(block.startMin)) continue;
-      const triggerAtMs = msForMinuteToday(block.startMin);
-      if (triggerAtMs > nowMs + 1_000) {
-        const emoji = (block.emojiPair || '📅').trim();
-        const titleText = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
-        const desc = cleanCalendarText(block.description || '').slice(0, 220);
-        alarms.push({
-          id: `event_${todayCairoIso}_${block.id}_${block.startMin}`,
-          kind: 'event',
-          title: `${emoji} ${titleText}`,
-          body: `${desc ? `${desc}\n` : ''}تقويم Google · ${formatMinutes12h(block.startMin, 'ar')}`,
-          triggerAtMs,
-          snoozeMinutes,
+      // 2. Remaining Water Cups today
+      if (waterRemindersEnabled && hydrationToday) {
+        dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
+          if (hydrationToday.slots[idx] || isSilencedAtMinute(slot.timeMinutes)) return;
+          const triggerAtMs = msForMinuteToday(slot.timeMinutes);
+          if (triggerAtMs > nowMs + 1_000) {
+            alarms.push({
+              id: `water_${todayCairoIso}_${slot.cupIndex}`,
+              kind: 'water',
+              title: `💧 كوب ماء #${slot.cupIndex}`,
+              body: `موعد شرب ${dailyRhythmPlan.cupSizeMl} مل (${formatMinutes12h(slot.timeMinutes, 'ar')})`,
+              triggerAtMs,
+              snoozeMinutes,
+            });
+          }
         });
       }
-    }
 
-    // 5. Timed Google Tasks today
-    for (const tk of googleTasks) {
-      if (tk.status === 'completed') continue;
-      const info = extractTaskTimeMinutesForToday(tk, todayCairoIso, activeTimeZone);
-      if (!info || !info.hasExplicitTime || isSilencedAtMinute(info.startMin)) continue;
-      const triggerAtMs = msForMinuteToday(info.startMin);
-      if (triggerAtMs > nowMs + 1_000) {
-        const titleText = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
-        const notes = cleanCalendarText(tk.notes || '').slice(0, 220);
-        alarms.push({
-          id: `task_${todayCairoIso}_${tk.id}_${info.startMin}`,
-          kind: 'task',
-          title: `☑️ ${titleText}`,
-          body: `${notes ? `${notes}\n` : ''}مهام Google · ${formatMinutes12h(info.startMin, 'ar')}`,
-          triggerAtMs,
-          snoozeMinutes,
-        });
+      // 3. Remaining Medication Doses today
+      for (const med of medications) {
+        if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayW)) {
+          continue;
+        }
+        const times =
+          med.times24 && med.times24.length > 0 ? med.times24 : med.time24 ? [med.time24] : [];
+        const takenDoses = med.takenDateKey === todayCairoIso ? med.takenDosesToday ?? [] : [];
+        for (const t24 of times) {
+          const alreadyTaken =
+            times.length > 1 ? takenDoses.includes(t24) : med.takenDateKey === todayCairoIso;
+          if (alreadyTaken) continue;
+          const m = t24.match(/^(\d{1,2}):(\d{2})$/);
+          if (!m) continue;
+          const medMin = Number(m[1]) * 60 + Number(m[2]);
+          if (isSilencedAtMinute(medMin)) continue;
+          const triggerAtMs = msForMinuteToday(medMin);
+          if (triggerAtMs > nowMs + 1_000) {
+            alarms.push({
+              id: `med_${todayCairoIso}_${med.id}_${t24}`,
+              kind: 'medication',
+              title: `💊 موعد الجرعة: ${med.name}`,
+              body: `${med.doseNote ? `${med.doseNote} · ` : ''}${formatMinutes12h(medMin, 'ar')}`,
+              triggerAtMs,
+              snoozeMinutes,
+              medicationId: med.id,
+              doseTime24: times.length > 1 ? t24 : '',
+            });
+          }
+        }
       }
-    }
 
-    alarms.sort((a, b) => a.triggerAtMs - b.triggerAtMs);
-
-    const alarmsJson = JSON.stringify(alarms.slice(0, 60));
-
-    if (androidBridge?.scheduleExactAlarms) {
-      try {
-        androidBridge.scheduleExactAlarms(alarmsJson);
-      } catch {
-        // ignore Android bridge errors
+      // 4. Upcoming Google Calendar Events today (exact simultaneous firing with PC)
+      for (const block of liveBlocks) {
+        if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer' || isSilencedAtMinute(block.startMin)) continue;
+        const triggerAtMs = msForMinuteToday(block.startMin);
+        if (triggerAtMs > nowMs + 1_000) {
+          const emoji = (block.emojiPair || '📅').trim();
+          const titleText = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
+          const desc = cleanCalendarText(block.description || '').slice(0, 220);
+          alarms.push({
+            id: `event_${todayCairoIso}_${block.id}_${block.startMin}`,
+            kind: 'event',
+            title: `${emoji} ${titleText}`,
+            body: `${desc ? `${desc}\n` : ''}تقويم Google · ${formatMinutes12h(block.startMin, 'ar')}`,
+            triggerAtMs,
+            snoozeMinutes,
+          });
+        }
       }
-    }
 
-    // Sync upcoming exact alarms to Firestore so Android background service arms hardware AlarmManager
-    // even if the user created or updated events from PC!
-    if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-      void syncScheduledAlarmsToCloud(firebaseUser.uid, alarmsJson);
-    }
+      // 5. Timed Google Tasks today
+      for (const tk of googleTasks) {
+        if (tk.status === 'completed') continue;
+        const info = extractTaskTimeMinutesForToday(tk, todayCairoIso, activeTimeZone);
+        if (!info || !info.hasExplicitTime || isSilencedAtMinute(info.startMin)) continue;
+        const triggerAtMs = msForMinuteToday(info.startMin);
+        if (triggerAtMs > nowMs + 1_000) {
+          const titleText = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
+          const notes = cleanCalendarText(tk.notes || '').slice(0, 220);
+          alarms.push({
+            id: `task_${todayCairoIso}_${tk.id}_${info.startMin}`,
+            kind: 'task',
+            title: `☑️ ${titleText}`,
+            body: `${notes ? `${notes}\n` : ''}مهام Google · ${formatMinutes12h(info.startMin, 'ar')}`,
+            triggerAtMs,
+            snoozeMinutes,
+          });
+        }
+      }
+
+      alarms.sort((a, b) => a.triggerAtMs - b.triggerAtMs);
+
+      const alarmsJson = JSON.stringify(alarms.slice(0, 60));
+
+      if (androidBridge?.scheduleExactAlarms && alarmsJson !== lastScheduledAlarmsJsonRef.current) {
+        lastScheduledAlarmsJsonRef.current = alarmsJson;
+        try {
+          androidBridge.scheduleExactAlarms(alarmsJson);
+        } catch {
+          // ignore Android bridge errors
+        }
+      }
+
+      // Sync upcoming exact alarms to Firestore so Android background service arms hardware AlarmManager
+      // even if the user created or updated events from PC!
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous && alarmsJson !== lastSyncedCloudAlarmsJsonRef.current) {
+        lastSyncedCloudAlarmsJsonRef.current = alarmsJson;
+        void syncScheduledAlarmsToCloud(firebaseUser.uid, alarmsJson, clientIdRef.current);
+      }
+    }, 800);
+
+    return () => window.clearTimeout(timerId);
   }, [
     activeTimeZone,
     dailyRhythmPlan.bedtimeMin,
@@ -9794,7 +9840,7 @@ ${lifeConstitution}
           /></Suspense></div>)}
       </main>
 
-      {!isAndroidNativeApp() && !isWindowsNative() && (<Suspense fallback={null}><FloatingPiPCapsule
+      {!isAndroidNativeApp() && (<Suspense fallback={null}><FloatingPiPCapsule
         nextEmoji={capsuleTimerState.emoji}
         nextTitle={capsuleTimerState.title}
         statusLabel={capsuleTimerState.statusLabel}

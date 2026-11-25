@@ -77,6 +77,8 @@ public class MainActivity extends Activity {
     private String pendingUpdateUrl = "";
     private String pendingOtaZipUrl = "";
     private long activeDownloadId = -1L;
+    private String lastDispatchedBatteryKey = "";
+    private long lastBatteryDispatchMs = 0L;
 
     private final BroadcastReceiver nativeEventsReceiver = new BroadcastReceiver() {
         @Override
@@ -162,8 +164,30 @@ public class MainActivity extends Activity {
         Intent resolved = batteryIntent != null
                 ? batteryIntent
                 : registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (resolved == null) return;
+
+        int level = resolved.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = resolved.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+        int status = resolved.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        if (level < 0 || scale <= 0) return;
+
+        int pct = Math.max(0, Math.min(100, Math.round((level * 100f) / scale)));
+        boolean charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+                || status == BatteryManager.BATTERY_STATUS_FULL;
+
+        // Deduplicate noisy SuperVOOC / voltage / temp ACTION_BATTERY_CHANGED broadcasts on UI thread
+        long nowMs = System.currentTimeMillis();
+        String fastKey = pct + ":" + (charging ? 1 : 0);
+        if (batteryIntent != null && fastKey.equals(lastDispatchedBatteryKey)
+                && (!charging || nowMs - lastBatteryDispatchMs < 30_000L)) {
+            return;
+        }
+
         String json = buildBatterySnapshotJson(resolved);
         if (json.isEmpty()) return;
+        lastDispatchedBatteryKey = fastKey;
+        lastBatteryDispatchMs = nowMs;
+
         String js = "window.__dayRhythmNativeBattery=" + json + ";"
                 + "window.dispatchEvent(new CustomEvent('dayrhythm:native-battery',{detail:window.__dayRhythmNativeBattery}));";
         webView.evaluateJavascript(js, null);
@@ -247,7 +271,7 @@ public class MainActivity extends Activity {
     @Override
     public void onTrimMemory(int level) {
         super.onTrimMemory(level);
-        if (webView != null && level >= TRIM_MEMORY_RUNNING_LOW) {
+        if (webView != null && (level == TRIM_MEMORY_RUNNING_CRITICAL || level >= TRIM_MEMORY_COMPLETE)) {
             webView.clearCache(false);
         }
     }
@@ -657,8 +681,9 @@ public class MainActivity extends Activity {
                     boolean deleted,
                     String payloadJson
             ) {
-                return LocalSqliteStore.getInstance(MainActivity.this)
-                        .upsertEntity(entityId, entityKind, lamportSeq, clientId, timestampMs, deleted, payloadJson);
+                executor.execute(() -> LocalSqliteStore.getInstance(MainActivity.this)
+                        .upsertEntity(entityId, entityKind, lamportSeq, clientId, timestampMs, deleted, payloadJson));
+                return true;
             }
 
             @JavascriptInterface

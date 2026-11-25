@@ -753,13 +753,15 @@ export async function emitCloudLiveSignal(
  */
 export async function syncScheduledAlarmsToCloud(
   uid: string,
-  alarmsJson: string
+  alarmsJson: string,
+  originClientId?: string
 ): Promise<boolean> {
   if (!uid || !alarmsJson) return false;
   try {
     const docRef = doc(db, 'users', uid, 'sync', 'scheduled_alarms');
     await setDoc(docRef, {
       alarmsJson,
+      ...(originClientId ? { originClientId } : {}),
       updatedAtMs: Date.now(),
       serverTime: serverTimestamp(),
     });

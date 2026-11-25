@@ -624,30 +624,44 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         if (am == null) return;
 
         SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
-        String prevCsv = prefs.getString(KEY_SCHEDULED_IDS, "");
-        if (prevCsv != null && !prevCsv.isEmpty()) {
-            for (String token : prevCsv.split(",")) {
+        String prevBatch = prefs.getString("last_batch_raw", "");
+        if (jsonArrayStr.equals(prevBatch)) {
+            return;
+        }
+
+        // Parse old signature map: reqCode -> signature (or seed legacy KEY_SCHEDULED_IDS once after upgrade)
+        java.util.Map<Integer, String> prevMap = new java.util.HashMap<>();
+        try {
+            String prevMapJson = prefs.getString("scheduled_sigs_map", "{}");
+            JSONObject prevObj = new JSONObject(prevMapJson != null ? prevMapJson : "{}");
+            java.util.Iterator<String> keys = prevObj.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
                 try {
-                    int reqCode = Integer.parseInt(token.trim());
-                    Intent cancelIntent = new Intent(context, ReminderAlarmReceiver.class);
-                    cancelIntent.setAction(ACTION_FIRE_ALARM);
-                    PendingIntent pi = PendingIntent.getBroadcast(
-                            context,
-                            reqCode,
-                            cancelIntent,
-                            PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE
-                    );
-                    if (pi != null) {
-                        am.cancel(pi);
-                        pi.cancel();
-                    }
+                    prevMap.put(Integer.parseInt(k), prevObj.optString(k, ""));
                 } catch (Exception ignored) {
                 }
             }
+            if (prevMap.isEmpty()) {
+                String legacyCsv = prefs.getString(KEY_SCHEDULED_IDS, "");
+                if (legacyCsv != null && !legacyCsv.isEmpty()) {
+                    for (String token : legacyCsv.split(",")) {
+                        try {
+                            prevMap.put(Integer.parseInt(token.trim()), "");
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
         }
 
+        java.util.Map<Integer, String> nextMap = new java.util.HashMap<>();
         StringBuilder newIds = new StringBuilder();
+        JSONObject nextMapObj = new JSONObject();
         long nowMs = System.currentTimeMillis();
+        boolean anyAlarmChanged = false;
+
         try {
             JSONArray arr = new JSONArray(jsonArrayStr);
             int maxItems = Math.min(arr.length(), 60);
@@ -665,29 +679,63 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 String doseTime = item.optString("doseTime24", "");
                 int snoozeMin = sanitizeSnoozeMinutes(item.optInt("snoozeMinutes", 5));
                 int reqCode = 5000 + Math.abs(alarmId.hashCode() % 40000);
-
-                scheduleSingleExactAlarm(
-                        context,
-                        reqCode,
-                        alarmId,
-                        kind,
-                        title,
-                        body,
-                        medId,
-                        doseTime,
-                        triggerAtMs,
-                        snoozeMin
-                );
+                String sig = triggerAtMs + "|" + kind + "|" + title + "|" + body + "|" + medId + "|" + doseTime + "|" + snoozeMin;
+                nextMap.put(reqCode, sig);
+                nextMapObj.put(String.valueOf(reqCode), sig);
                 if (newIds.length() > 0) newIds.append(",");
                 newIds.append(reqCode);
+
+                String oldSig = prevMap.get(reqCode);
+                if (!sig.equals(oldSig)) {
+                    anyAlarmChanged = true;
+                    scheduleSingleExactAlarm(
+                            context,
+                            reqCode,
+                            alarmId,
+                            kind,
+                            title,
+                            body,
+                            medId,
+                            doseTime,
+                            triggerAtMs,
+                            snoozeMin
+                    );
+                }
             }
         } catch (Exception ignored) {
         }
+
+        // Cancel only alarms removed from the new schedule (instead of wiping all 60 every time)
+        for (Integer oldReqCode : prevMap.keySet()) {
+            if (!nextMap.containsKey(oldReqCode)) {
+                anyAlarmChanged = true;
+                try {
+                    Intent cancelIntent = new Intent(context, ReminderAlarmReceiver.class);
+                    cancelIntent.setAction(ACTION_FIRE_ALARM);
+                    PendingIntent pi = PendingIntent.getBroadcast(
+                            context,
+                            oldReqCode,
+                            cancelIntent,
+                            PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE
+                    );
+                    if (pi != null) {
+                        am.cancel(pi);
+                        pi.cancel();
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
         prefs.edit()
+                .putString("last_batch_raw", jsonArrayStr)
+                .putString("scheduled_sigs_map", nextMapObj.toString())
                 .putString(KEY_SCHEDULED_IDS, newIds.toString())
                 .putString(KEY_CACHED_SCHEDULE, jsonArrayStr)
                 .apply();
-        DayRhythmSyncService.onScheduleUpdated(context);
+        if (anyAlarmChanged || prevMap.isEmpty()) {
+            DayRhythmSyncService.onScheduleUpdated(context);
+        }
     }
 
     public static void scheduleSingleExactAlarm(

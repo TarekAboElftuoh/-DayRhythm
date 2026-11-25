@@ -598,7 +598,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
   // Provide only a clean obsidian-glass dock trigger with popover controls (no duplicate floating bar).
   if (isNativeWindowsExe) {
     return (
-      <div className="hidden md:block fixed bottom-4 left-4 z-40">
+      <div className="fixed bottom-4 left-4 z-40">
         <div className="relative inline-block">
           {menuOpen && (
             <div className="absolute bottom-[calc(100%+8px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">

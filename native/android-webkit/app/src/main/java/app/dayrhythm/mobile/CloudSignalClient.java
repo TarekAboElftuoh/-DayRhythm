@@ -49,6 +49,7 @@ public final class CloudSignalClient {
     private static volatile long idTokenExpiresAtMs;
     private static ScheduledFuture<?> watchFuture;
     private static volatile long lastScheduledAlarmsUpdateMs = 0L;
+    private static volatile String lastScheduledAlarmsJson = "";
 
     private CloudSignalClient() {
     }
@@ -686,11 +687,17 @@ public final class CloudSignalClient {
                         JSONObject fields = doc.optJSONObject("fields");
                         if (fields != null) {
                             String alarmsJson = getFirestoreString(fields, "alarmsJson", "");
+                            String originClientId = getFirestoreString(fields, "originClientId", "");
                             long updatedAt = getFirestoreLong(fields, "updatedAtMs", 0L);
-                            if (!alarmsJson.isEmpty() && updatedAt > lastScheduledAlarmsUpdateMs) {
+                            if (!alarmsJson.isEmpty()
+                                    && !CLIENT_ID.equals(originClientId)
+                                    && updatedAt > lastScheduledAlarmsUpdateMs) {
                                 lastScheduledAlarmsUpdateMs = updatedAt;
-                                android.util.Log.d("CloudSignalClient", "Applying scheduled alarms synced from PC");
-                                ReminderAlarmReceiver.scheduleBatchFromJson(app, alarmsJson);
+                                if (!alarmsJson.equals(lastScheduledAlarmsJson)) {
+                                    lastScheduledAlarmsJson = alarmsJson;
+                                    android.util.Log.d("CloudSignalClient", "Applying scheduled alarms synced from PC");
+                                    ReminderAlarmReceiver.scheduleBatchFromJson(app, alarmsJson);
+                                }
                             }
                         }
                     }

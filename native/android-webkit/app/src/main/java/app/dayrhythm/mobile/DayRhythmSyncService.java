@@ -107,6 +107,8 @@ public class DayRhythmSyncService extends Service {
     private boolean persistentCountdownEnabled = true;
     private boolean liveIslandCurrentlyShown = false;
     private String syncSubtitle = "مزامنة لحظية نشطة 24/7";
+    private String lastNotifStateKey = "";
+    private long lastNotifPostMs = 0L;
 
     private final Runnable wsReconnectRunnable = this::connectBackgroundWebSocket;
 
@@ -189,39 +191,29 @@ public class DayRhythmSyncService extends Service {
                 }
 
                 if (explicitTagSec != null && remainingMs > explicitTagSec * 1000L) {
-                    // Tagged event: sleep until the exact moment of entering the tag window
+                    // Tagged event: sleep until entering tag window (max 10 min checks)
                     long waitMs = (remainingMs - explicitTagSec * 1000L) + 50L;
-                    long maxWait = lastBroadcastCharging ? 10_000L : 300_000L;
-                    handler.postDelayed(this, Math.max(1000L, Math.min(waitMs, maxWait)));
-                } else if (remainingMs > 60_000L && liveAlertsEnabled) {
-                    // Inside countdown (> 60s):
-                    // SystemUI Chronometer renders seconds live with 0% CPU.
-                    // We wake on minute boundary to refresh the shortCriticalText chip (e.g. 8د -> 7د),
-                    // or when transitioning into the final 60 seconds.
+                    handler.postDelayed(this, Math.max(1000L, Math.min(waitMs, 600_000L)));
+                } else if (remainingMs > 60_000L && (liveAlertsEnabled || persistentCountdownEnabled)) {
+                    // SystemUI Chronometer draws live seconds at 0% CPU.
+                    // Wake strictly on minute boundary to update the minute chip (e.g. 8د -> 7د).
                     long timeToNextMin = (remainingMs % 60_000L);
-                    if (timeToNextMin <= 200L) timeToNextMin = 60_000L;
+                    if (timeToNextMin <= 250L) timeToNextMin = 60_000L;
                     long timeToSixtySec = remainingMs - 60_000L + 50L;
                     long nextWake = Math.min(timeToNextMin, timeToSixtySec);
-                    if (lastBroadcastCharging) nextWake = Math.min(nextWake, 10_000L);
                     handler.postDelayed(this, Math.max(1000L, nextWake));
-                } else if (remainingMs > 0L && remainingMs <= 60_000L && liveAlertsEnabled) {
-                    // Final 60 seconds:
-                    // SystemUI Chronometer displays live seconds continuously.
-                    // We tick every 2.5 seconds for shortCriticalText chip accuracy and schedule exact arrival at 0s!
-                    long nextWake = Math.min(2500L, remainingMs + 50L);
-                    if (lastBroadcastCharging) nextWake = Math.min(nextWake, 10_000L);
-                    handler.postDelayed(this, Math.max(500L, nextWake));
+                } else if (remainingMs > 0L && remainingMs <= 60_000L && (liveAlertsEnabled || persistentCountdownEnabled)) {
+                    // Final 60s: native SystemUI Chronometer renders seconds smoothly.
+                    // Update chip every 15s (45s/30s/15s/0s) instead of spamming SystemUI every 2.5s.
+                    long nextWake = Math.min(15_000L, remainingMs + 50L);
+                    handler.postDelayed(this, Math.max(1000L, nextWake));
                 } else if (remainingMs <= 0L) {
-                    // Just reached 0: Automatically advance to next scheduled event from schedule cache!
+                    // Just reached 0: advance to next scheduled event
                     boolean advanced = advanceToNextScheduledEvent();
                     if (!advanced) {
-                        handler.postDelayed(this, 30_000L);
+                        handler.postDelayed(this, 60_000L);
                     }
-                } else if (lastBroadcastCharging) {
-                    handler.postDelayed(this, 10_000L);
                 }
-            } else if (lastBroadcastCharging) {
-                handler.postDelayed(this, 10_000L);
             }
         }
     };
@@ -626,7 +618,11 @@ public class DayRhythmSyncService extends Service {
                     return;
                 }
 
-                // 2. When charging: calculate charging speed & ETA to limit
+                // 2. When charging: only recompute & notify when %, charging state, or limit actually changed
+                if (pct == lastBroadcastBatteryLevel && lastBroadcastCharging && limit == lastBroadcastLimit) {
+                    return;
+                }
+
                 if (chargeSessionStartMs == 0L || chargeSessionStartLevel < 0 || pct < chargeSessionStartLevel) {
                     chargeSessionStartMs = nowMs;
                     chargeSessionStartLevel = pct;
@@ -648,15 +644,12 @@ public class DayRhythmSyncService extends Service {
 
                 lastBroadcastEtaMinutes = etaMinutes;
                 lastBroadcastLimit = limit;
+                lastBroadcastBatteryLevel = pct;
+                lastBroadcastCharging = true;
 
-                // 3. Broadcast live battery telemetry to PC over LAN / WebSocket
-                if (pct != lastBroadcastBatteryLevel || !lastBroadcastCharging) {
-                    lastBroadcastBatteryLevel = pct;
-                    lastBroadcastCharging = true;
-                    broadcastBatteryTelemetry(pct, true, etaMinutes, limit);
-                    handler.removeCallbacks(liveCountdownTickRunnable);
-                    handler.post(liveCountdownTickRunnable);
-                }
+                // 3. Broadcast live battery telemetry to PC and refresh charging capsule
+                broadcastBatteryTelemetry(pct, true, etaMinutes, limit);
+                refreshPersistentNotification();
 
                 // 4. Trigger alert when reaching limit (default 90%)
                 if (enabled && pct >= limit && !chargeAlertFiredThisSession) {
@@ -1020,42 +1013,31 @@ public class DayRhythmSyncService extends Service {
         }
     }
 
+    private String computeNotifStateKey() {
+        long nowMs = System.currentTimeMillis();
+        long remainingMs = liveTargetEpochMs - nowMs;
+        boolean hasUpcoming = liveTargetEpochMs > nowMs + 1000L;
+        long bucketSec = hasUpcoming ? Math.max(0L, remainingMs / 15_000L) : 0L;
+        return bucketSec + "|" + liveEmoji + "|" + liveTitle + "|" + liveStatusLabel + "|" + liveKind
+                + "|" + liveTargetEpochMs + "|" + liveAlertsEnabled + "|" + liveAlertsLeadMinutes
+                + "|" + persistentCountdownEnabled + "|" + lastBroadcastCharging + "|" + lastBroadcastBatteryLevel
+                + "|" + lastBroadcastLimit + "|" + lastBroadcastEtaMinutes + "|" + syncSubtitle;
+    }
+
     private void refreshPersistentNotification() {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm == null) return;
-        try {
-            nm.notify(NOTIF_KEEPALIVE_ID, buildPersistentNotification());
-        } catch (SecurityException ignored) {
+        long nowMs = System.currentTimeMillis();
+        String nextKey = computeNotifStateKey();
+        if (nextKey.equals(lastNotifStateKey) && nowMs - lastNotifPostMs < 55_000L) {
+            return;
         }
-    }
-
-    private void applyProgressStyleCompat(NotificationCompat.Builder builder, int progressPermille, int categoryColor) {
-        // Standard fallback progress for all Android versions
-        builder.setProgress(1000, progressPermille, false);
-
-        // Android 15 (API 35) & Android 16 (API 36) / OxygenOS 14+ ProgressStyle support via reflection
         try {
-            Class<?> progressStyleClass = Class.forName("android.app.Notification$ProgressStyle");
-            Object styleInstance = progressStyleClass.getConstructor().newInstance();
-
-            Method setStyledByProgress = progressStyleClass.getMethod("setStyledByProgress", boolean.class);
-            setStyledByProgress.invoke(styleInstance, true);
-
-            Method setProgress = progressStyleClass.getMethod("setProgress", int.class);
-            setProgress.invoke(styleInstance, progressPermille);
-
-            try {
-                Class<?> segmentClass = Class.forName("android.app.Notification$ProgressStyle$Segment");
-                Constructor<?> segmentCtor = segmentClass.getConstructor(int.class);
-                Object segment = segmentCtor.newInstance(1000);
-                Method setColor = segmentClass.getMethod("setColor", int.class);
-                setColor.invoke(segment, categoryColor);
-
-                Method addSegment = progressStyleClass.getMethod("addProgressSegment", segmentClass);
-                addSegment.invoke(styleInstance, segment);
-            } catch (Throwable ignored) {
-            }
-        } catch (Throwable ignored) {
+            Notification notif = buildPersistentNotification();
+            lastNotifStateKey = nextKey;
+            lastNotifPostMs = nowMs;
+            nm.notify(NOTIF_KEEPALIVE_ID, notif);
+        } catch (SecurityException ignored) {
         }
     }
 
@@ -1076,13 +1058,15 @@ public class DayRhythmSyncService extends Service {
             explicitTagSec = parseLeadTagSeconds(liveStatusLabel);
         }
 
-        // Live alert is active whenever there is an upcoming or ongoing event,
-        // respecting explicit tag (#45s, #30m) if set by user.
         boolean hasUpcoming = liveTargetEpochMs > nowMs + 1000L;
-        boolean inLeadWindow = liveAlertsEnabled && hasUpcoming &&
-                (explicitTagSec == null || remainingMs <= explicitTagSec * 1000L);
+        long leadWindowMs = getEffectiveLeadWindowMs();
+        boolean inUrgentLeadWindow = liveAlertsEnabled && hasUpcoming &&
+                (explicitTagSec != null ? remainingMs <= explicitTagSec * 1000L : remainingMs <= leadWindowMs);
+        boolean isChargingNow = lastBroadcastCharging && lastBroadcastBatteryLevel >= 0;
 
-        int smallIcon = getSmallIconForKind(liveKind);
+        int smallIcon = getSmallIconForKind(
+                (!inUrgentLeadWindow && isChargingNow && liveAlertsEnabled) ? "charge" : liveKind
+        );
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_LIVE_ALERTS)
                 .setSmallIcon(smallIcon)
                 .setOngoing(true)
@@ -1093,21 +1077,20 @@ public class DayRhythmSyncService extends Service {
 
         Bundle liveExtras = new Bundle();
         String chargeTag = "";
-        if (lastBroadcastCharging && lastBroadcastBatteryLevel >= 0) {
+        if (isChargingNow) {
             String etaStr = lastBroadcastEtaMinutes > 0
                     ? (" ~" + lastBroadcastEtaMinutes + "د")
                     : (lastBroadcastBatteryLevel >= lastBroadcastLimit ? " ✓ افصل الشاحن" : "");
             chargeTag = "⚡ " + lastBroadcastBatteryLevel + "%/" + lastBroadcastLimit + "%" + etaStr;
         }
 
-        if (inLeadWindow) {
-            // ── Live Alerts Capsule active (OnePlus 12R punch hole & Android Promoted Ongoing) ──
+        if (inUrgentLeadWindow) {
+            // ── Urgent Task Lead Window: Live Alerts Capsule (OnePlus 12R punch hole) ──
             String compactPill = formatChipText(liveEmoji, remainingMs);
             int categoryColor = (remainingMs <= 60_000L) ? 0xFFFF6B6B : (remainingMs <= 300_000L ? 0xFFFFB020 : 0xFF7FFFD4);
-            long leadRefMs = explicitTagSec != null ? explicitTagSec * 1000L : Math.max(1, liveAlertsLeadMinutes) * 60_000L;
+            long leadRefMs = explicitTagSec != null ? explicitTagSec * 1000L : leadWindowMs;
             int progressPermille = (int) Math.max(0, Math.min(1000, ((leadRefMs - remainingMs) * 1000) / Math.max(1000L, leadRefMs)));
 
-            // Keys specifically recognized by OxygenOS 14/15/16 Fluid Cloud & Android 16 Promoted Ongoing
             liveExtras.putBoolean("android.requestPromotedOngoing", true);
             liveExtras.putBoolean("android.promotedOngoing", true);
             liveExtras.putBoolean("oplus.live_alert.enable", true);
@@ -1118,18 +1101,6 @@ public class DayRhythmSyncService extends Service {
             liveExtras.putString("oplus.live_alert.text", compactPill);
             liveExtras.putBoolean("android.showChronometer", true);
             liveExtras.putBoolean("android.chronometerCountdown", true);
-
-            try {
-                Method setShortTextMethod = builder.getClass().getMethod("setShortCriticalText", CharSequence.class);
-                setShortTextMethod.invoke(builder, compactPill);
-            } catch (Throwable ignored) {
-            }
-
-            try {
-                Method setReqPromoted = builder.getClass().getMethod("setRequestPromotedOngoing", boolean.class);
-                setReqPromoted.invoke(builder, true);
-            } catch (Throwable ignored) {
-            }
 
             String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
             String cleanTitle = cleanDisplayTitle(rawTitle);
@@ -1144,14 +1115,12 @@ public class DayRhythmSyncService extends Service {
                     .setUsesChronometer(true)
                     .setChronometerCountDown(true)
                     .setColor(categoryColor)
-                    .setPriority(NotificationCompat.PRIORITY_MAX)
-                    .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setCategory(NotificationCompat.CATEGORY_EVENT)
                     .setProgress(1000, progressPermille, false)
                     .addExtras(liveExtras);
-
-            applyProgressStyleCompat(builder, progressPermille, categoryColor);
-        } else if (lastBroadcastCharging && lastBroadcastBatteryLevel >= 0 && liveAlertsEnabled) {
-            // ── Charging Live Capsule: show charger progress + next schedule/water task ──
+        } else if (isChargingNow && liveAlertsEnabled) {
+            // ── Charging Live Capsule: charger % + ETA + next schedule/water task ──
             String compactPill = "⚡ " + lastBroadcastBatteryLevel + "%";
             int chargeColor = lastBroadcastBatteryLevel >= lastBroadcastLimit ? 0xFF4ADE80 : 0xFF7FFFD4;
             int chargePermille = (int) Math.max(0, Math.min(1000, (lastBroadcastBatteryLevel * 1000L) / Math.max(1, lastBroadcastLimit)));
@@ -1164,18 +1133,6 @@ public class DayRhythmSyncService extends Service {
             liveExtras.putString("android.shortCriticalText", compactPill);
             liveExtras.putCharSequence("android.shortCriticalText", compactPill);
             liveExtras.putString("oplus.live_alert.text", compactPill);
-
-            try {
-                Method setShortTextMethod = builder.getClass().getMethod("setShortCriticalText", CharSequence.class);
-                setShortTextMethod.invoke(builder, compactPill);
-            } catch (Throwable ignored) {
-            }
-
-            try {
-                Method setReqPromoted = builder.getClass().getMethod("setRequestPromotedOngoing", boolean.class);
-                setReqPromoted.invoke(builder, true);
-            } catch (Throwable ignored) {
-            }
 
             String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
             String cleanTitle = cleanDisplayTitle(rawTitle);
@@ -1194,10 +1151,35 @@ public class DayRhythmSyncService extends Service {
                     .setCategory(NotificationCompat.CATEGORY_PROGRESS)
                     .setProgress(1000, chargePermille, false)
                     .addExtras(liveExtras);
+        } else if (liveAlertsEnabled && hasUpcoming) {
+            // ── Schedule / Water / Meds Live Alert Capsule (> lead window, not charging) ──
+            String compactPill = formatChipText(liveEmoji, remainingMs);
+            liveExtras.putBoolean("android.requestPromotedOngoing", true);
+            liveExtras.putBoolean("android.promotedOngoing", true);
+            liveExtras.putBoolean("oplus.live_alert.enable", true);
+            liveExtras.putBoolean("oplus.livealert.enable", true);
+            liveExtras.putInt("oplus.live_alert_state", 1);
+            liveExtras.putString("android.shortCriticalText", compactPill);
+            liveExtras.putCharSequence("android.shortCriticalText", compactPill);
+            liveExtras.putString("oplus.live_alert.text", compactPill);
 
-            applyProgressStyleCompat(builder, chargePermille, chargeColor);
+            String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
+            String cleanTitle = cleanDisplayTitle(rawTitle);
+            String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
+
+            builder.setContentTitle(compactPill)
+                    .setContentText(displayTitle)
+                    .setSubText(liveStatusLabel)
+                    .setShowWhen(true)
+                    .setWhen(liveTargetEpochMs)
+                    .setUsesChronometer(true)
+                    .setChronometerCountDown(true)
+                    .setColor(0xFF7FFFD4)
+                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                    .setCategory(NotificationCompat.CATEGORY_EVENT)
+                    .addExtras(liveExtras);
         } else if (hasUpcoming && persistentCountdownEnabled) {
-            // ── Ongoing silent schedule/water/meds countdown ──
+            // ── Ongoing silent schedule/water/meds countdown (Live Alerts toggled off) ──
             String compactPill = formatChipText(liveEmoji, remainingMs);
             String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
             String cleanTitle = cleanDisplayTitle(rawTitle);

@@ -45,6 +45,7 @@ namespace DayRhythm
 
         private bool _isQuitting;
         private bool _isDownloadingUpdate;
+        private bool _wasPhoneCharging;
         private string _wsStatusText = "متصل 24/7 (Firestore لحظي)";
         private ReleaseUpdateInfo _pendingUpdate;
 
@@ -374,7 +375,16 @@ namespace DayRhythm
                                         CapsuleStatePayload payload = JsonSerializer.Deserialize<CapsuleStatePayload>(msg);
                                         if (payload != null)
                                         {
-                                            RunOnUi(() => _capsuleForm?.UpdateState(payload));
+                                            RunOnUi(() =>
+                                            {
+                                                bool startedCharging = !_wasPhoneCharging && payload.phoneCharging;
+                                                _wasPhoneCharging = payload.phoneCharging;
+                                                _capsuleForm?.UpdateState(payload);
+                                                if (startedCharging && _capsuleForm != null && !_capsuleForm.Visible)
+                                                {
+                                                    _capsuleForm.ShowFloating();
+                                                }
+                                            });
                                         }
                                     }
                                     else if (string.Equals(msgType, "show-native-capsule", StringComparison.OrdinalIgnoreCase))
