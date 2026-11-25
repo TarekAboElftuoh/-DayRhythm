@@ -25,6 +25,9 @@
     <Content Include="app.ico" Condition="Exists('app.ico')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="DayRhythmCore.dll" Condition="Exists('DayRhythmCore.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,34 @@
+syntax = "proto3";
+package dayrhythm.spirc;
+
+enum ActionKind {
+  ACTION_UNSPECIFIED = 0;
+  ACTION_UPSERT = 1;
+  ACTION_DELETE_TOMBSTONE = 2;
+  ACTION_DISMISS_ALARM = 3;
+  ACTION_BATTERY_TELEMETRY = 4;
+  ACTION_FULL_SYNC_REQUEST = 5;
+  ACTION_HEARTBEAT = 6;
+}
+
+enum EntityKind {
+  ENTITY_UNSPECIFIED = 0;
+  ENTITY_STATE_V3 = 1;
+  ENTITY_MEDICATION = 2;
+  ENTITY_MEMORY = 3;
+  ENTITY_CHAT_SESSION = 4;
+  ENTITY_ALARM = 5;
+}
+
+message SpircFrame {
+  uint32 version = 1;
+  ActionKind action = 2;
+  EntityKind entity_kind = 3;
+  string entity_id = 4;
+  string client_id = 5;
+  string op_id = 6;
+  uint64 lamport_seq = 7;
+  uint64 timestamp_ms = 8;
+  bool deleted = 9;
+  bytes payload = 10;
+}

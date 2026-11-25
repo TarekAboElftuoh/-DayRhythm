@@ -1,0 +1,15 @@
+{
+  "name": "dayrhythm-spirc-broker",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate": "node scripts/migrate.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250401.0",
+    "wrangler": "^4.0.0"
+  }
+}

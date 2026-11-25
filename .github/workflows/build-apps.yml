@@ -15,6 +15,19 @@ permissions:
   contents: write
 
 jobs:
+  test-cpp-core:
+    name: Build & Test C++20 DayRhythmCore
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure, build, and test C++20 core
+        run: |
+          cmake -S core -B core/build-linux -DCMAKE_BUILD_TYPE=Release
+          cmake --build core/build-linux
+          ctest --test-dir core/build-linux --output-on-failure
+
   build-web-bundle:
     name: Build DayRhythm Web Bundle (Zero-SW Standalone)
     runs-on: ubuntu-latest
@@ -91,6 +104,13 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+
+      - name: Ensure Android NDK & CMake for C++20 JNI core
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          if [ -n "$SDK_ROOT" ] && command -v sdkmanager >/dev/null 2>&1; then
+            yes | sdkmanager --sdk_root="$SDK_ROOT" "ndk;26.3.11579264" "cmake;3.22.1" >/dev/null || true
+          fi
 
       - name: Copy DayRhythm icons into Android resources
         run: |
@@ -194,6 +214,13 @@ jobs:
           $csproj = Get-Content $csprojPath -Raw
           $csproj = $csproj.Replace("<Version>1.0.0</Version>", "<Version>$ver</Version>")
           Set-Content -Path $csprojPath -Value $csproj -NoNewline
+
+      - name: Build C++20 DayRhythmCore.dll
+        shell: pwsh
+        run: |
+          cmake -S core -B core/build-win -A x64
+          cmake --build core/build-win --config Release
+          Copy-Item "core/build-win/Release/DayRhythmCore.dll" "native/windows-dotnet/DayRhythmCore.dll" -Force
 
       - name: Publish self-contained .NET 8 + WebView2 Windows app
         shell: pwsh

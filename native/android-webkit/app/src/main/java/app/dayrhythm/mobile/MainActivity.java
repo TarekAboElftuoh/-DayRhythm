@@ -635,6 +635,30 @@ public class MainActivity extends Activity {
             }
 
             @JavascriptInterface
+            public boolean sqliteUpsert(
+                    String entityId,
+                    int entityKind,
+                    long lamportSeq,
+                    String clientId,
+                    long timestampMs,
+                    boolean deleted,
+                    String payloadJson
+            ) {
+                return LocalSqliteStore.getInstance(MainActivity.this)
+                        .upsertEntity(entityId, entityKind, lamportSeq, clientId, timestampMs, deleted, payloadJson);
+            }
+
+            @JavascriptInterface
+            public String sqliteLoadAll() {
+                return LocalSqliteStore.getInstance(MainActivity.this).loadAllJson();
+            }
+
+            @JavascriptInterface
+            public boolean isNativeCoreLoaded() {
+                return NativeCore.isLoaded();
+            }
+
+            @JavascriptInterface
             public void startVoiceInput(String lang) {
                 runOnUiThread(() -> launchVoiceRecognizer(lang));
             }
