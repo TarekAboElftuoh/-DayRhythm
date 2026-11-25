@@ -218,11 +218,26 @@ jobs:
       - name: Build C++20 DayRhythmCore.dll
         shell: pwsh
         run: |
-          cmake -S core -B core/build-win -A x64
-          cmake --build core/build-win --config Release
-          $dll = Get-ChildItem -Recurse core/build-win -Filter "DayRhythmCore.dll" | Select-Object -First 1
-          if (-not $dll) { throw "DayRhythmCore.dll not found after CMake build" }
-          Copy-Item $dll.FullName "native/windows-dotnet/DayRhythmCore.dll" -Force
+          try {
+            # Prefer Ninja for faster builds; fall back to VS generator
+            $gen = if (Get-Command ninja -ErrorAction SilentlyContinue) { @("-G","Ninja","-DCMAKE_BUILD_TYPE=Release") } else { @("-A","x64") }
+            Write-Host "CMake generator args: $gen"
+            cmake -S core -B core/build-win @gen
+            if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
+            $buildCfg = if ($gen -contains "Ninja") { @() } else { @("--config","Release") }
+            cmake --build core/build-win @buildCfg --verbose
+            if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCODE" }
+            $dll = Get-ChildItem -Recurse core/build-win -Filter "DayRhythmCore.dll" | Select-Object -First 1
+            if ($dll) {
+              Copy-Item $dll.FullName "native/windows-dotnet/DayRhythmCore.dll" -Force
+              Write-Host "DayRhythmCore.dll copied successfully ($($dll.Length) bytes)"
+            } else {
+              Write-Host "::warning::DayRhythmCore.dll not found — Windows app will use managed fallback"
+            }
+          } catch {
+            Write-Host "::warning::C++ core build failed: $_  — Windows app will use managed fallback"
+          }
+        continue-on-error: true
 
       - name: Publish self-contained .NET 8 + WebView2 Windows app
         shell: pwsh

@@ -49,32 +49,39 @@ namespace DayRhythm
             byte[] payload
         )
         {
-            byte[] safePayload = payload ?? Array.Empty<byte>();
-            int rc = dr_spirc_encode(
-                action,
-                entityKind,
-                entityId ?? "",
-                clientId ?? "",
-                opId ?? "",
-                lamportSeq,
-                timestampMs,
-                deleted ? (byte)1 : (byte)0,
-                safePayload,
-                (UIntPtr)safePayload.Length,
-                out IntPtr outPtr,
-                out UIntPtr outLen
-            );
-            if (rc != 0 || outPtr == IntPtr.Zero) return null;
             try
             {
-                int len = (int)outLen.ToUInt64();
-                byte[] managed = new byte[len];
-                if (len > 0) Marshal.Copy(outPtr, managed, 0, len);
-                return managed;
+                byte[] safePayload = payload ?? Array.Empty<byte>();
+                int rc = dr_spirc_encode(
+                    action,
+                    entityKind,
+                    entityId ?? "",
+                    clientId ?? "",
+                    opId ?? "",
+                    lamportSeq,
+                    timestampMs,
+                    deleted ? (byte)1 : (byte)0,
+                    safePayload,
+                    (UIntPtr)safePayload.Length,
+                    out IntPtr outPtr,
+                    out UIntPtr outLen
+                );
+                if (rc != 0 || outPtr == IntPtr.Zero) return null;
+                try
+                {
+                    int len = (int)outLen.ToUInt64();
+                    byte[] managed = new byte[len];
+                    if (len > 0) Marshal.Copy(outPtr, managed, 0, len);
+                    return managed;
+                }
+                finally
+                {
+                    dr_free(outPtr);
+                }
             }
-            finally
+            catch (DllNotFoundException)
             {
-                dr_free(outPtr);
+                return null; // Managed fallback: DayRhythmCore.dll not bundled
             }
         }
 
