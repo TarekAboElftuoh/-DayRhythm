@@ -84,15 +84,15 @@ function post(msg: Record<string, unknown>) {
   }
 }
 
-/** Smooth clock from targetEpochMs: >60s → X دقيقة | <=60s → MM:SS down to 00:00 (never "الآن"). */
+/** Smooth clock from targetEpochMs: >60s → X (number only) | <=60s → MM:SS down to 00:00 (never "الآن"). */
 function liveClock(targetEpochMs: number, fallback: string, baseUrgent: boolean, nowMs: number) {
   if (!targetEpochMs || targetEpochMs <= 0) {
-    const cleanFallback = !fallback || fallback === 'الآن' ? '00:00' : fallback;
+    const cleanFallback = !fallback || fallback === 'الآن' ? '00:00' : fallback.replace(/\s*دقيقة\s*$/u, '').trim();
     return { text: cleanFallback, urgent: baseUrgent };
   }
   const remMs = Math.max(0, targetEpochMs - nowMs);
   return {
-    text: formatCountdown(remMs),
+    text: remMs > 60_000 ? String(Math.ceil(remMs / 60_000)) : formatCountdown(remMs),
     urgent: remMs <= 60_000,
   };
 }
