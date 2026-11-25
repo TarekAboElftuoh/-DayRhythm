@@ -242,7 +242,7 @@ export function connectSpircCluster(
         : clean.startsWith('ws://') || clean.startsWith('wss://')
           ? clean
           : `wss://${clean}`;
-    return `${wsProto}/ws/${encodeURIComponent(uid)}`;
+    return `${wsProto}/ws?uid=${encodeURIComponent(uid)}`;
   };
 
   const connect = () => {

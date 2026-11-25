@@ -924,7 +924,7 @@ export default function App() {
   const clientIdRef = useRef<string>(resolveMyDeviceId());
   useEffect(() => {
     clientIdRef.current = resolveMyDeviceId();
-  });
+  }, []);
 
   useEffect(() => {
     // Kill any leftover continuous alarm or vibration on app launch
@@ -960,6 +960,8 @@ export default function App() {
   const pendingRemoteTimerRef = useRef<number | null>(null);
   const pushToTasksVaultRef = useRef<(patch?: Partial<TasksVaultPayload>) => Promise<void>>(() => Promise.resolve());
   const spircClusterRef = useRef<SpircClusterHandle | null>(null);
+  const recentCloudWriteTimestampsRef = useRef<number[]>([]);
+  const lastSpircFullStateRef = useRef<Record<string, unknown>>({});
   const pendingPatchesBeforeHydrationRef = useRef<Array<Partial<TasksVaultPayload>>>([]);
   const handleToggleMedicationRef = useRef<(id: string, doseTime24?: string) => void>(() => {});
   const handleLogWaterCupRef = useRef<() => void>(() => {});
@@ -3747,14 +3749,26 @@ export default function App() {
     }
 
     if (typeof remote.dailyCommitmentDays === 'number') {
-      lastSyncedStreaksSigRef.current = `${remote.dailyCommitmentDays}:${Boolean(remote.dailyCommitmentDoneToday)}:${remote.waterTargetDays ?? 0}:${Boolean(remote.waterTargetDoneToday)}`;
+      const nextDaily = remote.dailyCommitmentDays!;
+      const nextDailyDone = Boolean(remote.dailyCommitmentDoneToday);
+      const nextWater = remote.waterTargetDays ?? 0;
+      const nextWaterDone = Boolean(remote.waterTargetDoneToday);
+      lastSyncedStreaksSigRef.current = `${nextDaily}:${nextDailyDone}:${nextWater}:${nextWaterDone}`;
       setStreaks((prev) => {
         if (Date.now() < localWriteLockUntilRef.current) return prev;
+        if (
+          prev.dailyCommitmentDays === nextDaily &&
+          prev.dailyCommitmentDoneToday === nextDailyDone &&
+          prev.waterTargetDays === nextWater &&
+          prev.waterTargetDoneToday === nextWaterDone
+        ) {
+          return prev;
+        }
         return {
-          dailyCommitmentDays: remote.dailyCommitmentDays!,
-          dailyCommitmentDoneToday: Boolean(remote.dailyCommitmentDoneToday),
-          waterTargetDays: remote.waterTargetDays ?? 0,
-          waterTargetDoneToday: Boolean(remote.waterTargetDoneToday),
+          dailyCommitmentDays: nextDaily,
+          dailyCommitmentDoneToday: nextDailyDone,
+          waterTargetDays: nextWater,
+          waterTargetDoneToday: nextWaterDone,
         };
       });
     }
@@ -3770,16 +3784,31 @@ export default function App() {
 
       setHydrationHistory((prev) => {
         const prevToday = prev.length > 0 ? prev[prev.length - 1] : null;
+        const targetVal = remote.targetCups || (prevToday ? prevToday.targetCups : 13);
+        const expectedTodayCups = isSameDay
+          ? (Date.now() < localWriteLockUntilRef.current
+              ? Math.max(remote.cupsLogged!, prevToday ? prevToday.cupsLogged : 0)
+              : remote.cupsLogged!)
+          : (prevToday && prevToday.dateKey === todayIso ? prevToday.cupsLogged : 0);
+        if (
+          prevToday &&
+          prevToday.dateKey === todayIso &&
+          prevToday.cupsLogged === Math.min(targetVal, expectedTodayCups) &&
+          prevToday.targetCups === targetVal &&
+          prev.length === labels.length &&
+          prev.every((d, i) => i === 6 || d.cupsLogged === (baseCounts[i] ?? 0))
+        ) {
+          return prev;
+        }
         return labels.map((labelAr, idx) => {
           const isToday = idx === 6;
-          const t = remote.targetCups || (prevToday ? prevToday.targetCups : 13);
+          const t = targetVal;
           let c = isToday
             ? isSameDay
               ? remote.cupsLogged!
               : 0
             : baseCounts[idx] ?? 0;
 
-          // Bulletproof Anti-Downgrade: NEVER allow remote sync to wipe today's logged cups while writing locally!
           if (isToday) {
             if (isSameDay) {
               if (Date.now() < localWriteLockUntilRef.current) {
@@ -3788,8 +3817,6 @@ export default function App() {
                 c = remote.cupsLogged!;
               }
             } else {
-              // Remote snapshot hasn't recorded today yet or is from a previous day:
-              // Preserve today's local logged progress completely!
               if (prevToday && prevToday.dateKey === todayIso) {
                 c = prevToday.cupsLogged;
               }
@@ -3856,7 +3883,22 @@ export default function App() {
     }
 
     try {
-      lastServerFieldsRef.current = serializeRhythmFields(sanitizeRhythmPayload(remote));
+      // Only update keys that actually arrived on `remote` — never wipe omitted keys in lastServerFieldsRef!
+      const incomingObj = remote as unknown as Record<string, unknown>;
+      const sanitizedRemote = sanitizeRhythmPayload(remote);
+      const nextFields = { ...lastServerFieldsRef.current };
+      for (const group of RHYTHM_FIELD_GROUPS) {
+        for (const key of group) {
+          if (incomingObj[key] !== undefined) {
+            nextFields[key] = JSON.stringify(sanitizedRemote[key] ?? null);
+          }
+        }
+      }
+      lastServerFieldsRef.current = nextFields;
+      lastSpircFullStateRef.current = {
+        ...lastSpircFullStateRef.current,
+        ...incomingObj,
+      };
     } catch {
       // ignore
     }
@@ -4054,21 +4096,37 @@ export default function App() {
         }
       }
 
+      // Circuit breaker: mathematically prevent any infinite cloud sync loop (max 6 writes per 4s window)
+      const nowBurstMs = Date.now();
+      recentCloudWriteTimestampsRef.current = recentCloudWriteTimestampsRef.current.filter(
+        (ts) => nowBurstMs - ts < 4000
+      );
+      if (recentCloudWriteTimestampsRef.current.length >= 6) {
+        console.warn('[CloudSync] Circuit breaker tripped: throttling burst cloud write');
+        return;
+      }
+      recentCloudWriteTimestampsRef.current.push(nowBurstMs);
+
       // 2.5 Native Android SQLite WAL (<1ms) + Cloudflare DO Binary Protobuf WebSocket (<35ms)
+      const mergedFullState = {
+        ...lastSpircFullStateRef.current,
+        ...(payload as unknown as Record<string, unknown>),
+      };
+      lastSpircFullStateRef.current = mergedFullState;
       persistToNativeSqlite(
         'state_v3',
         SPIRC_ENTITY.STATE_V3,
-        Date.now(),
+        nowBurstMs,
         clientIdRef.current,
-        Date.now(),
+        nowBurstMs,
         false,
-        payload
+        mergedFullState
       );
       const sentViaSpirc = spircClusterRef.current?.sendJsonState(
         'state_v3',
         SPIRC_ENTITY.STATE_V3,
         SPIRC_ACTION.UPSERT,
-        payload
+        mergedFullState
       );
 
       // Ultra-low-latency real-time live signal (<100ms) over Google Cloud Firestore (fallback when Spirc WS is not connected)
@@ -4201,7 +4259,7 @@ export default function App() {
       auth.currentUser?.uid ||
       localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
       '';
-    if (!uid) return;
+    if (!uid || (!firebaseUser && !auth.currentUser)) return;
 
     void cleanupExpiredActiveAlarms(uid);
 
@@ -4246,7 +4304,7 @@ export default function App() {
       auth.currentUser?.uid ||
       localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
       '';
-    if (!uid) return;
+    if (!uid || (!firebaseUser && !auth.currentUser)) return;
 
     const unsubscribe = subscribeToUserDocument(
       uid,
@@ -4309,6 +4367,24 @@ export default function App() {
       (signal) => {
         if (!signal) {
           return;
+        }
+        const rawSender =
+          (signal as unknown as { originDeviceId?: string }).originDeviceId ||
+          signal.originClientId ||
+          (signal as unknown as { dismissedByDeviceId?: string }).dismissedByDeviceId ||
+          signal.dismissedBy ||
+          signal.clientId;
+        if (rawSender && rawSender === clientIdRef.current) {
+          return;
+        }
+        const sigOp = signal.opId || signal.sessionId;
+        if (sigOp) {
+          if (seenSyncOpIdsRef.current.has(sigOp)) return;
+          seenSyncOpIdsRef.current.add(sigOp);
+          if (seenSyncOpIdsRef.current.size > 150) {
+            const oldest = seenSyncOpIdsRef.current.values().next().value;
+            if (oldest) seenSyncOpIdsRef.current.delete(oldest);
+          }
         }
 
         // 1. Alarm dismissal fast-path (<100ms) — Spotify Connect Session Status
