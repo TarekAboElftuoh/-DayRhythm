@@ -2,7 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(DR_STATIC)
   #if defined(DR_BUILDING_SHARED)
     #define DR_API __declspec(dllexport)
   #else

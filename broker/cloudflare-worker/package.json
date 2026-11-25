@@ -9,7 +9,7 @@
     "migrate": "node scripts/migrate.mjs"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250401.0",
+    "@cloudflare/workers-types": "^5.20261123.1",
     "wrangler": "^4.0.0"
   }
 }
