@@ -69,21 +69,49 @@ export function isNonApiShareUrl(rawUrl: string): boolean {
   );
 }
 
-// Deprecated Cloud Run helpers kept as safe client stubs
+const CLOUD_API_URL_KEY = 'dayrhythm_cloud_api_url';
+export const DEFAULT_SPIRC_BROKER_URL = 'https://dayrhythm-spirc-broker.tarek13us.workers.dev';
+
 export function getSavedCloudApiUrl(): string {
-  return '';
+  try {
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(CLOUD_API_URL_KEY) : null;
+    if (saved && saved.trim()) return saved.trim();
+  } catch {
+    // ignore storage errors
+  }
+  return DEFAULT_SPIRC_BROKER_URL;
 }
 
-export function setSavedCloudApiUrl(_rawUrl: string): { saved: string; error?: string } {
-  return { saved: '' };
+export function setSavedCloudApiUrl(rawUrl: string): { saved: string; error?: string } {
+  const clean = (rawUrl || '').trim().replace(/\/+$/, '');
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (clean) localStorage.setItem(CLOUD_API_URL_KEY, clean);
+      else localStorage.removeItem(CLOUD_API_URL_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return { saved: clean || DEFAULT_SPIRC_BROKER_URL };
 }
 
 export function clearSavedCloudApiUrl(): void {
-  // no-op
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.removeItem(CLOUD_API_URL_KEY);
+  } catch {
+    // ignore
+  }
 }
 
-export function syncSavedCloudApiUrlFromRemote(_remoteUrl?: string): void {
-  // no-op
+export function syncSavedCloudApiUrlFromRemote(remoteUrl?: string): void {
+  if (!remoteUrl || !remoteUrl.trim()) return;
+  try {
+    if (typeof localStorage !== 'undefined' && !localStorage.getItem(CLOUD_API_URL_KEY)) {
+      localStorage.setItem(CLOUD_API_URL_KEY, remoteUrl.trim().replace(/\/+$/, ''));
+    }
+  } catch {
+    // ignore
+  }
 }
 
 export function warmGeminiChatSocket(): void {
