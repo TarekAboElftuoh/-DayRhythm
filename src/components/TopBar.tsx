@@ -189,12 +189,12 @@ export const TopBar: React.FC<TopBarProps> = ({
                 type="button"
                 onClick={onCheckAppUpdates}
                 disabled={isCheckingUpdates}
-                className="w-9 h-9 rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-60"
+                className="min-w-[40px] min-h-[40px] w-10 h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-60"
                 title={language === 'ar' ? 'فحص التحديثات الآن' : 'Check for updates'}
                 aria-label={language === 'ar' ? 'فحص التحديثات' : 'Check for updates'}
               >
                 <RefreshCw
-                  className={`w-3.5 h-3.5 ${isCheckingUpdates ? 'animate-spin text-[#7FFFD4]' : ''}`}
+                  className={`w-4 h-4 ${isCheckingUpdates ? 'animate-spin text-[#7FFFD4]' : ''}`}
                 />
               </button>
             )}
@@ -203,7 +203,7 @@ export const TopBar: React.FC<TopBarProps> = ({
               <button
                 type="button"
                 onClick={onToggleSunMode}
-                className="w-9 h-9 rounded-lg text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0"
+                className="min-w-[40px] min-h-[40px] w-10 h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0"
                 title={sunMode ? 'الرجوع للمود الليلي' : 'مود الشمس (للقراءة في النور)'}
                 aria-label={sunMode ? 'المود الليلي' : 'مود الشمس'}
                 aria-pressed={sunMode}
@@ -215,7 +215,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <button
               type="button"
               onClick={onToggleLanguage}
-              className="min-h-[36px] px-2.5 py-1.5 text-xs font-medium rounded-lg border border-white/[0.09] bg-white/[0.03] text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-95"
+              className="min-h-[40px] px-3 py-1.5 text-xs font-medium rounded-xl border border-white/[0.09] bg-white/[0.03] text-zinc-200 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-95"
               title="عربي ↔ English"
             >
               <Globe className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
@@ -226,7 +226,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <button
               type="button"
               onClick={onOpenCatchUp}
-              className="min-h-[36px] px-3 sm:px-3.5 py-1.5 text-xs font-bold rounded-lg bg-[#7FFFD4] text-black hover:bg-[#66eec2] transition-all active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[40px] px-3.5 sm:px-4 py-1.5 text-xs font-bold rounded-xl bg-[#7FFFD4] text-black hover:bg-[#66eec2] transition-all active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span className="sm:hidden">{language === 'ar' ? 'تدارك' : 'Catch-Up'}</span>
               <span className="hidden sm:inline">{t(language, 'ctaCatchUp')}</span>

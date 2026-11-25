@@ -15,24 +15,23 @@ import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.net.ConnectivityManager;
 import android.net.Network;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.view.View;
-import android.widget.RemoteViews;
 
 import androidx.annotation.NonNull;
-import androidx.core.app.NotificationCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.Locale;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
@@ -44,6 +43,7 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
+import okio.ByteString;
 
 /**
  * 24/7 Special-Use Foreground Service for OnePlus 12R (immune to Android 14/15 6-hour dataSync timeout):
@@ -62,6 +62,7 @@ public class DayRhythmSyncService extends Service {
     public static final String ACTION_SCHEDULE_UPDATED = "app.dayrhythm.mobile.SCHEDULE_UPDATED";
     public static final String ACTION_ADVANCE_SCHEDULE = "app.dayrhythm.mobile.ADVANCE_SCHEDULE";
     public static final String ACTION_REFRESH_NOTIF = "app.dayrhythm.mobile.REFRESH_NOTIF";
+    public static final String ACTION_RECONNECT_WS = "app.dayrhythm.mobile.RECONNECT_WS";
     public static final String EXTRA_WS_PAYLOAD = "ws_payload";
     public static final String EXTRA_UPDATE_TAG = "update_tag";
     public static final String EXTRA_UPDATE_URL = "update_url";
@@ -73,8 +74,15 @@ public class DayRhythmSyncService extends Service {
     public static final String EXTRA_LIVE_TARGET_MS = "live_target_ms";
     public static final String EXTRA_LIVE_ALERTS_ENABLED = "live_alerts_enabled";
     public static final String EXTRA_LIVE_LEAD_MINUTES = "live_lead_minutes";
+    public static final String EXTRA_LIVE_ALWAYS_ON = "live_always_on";
+    public static final String EXTRA_LIVE_SHOW_CHARGING = "live_show_charging";
     public static final String EXTRA_PERSISTENT_NOTIF_ENABLED = "persistent_notif_enabled";
+    public static final String EXTRA_LIVE_DESC = "live_description";
+    public static final String EXTRA_LIVE_CLOCK_LABEL = "live_clock_label";
+    public static final String EXTRA_LIVE_NEXT_UP = "live_next_up";
+    public static final String EXTRA_LIVE_HYDRATION = "live_hydration";
 
+    private static final String DEFAULT_SPIRC_BROKER_WSS = "wss://dayrhythm-spirc-broker.tarek13us.workers.dev";
     private static final String PREFS_LIVE = "dayrhythm_live_state_prefs";
     public static final int NOTIF_UNIFIED_ID = 1001;
     private static final int NOTIF_KEEPALIVE_ID = NOTIF_UNIFIED_ID;
@@ -90,12 +98,14 @@ public class DayRhythmSyncService extends Service {
     private final Random jitterRandom = new Random();
 
     private OkHttpClient wsClient;
-    private WebSocket activeWebSocket;
+    private volatile WebSocket activeWebSocket;
+    private volatile String connectedWsUrl = "";
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
     private int backoffAttempt = 0;
     private boolean hadNetworkLoss = false;
     private volatile boolean isDestroyed = false;
+    private long spircLamportSeq = 0L;
 
     private String liveEmoji = "📅";
     private String liveTitle = "";
@@ -104,7 +114,13 @@ public class DayRhythmSyncService extends Service {
     private long liveTargetEpochMs = 0L;
     private boolean liveAlertsEnabled = true;
     private int liveAlertsLeadMinutes = 10;
+    private boolean liveAlertsAlwaysOn = false;
+    private boolean liveAlertsShowCharging = true;
     private boolean persistentCountdownEnabled = true;
+    private String liveDescription = "";
+    private String liveClockLabel = "";
+    private String liveNextUpSummary = "";
+    private String liveHydrationSummary = "";
     private boolean liveIslandCurrentlyShown = false;
     private String syncSubtitle = "مزامنة لحظية نشطة 24/7";
     private String lastNotifStateKey = "";
@@ -196,11 +212,15 @@ public class DayRhythmSyncService extends Service {
                     handler.postDelayed(this, Math.max(1000L, Math.min(waitMs, 600_000L)));
                 } else if (remainingMs > 60_000L && (liveAlertsEnabled || persistentCountdownEnabled)) {
                     // SystemUI Chronometer draws live seconds at 0% CPU.
-                    // Wake strictly on minute boundary to update the minute chip (e.g. 8د -> 7د).
+                    // Wake strictly on minute boundary OR exact entry into the Live Alert lead window.
                     long timeToNextMin = (remainingMs % 60_000L);
                     if (timeToNextMin <= 250L) timeToNextMin = 60_000L;
                     long timeToSixtySec = remainingMs - 60_000L + 50L;
-                    long nextWake = Math.min(timeToNextMin, timeToSixtySec);
+                    long leadWindowMs = getEffectiveLeadWindowMs();
+                    long timeToLeadEdge = (!liveAlertsAlwaysOn && liveAlertsEnabled && remainingMs > leadWindowMs)
+                            ? (remainingMs - leadWindowMs + 80L)
+                            : Long.MAX_VALUE;
+                    long nextWake = Math.min(Math.min(timeToNextMin, timeToSixtySec), timeToLeadEdge);
                     handler.postDelayed(this, Math.max(1000L, nextWake));
                 } else if (remainingMs > 0L && remainingMs <= 60_000L && (liveAlertsEnabled || persistentCountdownEnabled)) {
                     // Final 60s: native SystemUI Chronometer renders seconds smoothly.
@@ -259,7 +279,7 @@ public class DayRhythmSyncService extends Service {
             if (ws == null) return;
             boolean sent = false;
             try {
-                sent = ws.send("{\"type\":\"ping\"}");
+                sent = ws.send("ping");
             } catch (Exception ignored) {
             }
             if (!sent) {
@@ -295,16 +315,59 @@ public class DayRhythmSyncService extends Service {
             int leadMinutes,
             boolean persistentNotifEnabled
     ) {
+        pushLiveStatus(
+                context,
+                emoji,
+                title,
+                statusLabel,
+                "general",
+                targetEpochMs,
+                liveAlertsEnabled,
+                leadMinutes,
+                false,
+                true,
+                persistentNotifEnabled,
+                "",
+                "",
+                "",
+                ""
+        );
+    }
+
+    public static void pushLiveStatus(
+            Context context,
+            String emoji,
+            String title,
+            String statusLabel,
+            String kind,
+            long targetEpochMs,
+            boolean liveAlertsEnabled,
+            int leadMinutes,
+            boolean liveAlertsAlwaysOn,
+            boolean liveAlertsShowCharging,
+            boolean persistentNotifEnabled,
+            String description,
+            String clockLabel,
+            String nextUpSummary,
+            String hydrationSummary
+    ) {
         if (context == null) return;
         Intent intent = new Intent(context, DayRhythmSyncService.class);
         intent.setAction(ACTION_UPDATE_LIVE_STATUS);
         intent.putExtra(EXTRA_LIVE_EMOJI, emoji != null ? emoji : "📅");
         intent.putExtra(EXTRA_LIVE_TITLE, title != null ? title : "");
         intent.putExtra(EXTRA_LIVE_STATUS_LABEL, statusLabel != null ? statusLabel : "المهمة القادمة");
+        intent.putExtra(EXTRA_LIVE_KIND, kind != null && !kind.isEmpty() ? kind : "general");
         intent.putExtra(EXTRA_LIVE_TARGET_MS, targetEpochMs);
         intent.putExtra(EXTRA_LIVE_ALERTS_ENABLED, liveAlertsEnabled);
         intent.putExtra(EXTRA_LIVE_LEAD_MINUTES, leadMinutes);
+        intent.putExtra(EXTRA_LIVE_ALWAYS_ON, liveAlertsAlwaysOn);
+        intent.putExtra(EXTRA_LIVE_SHOW_CHARGING, liveAlertsShowCharging);
         intent.putExtra(EXTRA_PERSISTENT_NOTIF_ENABLED, persistentNotifEnabled);
+        intent.putExtra(EXTRA_LIVE_DESC, description != null ? description : "");
+        intent.putExtra(EXTRA_LIVE_CLOCK_LABEL, clockLabel != null ? clockLabel : "");
+        intent.putExtra(EXTRA_LIVE_NEXT_UP, nextUpSummary != null ? nextUpSummary : "");
+        intent.putExtra(EXTRA_LIVE_HYDRATION, hydrationSummary != null ? hydrationSummary : "");
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent);
@@ -313,6 +376,90 @@ public class DayRhythmSyncService extends Service {
             }
         } catch (Exception ignored) {
         }
+    }
+
+    public static void reconnectWebSocketIfNeeded(Context context) {
+        if (context == null) return;
+        try {
+            Intent intent = new Intent(context, DayRhythmSyncService.class);
+            intent.setAction(ACTION_RECONNECT_WS);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent);
+            } else {
+                context.startService(intent);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void sendSpircDismiss(Context context, String action, String alertId) {
+        DayRhythmSyncService svc = instance;
+        if (svc == null) return;
+        WebSocket ws = svc.activeWebSocket;
+        if (ws == null) return;
+        try {
+            long now = System.currentTimeMillis();
+            long seq = svc.nextLamportSeq(now);
+            String opId = "mob_dism_" + Long.toString(now, 36);
+            JSONObject body = new JSONObject();
+            body.put("action", (action != null && !action.isEmpty()) ? action : "native_dismiss");
+            body.put("alertId", (alertId != null && !alertId.isEmpty()) ? alertId : "all");
+            body.put("clientId", CloudSignalClient.CLIENT_ID);
+            body.put("dismissedBy", CloudSignalClient.CLIENT_ID);
+            body.put("timestampMs", now);
+            byte[] frameBytes = SpircWireCodec.encodeFrame(
+                    SpircWireCodec.ACTION_DISMISS_ALARM,
+                    SpircWireCodec.ENTITY_ALARM,
+                    "alarm_dismiss",
+                    CloudSignalClient.CLIENT_ID,
+                    opId,
+                    seq,
+                    now,
+                    false,
+                    body.toString().getBytes(StandardCharsets.UTF_8)
+            );
+            ws.send(ByteString.of(frameBytes));
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void sendSpircTrigger(Context context, String title, String bodyText, String kind, int snoozeMinutes, long startedAtMs) {
+        DayRhythmSyncService svc = instance;
+        if (svc == null) return;
+        WebSocket ws = svc.activeWebSocket;
+        if (ws == null) return;
+        try {
+            long now = startedAtMs > 0L ? startedAtMs : System.currentTimeMillis();
+            long seq = svc.nextLamportSeq(now);
+            String opId = "mob_trig_" + Long.toString(now, 36);
+            JSONObject payload = new JSONObject();
+            payload.put("scope", "alarm_trigger");
+            payload.put("action", "trigger");
+            payload.put("title", title != null ? title : "تنبيه إيقاع اليوم");
+            payload.put("body", bodyText != null ? bodyText : "");
+            payload.put("kind", kind != null ? kind : "general");
+            payload.put("snoozeMinutes", snoozeMinutes);
+            payload.put("startedAtMs", now);
+            payload.put("clientId", CloudSignalClient.CLIENT_ID);
+            byte[] frameBytes = SpircWireCodec.encodeFrame(
+                    SpircWireCodec.ACTION_UPSERT,
+                    SpircWireCodec.ENTITY_ALARM,
+                    "alarm_trigger",
+                    CloudSignalClient.CLIENT_ID,
+                    opId,
+                    seq,
+                    now,
+                    false,
+                    payload.toString().getBytes(StandardCharsets.UTF_8)
+            );
+            ws.send(ByteString.of(frameBytes));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private synchronized long nextLamportSeq(long nowMs) {
+        spircLamportSeq = Math.max(spircLamportSeq + 1L, nowMs);
+        return spircLamportSeq;
     }
 
     public static void refreshServiceNotification(Context context) {
@@ -435,14 +582,19 @@ public class DayRhythmSyncService extends Service {
             JSONArray arr = new JSONArray(scheduleJson);
             long nowMs = System.currentTimeMillis();
             JSONObject nextItem = null;
+            JSONObject afterItem = null;
 
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject item = arr.optJSONObject(i);
                 if (item == null) continue;
                 long triggerAtMs = item.optLong("triggerAtMs", 0L);
                 if (triggerAtMs > nowMs + 1000L) {
-                    nextItem = item;
-                    break;
+                    if (nextItem == null) {
+                        nextItem = item;
+                    } else {
+                        afterItem = item;
+                        break;
+                    }
                 }
             }
 
@@ -456,6 +608,16 @@ public class DayRhythmSyncService extends Service {
                 liveEmoji = extractEmoji(rawTitle, kind);
                 liveTitle = cleanEmojiPrefix(rawTitle);
                 liveStatusLabel = getStatusLabelForKind(kind, body);
+                liveDescription = body != null ? body.trim() : "";
+                liveClockLabel = new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(liveTargetEpochMs));
+                if (afterItem != null) {
+                    long t2 = afterItem.optLong("triggerAtMs", 0L);
+                    String title2 = afterItem.optString("title", "").trim();
+                    String clock2 = t2 > 0L ? new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(t2)) : "";
+                    liveNextUpSummary = !title2.isEmpty() ? (title2 + (clock2.isEmpty() ? "" : " (" + clock2 + ")")) : "";
+                } else {
+                    liveNextUpSummary = "";
+                }
                 persistLiveState();
                 refreshPersistentNotification();
 
@@ -468,6 +630,9 @@ public class DayRhythmSyncService extends Service {
                 liveEmoji = "✅";
                 liveStatusLabel = "يوم هادئ ومكتمل";
                 liveKind = "done";
+                liveDescription = "";
+                liveClockLabel = "";
+                liveNextUpSummary = "";
                 persistLiveState();
                 refreshPersistentNotification();
             }
@@ -494,7 +659,13 @@ public class DayRhythmSyncService extends Service {
             liveTargetEpochMs = sp.getLong(EXTRA_LIVE_TARGET_MS, 0L);
             liveAlertsEnabled = sp.getBoolean(EXTRA_LIVE_ALERTS_ENABLED, true);
             liveAlertsLeadMinutes = sp.getInt(EXTRA_LIVE_LEAD_MINUTES, 10);
+            liveAlertsAlwaysOn = sp.getBoolean(EXTRA_LIVE_ALWAYS_ON, false);
+            liveAlertsShowCharging = sp.getBoolean(EXTRA_LIVE_SHOW_CHARGING, true);
             persistentCountdownEnabled = sp.getBoolean(EXTRA_PERSISTENT_NOTIF_ENABLED, true);
+            liveDescription = sp.getString(EXTRA_LIVE_DESC, "");
+            liveClockLabel = sp.getString(EXTRA_LIVE_CLOCK_LABEL, "");
+            liveNextUpSummary = sp.getString(EXTRA_LIVE_NEXT_UP, "");
+            liveHydrationSummary = sp.getString(EXTRA_LIVE_HYDRATION, "");
         } catch (Exception ignored) {
         }
     }
@@ -509,7 +680,13 @@ public class DayRhythmSyncService extends Service {
                     .putLong(EXTRA_LIVE_TARGET_MS, liveTargetEpochMs)
                     .putBoolean(EXTRA_LIVE_ALERTS_ENABLED, liveAlertsEnabled)
                     .putInt(EXTRA_LIVE_LEAD_MINUTES, liveAlertsLeadMinutes)
+                    .putBoolean(EXTRA_LIVE_ALWAYS_ON, liveAlertsAlwaysOn)
+                    .putBoolean(EXTRA_LIVE_SHOW_CHARGING, liveAlertsShowCharging)
                     .putBoolean(EXTRA_PERSISTENT_NOTIF_ENABLED, persistentCountdownEnabled)
+                    .putString(EXTRA_LIVE_DESC, liveDescription)
+                    .putString(EXTRA_LIVE_CLOCK_LABEL, liveClockLabel)
+                    .putString(EXTRA_LIVE_NEXT_UP, liveNextUpSummary)
+                    .putString(EXTRA_LIVE_HYDRATION, liveHydrationSummary)
                     .apply();
         } catch (Exception ignored) {
         }
@@ -695,6 +872,27 @@ public class DayRhythmSyncService extends Service {
             // Publish to Firestore REST so PC gets live telemetry even with app closed & screen off
             CloudSignalClient.publishBatteryTelemetry(this, level, charging, etaMinutes, limit);
 
+            // Push low-latency binary Spirc frame if WebSocket is connected
+            WebSocket ws = activeWebSocket;
+            if (ws != null) {
+                try {
+                    long now = System.currentTimeMillis();
+                    byte[] batFrame = SpircWireCodec.encodeFrame(
+                            SpircWireCodec.ACTION_BATTERY_TELEMETRY,
+                            SpircWireCodec.ENTITY_STATE_V3,
+                            "phone_battery",
+                            CloudSignalClient.CLIENT_ID,
+                            "bat_" + Long.toString(now, 36),
+                            nextLamportSeq(now),
+                            now,
+                            false,
+                            packet.toString().getBytes(StandardCharsets.UTF_8)
+                    );
+                    ws.send(ByteString.of(batFrame));
+                } catch (Exception ignored) {
+                }
+            }
+
             // Broadcast internal intent for local web view
             Intent syncIntent = new Intent(ACTION_WS_SYNC_MESSAGE);
             syncIntent.setPackage(getPackageName());
@@ -711,6 +909,14 @@ public class DayRhythmSyncService extends Service {
             return START_STICKY;
         }
 
+        if (intent != null && ACTION_RECONNECT_WS.equals(intent.getAction())) {
+            String targetUrl = resolveSyncWsUrl();
+            if (activeWebSocket == null || !targetUrl.equals(connectedWsUrl)) {
+                connectBackgroundWebSocket();
+            }
+            return START_STICKY;
+        }
+
         if (intent != null && (ACTION_SCHEDULE_UPDATED.equals(intent.getAction()) || ACTION_ADVANCE_SCHEDULE.equals(intent.getAction()))) {
             advanceToNextScheduledEvent();
             return START_STICKY;
@@ -723,12 +929,26 @@ public class DayRhythmSyncService extends Service {
             if (liveTitle == null) liveTitle = "";
             liveStatusLabel = intent.getStringExtra(EXTRA_LIVE_STATUS_LABEL);
             if (liveStatusLabel == null || liveStatusLabel.trim().isEmpty()) liveStatusLabel = "المهمة القادمة";
+            String incomingKind = intent.getStringExtra(EXTRA_LIVE_KIND);
+            if (incomingKind != null && !incomingKind.trim().isEmpty()) {
+                liveKind = incomingKind.trim();
+            }
             liveTargetEpochMs = intent.getLongExtra(EXTRA_LIVE_TARGET_MS, 0L);
             liveAlertsEnabled = intent.getBooleanExtra(EXTRA_LIVE_ALERTS_ENABLED, true);
-            liveAlertsLeadMinutes = Math.max(1, Math.min(30, intent.getIntExtra(EXTRA_LIVE_LEAD_MINUTES, 10)));
+            liveAlertsLeadMinutes = Math.max(1, Math.min(60, intent.getIntExtra(EXTRA_LIVE_LEAD_MINUTES, 10)));
+            liveAlertsAlwaysOn = intent.getBooleanExtra(EXTRA_LIVE_ALWAYS_ON, false);
+            liveAlertsShowCharging = intent.getBooleanExtra(EXTRA_LIVE_SHOW_CHARGING, true);
             persistentCountdownEnabled = intent.getBooleanExtra(EXTRA_PERSISTENT_NOTIF_ENABLED, true);
+            String desc = intent.getStringExtra(EXTRA_LIVE_DESC);
+            liveDescription = desc != null ? desc.trim() : "";
+            String clock = intent.getStringExtra(EXTRA_LIVE_CLOCK_LABEL);
+            liveClockLabel = clock != null ? clock.trim() : "";
+            String nextUp = intent.getStringExtra(EXTRA_LIVE_NEXT_UP);
+            liveNextUpSummary = nextUp != null ? nextUp.trim() : "";
+            String hyd = intent.getStringExtra(EXTRA_LIVE_HYDRATION);
+            liveHydrationSummary = hyd != null ? hyd.trim() : "";
 
-            if (liveTargetEpochMs <= System.currentTimeMillis() + 1000L) {
+            if (liveTargetEpochMs <= System.currentTimeMillis() + 1000L && !"none".equals(liveKind) && !"done".equals(liveKind)) {
                 advanceToNextScheduledEvent();
             } else {
                 persistLiveState();
@@ -857,6 +1077,7 @@ public class DayRhythmSyncService extends Service {
     private void teardownActiveWebSocket(String reason) {
         handler.removeCallbacks(heartbeatPingRunnable);
         handler.removeCallbacks(pongWatchdogRunnable);
+        connectedWsUrl = "";
         WebSocket ws = activeWebSocket;
         activeWebSocket = null;
         if (ws != null) {
@@ -876,21 +1097,32 @@ public class DayRhythmSyncService extends Service {
     private String resolveSyncWsUrl() {
         SharedPreferences prefs = getSharedPreferences(MainActivity.PREFS_NAME, MODE_PRIVATE);
         String saved = prefs.getString(MainActivity.KEY_REMOTE_WS_URL, BuildConfig.REMOTE_WS_URL);
-        if (saved == null) return "";
-        return saved.trim();
+        String uid = CloudSignalClient.getSavedUid(this);
+        String base = saved != null ? saved.trim() : "";
+        if (base.isEmpty() || (!base.startsWith("ws://") && !base.startsWith("wss://"))) {
+            if (uid != null && !uid.isEmpty()) {
+                return DEFAULT_SPIRC_BROKER_WSS + "/ws?uid=" + Uri.encode(uid);
+            }
+            return "";
+        }
+        if (uid != null && !uid.isEmpty() && !base.contains("uid=")) {
+            return base + (base.contains("?") ? "&" : "?") + "uid=" + Uri.encode(uid);
+        }
+        return base;
     }
 
     private void connectBackgroundWebSocket() {
         if (isDestroyed || wsClient == null) return;
         String wsUrl = resolveSyncWsUrl();
         if (wsUrl.isEmpty() || (!wsUrl.startsWith("ws://") && !wsUrl.startsWith("wss://"))) {
-            syncSubtitle = "مزامنة لحظية نشطة 24/7";
+            syncSubtitle = "مزامنة سحابية نشطة 24/7";
             refreshPersistentNotification();
             return;
         }
 
         clearWsTimers();
         teardownActiveWebSocket("replace_stale_socket");
+        connectedWsUrl = wsUrl;
 
         Request request = new Request.Builder().url(wsUrl).build();
         WebSocket ws = wsClient.newWebSocket(request, new WebSocketListener() {
@@ -914,11 +1146,73 @@ public class DayRhythmSyncService extends Service {
             }
 
             @Override
+            public void onMessage(@NonNull WebSocket webSocket, @NonNull ByteString bytes) {
+                byte[] raw = bytes.toByteArray();
+                SpircWireCodec.SpircFrame frame = SpircWireCodec.decodeFrame(raw);
+                handler.post(() -> {
+                    if (isDestroyed || activeWebSocket != webSocket) return;
+                    handler.removeCallbacks(pongWatchdogRunnable);
+                    if (CloudSignalClient.CLIENT_ID.equals(frame.clientId)) return;
+                    if (frame.lamportSeq > spircLamportSeq) {
+                        spircLamportSeq = frame.lamportSeq;
+                    }
+
+                    if (frame.action == SpircWireCodec.ACTION_DISMISS_ALARM) {
+                        long dTs = frame.timestampMs > 0L ? frame.timestampMs : System.currentTimeMillis();
+                        CloudSignalClient.markRemoteDismissReceived(dTs);
+                        ReminderAlarmReceiver.cancelAllActiveAlarms(DayRhythmSyncService.this);
+                        if (MainActivity.activeInstance != null) {
+                            MainActivity.activeInstance.evaluateJavascriptInWebView(
+                                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true } }));"
+                            );
+                        }
+                        return;
+                    }
+
+                    if (frame.action == SpircWireCodec.ACTION_UPSERT && frame.entityKind == SpircWireCodec.ENTITY_ALARM) {
+                        try {
+                            String jsonText = frame.payloadAsUtf8();
+                            if (jsonText.isEmpty()) return;
+                            JSONObject json = new JSONObject(jsonText);
+                            String title = json.optString("title", "تنبيه إيقاع اليوم");
+                            String body = json.optString("body", "");
+                            String kind = json.optString("kind", "general");
+                            int snoozeMin = json.optInt("snoozeMinutes", 5);
+                            long nowMs = System.currentTimeMillis();
+                            long startedAtMs = frame.timestampMs > 0L ? frame.timestampMs : json.optLong("startedAtMs", nowMs);
+                            if (Math.abs(nowMs - startedAtMs) > 90_000L) return;
+
+                            if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
+                                JSONObject detail = new JSONObject()
+                                        .put("title", title)
+                                        .put("body", body)
+                                        .put("kind", kind);
+                                MainActivity.activeInstance.evaluateJavascriptInWebView(
+                                        "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: " + detail.toString() + " }));"
+                                );
+                            } else {
+                                ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                                        DayRhythmSyncService.this,
+                                        title,
+                                        body,
+                                        kind,
+                                        true,
+                                        snoozeMin
+                                );
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
+                });
+            }
+
+            @Override
             public void onMessage(@NonNull WebSocket webSocket, @NonNull String text) {
                 handler.post(() -> {
                     if (isDestroyed || activeWebSocket != webSocket) return;
                     handler.removeCallbacks(pongWatchdogRunnable);
-                    if (text.contains("\"pong\"")) return;
+                    String trimmed = text.trim();
+                    if ("pong".equals(trimmed) || trimmed.contains("\"pong\"")) return;
 
                     // Direct native execution of sub-second cross-device alarm triggers & dismissals
                     try {
@@ -941,6 +1235,7 @@ public class DayRhythmSyncService extends Service {
                                     snoozeMin
                             );
                         } else if ("alarm_dismiss".equals(scope)) {
+                            CloudSignalClient.markRemoteDismissReceived(System.currentTimeMillis());
                             ReminderAlarmReceiver.cancelAllActiveAlarms(DayRhythmSyncService.this);
                         }
                     } catch (Exception ignored) {
@@ -1020,6 +1315,8 @@ public class DayRhythmSyncService extends Service {
         long bucketSec = hasUpcoming ? Math.max(0L, remainingMs / 15_000L) : 0L;
         return bucketSec + "|" + liveEmoji + "|" + liveTitle + "|" + liveStatusLabel + "|" + liveKind
                 + "|" + liveTargetEpochMs + "|" + liveAlertsEnabled + "|" + liveAlertsLeadMinutes
+                + "|" + liveAlertsAlwaysOn + "|" + liveAlertsShowCharging + "|" + liveDescription
+                + "|" + liveClockLabel + "|" + liveNextUpSummary + "|" + liveHydrationSummary
                 + "|" + persistentCountdownEnabled + "|" + lastBroadcastCharging + "|" + lastBroadcastBatteryLevel
                 + "|" + lastBroadcastLimit + "|" + lastBroadcastEtaMinutes + "|" + syncSubtitle;
     }
@@ -1038,6 +1335,72 @@ public class DayRhythmSyncService extends Service {
             lastNotifPostMs = nowMs;
             nm.notify(NOTIF_KEEPALIVE_ID, notif);
         } catch (SecurityException ignored) {
+        }
+    }
+
+    private static String formatRemainingDetailedAr(long remainingMs) {
+        if (remainingMs <= 0L) return "الآن";
+        long totalSec = (remainingMs + 500L) / 1000L;
+        if (totalSec < 60L) {
+            return totalSec + " ثانية";
+        }
+        long mins = (remainingMs + 59_999L) / 60_000L;
+        if (mins < 60L) {
+            return mins + " دقيقة";
+        }
+        long hrs = mins / 60L;
+        long remM = mins % 60L;
+        if (remM > 0L) {
+            return hrs + " س و " + remM + " د";
+        }
+        return hrs + " ساعة";
+    }
+
+    private static void applyPlatformLiveAlertFlags(
+            Notification.Builder nb,
+            Bundle extras,
+            boolean shouldPromote,
+            String shortPillText,
+            String liveTitleText
+    ) {
+        if (shouldPromote) {
+            String safeChip = (shortPillText != null && shortPillText.length() > 7)
+                    ? shortPillText.substring(0, 7).trim()
+                    : shortPillText;
+            extras.putBoolean("android.requestPromotedOngoing", true);
+            extras.putBoolean("android.promotedOngoing", true);
+            extras.putBoolean("oplus.live_alert.enable", true);
+            extras.putBoolean("oplus.livealert.enable", true);
+            extras.putInt("oplus.live_alert_state", 1);
+            if (safeChip != null && !safeChip.isEmpty()) {
+                extras.putString("android.shortCriticalText", safeChip);
+                extras.putCharSequence("android.shortCriticalText", safeChip);
+                extras.putString("oplus.live_alert.text", safeChip);
+            }
+            if (liveTitleText != null && !liveTitleText.isEmpty()) {
+                extras.putString("oplus.live_alert.title", liveTitleText);
+            }
+            try {
+                Method mReq = Notification.Builder.class.getMethod("setRequestPromotedOngoing", boolean.class);
+                mReq.invoke(nb, true);
+            } catch (Throwable ignored) {
+            }
+            if (safeChip != null && !safeChip.isEmpty()) {
+                try {
+                    Method mShort = Notification.Builder.class.getMethod("setShortCriticalText", CharSequence.class);
+                    mShort.invoke(nb, safeChip);
+                } catch (Throwable ignored) {
+                }
+            }
+        } else {
+            extras.putBoolean("android.requestPromotedOngoing", false);
+            extras.putBoolean("oplus.live_alert.enable", false);
+            extras.putBoolean("oplus.livealert.enable", false);
+            try {
+                Method mReq = Notification.Builder.class.getMethod("setRequestPromotedOngoing", boolean.class);
+                mReq.invoke(nb, false);
+            } catch (Throwable ignored) {
+            }
         }
     }
 
@@ -1060,156 +1423,175 @@ public class DayRhythmSyncService extends Service {
 
         boolean hasUpcoming = liveTargetEpochMs > nowMs + 1000L;
         long leadWindowMs = getEffectiveLeadWindowMs();
-        boolean inUrgentLeadWindow = liveAlertsEnabled && hasUpcoming &&
-                (explicitTagSec != null ? remainingMs <= explicitTagSec * 1000L : remainingMs <= leadWindowMs);
+        boolean inLeadWindow = liveAlertsEnabled && hasUpcoming && (
+                liveAlertsAlwaysOn ||
+                (explicitTagSec != null ? remainingMs <= explicitTagSec * 1000L : remainingMs <= leadWindowMs)
+        );
         boolean isChargingNow = lastBroadcastCharging && lastBroadcastBatteryLevel >= 0;
+        boolean chargePromote = liveAlertsEnabled && liveAlertsShowCharging && isChargingNow;
+        boolean shouldPromote = inLeadWindow || chargePromote;
 
         int smallIcon = getSmallIconForKind(
-                (!inUrgentLeadWindow && isChargingNow && liveAlertsEnabled) ? "charge" : liveKind
+                (!inLeadWindow && chargePromote) ? "charge" : liveKind
         );
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_LIVE_ALERTS)
+
+        // Android 16 / OxygenOS 16 Promoted Ongoing requires platform Notification.Builder,
+        // eligible style (BigTextStyle), setOngoing(true), setContentTitle, NO setColorized(true), NO RemoteViews.
+        Notification.Builder builder = new Notification.Builder(this, CHANNEL_LIVE_ALERTS)
                 .setSmallIcon(smallIcon)
                 .setOngoing(true)
-                .setSilent(true)
                 .setOnlyAlertOnce(true)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(pi);
 
         Bundle liveExtras = new Bundle();
         String chargeTag = "";
         if (isChargingNow) {
             String etaStr = lastBroadcastEtaMinutes > 0
-                    ? (" ~" + lastBroadcastEtaMinutes + "د")
-                    : (lastBroadcastBatteryLevel >= lastBroadcastLimit ? " ✓ افصل الشاحن" : "");
-            chargeTag = "⚡ " + lastBroadcastBatteryLevel + "%/" + lastBroadcastLimit + "%" + etaStr;
+                    ? ("متبقي ~" + lastBroadcastEtaMinutes + " د")
+                    : (lastBroadcastBatteryLevel >= lastBroadcastLimit ? "مكتمل — افصل الشاحن ✓" : "قيد الشحن");
+            chargeTag = "⚡ " + lastBroadcastBatteryLevel + "%/" + lastBroadcastLimit + "% · " + etaStr;
         }
 
-        if (inUrgentLeadWindow) {
-            // ── Urgent Task Lead Window: Live Alerts Capsule (OnePlus 12R punch hole) ──
+        String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
+        String cleanTitle = cleanDisplayTitle(rawTitle);
+        String finalCleanTitle = cleanTitle.isEmpty() ? rawTitle : cleanTitle;
+        String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + finalCleanTitle;
+        String targetClock = !liveClockLabel.isEmpty()
+                ? liveClockLabel
+                : (hasUpcoming ? new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(liveTargetEpochMs)) : "");
+
+        if (hasUpcoming && (inLeadWindow || !chargePromote) && (liveAlertsEnabled || persistentCountdownEnabled)) {
             String compactPill = formatChipText(liveEmoji, remainingMs);
-            int categoryColor = (remainingMs <= 60_000L) ? 0xFFFF6B6B : (remainingMs <= 300_000L ? 0xFFFFB020 : 0xFF7FFFD4);
-            long leadRefMs = explicitTagSec != null ? explicitTagSec * 1000L : leadWindowMs;
-            int progressPermille = (int) Math.max(0, Math.min(1000, ((leadRefMs - remainingMs) * 1000) / Math.max(1000L, leadRefMs)));
+            String remDetailed = formatRemainingDetailedAr(remainingMs);
+            int accentColor = (remainingMs <= 60_000L) ? 0xFFFF6B6B : (remainingMs <= 300_000L ? 0xFFFFB020 : 0xFF7FFFD4);
 
-            liveExtras.putBoolean("android.requestPromotedOngoing", true);
-            liveExtras.putBoolean("android.promotedOngoing", true);
-            liveExtras.putBoolean("oplus.live_alert.enable", true);
-            liveExtras.putBoolean("oplus.livealert.enable", true);
-            liveExtras.putInt("oplus.live_alert_state", 1);
-            liveExtras.putString("android.shortCriticalText", compactPill);
-            liveExtras.putCharSequence("android.shortCriticalText", compactPill);
-            liveExtras.putString("oplus.live_alert.text", compactPill);
-            liveExtras.putBoolean("android.showChronometer", true);
-            liveExtras.putBoolean("android.chronometerCountdown", true);
+            applyPlatformLiveAlertFlags(builder, liveExtras, inLeadWindow, compactPill, finalCleanTitle);
 
-            String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
-            String cleanTitle = cleanDisplayTitle(rawTitle);
-            String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
-            String sub = chargeTag.isEmpty() ? liveStatusLabel : (liveStatusLabel + " • " + chargeTag);
+            String titleLine = targetClock.isEmpty() ? displayTitle : (displayTitle + " · " + targetClock);
+            String compactSummaryLine = "⏳ متبقي " + remDetailed + " · " + liveStatusLabel;
+            String summaryPill = !chargeTag.isEmpty()
+                    ? chargeTag
+                    : (!liveHydrationSummary.isEmpty() ? liveHydrationSummary : (targetClock.isEmpty() ? liveStatusLabel : targetClock));
 
-            builder.setContentTitle(compactPill)
-                    .setContentText(displayTitle)
-                    .setSubText(sub)
+            StringBuilder bigSb = new StringBuilder();
+            bigSb.append("⏱ الموعد: ").append(targetClock.isEmpty() ? liveStatusLabel : targetClock)
+                    .append(" (متبقي ").append(remDetailed).append(")");
+            bigSb.append("\n📌 التصنيف: ").append(liveStatusLabel);
+            if (!liveDescription.isEmpty()) {
+                bigSb.append("\n📝 ").append(liveDescription);
+            }
+            if (!liveNextUpSummary.isEmpty()) {
+                bigSb.append("\n⏭ التالي: ").append(liveNextUpSummary);
+            }
+            if (!liveHydrationSummary.isEmpty()) {
+                bigSb.append("\n").append(liveHydrationSummary);
+            }
+            if (!chargeTag.isEmpty()) {
+                bigSb.append("\n").append(chargeTag);
+            }
+            if (!inLeadWindow && liveAlertsEnabled && !liveAlertsAlwaysOn) {
+                bigSb.append("\n✨ تظهر الكبسولة المباشرة قبل الموعد بـ ").append(liveAlertsLeadMinutes).append(" دقيقة");
+            }
+            bigSb.append("\n🔗 ").append(syncSubtitle);
+
+            if (inLeadWindow) {
+                liveExtras.putBoolean("android.showChronometer", true);
+                liveExtras.putBoolean("android.chronometerCountdown", true);
+            }
+
+            builder.setContentTitle(titleLine)
+                    .setContentText(compactSummaryLine)
+                    .setSubText(summaryPill)
                     .setShowWhen(true)
                     .setWhen(liveTargetEpochMs)
                     .setUsesChronometer(true)
                     .setChronometerCountDown(true)
-                    .setColor(categoryColor)
-                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                    .setCategory(NotificationCompat.CATEGORY_EVENT)
-                    .setProgress(1000, progressPermille, false)
+                    .setColor(accentColor)
+                    .setCategory(Notification.CATEGORY_EVENT)
+                    .setStyle(new Notification.BigTextStyle()
+                            .setBigContentTitle(titleLine)
+                            .setSummaryText(summaryPill)
+                            .bigText(bigSb.toString()))
                     .addExtras(liveExtras);
-        } else if (isChargingNow && liveAlertsEnabled) {
-            // ── Charging Live Capsule: charger % + ETA + next schedule/water task ──
-            String compactPill = "⚡ " + lastBroadcastBatteryLevel + "%";
+        } else if (chargePromote) {
+            String compactPill = (lastBroadcastBatteryLevel >= lastBroadcastLimit ? "🔋 " : "⚡ ") + lastBroadcastBatteryLevel + "%";
             int chargeColor = lastBroadcastBatteryLevel >= lastBroadcastLimit ? 0xFF4ADE80 : 0xFF7FFFD4;
-            int chargePermille = (int) Math.max(0, Math.min(1000, (lastBroadcastBatteryLevel * 1000L) / Math.max(1, lastBroadcastLimit)));
+            applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, "شحن الهاتف " + lastBroadcastBatteryLevel + "%");
 
-            liveExtras.putBoolean("android.requestPromotedOngoing", true);
-            liveExtras.putBoolean("android.promotedOngoing", true);
-            liveExtras.putBoolean("oplus.live_alert.enable", true);
-            liveExtras.putBoolean("oplus.livealert.enable", true);
-            liveExtras.putInt("oplus.live_alert_state", 1);
-            liveExtras.putString("android.shortCriticalText", compactPill);
-            liveExtras.putCharSequence("android.shortCriticalText", compactPill);
-            liveExtras.putString("oplus.live_alert.text", compactPill);
+            StringBuilder bigSb = new StringBuilder();
+            bigSb.append("⚡ الشحن الحالي: ").append(lastBroadcastBatteryLevel).append("% من حد ").append(lastBroadcastLimit).append("%");
+            if (lastBroadcastEtaMinutes > 0) {
+                bigSb.append("\n⏱ الوقت المتبقي للوصول للحد: ~").append(lastBroadcastEtaMinutes).append(" دقيقة");
+            } else if (lastBroadcastBatteryLevel >= lastBroadcastLimit) {
+                bigSb.append("\n🔋 وصل للحد المطلوب — يُنصح بفصل الشاحن لحماية البطارية");
+            }
+            if (hasUpcoming) {
+                bigSb.append("\n📅 القادم: ").append(displayTitle);
+                if (!targetClock.isEmpty()) bigSb.append(" (").append(targetClock).append(")");
+            }
+            if (!liveHydrationSummary.isEmpty()) {
+                bigSb.append("\n").append(liveHydrationSummary);
+            }
+            bigSb.append("\n🔗 ").append(syncSubtitle);
 
-            String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
-            String cleanTitle = cleanDisplayTitle(rawTitle);
-            String nextLine = hasUpcoming && !cleanTitle.isEmpty()
-                    ? ((liveEmoji.isEmpty() ? "" : liveEmoji + " ") + cleanTitle + " (" + formatChipText("", remainingMs).trim() + ")")
+            String shortSub = hasUpcoming
+                    ? (displayTitle + " · " + formatRemainingDetailedAr(remainingMs))
                     : syncSubtitle;
 
             builder.setContentTitle(chargeTag)
-                    .setContentText(nextLine)
+                    .setContentText(shortSub)
+                    .setSubText("⚡ " + lastBroadcastBatteryLevel + "%")
                     .setShowWhen(hasUpcoming)
                     .setWhen(hasUpcoming ? liveTargetEpochMs : nowMs)
                     .setUsesChronometer(hasUpcoming)
                     .setChronometerCountDown(hasUpcoming)
                     .setColor(chargeColor)
-                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                    .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-                    .setProgress(1000, chargePermille, false)
+                    .setCategory(Notification.CATEGORY_PROGRESS)
+                    .setStyle(new Notification.BigTextStyle()
+                            .setBigContentTitle(chargeTag)
+                            .setSummaryText("OnePlus 12R SuperVOOC")
+                            .bigText(bigSb.toString()))
                     .addExtras(liveExtras);
-        } else if (liveAlertsEnabled && hasUpcoming) {
-            // ── Schedule / Water / Meds Live Alert Capsule (> lead window, not charging) ──
-            String compactPill = formatChipText(liveEmoji, remainingMs);
-            liveExtras.putBoolean("android.requestPromotedOngoing", true);
-            liveExtras.putBoolean("android.promotedOngoing", true);
-            liveExtras.putBoolean("oplus.live_alert.enable", true);
-            liveExtras.putBoolean("oplus.livealert.enable", true);
-            liveExtras.putInt("oplus.live_alert_state", 1);
-            liveExtras.putString("android.shortCriticalText", compactPill);
-            liveExtras.putCharSequence("android.shortCriticalText", compactPill);
-            liveExtras.putString("oplus.live_alert.text", compactPill);
 
-            String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
-            String cleanTitle = cleanDisplayTitle(rawTitle);
-            String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
-
-            builder.setContentTitle(compactPill)
-                    .setContentText(displayTitle)
-                    .setSubText(liveStatusLabel)
-                    .setShowWhen(true)
-                    .setWhen(liveTargetEpochMs)
-                    .setUsesChronometer(true)
-                    .setChronometerCountDown(true)
-                    .setColor(0xFF7FFFD4)
-                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                    .setCategory(NotificationCompat.CATEGORY_EVENT)
-                    .addExtras(liveExtras);
-        } else if (hasUpcoming && persistentCountdownEnabled) {
-            // ── Ongoing silent schedule/water/meds countdown (Live Alerts toggled off) ──
-            String compactPill = formatChipText(liveEmoji, remainingMs);
-            String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
-            String cleanTitle = cleanDisplayTitle(rawTitle);
-            String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + (cleanTitle.isEmpty() ? rawTitle : cleanTitle);
-
-            liveExtras.putBoolean("oplus.live_alert.enable", false);
-            liveExtras.putBoolean("android.requestPromotedOngoing", false);
-
-            builder.setContentTitle(compactPill)
-                    .setContentText(displayTitle + " • " + liveStatusLabel)
-                    .setShowWhen(true)
-                    .setWhen(liveTargetEpochMs)
-                    .setUsesChronometer(true)
-                    .setChronometerCountDown(true)
-                    .setColor(0xFF7FFFD4)
-                    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                    .setCategory(NotificationCompat.CATEGORY_EVENT)
-                    .addExtras(liveExtras);
+            if (lastBroadcastBatteryLevel >= lastBroadcastLimit) {
+                Intent dismissChargeIntent = new Intent(this, ReminderAlarmReceiver.class);
+                dismissChargeIntent.setAction(ReminderAlarmReceiver.ACTION_DISMISS);
+                dismissChargeIntent.putExtra(ReminderAlarmReceiver.EXTRA_NOTIF_ID, NOTIF_KEEPALIVE_ID);
+                PendingIntent dismissPi = PendingIntent.getBroadcast(
+                        this,
+                        9105,
+                        dismissChargeIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                );
+                builder.addAction(new Notification.Action.Builder(
+                        android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_notif_charge),
+                        "✓ فصلت الشاحن",
+                        dismissPi
+                ).build());
+            }
         } else {
-            // ── Idle / Sync Status: Clean background ongoing notification ──
-            liveExtras.putBoolean("oplus.live_alert.enable", false);
-            liveExtras.putBoolean("android.requestPromotedOngoing", false);
+            applyPlatformLiveAlertFlags(builder, liveExtras, false, "", "");
+            StringBuilder bigSb = new StringBuilder();
+            bigSb.append("🔗 ").append(syncSubtitle);
+            if (!liveHydrationSummary.isEmpty()) {
+                bigSb.append("\n").append(liveHydrationSummary);
+            }
+            if (!chargeTag.isEmpty()) {
+                bigSb.append("\n").append(chargeTag);
+            }
+            bigSb.append("\n✅ جدول اليوم منظم وجاهز للتنبيه التلقائي");
 
             builder.setContentTitle("إيقاع اليوم | DayRhythm")
-                    .setContentText(chargeTag.isEmpty() ? syncSubtitle : (chargeTag + " • " + syncSubtitle))
+                    .setContentText(chargeTag.isEmpty() ? syncSubtitle : (chargeTag + " · " + syncSubtitle))
+                    .setSubText(liveHydrationSummary.isEmpty() ? "مزامنة 24/7" : liveHydrationSummary)
                     .setShowWhen(false)
                     .setUsesChronometer(false)
                     .setColor(0xFF7FFFD4)
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .setCategory(NotificationCompat.CATEGORY_STATUS)
+                    .setCategory(Notification.CATEGORY_STATUS)
+                    .setStyle(new Notification.BigTextStyle()
+                            .setBigContentTitle("إيقاع اليوم | DayRhythm")
+                            .bigText(bigSb.toString()))
                     .addExtras(liveExtras);
         }
 

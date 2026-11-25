@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   BatteryCharging,
   MapPin,
@@ -9,9 +9,15 @@ import {
   ChevronDown,
   ChevronUp,
   Volume2,
-  Vibrate,
   ShieldCheck,
   RefreshCw,
+  ExternalLink,
+  AlertTriangle,
+  Clock,
+  Timer,
+  Plane,
+  Sparkles,
+  RotateCcw,
 } from 'lucide-react';
 import {
   AppLanguage,
@@ -26,7 +32,13 @@ import {
 } from '../types/dayrhythm';
 import { LiveAlertsLeadMinutes, OnePlusDeviceSettings } from '../firebase';
 import { QUIET_MODE_LABELS } from '../engines/i18n';
-import { HAPTIC_WAVEFORMS, HapticWaveformKind, triggerHapticWaveform } from '../engines/hapticsEngine';
+import { AndroidPermissionsCard } from './AndroidPermissionsCard';
+import {
+  type AndroidPermissionsStatus,
+  getAndroidPermissionsStatus,
+  isAndroidNative,
+  openLiveAlertSettings,
+} from '../services/androidPermissions';
 
 interface MobilePreviewViewProps {
   language: AppLanguage;
@@ -62,22 +74,29 @@ interface MobilePreviewViewProps {
   onRefreshGps?: () => void;
   gpsSyncing?: boolean;
   phoneBattery?: PhoneBatteryTelemetry | null;
-  upcomingPreview?: { emoji: string; title: string; countdownText: string } | null;
+  upcomingPreview?: {
+    emoji: string;
+    title: string;
+    countdownText: string;
+    statusLabel?: string;
+    clockLabel?: string;
+    nextUpText?: string;
+  } | null;
 }
 
-const LEAD_MINUTE_OPTIONS: LiveAlertsLeadMinutes[] = [5, 10, 15];
-
-const PERMISSION_STEPS = [
-  { id: 'alarm', labelAr: 'منبهات دقيقة لا تتأخر في وضع السكون' },
-  { id: 'battery', labelAr: 'استثناء التطبيق من تحسين البطارية في الخلفية' },
-  { id: 'notif', labelAr: 'السماح بإشعارات Live Alerts وشريط الحالة' },
-];
+const LEAD_MINUTE_OPTIONS: LiveAlertsLeadMinutes[] = [5, 10, 15, 20, 30];
 
 export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
+  hydrationToday,
   quietMode,
   onSetQuietMode,
+  onOpenTravel,
+  onOpenCatchUp,
+  onOpenPomodoro,
   batteryGuard,
   onToggleBypassCharging,
+  hasShakeUndoActive,
+  onTriggerShakeUndo,
   alarmRinging,
   onDismissTwoWay,
   deviceSettings,
@@ -90,9 +109,29 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
   upcomingPreview,
 }) => {
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [lastHapticNote, setLastHapticNote] = useState<string>('');
+  const isAndroid = isAndroidNative();
+  const [androidPerms, setAndroidPerms] = useState<AndroidPermissionsStatus | null>(() =>
+    getAndroidPermissionsStatus()
+  );
+
+  useEffect(() => {
+    if (!isAndroid) return;
+    const syncPerms = () => setAndroidPerms(getAndroidPermissionsStatus());
+    syncPerms();
+    const onVis = () => {
+      if (document.visibilityState === 'visible') syncPerms();
+    };
+    window.addEventListener('dayrhythm:permissions-changed', syncPerms);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('dayrhythm:permissions-changed', syncPerms);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [isAndroid]);
 
   const persistentEnabled = deviceSettings.persistentCountdownNotif ?? true;
+  const alwaysOn = Boolean(deviceSettings.liveAlertsAlwaysOn);
+  const showChargingPill = deviceSettings.liveAlertsShowCharging ?? true;
   const batteryEtaMin = phoneBattery?.chargeTimeRemainingMin;
   const batteryEtaText =
     phoneBattery?.charging && typeof batteryEtaMin === 'number' && batteryEtaMin > 0
@@ -100,6 +139,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
       : phoneBattery?.charging
         ? 'قيد الشحن الآن'
         : 'غير موصول بالشاحن';
+  const promotedGranted = androidPerms ? Boolean(androidPerms.promotedAlerts ?? androidPerms.notifications) : null;
 
   return (
     <div className="mx-auto max-w-[920px] px-4 sm:px-6 py-5 sm:py-6 space-y-5">
@@ -140,19 +180,21 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
       <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
-            <h2 className="text-sm font-bold text-white">
-              كبسولة Dynamic Island (Live Alerts)
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-[#7FFFD4] shrink-0" />
+              <span>كبسولة شريط الحالة (Live Alerts)</span>
             </h2>
             <p className="text-xs text-zinc-400 leading-relaxed">
-              تظهر تلقائياً في أعلى شاشة OnePlus 12R قبل موعد المهمة أو التنبيه القادم مع الإيموجي وعدّاد الثواني (ولا تظهر أي كبسولة مكررة داخل التطبيق).
+              تظهر تلقائياً في شريط حالة OnePlus 12R (بجوار الكاميرا) قبل الموعد بـ {deviceSettings.liveAlertsLeadMinutes} دقائق أو طوال الوقت مع الإيموجي والعدّاد التنازلي وحالة الشحن.
             </p>
           </div>
           <button
             type="button"
+            aria-pressed={deviceSettings.liveAlertsEnabled}
             onClick={() =>
               onUpdateDeviceSettings({ liveAlertsEnabled: !deviceSettings.liveAlertsEnabled })
             }
-            className={`min-h-[40px] px-4 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
               deviceSettings.liveAlertsEnabled
                 ? 'bg-[#7FFFD4] text-black'
                 : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
@@ -162,38 +204,160 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
           </button>
         </div>
 
+        {/* Android 16 / OxygenOS 16 Live Alerts System Permission Diagnostic Banner */}
+        {isAndroid && promotedGranted === false && (
+          <div className="rounded-xl border border-amber-400/35 bg-amber-500/10 px-3.5 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+              <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+              <div className="text-xs text-amber-100 leading-relaxed">
+                <span className="font-bold block text-amber-300">إذن النظام مطلوب لإظهار Live Alerts</span>
+                فعّل خيار «التنبيهات المباشرة / Promoted Notifications» للتطبيق في إعدادات أندرويد 16 حتى تظهر الكبسولة أعلى الشاشة.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={openLiveAlertSettings}
+              className="min-h-[44px] px-3.5 rounded-xl bg-amber-400 text-black text-xs font-bold hover:bg-amber-300 transition-colors cursor-pointer shrink-0 flex items-center gap-1.5"
+            >
+              <span>تفعيل من النظام</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {isAndroid && promotedGranted === true && deviceSettings.liveAlertsEnabled && (
+          <div className="rounded-xl border border-[#4ADE80]/25 bg-[#4ADE80]/8 px-3.5 py-2.5 flex items-center justify-between gap-3">
+            <span className="text-xs text-[#4ADE80] font-semibold flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+              <span>إذن Live Alerts مفعّل في النظام ✓</span>
+            </span>
+            <button
+              type="button"
+              onClick={openLiveAlertSettings}
+              className="min-h-[36px] px-2.5 rounded-lg text-[11px] font-medium text-zinc-300 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>فتح الإعدادات</span>
+              <ExternalLink className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
         {deviceSettings.liveAlertsEnabled && (
-          <div className="space-y-3 pt-1">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs text-zinc-300">تبدأ بالظهور قبل الموعد بـ</span>
-              <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-black/60 border border-white/[0.08]">
-                {LEAD_MINUTE_OPTIONS.map((mins) => (
-                  <button
-                    key={mins}
-                    type="button"
-                    onClick={() => onUpdateDeviceSettings({ liveAlertsLeadMinutes: mins })}
-                    className={`min-h-[36px] px-3.5 rounded-lg text-xs font-bold font-digits transition-colors cursor-pointer ${
-                      deviceSettings.liveAlertsLeadMinutes === mins
-                        ? 'bg-[#7FFFD4] text-black'
-                        : 'text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    {mins} دقائق
-                  </button>
-                ))}
+          <div className="space-y-4 pt-1">
+            {/* Lead time options: 5 / 10 / 15 / 20 / 30 min + Always On */}
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                  <span>تبدأ الكبسولة بالظهور قبل الموعد بـ</span>
+                </span>
+                <span className="text-[11px] font-medium text-[#7FFFD4]">
+                  {alwaysOn ? 'ظهور مستمر طوال اليوم' : `قبل ${deviceSettings.liveAlertsLeadMinutes} دقائق`}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 p-1 rounded-xl bg-black/60 border border-white/[0.08]">
+                {LEAD_MINUTE_OPTIONS.map((mins) => {
+                  const selected = !alwaysOn && deviceSettings.liveAlertsLeadMinutes === mins;
+                  return (
+                    <button
+                      key={mins}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() =>
+                        onUpdateDeviceSettings({
+                          liveAlertsLeadMinutes: mins,
+                          liveAlertsAlwaysOn: false,
+                        })
+                      }
+                      className={`min-h-[42px] px-2 rounded-lg text-xs font-bold font-digits transition-colors cursor-pointer ${
+                        selected
+                          ? 'bg-[#7FFFD4] text-black'
+                          : 'text-zinc-300 hover:text-white hover:bg-white/[0.05]'
+                      }`}
+                    >
+                      {mins} د
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  aria-pressed={alwaysOn}
+                  onClick={() =>
+                    onUpdateDeviceSettings({
+                      liveAlertsAlwaysOn: !alwaysOn,
+                    })
+                  }
+                  className={`min-h-[42px] px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                    alwaysOn
+                      ? 'bg-[#7FFFD4] text-black'
+                      : 'text-zinc-300 hover:text-white hover:bg-white/[0.05]'
+                  }`}
+                >
+                  دائماً
+                </button>
               </div>
             </div>
 
-            {/* Minimal, factual preview of the exact Dynamic Island chip format */}
-            <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-black/50 px-3.5 py-2.5">
-              <span className="text-xs text-zinc-400">شكل الكبسولة في شريط الحالة</span>
-              <span className="inline-flex items-center gap-2 rounded-full border border-[#7FFFD4]/35 bg-black px-3 py-1 text-xs font-bold font-digits text-[#7FFFD4]">
-                <span>{upcomingPreview?.emoji || '💧'}</span>
-                <span dir="ltr">
-                  {upcomingPreview?.countdownText ||
-                    `${String(deviceSettings.liveAlertsLeadMinutes).padStart(2, '0')}:00`}
+            {/* Charging Capsule Toggle */}
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-black/45 px-3.5 py-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <BatteryCharging className="w-3.5 h-3.5 text-[#7FFFD4] shrink-0" />
+                  <span>إظهار كبسولة الشحن المباشرة</span>
+                </div>
+                <div className="text-[11px] text-zinc-400 mt-0.5">
+                  تعرض نسبة البطارية والوقت المتبقي للحد المحدد في شريط الحالة عند توصيل الشاحن
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-pressed={showChargingPill}
+                onClick={() =>
+                  onUpdateDeviceSettings({ liveAlertsShowCharging: !showChargingPill })
+                }
+                className={`min-h-[40px] px-3.5 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                  showChargingPill
+                    ? 'bg-[#7FFFD4] text-black'
+                    : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+                }`}
+              >
+                {showChargingPill ? 'مفعّل' : 'متوقف'}
+              </button>
+            </div>
+
+            {/* Live factual preview: Status Bar Chip + Rich Expanded Notification Drawer */}
+            <div className="rounded-xl border border-white/[0.08] bg-black/60 p-3.5 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-zinc-400">معاينة شريط الحالة وستارة الإشعارات</span>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-[#7FFFD4]/40 bg-black px-3 py-1 text-xs font-bold font-digits text-[#7FFFD4]">
+                  <span>{upcomingPreview?.emoji || '💧'}</span>
+                  <span dir="ltr">
+                    {upcomingPreview?.countdownText ||
+                      `${String(deviceSettings.liveAlertsLeadMinutes).padStart(2, '0')}:00`}
+                  </span>
                 </span>
-              </span>
+              </div>
+
+              <div className="rounded-xl border border-white/[0.07] bg-[#0F131C] p-3 space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-white truncate">
+                    {upcomingPreview?.emoji || '📅'} {upcomingPreview?.title || 'المهمة القادمة'}
+                    {upcomingPreview?.clockLabel ? ` · ${upcomingPreview.clockLabel}` : ''}
+                  </span>
+                  <span className="text-[11px] text-[#7FFFD4] shrink-0">
+                    {upcomingPreview?.clockLabel || '12h'}
+                  </span>
+                </div>
+                <div className="text-[11px] text-zinc-300">
+                  ⏳ {upcomingPreview?.statusLabel || `يبدأ قبل الموعد بـ ${deviceSettings.liveAlertsLeadMinutes} د`} · 💧 {hydrationToday.cupsLogged}/{hydrationToday.targetCups} كوب
+                </div>
+                {upcomingPreview?.nextUpText && (
+                  <div className="text-[11px] text-zinc-400 truncate">
+                    ⏭ التالي: {upcomingPreview.nextUpText}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -202,18 +366,19 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
         <div className="pt-4 border-t border-white/[0.08] flex items-start justify-between gap-4">
           <div className="space-y-1">
             <h3 className="text-sm font-bold text-white">
-              إشعار ثابت بعدّاد تنازلي في الإشعارات
+              إشعار ثابت غني بالمعلومات في الستارة
             </h3>
             <p className="text-xs text-zinc-400 leading-relaxed">
-              يبقي المهمة أو الحدث القادم (من التقويم أو المهام أو الماء أو العلاج) ظاهراً دائماً في ستارة الإشعارات بعدّاد تنازلي مباشر صامت.
+              يبقي الموعد القادم وتفاصيله والعدّاد التنازلي والترطيب والمهمة التالية ظاهرين في ستارة الإشعارات بصمت طوال اليوم.
             </p>
           </div>
           <button
             type="button"
+            aria-pressed={persistentEnabled}
             onClick={() =>
               onUpdateDeviceSettings({ persistentCountdownNotif: !persistentEnabled })
             }
-            className={`min-h-[40px] px-4 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+            className={`min-h-[44px] px-4 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
               persistentEnabled
                 ? 'bg-[#7FFFD4] text-black'
                 : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
@@ -298,7 +463,82 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
         </div>
       </section>
 
-      {/* Secondary / Advanced Hardware Settings (Collapsed by Default!) */}
+      {/* Mobile Quick Tools Strip (Pomodoro, Travel, Catch-Up, Bypass Charging, Shake-Undo) */}
+      <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <BatteryCharging className="w-4 h-4 text-[#7FFFD4]" />
+              <span>الشحن التجاوزي والأدوات السريعة</span>
+            </h2>
+            <p className="text-xs text-zinc-400 mt-0.5">
+              {phoneBattery
+                ? `${phoneBattery.levelPct}% · ${batteryEtaText}`
+                : 'تحكم سريع بالشحن والتركيز والسفر من الهاتف'}
+            </p>
+          </div>
+          {hasShakeUndoActive && (
+            <button
+              type="button"
+              onClick={onTriggerShakeUndo}
+              className="min-h-[40px] px-3.5 rounded-xl bg-amber-400 text-black text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>تراجع عن آخر حذف</span>
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          {([null, 80, 90] as const).map((limit) => {
+            const active = batteryGuard.bypassChargingLimitPct === limit;
+            return (
+              <button
+                key={String(limit)}
+                type="button"
+                aria-pressed={active}
+                onClick={() => onToggleBypassCharging(limit)}
+                className={`min-h-[44px] px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
+                  active
+                    ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                    : 'border-white/[0.08] bg-black/40 text-zinc-300 hover:border-white/20'
+                }`}
+              >
+                {limit === null ? 'شحن عادي' : `Bypass ${limit}%`}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-white/[0.07]">
+          <button
+            type="button"
+            onClick={onOpenPomodoro}
+            className="min-h-[44px] px-3 rounded-xl border border-white/[0.08] bg-black/40 text-xs font-semibold text-zinc-200 hover:border-[#7FFFD4]/40 transition-colors cursor-pointer flex items-center justify-center gap-2"
+          >
+            <Timer className="w-3.5 h-3.5 text-[#7FFFD4]" />
+            <span>بومودورو التركيز</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenTravel}
+            className="min-h-[44px] px-3 rounded-xl border border-white/[0.08] bg-black/40 text-xs font-semibold text-zinc-200 hover:border-[#7FFFD4]/40 transition-colors cursor-pointer flex items-center justify-center gap-2"
+          >
+            <Plane className="w-3.5 h-3.5 text-[#7FFFD4]" />
+            <span>وضع السفر</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenCatchUp}
+            className="min-h-[44px] px-3 rounded-xl border border-white/[0.08] bg-black/40 text-xs font-semibold text-zinc-200 hover:border-[#7FFFD4]/40 transition-colors cursor-pointer flex items-center justify-center gap-2"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-[#7FFFD4]" />
+            <span>تدارك اليوم</span>
+          </button>
+        </div>
+      </section>
+
+      {/* Secondary / Advanced Hardware Settings & Live Permissions */}
       <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] overflow-hidden">
         <button
           type="button"
@@ -307,7 +547,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
         >
           <span className="flex items-center gap-2 text-xs font-bold text-zinc-200">
             <SlidersHorizontal className="w-4 h-4 text-zinc-400" />
-            <span>إعدادات متقدمة للنظام والأذونات (OnePlus 12R)</span>
+            <span>الأذونات الحقيقية وإعدادات الهاردوير (OnePlus 12R)</span>
           </span>
           {advancedOpen ? (
             <ChevronUp className="w-4 h-4 text-zinc-400" />
@@ -317,7 +557,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
         </button>
 
         {advancedOpen && (
-          <div className="px-5 pb-5 pt-2 border-t border-white/[0.08] space-y-4">
+          <div className="px-5 pb-5 pt-3 border-t border-white/[0.08] space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {(
                 [
@@ -336,15 +576,16 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                   >
                     <div className="min-w-0">
                       <div className="text-xs font-semibold text-white">{item.title}</div>
-                      <div className="text-[11px] text-zinc-500 mt-0.5">{item.desc}</div>
+                      <div className="text-[11px] text-zinc-400 mt-0.5">{item.desc}</div>
                     </div>
                     <button
                       type="button"
+                      aria-pressed={enabled}
                       onClick={() => onUpdateDeviceSettings({ [item.key]: !enabled })}
-                      className={`min-h-[34px] px-3 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                      className={`min-h-[40px] px-3.5 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
                         enabled
                           ? 'bg-[#7FFFD4] text-black'
-                          : 'bg-white/[0.06] text-zinc-400 hover:text-white'
+                          : 'bg-white/[0.06] text-zinc-300 hover:text-white'
                       }`}
                     >
                       {enabled ? 'مفعّل' : 'متوقف'}
@@ -354,21 +595,14 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
               })}
             </div>
 
-            {/* Background Permissions Checklist */}
-            <div className="space-y-2 pt-2 border-t border-white/[0.06]">
-              <div className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-[#7FFFD4]" />
-                <span>أذونات العمل في الخلفية الموصى بها</span>
+            {isAndroid ? (
+              <AndroidPermissionsCard />
+            ) : (
+              <div className="rounded-xl border border-white/[0.07] bg-black/40 px-4 py-3 text-xs text-zinc-400 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#7FFFD4] shrink-0" />
+                <span>افتح التطبيق على هاتف OnePlus 12R لمراجعة وتفعيل أذونات النظام الحقيقية مباشرة.</span>
               </div>
-              <ul className="space-y-1.5">
-                {PERMISSION_STEPS.map((p) => (
-                  <li key={p.id} className="text-xs text-zinc-400 flex items-center gap-2">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-[#4ADE80] shrink-0" />
-                    <span>{p.labelAr}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
+            )}
           </div>
         )}
       </section>

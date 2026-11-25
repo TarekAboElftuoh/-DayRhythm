@@ -41,4 +41,43 @@ describe('spircClient binary Protobuf v3 codec', () => {
     expect(lamportWins(10, 'b', 10, 'a')).toBe(false);
     expect(lamportWins(10, 'a', 10, 'b')).toBe(true);
   });
+
+  it('encodes and decodes cross-device DISMISS_ALARM frame with and without payload', () => {
+    const emptyDismiss = encodeSpircFrame({
+      version: 1,
+      action: SPIRC_ACTION.DISMISS_ALARM,
+      entityKind: SPIRC_ENTITY.ALARM,
+      entityId: 'alarm_dismiss',
+      clientId: 'pc_client',
+      opId: 'dism_1',
+      lamportSeq: 99,
+      timestampMs: 1795560000123,
+      deleted: false,
+      payload: new Uint8Array(0),
+    });
+    const decodedEmpty = decodeSpircFrame(emptyDismiss);
+    expect(decodedEmpty.action).toBe(SPIRC_ACTION.DISMISS_ALARM);
+    expect(decodedEmpty.entityKind).toBe(SPIRC_ENTITY.ALARM);
+    expect(decodedEmpty.payload.length).toBe(0);
+
+    const payload = new TextEncoder().encode(JSON.stringify({ action: 'water_confirmed', alertId: 'water' }));
+    const fullDismiss = encodeSpircFrame({
+      version: 1,
+      action: SPIRC_ACTION.DISMISS_ALARM,
+      entityKind: SPIRC_ENTITY.ALARM,
+      entityId: 'alarm_dismiss',
+      clientId: 'device_mobile_native',
+      opId: 'mob_dism_1',
+      lamportSeq: 100,
+      timestampMs: 1795560000999,
+      deleted: false,
+      payload,
+    });
+    const decodedFull = decodeSpircFrame(fullDismiss);
+    expect(decodedFull.action).toBe(SPIRC_ACTION.DISMISS_ALARM);
+    expect(JSON.parse(new TextDecoder().decode(decodedFull.payload))).toEqual({
+      action: 'water_confirmed',
+      alertId: 'water',
+    });
+  });
 });

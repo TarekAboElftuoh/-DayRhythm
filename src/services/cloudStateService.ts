@@ -681,7 +681,8 @@ export async function broadcastAlertDismiss(
   uid: string,
   senderDeviceId: string,
   alertId?: string,
-  action?: string
+  action?: string,
+  extra?: Record<string, unknown>
 ): Promise<boolean> {
   if (!uid) return false;
   try {
@@ -702,14 +703,16 @@ export async function broadcastAlertDismiss(
       timestampMs: nowMs,
       updatedAtMs: nowMs,
       serverTime: serverTimestamp(),
+      ...(extra ? { extra } : {}),
     };
 
-    const syncSignal = {
+    const syncSignal: Record<string, unknown> = {
       scope: 'alarm_dismiss',
       action: action || 'dismiss',
       clientId: senderDeviceId,
       timestampMs: nowMs,
       opId: `dism_${nowMs}_${senderDeviceId}`,
+      ...(extra ? { extra } : {}),
     };
 
     await Promise.allSettled([

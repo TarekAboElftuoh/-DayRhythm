@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   ExternalLink,
+  Sparkles,
 } from 'lucide-react';
 import {
   type AndroidPermissionsStatus,
@@ -22,6 +23,7 @@ import {
   openDndSettings,
   openExactAlarmSettings,
   openFullScreenIntentSettings,
+  openLiveAlertSettings,
   requestEssentialAndroidPermissions,
 } from '../services/androidPermissions';
 
@@ -93,6 +95,15 @@ export const AndroidPermissionsCard: React.FC = () => {
       icon: Volume2,
       action: openDndSettings,
       actionLabel: 'إعدادات عدم الإزعاج',
+    },
+    {
+      id: 'promotedAlerts',
+      title: 'الكبسولة المباشرة في شريط الحالة (Live Alerts)',
+      desc: 'إظهار العدّاد التنازلي والشحن في شريط الحالة بجانب الكاميرا (OnePlus 12R / Android 16)',
+      granted: Boolean(status.promotedAlerts ?? status.notifications),
+      icon: Sparkles,
+      action: openLiveAlertSettings,
+      actionLabel: 'تفعيل Live Alerts',
     },
     {
       id: 'notifications',
@@ -205,7 +216,7 @@ export const AndroidPermissionsCard: React.FC = () => {
                 <button
                   type="button"
                   onClick={item.action}
-                  className="px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 text-xs font-medium cursor-pointer transition shrink-0 flex items-center gap-1"
+                  className="min-h-[40px] px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 text-xs font-medium cursor-pointer transition shrink-0 flex items-center gap-1"
                 >
                   <span>{item.actionLabel}</span>
                   <ExternalLink className="w-3 h-3" />
@@ -223,7 +234,7 @@ export const AndroidPermissionsCard: React.FC = () => {
         <button
           type="button"
           onClick={openAppSystemSettings}
-          className="px-3 py-1.5 rounded-xl border border-white/15 bg-white/5 text-zinc-300 hover:text-white hover:bg-white/10 text-xs font-medium cursor-pointer transition shrink-0 flex items-center gap-1.5"
+          className="min-h-[40px] px-3 py-1.5 rounded-xl border border-white/15 bg-white/5 text-zinc-300 hover:text-white hover:bg-white/10 text-xs font-medium cursor-pointer transition shrink-0 flex items-center gap-1.5"
         >
           <Settings className="w-3.5 h-3.5" />
           <span>إعدادات التطبيق بالنظام</span>

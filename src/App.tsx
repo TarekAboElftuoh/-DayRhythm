@@ -964,8 +964,8 @@ export default function App() {
   const recentCloudWriteTimestampsRef = useRef<number[]>([]);
   const lastSpircFullStateRef = useRef<Record<string, unknown>>({});
   const pendingPatchesBeforeHydrationRef = useRef<Array<Partial<TasksVaultPayload>>>([]);
-  const handleToggleMedicationRef = useRef<(id: string, doseTime24?: string) => void>(() => {});
-  const handleLogWaterCupRef = useRef<() => void>(() => {});
+  const handleToggleMedicationRef = useRef<(id: string, doseTime24?: string, options?: { fromRemote?: boolean }) => void>(() => {});
+  const handleLogWaterCupRef = useRef<(options?: { fromRemote?: boolean }) => void>(() => {});
 
   // Any LOCALLY-initiated lifeProfile edit arms the write lock (see the Firestore listener's
   // "Date.now() < localWriteLockUntilRef.current" guard above) so a snapshot that happens to
@@ -1704,7 +1704,36 @@ export default function App() {
         auth.currentUser?.uid ||
         localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
         '';
-      if (effectiveSyncUid) {
+      if (scope === 'alarm_dismiss') {
+        const alertId = typeof extraPayload?.alertId === 'string' && extraPayload.alertId ? extraPayload.alertId : 'all';
+        spircClusterRef.current?.sendDismissAlarm(alertId, action, extraPayload);
+        if (effectiveSyncUid) {
+          void broadcastAlertDismiss(effectiveSyncUid, clientIdRef.current, alertId, action, extraPayload);
+        }
+      } else if (scope === 'alarm_trigger') {
+        spircClusterRef.current?.sendJsonState(
+          'alarm_trigger',
+          SPIRC_ENTITY.ALARM,
+          SPIRC_ACTION.UPSERT,
+          {
+            scope: 'alarm_trigger',
+            action,
+            clientId: clientIdRef.current,
+            timestampMs,
+            ...(extraPayload || {}),
+          }
+        );
+        if (effectiveSyncUid) {
+          void publishWorkspaceSyncSignal(effectiveSyncUid, {
+            opId,
+            clientId: clientIdRef.current,
+            scope,
+            action,
+            timestampMs,
+            extra: extraPayload,
+          });
+        }
+      } else if (effectiveSyncUid) {
         void publishWorkspaceSyncSignal(effectiveSyncUid, {
           opId,
           clientId: clientIdRef.current,
@@ -1718,11 +1747,7 @@ export default function App() {
           clientId: clientIdRef.current,
           timestampMs,
           type:
-            scope === 'alarm_dismiss'
-              ? 'alarm_dismiss'
-              : scope === 'alarm_trigger'
-              ? 'alarm_trigger'
-              : scope === 'tasks'
+            scope === 'tasks'
               ? 'tasks'
               : scope === 'calendar'
               ? 'schedule_blocks'
@@ -1796,17 +1821,6 @@ export default function App() {
       blockId: dismissedBlockId,
       alertId,
     });
-
-    // Spotify Connect: Real-time cloud alarm dismissal across all connected devices (<100ms)
-    const effectiveUid =
-      firebaseUser?.uid ||
-      authUser?.uid ||
-      auth.currentUser?.uid ||
-      localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-      '';
-    if (effectiveUid) {
-      void broadcastAlertDismiss(effectiveUid, clientIdRef.current, alertId, 'dismiss');
-    }
 
     if (hadAlert) {
       showToast(`✓ تم إيقاف وتأكيد تنبيه «${title}» على أجهزتك`);
@@ -1976,6 +1990,7 @@ export default function App() {
           id: alertId,
           emoji: privacyBadge,
           title: visibleTitle,
+          description: visibleDescription,
           sourceLabel: visibleSource,
           time12h: nowTime12,
           category,
@@ -2097,16 +2112,7 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'snooze');
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, alertItem.id, 'snooze');
-      }
+      emitCrossDeviceSync('alarm_dismiss', 'snooze', undefined, { alertId: alertItem.id });
       const timerId = window.setTimeout(() => {
         snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);
         triggerTaskAlert(alertItem.emoji || alertItem.title, alertItem.category, {
@@ -2873,7 +2879,7 @@ export default function App() {
     if (!native?.setCloudAuth) return;
     if (!effectiveUid) return;
 
-    void (async () => {
+    const pushNativeAuthSnapshot = async () => {
       let idToken: string | undefined;
       try {
         idToken = await auth.currentUser?.getIdToken();
@@ -2900,7 +2906,13 @@ export default function App() {
       } catch {
         // older APK without this bridge method
       }
-    })();
+    };
+
+    void pushNativeAuthSnapshot();
+    const unsubToken = auth.onIdTokenChanged(() => {
+      void pushNativeAuthSnapshot();
+    });
+    return () => unsubToken();
   }, [firebaseUser?.uid, authUser?.uid]);
 
   // Keep the Android service's charge-limit alert in sync with the app setting.
@@ -4269,7 +4281,42 @@ export default function App() {
       return;
     }
 
-    const handle = connectSpircCluster(workerUrl, uid, clientIdRef.current, (entityId, entityKind, payload) => {
+    const handle = connectSpircCluster(workerUrl, uid, clientIdRef.current, (entityId, entityKind, payload, frame) => {
+      if (frame.action === SPIRC_ACTION.DISMISS_ALARM || entityId === 'alarm_dismiss') {
+        const spOpId = frame.opId || `spirc_dism_${frame.timestampMs}_${frame.clientId}`;
+        if (!seenSyncOpIdsRef.current.has(spOpId)) {
+          seenSyncOpIdsRef.current.add(spOpId);
+          if (seenSyncOpIdsRef.current.size > 200) seenSyncOpIdsRef.current.clear();
+          stopContinuousAlert();
+          stopSmartChargeCompleteAlert();
+          stopNativeAlerts();
+          setSmartChargeAudioActive(false);
+          setActiveAudioAlert(null);
+          setPersistentAlert(null);
+          setAlarmRinging(false);
+          const remoteAction = typeof payload.action === 'string' ? payload.action : '';
+          if (remoteAction === 'water_confirmed') {
+            handleLogWaterCupRef.current({ fromRemote: true });
+          } else if (remoteAction === 'medication_confirmed' || remoteAction === 'med_confirmed') {
+            const medId = (payload.medicationId as string) || (payload.medId as string);
+            const doseTime = (payload.doseTime24 as string) || (payload.doseTime as string);
+            if (medId && medId !== 'all' && medId !== 'medication') {
+              handleToggleMedicationRef.current(medId, doseTime, { fromRemote: true });
+            }
+          }
+          showToastRef.current('🔕 تم إيقاف التنبيه فورياً من جهازك الآخر ✓');
+        }
+        return;
+      }
+
+      if (entityKind === SPIRC_ENTITY.ALARM && frame.action === SPIRC_ACTION.UPSERT) {
+        const startedMs = Number(payload.startedAtMs || frame.timestampMs || Date.now());
+        if (Math.abs(Date.now() - startedMs) <= 90_000) {
+          window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: payload }));
+        }
+        return;
+      }
+
       if (entityId === 'state_v3' || entityKind === SPIRC_ENTITY.STATE_V3) {
         isLoadingSettingsRef.current = true;
         try {
@@ -4315,7 +4362,9 @@ export default function App() {
           handledDismissedAlarmIdsRef.current.add(relevantDismissal.id);
           console.info('[CloudSync] Real-time remote alarm dismissed:', relevantDismissal.id, 'by:', relevantDismissal.dismissedByClientId);
           stopContinuousAlert();
+          stopSmartChargeCompleteAlert();
           stopNativeAlerts();
+          setSmartChargeAudioActive(false);
           setActiveAudioAlert(null);
           setPersistentAlert(null);
           setAlarmRinging(false);
@@ -4359,19 +4408,20 @@ export default function App() {
               console.info('[CloudSync] Remote alarm dismiss signal received:', sig.action);
               stopContinuousAlert();
               stopSmartChargeCompleteAlert();
+              stopNativeAlerts();
               setSmartChargeAudioActive(false);
               setActiveAudioAlert(null);
               setPersistentAlert(null);
               setAlarmRinging(false);
 
               if (sig.action === 'water_confirmed' || (sig.extra as any)?.kind === 'water') {
-                handleLogWaterCupRef.current();
+                handleLogWaterCupRef.current({ fromRemote: true });
               } else if (sig.action === 'medication_confirmed' || sig.action === 'med_confirmed' || (sig.extra as any)?.kind === 'medication') {
                 const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string; medicationId?: string; doseTime24?: string } | undefined;
                 const medId = extra?.medId || extra?.medicationId;
                 const doseTime = extra?.doseTime || extra?.doseTime24;
                 if (medId) {
-                  handleToggleMedicationRef.current(medId, doseTime);
+                  handleToggleMedicationRef.current(medId, doseTime, { fromRemote: true });
                 }
               }
             }
@@ -4448,6 +4498,7 @@ export default function App() {
           if (seenSyncOpIdsRef.current.size > 200) seenSyncOpIdsRef.current.clear();
           stopContinuousAlert();
           stopSmartChargeCompleteAlert();
+          stopNativeAlerts();
           if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
             try {
               navigator.vibrate(0);
@@ -4470,13 +4521,13 @@ export default function App() {
           }
           const action = signal.action || (signal.extra as any)?.action;
           if (action === 'water_confirmed') {
-            handleLogWaterCupRef.current();
+            handleLogWaterCupRef.current({ fromRemote: true });
           } else if (action === 'medication_confirmed' || action === 'med_confirmed') {
             const extra = signal.extra as Record<string, unknown> | undefined;
             const medId = (extra?.medicationId as string) || (extra?.medId as string) || signal.alertId;
             const doseTime = (extra?.doseTime24 as string) || (extra?.doseTime as string);
             if (medId && medId !== 'all' && medId !== 'medication') {
-              handleToggleMedicationRef.current(medId, doseTime);
+              handleToggleMedicationRef.current(medId, doseTime, { fromRemote: true });
             }
           }
           showToastRef.current('🔕 تم إيقاف التنبيه فورياً من جهازك الآخر ✓');
@@ -6907,17 +6958,7 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'block_completed', undefined, { blockId: id });
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'block_completed');
-        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
-      }
+      emitCrossDeviceSync('alarm_dismiss', 'block_completed', undefined, { blockId: id, alertId: id });
       setCompletedOverrides((prev) => {
         const next = {
           ...prev,
@@ -7209,22 +7250,14 @@ export default function App() {
     ]
   );
 
-  const handleLogWaterCup = useCallback(() => {
+  const handleLogWaterCup = useCallback((options?: { fromRemote?: boolean }) => {
     stopContinuousAlert();
     stopNativeAlerts();
     setActiveAudioAlert(null);
     setPersistentAlert(null);
     setAlarmRinging(false);
-    emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
-    const effectiveUid =
-      firebaseUser?.uid ||
-      authUser?.uid ||
-      auth.currentUser?.uid ||
-      localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-      '';
-    if (effectiveUid) {
-      void broadcastAlertDismiss(effectiveUid, clientIdRef.current, 'water', 'water_confirmed');
-      void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
+    if (!options?.fromRemote) {
+      emitCrossDeviceSync('alarm_dismiss', 'water_confirmed', undefined, { alertId: 'water' });
     }
 
     updateTodayHydration((today) => {
@@ -7238,7 +7271,7 @@ export default function App() {
         slots: nextSlots,
         cupsLogged: nextLogged,
       };
-    }, { scope: 'alarm_dismiss', action: 'water_confirmed' });
+    }, options?.fromRemote ? undefined : { scope: 'alarm_dismiss', action: 'water_confirmed' });
   }, [
     updateTodayHydration,
     stopContinuousAlert,
@@ -7260,17 +7293,7 @@ export default function App() {
         setActiveAudioAlert(null);
         setPersistentAlert(null);
         setAlarmRinging(false);
-        emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
-        const effectiveUid =
-          firebaseUser?.uid ||
-          authUser?.uid ||
-          auth.currentUser?.uid ||
-          localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-          '';
-        if (effectiveUid) {
-          void broadcastAlertDismiss(effectiveUid, clientIdRef.current, 'water', 'water_confirmed');
-          void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
-        }
+        emitCrossDeviceSync('alarm_dismiss', 'water_confirmed', undefined, { alertId: 'water' });
       }
 
       return {
@@ -7802,7 +7825,7 @@ export default function App() {
     setSmartChargeAudioActive(false);
     setPhoneChargeAlertDismissed(true);
     setPersistentAlert((prev) => (prev?.id.startsWith('charge_') ? null : prev));
-    emitCrossDeviceSync('alarm_dismiss', 'charge_dismiss');
+    emitCrossDeviceSync('alarm_dismiss', 'charge_dismiss', undefined, { alertId: 'charge' });
     showToast('🔕 تم إسكات تنبيه الشحن على كل أجهزتك ✓ (هينبّه تاني في الشحنة الجاية)');
   }, [emitCrossDeviceSync, showToast, stopNativeAlerts]);
 
@@ -7861,6 +7884,12 @@ export default function App() {
       const devicePatch: Partial<OnePlusDeviceSettings> = {};
       if (typeof patch.liveAlertsEnabled === 'boolean') devicePatch.liveAlertsEnabled = patch.liveAlertsEnabled;
       if (patch.liveAlertsLeadMinutes) devicePatch.liveAlertsLeadMinutes = patch.liveAlertsLeadMinutes;
+      if (typeof patch.liveAlertsAlwaysOn === 'boolean') {
+        devicePatch.liveAlertsAlwaysOn = patch.liveAlertsAlwaysOn;
+      }
+      if (typeof patch.liveAlertsShowCharging === 'boolean') {
+        devicePatch.liveAlertsShowCharging = patch.liveAlertsShowCharging;
+      }
       if (typeof patch.persistentCountdownNotif === 'boolean') {
         devicePatch.persistentCountdownNotif = patch.persistentCountdownNotif;
       }
@@ -8045,16 +8074,19 @@ export default function App() {
       localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
       '',
     clientIdRef,
-    onMedicationConfirmedAlertCleanup: (medicationId, doseTime24) => {
+    onMedicationConfirmedAlertCleanup: (medicationId, doseTime24, fromRemote) => {
       stopContinuousAlert();
       stopNativeAlerts();
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, {
-        medicationId,
-        doseTime24,
-      });
+      if (!fromRemote) {
+        emitCrossDeviceSync('alarm_dismiss', 'medication_confirmed', undefined, {
+          alertId: medicationId,
+          medicationId,
+          doseTime24,
+        });
+      }
     },
     triggerHapticWaveform,
   });
@@ -8605,21 +8637,6 @@ export default function App() {
 
     const onWaterConfirmed = () => {
       handleLogWaterCup();
-      stopContinuousAlert();
-      stopNativeAlerts();
-      setActiveAudioAlert(null);
-      setPersistentAlert(null);
-      setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'water_confirmed');
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, 'water', 'water_confirmed');
-      }
     };
     const onMedicationConfirmed = (ev: Event) => {
       const detail = (
@@ -8627,22 +8644,14 @@ export default function App() {
       ).detail;
       if (detail?.medicationId) {
         handleToggleMedication(detail.medicationId, detail.doseTime24 || undefined);
+        return;
       }
       stopContinuousAlert();
       stopNativeAlerts();
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'med_confirmed');
-      const effectiveUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, detail?.medicationId || 'medication', 'med_confirmed');
-      }
+      emitCrossDeviceSync('alarm_dismiss', 'med_confirmed', undefined, { alertId: 'medication' });
     };
     const onQuickMedConfirm = () => {
       if (nextMedicationQuick) {
@@ -9209,14 +9218,43 @@ export default function App() {
       }
     ).DayRhythmNative;
     if (!androidBridge) return;
+
+    const firstQueueItem = capsuleTimerState.upcomingQueue?.[0];
+    const secondQueueItem = capsuleTimerState.upcomingQueue?.[1];
+    const clockLabel = firstQueueItem?.clockLabel || '';
+    const nextUpSummary = secondQueueItem
+      ? `${secondQueueItem.emoji} ${secondQueueItem.title} (${secondQueueItem.clockLabel || secondQueueItem.countdownText})`
+      : '';
+    const hydrationProgress = hydrationToday
+      ? `💧 ${hydrationToday.cupsLogged}/${targetCups} كوب (${hydrationToday.cupsLogged * dailyRhythmPlan.cupSizeMl} مل)`
+      : '';
+
+    let description = '';
+    if (capsuleTimerState.sourceKind === 'water' && hydrationToday) {
+      const nextCupNum = Math.min(targetCups, hydrationToday.cupsLogged + 1);
+      description = `الكوب ${nextCupNum} من ${targetCups} · ${dailyRhythmPlan.cupSizeMl} مل`;
+    } else if (capsuleTimerState.sourceKind === 'medication') {
+      const matchedMed = medications.find((m) => capsuleTimerState.title.includes(m.name));
+      if (matchedMed?.doseNote) description = matchedMed.doseNote;
+    } else if (capsuleTimerState.sourceKind === 'calendar' && nextActiveBlock?.description) {
+      description = cleanCalendarText(nextActiveBlock.description).slice(0, 140);
+    }
+
     const dedupKey = [
       capsuleTimerState.emoji,
       capsuleTimerState.title,
       capsuleTimerState.statusLabel,
+      capsuleTimerState.sourceKind,
       capsuleTimerState.targetEpochMs || 0,
       deviceSettings.liveAlertsEnabled,
       deviceSettings.liveAlertsLeadMinutes,
+      deviceSettings.liveAlertsAlwaysOn ?? false,
+      deviceSettings.liveAlertsShowCharging ?? true,
       deviceSettings.persistentCountdownNotif ?? true,
+      clockLabel,
+      nextUpSummary,
+      hydrationProgress,
+      description,
     ].join('|');
     if (lastPushedLiveStatusRef.current === dedupKey) return;
     lastPushedLiveStatusRef.current = dedupKey;
@@ -9228,10 +9266,17 @@ export default function App() {
             title: capsuleTimerState.title,
             countdown: capsuleTimerState.countdownText,
             statusLabel: capsuleTimerState.statusLabel,
+            kind: capsuleTimerState.sourceKind,
             targetEpochMs: capsuleTimerState.targetEpochMs || 0,
             liveAlertsEnabled: deviceSettings.liveAlertsEnabled,
             liveAlertsLeadMinutes: deviceSettings.liveAlertsLeadMinutes,
+            liveAlertsAlwaysOn: deviceSettings.liveAlertsAlwaysOn ?? false,
+            liveAlertsShowCharging: deviceSettings.liveAlertsShowCharging ?? true,
             persistentCountdownNotif: deviceSettings.persistentCountdownNotif ?? true,
+            description,
+            clockLabel,
+            nextUpSummary,
+            hydrationProgress,
           })
         );
       } else if (androidBridge.updateCapsule) {
@@ -9249,10 +9294,19 @@ export default function App() {
     capsuleTimerState.emoji,
     capsuleTimerState.title,
     capsuleTimerState.statusLabel,
+    capsuleTimerState.sourceKind,
     capsuleTimerState.targetEpochMs,
+    capsuleTimerState.upcomingQueue,
     deviceSettings.liveAlertsEnabled,
     deviceSettings.liveAlertsLeadMinutes,
+    deviceSettings.liveAlertsAlwaysOn,
+    deviceSettings.liveAlertsShowCharging,
     deviceSettings.persistentCountdownNotif,
+    hydrationToday?.cupsLogged,
+    targetCups,
+    dailyRhythmPlan.cupSizeMl,
+    medications,
+    nextActiveBlock?.description,
   ]);
 
   const lastScheduledAlarmsJsonRef = useRef<string>('');
@@ -9325,6 +9379,7 @@ export default function App() {
 
       // 2. Remaining Water Cups today
       if (waterRemindersEnabled && hydrationToday) {
+        const totalCups = dailyRhythmPlan.hydrationSlots.length || targetCups;
         dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
           if (hydrationToday.slots[idx] || isSilencedAtMinute(slot.timeMinutes)) return;
           const triggerAtMs = msForMinuteToday(slot.timeMinutes);
@@ -9332,8 +9387,8 @@ export default function App() {
             alarms.push({
               id: `water_${todayCairoIso}_${slot.cupIndex}`,
               kind: 'water',
-              title: `💧 كوب ماء #${slot.cupIndex}`,
-              body: `موعد شرب ${dailyRhythmPlan.cupSizeMl} مل (${formatMinutes12h(slot.timeMinutes, 'ar')})`,
+              title: `💧 كوب ماء #${slot.cupIndex} من ${totalCups}`,
+              body: `موعد شرب ${dailyRhythmPlan.cupSizeMl} مل (${formatMinutes12h(slot.timeMinutes, 'ar')})\nالهدف اليومي: ${hydrationToday.cupsLogged}/${totalCups} كوب منجز حتى الآن`,
               triggerAtMs,
               snoozeMinutes,
             });
@@ -9359,11 +9414,15 @@ export default function App() {
           if (isSilencedAtMinute(medMin)) continue;
           const triggerAtMs = msForMinuteToday(medMin);
           if (triggerAtMs > nowMs + 1_000) {
+            const stockLine =
+              typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
+                ? `\n💊 الرصيد المتبقي: ${med.remainingDoses} جرعة`
+                : '';
             alarms.push({
               id: `med_${todayCairoIso}_${med.id}_${t24}`,
               kind: 'medication',
               title: `💊 موعد الجرعة: ${med.name}`,
-              body: `${med.doseNote ? `${med.doseNote} · ` : ''}${formatMinutes12h(medMin, 'ar')}`,
+              body: `${med.doseNote ? `${med.doseNote} · ` : ''}${formatMinutes12h(medMin, 'ar')}${stockLine}`,
               triggerAtMs,
               snoozeMinutes,
               medicationId: med.id,
@@ -9381,11 +9440,12 @@ export default function App() {
           const emoji = (block.emojiPair || '📅').trim();
           const titleText = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
           const desc = cleanCalendarText(block.description || '').slice(0, 220);
+          const durMin = Math.max(5, block.durationMin || 30);
           alarms.push({
             id: `event_${todayCairoIso}_${block.id}_${block.startMin}`,
             kind: 'event',
             title: `${emoji} ${titleText}`,
-            body: `${desc ? `${desc}\n` : ''}تقويم Google · ${formatMinutes12h(block.startMin, 'ar')}`,
+            body: `${desc ? `${desc}\n` : ''}📅 تقويم Google · ${formatMinutes12h(block.startMin, 'ar')} (المدة ${durMin} د)`,
             triggerAtMs,
             snoozeMinutes,
           });
@@ -9743,6 +9803,11 @@ ${lifeConstitution}
               emoji: capsuleTimerState.emoji,
               title: capsuleTimerState.title,
               countdownText: capsuleTimerState.countdownText,
+              statusLabel: capsuleTimerState.statusLabel,
+              clockLabel: capsuleTimerState.upcomingQueue?.[0]?.clockLabel || '',
+              nextUpText: capsuleTimerState.upcomingQueue?.[1]
+                ? `${capsuleTimerState.upcomingQueue[1].emoji} ${capsuleTimerState.upcomingQueue[1].title} (${capsuleTimerState.upcomingQueue[1].clockLabel || capsuleTimerState.upcomingQueue[1].countdownText})`
+                : '',
             }}
             prayers={prayers}
             blocks={liveBlocks}

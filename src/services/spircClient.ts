@@ -253,6 +253,7 @@ export function loadFromNativeSqlite(): Array<{
 export interface SpircClusterHandle {
   isOpen: () => boolean;
   sendJsonState: (entityId: string, entityKind: number, action: number, payloadObj: unknown) => boolean;
+  sendDismissAlarm: (alertId?: string, action?: string, extra?: Record<string, unknown>) => boolean;
   close: () => void;
 }
 
@@ -308,18 +309,26 @@ export function connectSpircCluster(
           const frame = decodeSpircFrame(new Uint8Array(ev.data));
           if (frame.clientId === clientId) return;
           if (frame.lamportSeq > lamportSeq) lamportSeq = frame.lamportSeq;
+          const isTransientSignal =
+            frame.action === SPIRC_ACTION.DISMISS_ALARM ||
+            frame.action === SPIRC_ACTION.BATTERY_TELEMETRY ||
+            frame.entityKind === SPIRC_ENTITY.ALARM;
           if (frame.payload.length > 0) {
             const parsed = JSON.parse(textDecoder.decode(frame.payload)) as Record<string, unknown>;
-            persistToNativeSqlite(
-              frame.entityId,
-              frame.entityKind,
-              frame.lamportSeq,
-              frame.clientId,
-              frame.timestampMs,
-              frame.deleted,
-              parsed
-            );
+            if (!isTransientSignal) {
+              persistToNativeSqlite(
+                frame.entityId,
+                frame.entityKind,
+                frame.lamportSeq,
+                frame.clientId,
+                frame.timestampMs,
+                frame.deleted,
+                parsed
+              );
+            }
             onRemoteState(frame.entityId, frame.entityKind, parsed, frame);
+          } else if (frame.action === SPIRC_ACTION.DISMISS_ALARM) {
+            onRemoteState(frame.entityId || 'alarm_dismiss', frame.entityKind || SPIRC_ENTITY.ALARM, {}, frame);
           }
         } catch {
           // ignore malformed wire frame
@@ -347,7 +356,13 @@ export function connectSpircCluster(
     sendJsonState: (entityId, entityKind, action, payloadObj) => {
       lamportSeq = Math.max(lamportSeq + 1, Date.now());
       const jsonBytes = textEncoder.encode(JSON.stringify(payloadObj ?? {}));
-      persistToNativeSqlite(entityId, entityKind, lamportSeq, clientId, Date.now(), false, payloadObj);
+      const isTransientSignal =
+        action === SPIRC_ACTION.DISMISS_ALARM ||
+        action === SPIRC_ACTION.BATTERY_TELEMETRY ||
+        entityKind === SPIRC_ENTITY.ALARM;
+      if (!isTransientSignal) {
+        persistToNativeSqlite(entityId, entityKind, lamportSeq, clientId, Date.now(), false, payloadObj);
+      }
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
       const bytes = encodeSpircFrame({
         version: 1,
@@ -358,6 +373,35 @@ export function connectSpircCluster(
         opId: `op_${lamportSeq.toString(36)}`,
         lamportSeq,
         timestampMs: Date.now(),
+        deleted: false,
+        payload: jsonBytes,
+      });
+      ws.send(bytes.buffer as ArrayBuffer);
+      return true;
+    },
+    sendDismissAlarm: (alertId = 'all', action = 'dismiss', extra) => {
+      lamportSeq = Math.max(lamportSeq + 1, Date.now());
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      const now = Date.now();
+      const jsonBytes = textEncoder.encode(
+        JSON.stringify({
+          alertId,
+          action,
+          clientId,
+          dismissedBy: clientId,
+          timestampMs: now,
+          ...(extra || {}),
+        })
+      );
+      const bytes = encodeSpircFrame({
+        version: 1,
+        action: SPIRC_ACTION.DISMISS_ALARM,
+        entityKind: SPIRC_ENTITY.ALARM,
+        entityId: 'alarm_dismiss',
+        clientId,
+        opId: `dism_${lamportSeq.toString(36)}`,
+        lamportSeq,
+        timestampMs: now,
         deleted: false,
         payload: jsonBytes,
       });

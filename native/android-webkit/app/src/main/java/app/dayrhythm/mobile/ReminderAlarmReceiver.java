@@ -878,19 +878,55 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         );
 
         String doneLabel = "water".equals(kind)
-                ? "شربت كوب ماء"
+                ? "💧 شربت كوب ماء"
                 : "medication".equals(kind)
-                    ? "أخذت الجرعة"
-                    : "تم";
+                    ? "💊 أخذت الجرعة"
+                    : "charge".equals(kind)
+                        ? "🔋 فصلت الشاحن"
+                        : "✓ تم";
 
-        String shownBody = body != null && !body.isEmpty() ? body : "حان وقت مهمتك الآن";
+        String kindLabelAr = "water".equals(kind)
+                ? "ترطيب يومي"
+                : "medication".equals(kind)
+                    ? "العلاجات والأدوية"
+                    : "charge".equals(kind)
+                        ? "حماية البطارية"
+                        : "prayer".equals(kind)
+                            ? "مواقيت الصلاة"
+                            : ("event".equals(kind) || "calendar".equals(kind))
+                                ? "تقويم Google"
+                                : "task".equals(kind)
+                                    ? "مهام اليوم"
+                                    : "إيقاع اليوم";
+
+        String time12h = new java.text.SimpleDateFormat("hh:mm a", new java.util.Locale("ar")).format(new java.util.Date());
+        String displayTitle = (title != null && !title.isEmpty()) ? title : "تنبيه إيقاع اليوم";
+        String baseDesc = (body != null && !body.trim().isEmpty()) ? body.trim() : "حان وقت هذا الموعد الآن";
+        String nextQueueHint = findNextScheduledSummary(context, alarmId);
+
+        StringBuilder richSb = new StringBuilder();
+        richSb.append(baseDesc);
+        if (!baseDesc.contains(kindLabelAr)) {
+            richSb.append("\n📌 ").append(kindLabelAr).append(" · ").append(time12h);
+        }
+        if (doseTime != null && !doseTime.isEmpty() && "medication".equals(kind)) {
+            richSb.append(" (موعد الجرعة: ").append(doseTime).append(")");
+        }
+        if (!nextQueueHint.isEmpty()) {
+            richSb.append("\n⏭ التالي: ").append(nextQueueHint);
+        }
+        richSb.append("\n🛑 الإيقاف هنا يُغلق التنبيه على الكمبيوتر تلقائياً");
+        String shownBody = richSb.toString();
+
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(smallIconForKind(kind))
-                .setContentTitle(title != null && !title.isEmpty() ? title : "تنبيه إيقاع اليوم")
-                .setContentText(shownBody)
-                // The body now carries the event's description on its first line; BigText keeps it
-                // readable in the heads-up banner instead of cutting it to one line.
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(shownBody))
+                .setContentTitle(displayTitle)
+                .setContentText(baseDesc)
+                .setSubText(kindLabelAr + " · " + time12h)
+                .setStyle(new NotificationCompat.BigTextStyle()
+                        .setBigContentTitle(displayTitle)
+                        .setSummaryText(kindLabelAr + " · " + time12h)
+                        .bigText(shownBody))
                 // Gone by itself after two minutes, same as the PC alert, instead of staying up.
                 .setTimeoutAfter(120_000L)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
@@ -944,9 +980,37 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
         if (MainActivity.activeInstance != null) {
             MainActivity.activeInstance.evaluateJavascriptInWebView(
-                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+                    "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true } }));"
             );
         }
+    }
+
+    public static String findNextScheduledSummary(Context context, String excludeAlarmId) {
+        if (context == null) return "";
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
+            String raw = prefs.getString(KEY_CACHED_SCHEDULE, "");
+            if (raw == null || raw.isEmpty()) return "";
+            JSONArray arr = new JSONArray(raw);
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject item = arr.optJSONObject(i);
+                if (item == null) continue;
+                String id = item.optString("id", "");
+                if (excludeAlarmId != null && !excludeAlarmId.isEmpty() && excludeAlarmId.equals(id)) {
+                    continue;
+                }
+                long tMs = item.optLong("triggerAtMs", 0L);
+                if (tMs > now + 20_000L) {
+                    String nextTitle = item.optString("title", "").trim();
+                    if (nextTitle.isEmpty()) continue;
+                    String clock = new java.text.SimpleDateFormat("hh:mm a", new java.util.Locale("ar")).format(new java.util.Date(tMs));
+                    return nextTitle + " (" + clock + ")";
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "";
     }
 
     public static void cancelAllActiveAlarms(Context context) {

@@ -113,8 +113,36 @@ describe('Cloud State Synchronization Payload Guards', () => {
     expect(merged.quietMode).toBe('mute_audio');
     expect(merged.surfaceTheme).toBe('obsidian');
     expect(merged.deviceSettings?.liveAlertsLeadMinutes).toBe(15);
+    expect(merged.deviceSettings?.liveAlertsAlwaysOn ?? false).toBe(false);
     expect(merged.uiPrefs?.capsuleSize).toBe('lg');
     expect(merged.uiPrefs?.selectedLogoId).toBe('glass_horizon');
+  });
+
+  it('merges 20/30 minute Live Alerts lead times and always-on/charging toggles', () => {
+    const base: UserSettingsPayload = {
+      deviceSettings: {
+        alertSliderLinked: false,
+        liveAlertsEnabled: true,
+        liveAlertsLeadMinutes: 10,
+        liveAlertsAlwaysOn: false,
+        liveAlertsShowCharging: true,
+        persistentCountdownNotif: true,
+        aquaTouchMode: true,
+        ltpoNight1Hz: true,
+        pocketProtectionEnabled: true,
+      },
+    };
+    const merged = mergeUserSettingsPayloads(base, {
+      deviceSettings: {
+        ...base.deviceSettings!,
+        liveAlertsLeadMinutes: 20,
+        liveAlertsAlwaysOn: true,
+        liveAlertsShowCharging: false,
+      },
+    });
+    expect(merged.deviceSettings?.liveAlertsLeadMinutes).toBe(20);
+    expect(merged.deviceSettings?.liveAlertsAlwaysOn).toBe(true);
+    expect(merged.deviceSettings?.liveAlertsShowCharging).toBe(false);
   });
 
   describe('Cloud Real-time Live Signal Stream (Sub-100ms Pub/Sub)', () => {

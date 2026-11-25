@@ -59,6 +59,7 @@ namespace DayRhythm
         private readonly NativeAlertPayload _payload;
         private readonly string _emoji;
         private readonly string _title;
+        private readonly string _description;
         private readonly string _sourceLabel;
         private readonly string _time12h;
         private readonly bool _isHydration;
@@ -84,6 +85,9 @@ namespace DayRhythm
             _payload = payload ?? new NativeAlertPayload();
             _emoji = string.IsNullOrWhiteSpace(_payload.emoji) ? "🔔" : _payload.emoji.Trim();
             _title = string.IsNullOrWhiteSpace(_payload.title) ? "" : _payload.title.Trim();
+            _description = string.IsNullOrWhiteSpace(_payload.description)
+                ? ""
+                : _payload.description.Replace("\r", " ").Replace("\n", " · ").Trim();
             _sourceLabel = string.IsNullOrWhiteSpace(_payload.sourceLabel) ? "إيقاع اليوم" : _payload.sourceLabel.Trim();
             _time12h = _payload.time12h ?? "";
             _isHydration = _payload.isHydration;
@@ -110,8 +114,10 @@ namespace DayRhythm
             TopMost = true;
             ShowInTaskbar = false;
 
-            int cardW = 374;
-            int cardH = string.IsNullOrWhiteSpace(_title) ? 116 : 134;
+            int cardW = 384;
+            int cardH = string.IsNullOrWhiteSpace(_title)
+                ? 116
+                : string.IsNullOrWhiteSpace(_description) ? 136 : 162;
             Size = new Size(cardW + ShadowPad * 2, cardH + ShadowPad * 2);
 
             BuildHitButtons(cardW, cardH);
@@ -441,7 +447,15 @@ namespace DayRhythm
                     {
                         using (Font tf = new Font("Segoe UI", 10.5f, FontStyle.Bold, GraphicsUnit.Point))
                         using (SolidBrush tb = new SolidBrush(Color.White))
-                            g.DrawString(_title, tf, tb, new RectangleF(cardRect.X + 16f, cardRect.Y + 39f, cardRect.Width - 84f, 28f), rtlRightFmt);
+                            g.DrawString(_title, tf, tb, new RectangleF(cardRect.X + 16f, cardRect.Y + 38f, cardRect.Width - 84f, 26f), rtlRightFmt);
+                    }
+
+                    // Description / Details
+                    if (!string.IsNullOrWhiteSpace(_description))
+                    {
+                        using (Font df = new Font("Segoe UI", 8.5f, FontStyle.Regular, GraphicsUnit.Point))
+                        using (SolidBrush db = new SolidBrush(Color.FromArgb(203, 213, 225)))
+                            g.DrawString(_description, df, db, new RectangleF(cardRect.X + 16f, cardRect.Y + 66f, cardRect.Width - 84f, 22f), rtlRightFmt);
                     }
 
                     // Custom smooth rounded buttons

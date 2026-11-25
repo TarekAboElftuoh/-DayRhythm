@@ -331,8 +331,9 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
             </div>
             <button
               type="button"
+              aria-pressed={stealthAudioOnly}
               onClick={onToggleStealthAudioOnly}
-              className={`min-h-[34px] px-3 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+              className={`min-h-[42px] px-3.5 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
                 stealthAudioOnly
                   ? 'bg-[#7FFFD4] text-black'
                   : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
@@ -345,6 +346,25 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
           <div className="flex items-center justify-between gap-2 text-xs text-zinc-400 px-1">
             <span>الوضع الهادئ الحالي</span>
             <span className="font-semibold text-zinc-200">{QUIET_MODE_LABELS[quietMode].ar}</span>
+          </div>
+
+          <div className="pt-2 border-t border-white/[0.07] flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onTriggerRing}
+              className="flex-1 min-h-[42px] px-3 rounded-xl border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 text-xs font-bold transition-colors cursor-pointer"
+            >
+              اختبار التنبيه المتزامن
+            </button>
+            {alarmRinging && (
+              <button
+                type="button"
+                onClick={onDismissTwoWay}
+                className="flex-1 min-h-[42px] px-3 rounded-xl bg-[#4ADE80] text-black hover:bg-emerald-300 text-xs font-bold transition-colors cursor-pointer"
+              >
+                إيقاف على الجهازين الآن
+              </button>
+            )}
           </div>
 
         </section>

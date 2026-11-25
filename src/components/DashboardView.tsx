@@ -1281,16 +1281,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
+            aria-pressed={lowEnergyActive}
             onClick={onToggleLowEnergyToday}
-            className={`min-h-[34px] px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+            className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
               lowEnergyActive
-                ? 'border-emerald-400/40 bg-emerald-400/12 text-emerald-200'
-                : 'border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/15'
+                ? 'border-emerald-400/45 bg-emerald-400/14 text-emerald-200'
+                : 'border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:border-white/15'
             }`}
             title="تخفيف اليوم عند انخفاض الطاقة"
           >
             <Leaf className="w-3.5 h-3.5" />
-            <span>{lowEnergyActive ? 'يوم هادئ' : 'يوم هادئ'}</span>
+            <span>{lowEnergyActive ? '✓ يوم هادئ' : 'يوم هادئ'}</span>
           </button>
 
           <div className="relative">

@@ -10,6 +10,8 @@ export interface AndroidPermissionsStatus {
   fullScreenIntent: boolean;
   dndPolicy: boolean;
   location: boolean;
+  promotedAlerts?: boolean;
+  sdkInt?: number;
 }
 
 interface DayRhythmNativeBridge {
@@ -49,6 +51,11 @@ export function getAndroidPermissionsStatus(): AndroidPermissionsStatus | null {
       fullScreenIntent: Boolean(parsed.fullScreenIntent),
       dndPolicy: Boolean(parsed.dndPolicy),
       location: Boolean(parsed.location),
+      promotedAlerts:
+        typeof parsed.promotedAlerts === 'boolean'
+          ? parsed.promotedAlerts
+          : Boolean(parsed.notifications),
+      sdkInt: typeof parsed.sdkInt === 'number' ? parsed.sdkInt : undefined,
     };
   } catch {
     return null;

@@ -43,7 +43,7 @@ export interface UseMedicationActionsOptions {
   pushFullCloudBackupImmediately: () => Promise<unknown> | void;
   getEffectiveUid: () => string;
   clientIdRef: MutableRefObject<string>;
-  onMedicationConfirmedAlertCleanup: (medicationId: string, doseTime24?: string) => void;
+  onMedicationConfirmedAlertCleanup: (medicationId: string, doseTime24?: string, fromRemote?: boolean) => void;
   triggerHapticWaveform: (pattern: 'water_cup' | 'shake_undo') => void;
 }
 
@@ -111,7 +111,7 @@ export function useMedicationActions({
   }, [activeTimeZone, medications, showToast]);
 
   const handleToggleMedication = useCallback(
-    (id: string, doseTime24?: string) => {
+    (id: string, doseTime24?: string, options?: { fromRemote?: boolean }) => {
       const target = medications.find((m) => m.id === id);
       if (!target) return;
 
@@ -196,11 +196,12 @@ export function useMedicationActions({
         }
       }
 
-      onMedicationConfirmedAlertCleanup(id, doseTime24);
-      const effectiveUid = getEffectiveUid();
-      if (effectiveUid) {
-        void broadcastAlertDismiss(effectiveUid, clientIdRef.current, id, 'medication_confirmed');
-        void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
+      onMedicationConfirmedAlertCleanup(id, doseTime24, Boolean(options?.fromRemote));
+      if (!options?.fromRemote) {
+        const effectiveUid = getEffectiveUid();
+        if (effectiveUid) {
+          void dismissActiveAlarmInCloud(effectiveUid, 'all', clientIdRef.current);
+        }
       }
 
       setMedications((prev) => {

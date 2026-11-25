@@ -50,8 +50,16 @@ public final class CloudSignalClient {
     private static ScheduledFuture<?> watchFuture;
     private static volatile long lastScheduledAlarmsUpdateMs = 0L;
     private static volatile String lastScheduledAlarmsJson = "";
+    private static volatile long lastRemoteDismissAtMs = 0L;
+    private static volatile long lastLocalDismissAtMs = 0L;
+    private static volatile String lastHandledDismissOpId = "";
 
     private CloudSignalClient() {
+    }
+
+    public static void markRemoteDismissReceived(long tsMs) {
+        long now = System.currentTimeMillis();
+        lastRemoteDismissAtMs = Math.max(now, tsMs);
     }
 
     /** {apiKey, projectId, databaseId, uid, refreshToken, idToken} from the web app. */
@@ -64,7 +72,7 @@ public final class CloudSignalClient {
                 idToken = directId;
                 idTokenExpiresAtMs = System.currentTimeMillis() + 3500_000L;
             }
-            // Retain existing valid idToken rather than clearing it if directId is not provided
+            DayRhythmSyncService.reconnectWebSocketIfNeeded(context);
         } catch (Exception ignored) {
         }
     }
@@ -134,7 +142,9 @@ public final class CloudSignalClient {
     /** Phone stopped/snoozed the alert → tell the PC instantly (<100ms). */
     public static void sendAlarmDismiss(Context context, String action) {
         final Context app = context.getApplicationContext();
+        lastLocalDismissAtMs = System.currentTimeMillis();
         stopWatching();
+        DayRhythmSyncService.sendSpircDismiss(app, action, "all");
         EXEC.execute(() -> {
             try {
                 JSONObject auth = readAuth(app);
@@ -207,7 +217,7 @@ public final class CloudSignalClient {
 
                 if (MainActivity.activeInstance != null) {
                     MainActivity.activeInstance.evaluateJavascriptInWebView(
-                            "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed'));"
+                            "window.dispatchEvent(new CustomEvent('dayrhythm:alert-dismissed', { detail: { remote: true } }));"
                     );
                 }
             } catch (Exception e) {
@@ -219,11 +229,19 @@ public final class CloudSignalClient {
     /** Phone fired an exact native alarm → tell the PC to show its card in the exact same millisecond (<100ms). */
     public static void sendAlarmTrigger(Context context, String title, String bodyText, String kind, int snoozeMinutes) {
         final Context app = context.getApplicationContext();
+        final long triggeredAtMs = System.currentTimeMillis();
+        DayRhythmSyncService.sendSpircTrigger(app, title, bodyText, kind, snoozeMinutes, triggeredAtMs);
         EXEC.execute(() -> {
             try {
+                if (lastLocalDismissAtMs >= triggeredAtMs || lastRemoteDismissAtMs >= triggeredAtMs - 5_000L) {
+                    return;
+                }
                 JSONObject auth = readAuth(app);
                 if (auth == null) return;
                 String token = getIdToken(app, auth);
+                if (lastLocalDismissAtMs >= triggeredAtMs || lastRemoteDismissAtMs >= triggeredAtMs - 5_000L) {
+                    return;
+                }
                 long now = System.currentTimeMillis();
                 String opId = "nat_trig_" + Long.toString(now, 36);
 
@@ -387,15 +405,19 @@ public final class CloudSignalClient {
                         if (docFields != null) {
                             String status = getFirestoreString(docFields, "status", "");
                             String type = getFirestoreString(docFields, "type", "");
+                            String opId = getFirestoreString(docFields, "opId", getFirestoreString(docFields, "sessionId", ""));
                             String client = getFirestoreString(docFields, "clientId", "");
                             String dismissedBy = getFirestoreString(docFields, "dismissedByDeviceId", getFirestoreString(docFields, "dismissedBy", client));
                             long ts = getFirestoreLong(docFields, "dismissedAtMs", getFirestoreLong(docFields, "timestampMs", 0L));
 
                             boolean isDismissed = "dismissed".equals(status) || "alarm_dismiss".equals(type);
                             boolean isFromRemote = !CLIENT_ID.equals(dismissedBy);
+                            String effectiveOp = !opId.isEmpty() ? opId : ("live_" + ts + "_" + dismissedBy);
 
-                            if (isDismissed && isFromRemote) {
-                                if (ts == 0L || Math.abs(now - ts) <= 300_000L) {
+                            if (isDismissed && isFromRemote && !effectiveOp.equals(lastHandledDismissOpId)) {
+                                if ((ts == 0L || (ts >= firedAtMs - 15_000L && Math.abs(now - ts) <= 300_000L))) {
+                                    lastHandledDismissOpId = effectiveOp;
+                                    markRemoteDismissReceived(ts);
                                     android.util.Log.d("CloudSignalClient", "Spotify Connect: Remote dismiss received from PC, stopping phone alarm");
                                     stopWatching();
                                     MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
@@ -423,10 +445,14 @@ public final class CloudSignalClient {
                                 : (sig.optJSONObject("mapValue") == null ? null : sig.optJSONObject("mapValue").optJSONObject("fields"));
                         if (sf != null) {
                             String scope = getFirestoreString(sf, "scope", "");
+                            String opId = getFirestoreString(sf, "opId", "");
                             String client = getFirestoreString(sf, "clientId", "");
                             long ts = getFirestoreLong(sf, "timestampMs", 0L);
-                            if ("alarm_dismiss".equals(scope) && !CLIENT_ID.equals(client)) {
-                                if (ts == 0L || Math.abs(now - ts) <= 300_000L || Math.abs(ts - firedAtMs) <= 300_000L) {
+                            String effectiveOp = !opId.isEmpty() ? opId : ("sig_" + ts + "_" + client);
+                            if ("alarm_dismiss".equals(scope) && !CLIENT_ID.equals(client) && !effectiveOp.equals(lastHandledDismissOpId)) {
+                                if (ts == 0L || (ts >= firedAtMs - 15_000L && (Math.abs(now - ts) <= 300_000L || Math.abs(ts - firedAtMs) <= 300_000L))) {
+                                    lastHandledDismissOpId = effectiveOp;
+                                    markRemoteDismissReceived(ts);
                                     android.util.Log.d("CloudSignalClient", "Remote dismiss received from syncSignal, stopping phone alarm");
                                     stopWatching();
                                     MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
@@ -541,9 +567,12 @@ public final class CloudSignalClient {
 
                             if (isDismissed) {
                                 handledFromLive = true;
-                                if (!CLIENT_ID.equals(dismissedBy)) {
-                                    long dTs = getFirestoreLong(docFields, "dismissedAtMs", getFirestoreLong(docFields, "timestampMs", 0L));
+                                long dTs = getFirestoreLong(docFields, "dismissedAtMs", getFirestoreLong(docFields, "timestampMs", 0L));
+                                String dKey = !opId.isEmpty() ? opId : ("live_" + dTs + "_" + dismissedBy);
+                                if (!CLIENT_ID.equals(dismissedBy) && !dKey.equals(lastHandledDismissOpId)) {
                                     if (dTs == 0L || Math.abs(now - dTs) <= 300_000L) {
+                                        lastHandledDismissOpId = dKey;
+                                        markRemoteDismissReceived(dTs);
                                         android.util.Log.d("CloudSignalClient", "Spotify Connect: Poll found remote dismiss from " + dismissedBy);
                                         MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
                                     }
@@ -663,8 +692,10 @@ public final class CloudSignalClient {
                                         }
                                     } else if ("alarm_dismiss".equals(scope)) {
                                         boolean isRecent = (ts > 0L && Math.abs(now - ts) <= 300_000L);
-                                        if (isRecent && !opId.equals(lastHandledOpId)) {
-                                            lastHandledOpId = opId;
+                                        String dKey = !opId.isEmpty() ? opId : ("sig_" + ts + "_" + client);
+                                        if (isRecent && !dKey.equals(lastHandledDismissOpId)) {
+                                            lastHandledDismissOpId = dKey;
+                                            markRemoteDismissReceived(ts);
                                             MAIN.post(() -> ReminderAlarmReceiver.cancelAllActiveAlarms(app));
                                         }
                                     }

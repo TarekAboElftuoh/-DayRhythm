@@ -246,51 +246,77 @@ public class AlarmActivity extends Activity {
 
         card.addView(ringContainer);
 
-        // 2. Source Badge (e.g., ترطيب يومي · 06:30 م)
+        // 2. Source Badge Pill (e.g., ترطيب يومي · 06:30 م)
         TextView sourceView = new TextView(this);
         sourceView.setText(sourceLabel + " · " + timeNow12h);
         sourceView.setTextColor(accentColor);
         sourceView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         sourceView.setTypeface(Typeface.DEFAULT_BOLD);
         sourceView.setGravity(Gravity.CENTER);
+        sourceView.setPadding(dp(14), dp(6), dp(14), dp(6));
+        GradientDrawable badgeBg = new GradientDrawable();
+        badgeBg.setColor(accentColor & 0x18FFFFFF);
+        badgeBg.setCornerRadius(dp(99));
+        badgeBg.setStroke(dp(1), accentColor & 0x44FFFFFF);
+        sourceView.setBackground(badgeBg);
         card.addView(sourceView);
 
         // 3. Title
         TextView titleView = new TextView(this);
         titleView.setText(cleanTitle);
         titleView.setTextColor(Color.WHITE);
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 25);
+        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
         titleView.setTypeface(Typeface.DEFAULT_BOLD);
         titleView.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        titleLp.topMargin = dp(8);
+        titleLp.topMargin = dp(12);
         card.addView(titleView, titleLp);
 
-        // 4. Description (body)
+        // 4. Structured Description Box (body)
         if (body != null && !body.trim().isEmpty()) {
             TextView bodyView = new TextView(this);
             bodyView.setText(body.trim());
-            bodyView.setTextColor(0xFFD4D4D8);
+            bodyView.setTextColor(0xFFE4E4E7);
             bodyView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
             bodyView.setGravity(Gravity.CENTER);
-            bodyView.setLineSpacing(dp(3), 1.0f);
+            bodyView.setLineSpacing(dp(4), 1.05f);
+            bodyView.setPadding(dp(14), dp(10), dp(14), dp(10));
+            GradientDrawable bodyBg = new GradientDrawable();
+            bodyBg.setColor(0xFF131823);
+            bodyBg.setCornerRadius(dp(16));
+            bodyBg.setStroke(dp(1), 0x1FFFFFFF);
+            bodyView.setBackground(bodyBg);
             LinearLayout.LayoutParams bodyLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            bodyLp.topMargin = dp(6);
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            bodyLp.topMargin = dp(10);
             card.addView(bodyView, bodyLp);
+        }
+
+        // Next upcoming preview inside lockscreen card
+        String nextUp = ReminderAlarmReceiver.findNextScheduledSummary(this, src != null ? src.getStringExtra(ReminderAlarmReceiver.EXTRA_ALARM_ID) : "");
+        if (!nextUp.isEmpty()) {
+            TextView nextView = new TextView(this);
+            nextView.setText("⏭ التالي بعدها: " + nextUp);
+            nextView.setTextColor(0xFFA1A1AA);
+            nextView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            nextView.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams nextLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            nextLp.topMargin = dp(8);
+            card.addView(nextView, nextLp);
         }
 
         // 5. Elapsed Counter ("بدأ من 00:00")
         elapsedView = new TextView(this);
         elapsedView.setText("بدأ من 00:00");
-        elapsedView.setTextColor(0xFF71717A);
+        elapsedView.setTextColor(0xFF9CA3AF);
         elapsedView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         elapsedView.setTypeface(Typeface.MONOSPACE);
         elapsedView.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams elapsedLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        elapsedLp.topMargin = dp(12);
+        elapsedLp.topMargin = dp(10);
         card.addView(elapsedView, elapsedLp);
 
         // 6. Big Primary Action Button
@@ -441,6 +467,13 @@ public class AlarmActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        recreate();
+    }
+
+    @Override
     protected void onDestroy() {
         if (activeInstance == this) {
             activeInstance = null;
@@ -461,7 +494,7 @@ public class AlarmActivity extends Activity {
             unregisterReceiver(closeReceiver);
         } catch (Exception ignored) {
         }
-        CloudSignalClient.stopWatching();
+        // Keep CloudSignalClient remote dismiss watcher active until alarm is dismissed/silenced
         super.onDestroy();
     }
 }

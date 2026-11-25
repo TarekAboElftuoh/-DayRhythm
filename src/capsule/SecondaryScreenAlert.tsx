@@ -98,16 +98,25 @@ export const SecondaryScreenAlert: React.FC = () => {
           </span>
         </div>
 
-        <div className="text-base font-semibold" style={{ color: accent }}>
-          {alert.sourceLabel}
-          {alert.time12h ? ` · ${alert.time12h}` : ''}
+        <div
+          className="inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-base font-bold"
+          style={{ borderColor: `${accent}44`, background: `${accent}16`, color: accent }}
+        >
+          <span>{alert.sourceLabel}</span>
+          {alert.time12h && <span>· {alert.time12h}</span>}
         </div>
-        <h1 className="mt-3 text-5xl font-bold leading-tight text-white">{alert.title || 'تنبيه إيقاع اليوم'}</h1>
+        <h1 className="mt-4 text-5xl font-bold leading-tight text-white">{alert.title || 'تنبيه إيقاع اليوم'}</h1>
         {alert.description && (
-          <p className="mx-auto mt-4 max-w-2xl text-2xl leading-relaxed text-zinc-300">{alert.description}</p>
+          <p className="mx-auto mt-5 max-w-2xl rounded-2xl border border-white/[0.08] bg-white/[0.03] px-6 py-4 text-xl leading-relaxed text-zinc-200 whitespace-pre-line">
+            {alert.description}
+          </p>
         )}
-        <div className="mt-4 text-lg text-zinc-400">
-          بدأ من <span className="font-digits">{elapsedText}</span>
+        <div className="mt-4 flex items-center justify-center gap-3 text-base text-zinc-400">
+          <span>
+            بدأ من <span className="font-digits text-zinc-200">{elapsedText}</span>
+          </span>
+          <span aria-hidden="true">·</span>
+          <span className="text-zinc-400">إيقافه هنا يُغلق تنبيه الهاتف فوراً</span>
         </div>
 
         <div className="mt-12 flex flex-wrap items-center justify-center gap-4">

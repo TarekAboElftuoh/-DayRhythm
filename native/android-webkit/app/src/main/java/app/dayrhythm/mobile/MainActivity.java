@@ -738,19 +738,33 @@ public class MainActivity extends Activity {
                         String emoji = obj.optString("emoji", "📅");
                         String title = obj.optString("title", "");
                         String statusLabel = obj.optString("statusLabel", "المهمة القادمة");
+                        String kind = obj.optString("kind", "general");
                         long targetEpochMs = obj.optLong("targetEpochMs", 0L);
                         boolean liveEnabled = obj.optBoolean("liveAlertsEnabled", true);
                         int leadMin = obj.optInt("liveAlertsLeadMinutes", 10);
+                        boolean alwaysOn = obj.optBoolean("liveAlertsAlwaysOn", false);
+                        boolean showCharging = obj.optBoolean("liveAlertsShowCharging", true);
                         boolean persistentNotif = obj.optBoolean("persistentCountdownNotif", true);
+                        String description = obj.optString("description", "");
+                        String clockLabel = obj.optString("clockLabel", "");
+                        String nextUpSummary = obj.optString("nextUpSummary", "");
+                        String hydrationProgress = obj.optString("hydrationProgress", "");
                         DayRhythmSyncService.pushLiveStatus(
                                 MainActivity.this,
                                 emoji,
                                 title,
                                 statusLabel,
+                                kind,
                                 targetEpochMs,
                                 liveEnabled,
                                 leadMin,
-                                persistentNotif
+                                alwaysOn,
+                                showCharging,
+                                persistentNotif,
+                                description,
+                                clockLabel,
+                                nextUpSummary,
+                                hydrationProgress
                         );
                     } catch (Exception ignored) {
                     }
@@ -765,10 +779,17 @@ public class MainActivity extends Activity {
                         emoji,
                         title,
                         statusLabel,
+                        "general",
                         0L,
                         true,
                         10,
-                        true
+                        false,
+                        true,
+                        true,
+                        "",
+                        "",
+                        "",
+                        ""
                 ));
             }
 
@@ -847,6 +868,32 @@ public class MainActivity extends Activity {
                     ) == PackageManager.PERMISSION_GRANTED;
                     obj.put("location", loc);
 
+                    // 7. Live Alerts / Promoted Notifications (Android 16 / OxygenOS 16)
+                    boolean promotedAlerts = notif;
+                    try {
+                        NotificationManager nm =
+                                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                        if (nm != null) {
+                            if (Build.VERSION.SDK_INT >= 36) {
+                                java.lang.reflect.Method canPromote =
+                                        NotificationManager.class.getMethod("canPostPromotedNotifications");
+                                Object res = canPromote.invoke(nm);
+                                if (res instanceof Boolean) {
+                                    promotedAlerts = (Boolean) res;
+                                }
+                            } else if (Build.VERSION.SDK_INT >= 26) {
+                                android.app.NotificationChannel ch =
+                                        nm.getNotificationChannel(DayRhythmSyncService.CHANNEL_LIVE_ALERTS);
+                                if (ch != null && ch.getImportance() == NotificationManager.IMPORTANCE_NONE) {
+                                    promotedAlerts = false;
+                                }
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                    obj.put("promotedAlerts", promotedAlerts);
+                    obj.put("sdkInt", Build.VERSION.SDK_INT);
+
                     return obj.toString();
                 } catch (Exception e) {
                     return "{}";
@@ -920,6 +967,27 @@ public class MainActivity extends Activity {
             @JavascriptInterface
             public void openLiveAlertSettings() {
                 runOnUiThread(() -> {
+                    try {
+                        Intent promo = new Intent("android.settings.APP_NOTIFICATION_PROMOTION_SETTINGS");
+                        promo.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                        if (promo.resolveActivity(getPackageManager()) != null) {
+                            startActivity(promo);
+                            return;
+                        }
+                    } catch (Exception ignored) {
+                    }
+                    try {
+                        if (Build.VERSION.SDK_INT >= 26) {
+                            Intent channelIntent = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS);
+                            channelIntent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                            channelIntent.putExtra(Settings.EXTRA_CHANNEL_ID, DayRhythmSyncService.CHANNEL_LIVE_ALERTS);
+                            if (channelIntent.resolveActivity(getPackageManager()) != null) {
+                                startActivity(channelIntent);
+                                return;
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
                     try {
                         Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
                         intent.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());

@@ -406,6 +406,8 @@ export interface OnePlusDeviceSettings {
   alertSliderLinked: boolean;
   liveAlertsEnabled: boolean;
   liveAlertsLeadMinutes: LiveAlertsLeadMinutes;
+  liveAlertsAlwaysOn?: boolean;
+  liveAlertsShowCharging?: boolean;
   persistentCountdownNotif?: boolean;
   aquaTouchMode: boolean;
   ltpoNight1Hz: boolean;
@@ -416,6 +418,8 @@ export const DEFAULT_DEVICE_SETTINGS: OnePlusDeviceSettings = {
   alertSliderLinked: false,
   liveAlertsEnabled: true,
   liveAlertsLeadMinutes: 10,
+  liveAlertsAlwaysOn: false,
+  liveAlertsShowCharging: true,
   persistentCountdownNotif: true,
   aquaTouchMode: true,
   ltpoNight1Hz: true,
@@ -769,6 +773,14 @@ export function sanitizeDeviceSettings(
         ? raw.liveAlertsEnabled
         : DEFAULT_DEVICE_SETTINGS.liveAlertsEnabled,
     liveAlertsLeadMinutes: lead,
+    liveAlertsAlwaysOn:
+      typeof raw?.liveAlertsAlwaysOn === 'boolean'
+        ? raw.liveAlertsAlwaysOn
+        : DEFAULT_DEVICE_SETTINGS.liveAlertsAlwaysOn ?? false,
+    liveAlertsShowCharging:
+      typeof raw?.liveAlertsShowCharging === 'boolean'
+        ? raw.liveAlertsShowCharging
+        : DEFAULT_DEVICE_SETTINGS.liveAlertsShowCharging ?? true,
     persistentCountdownNotif:
       typeof raw?.persistentCountdownNotif === 'boolean'
         ? raw.persistentCountdownNotif
