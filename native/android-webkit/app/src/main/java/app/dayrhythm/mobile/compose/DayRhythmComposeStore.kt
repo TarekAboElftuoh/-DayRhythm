@@ -555,7 +555,7 @@ class DayRhythmComposeStore(private val appContext: Context) {
         val now = System.currentTimeMillis()
         val opId = "op_${lamportSeq.toString(36)}"
         if (NativeCore.isLoaded()) {
-            val nativeBytes = NativeCore.spircEncode(
+            val nativeBytes = NativeCore.encodeSpircFrame(
                 action, entityKind, entityId, clientId, opId, lamportSeq, now, false, payload
             )
             if (nativeBytes != null && nativeBytes.isNotEmpty()) return nativeBytes
