@@ -24,7 +24,6 @@ interface TopBarProps {
   isCheckingUpdates?: boolean;
   sunMode?: boolean;
   onToggleSunMode?: () => void;
-  isLiveSynced?: boolean;
 }
 
 import { isMobileDevice } from '../services/platform';
@@ -44,7 +43,6 @@ export const TopBar: React.FC<TopBarProps> = ({
   isCheckingUpdates = false,
   sunMode = false,
   onToggleSunMode,
-  isLiveSynced = false,
 }) => {
   const [isMobileEnv, setIsMobileEnv] = useState<boolean>(detectIsMobileEnvironment);
 
@@ -105,13 +103,13 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <>
       <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-[#070A0F]/92 pt-[env(safe-area-inset-top)]">
-        <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3.5 sm:px-6 h-14">
-          {/* Zone 1: Brand Lockup with subtle version badge */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3 sm:px-6 h-14">
+          {/* Zone 1: Brand Lockup */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 min-w-0">
             <button
               type="button"
               onClick={() => onSelectTab('dashboard')}
-              className="text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0 hover:text-[#7FFFD4] transition-colors cursor-pointer min-h-[40px] flex items-center gap-2.5"
+              className="text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0 hover:text-[#7FFFD4] transition-colors cursor-pointer min-h-[44px] sm:min-h-[40px] flex items-center gap-2"
             >
               {brandLogoSrc && (
                 <img
@@ -127,30 +125,11 @@ export const TopBar: React.FC<TopBarProps> = ({
               <span className="hidden sm:inline">{t(language, 'brand')}</span>
             </button>
             <span
-              className="text-[10px] font-mono tracking-wider text-zinc-500/70 select-none px-1.5 py-0.5 rounded bg-white/[0.03] border border-white/[0.06]"
+              className="hidden sm:inline-block text-[10px] font-mono tracking-wider text-zinc-500/70 select-none px-1.5 py-0.5 rounded bg-white/[0.03] border border-white/[0.06]"
               title={`إصدار التطبيق ${APP_VERSION}`}
             >
               {APP_VERSION}
             </span>
-            <div
-              className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border font-medium select-none ${
-                isLiveSynced
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                  : 'border-zinc-700/40 bg-zinc-800/30 text-zinc-500'
-              }`}
-              title={
-                isLiveSynced
-                  ? 'المزامنة السحابية اللحظية متصلة (<100ms بين الموبايل والكمبيوتر عبر حسابك)'
-                  : 'سجّل الدخول بحساب Google لتفعيل المزامنة اللحظية'
-              }
-            >
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  isLiveSynced ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'
-                }`}
-              />
-              <span className="inline">{isLiveSynced ? 'لحظي' : 'غير متصل'}</span>
-            </div>
           </div>
 
           {/* Zone 2: Clean Single-Line Navigation (Desktop) with Motion Layout Pill */}
@@ -189,7 +168,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                 type="button"
                 onClick={onCheckAppUpdates}
                 disabled={isCheckingUpdates}
-                className="min-w-[40px] min-h-[40px] w-10 h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-60"
+                className="min-w-[44px] min-h-[44px] sm:min-w-[40px] sm:min-h-[40px] sm:w-10 sm:h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-60"
                 title={language === 'ar' ? 'فحص التحديثات الآن' : 'Check for updates'}
                 aria-label={language === 'ar' ? 'فحص التحديثات' : 'Check for updates'}
               >
@@ -203,7 +182,7 @@ export const TopBar: React.FC<TopBarProps> = ({
               <button
                 type="button"
                 onClick={onToggleSunMode}
-                className="min-w-[40px] min-h-[40px] w-10 h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0"
+                className="min-w-[44px] min-h-[44px] sm:min-w-[40px] sm:min-h-[40px] sm:w-10 sm:h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0"
                 title={sunMode ? 'الرجوع للمود الليلي' : 'مود الشمس (للقراءة في النور)'}
                 aria-label={sunMode ? 'المود الليلي' : 'مود الشمس'}
                 aria-pressed={sunMode}

@@ -94,3 +94,57 @@ describe('Life Rhythm Engine Pure Functions', () => {
     expect(computeMedicationDaysLeft(6, 2)).toBeCloseTo(3, 1);
   });
 });
+
+describe('Year-Round Seasonal Sleep System', () => {
+  it('computes annual summer vs winter Isha-to-Fajr bounds cleanly', async () => {
+    const { computeAnnualSleepForecast } = await import('./lifeRhythmEngine');
+    const forecast = computeAnnualSleepForecast({
+      cityName: 'الدقهلية',
+      lat: 31.227,
+      lng: 31.6148,
+      timeZone: 'Africa/Cairo',
+    } as any);
+
+    expect(forecast.summerMinNightMin).toBeLessThan(forecast.winterMaxNightMin);
+    expect(forecast.summerMinNightMin).toBeLessThanOrEqual(420);
+    expect(forecast.winterMaxNightMin).toBeGreaterThanOrEqual(540);
+  });
+
+  it('activates short_summer_night and abundant_winter seasonal sleep phases in daily plan', async () => {
+    const { computeDailyRhythmPlan, DEFAULT_LIFE_PROFILE } = await import('./lifeRhythmEngine');
+
+    const summerPrayers = [
+      { id: 'fajr', nameAr: 'الفجر', adhanMinutes: 4 * 60 + 8, isObligatory: true },
+      { id: 'sunrise', nameAr: 'الشروق', adhanMinutes: 5 * 60 + 50, isObligatory: false },
+      { id: 'dhuhr', nameAr: 'الظهر', adhanMinutes: 12 * 60 + 55, isObligatory: true },
+      { id: 'asr', nameAr: 'العصر', adhanMinutes: 16 * 60 + 30, isObligatory: true },
+      { id: 'maghrib', nameAr: 'المغرب', adhanMinutes: 20 * 60 + 0, isObligatory: true },
+      { id: 'isha', nameAr: 'العشاء', adhanMinutes: 21 * 60 + 35, isObligatory: true },
+    ] as any;
+
+    const winterPrayers = [
+      { id: 'fajr', nameAr: 'الفجر', adhanMinutes: 5 * 60 + 18, isObligatory: true },
+      { id: 'sunrise', nameAr: 'الشروق', adhanMinutes: 6 * 60 + 48, isObligatory: false },
+      { id: 'dhuhr', nameAr: 'الظهر', adhanMinutes: 12 * 60 + 0, isObligatory: true },
+      { id: 'asr', nameAr: 'العصر', adhanMinutes: 14 * 60 + 55, isObligatory: true },
+      { id: 'maghrib', nameAr: 'المغرب', adhanMinutes: 17 * 60 + 10, isObligatory: true },
+      { id: 'isha', nameAr: 'العشاء', adhanMinutes: 18 * 60 + 35, isObligatory: true },
+    ] as any;
+
+    const summerPlan = computeDailyRhythmPlan(
+      DEFAULT_LIFE_PROFILE,
+      summerPrayers,
+      { todayWeekday: 0, tomorrowWeekday: 1, heatBonusMl: 400 }
+    );
+    const winterPlan = computeDailyRhythmPlan(
+      DEFAULT_LIFE_PROFILE,
+      winterPrayers,
+      { todayWeekday: 0, tomorrowWeekday: 1 }
+    );
+
+    expect(summerPlan.seasonalSleep?.phase).toBe('short_summer_night');
+    expect(winterPlan.seasonalSleep?.phase).toBe('abundant_winter');
+    expect(summerPlan.seasonalSleep?.completedCycles).toBeLessThanOrEqual(4);
+    expect(winterPlan.seasonalSleep?.completedCycles).toBeGreaterThanOrEqual(5);
+  });
+});

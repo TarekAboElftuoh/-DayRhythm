@@ -156,9 +156,9 @@ public class DayRhythmSyncService extends Service {
         String safeEmoji = (emoji != null && !emoji.trim().isEmpty()) ? emoji.trim() : "📅";
         String label;
         if (remainingMs <= 0L) {
-            label = "الآن";
-        } else if (remainingMs < 60_000L) {
-            long secs = Math.max(1L, Math.min(59L, (remainingMs + 500L) / 1000L));
+            label = "0ث";
+        } else if (remainingMs <= 60_000L) {
+            long secs = Math.max(1L, Math.min(60L, (remainingMs + 999L) / 1000L));
             label = secs + "ث";
         } else if (remainingMs < 3_600_000L) {
             long mins = (remainingMs + 59_999L) / 60_000L;
@@ -223,10 +223,11 @@ public class DayRhythmSyncService extends Service {
                     long nextWake = Math.min(Math.min(timeToNextMin, timeToSixtySec), timeToLeadEdge);
                     handler.postDelayed(this, Math.max(1000L, nextWake));
                 } else if (remainingMs > 0L && remainingMs <= 60_000L && (liveAlertsEnabled || persistentCountdownEnabled)) {
-                    // Final 60s: native SystemUI Chronometer renders seconds smoothly.
-                    // Update chip every 15s (45s/30s/15s/0s) instead of spamming SystemUI every 2.5s.
-                    long nextWake = Math.min(15_000L, remainingMs + 50L);
-                    handler.postDelayed(this, Math.max(1000L, nextWake));
+                    // Final 60s: update every 1s smoothly (60 -> 59 -> ... -> 1 -> 0) aligned to whole-second boundaries.
+                    long modMs = remainingMs % 1000L;
+                    long nextWake = (modMs >= 140L) ? modMs + 25L : (modMs + 1025L);
+                    nextWake = Math.min(nextWake, remainingMs + 40L);
+                    handler.postDelayed(this, Math.max(250L, nextWake));
                 } else if (remainingMs <= 0L) {
                     // Just reached 0: advance to next scheduled event
                     boolean advanced = advanceToNextScheduledEvent();
@@ -722,6 +723,7 @@ public class DayRhythmSyncService extends Service {
     public static final String PREFS_CHARGE = "dayrhythm_charge_limit_prefs";
     public static final String KEY_CHARGE_LIMIT = "charge_limit_pct";
     public static final String KEY_CHARGE_ALERT_ENABLED = "charge_alert_enabled";
+    private static final long CHARGE_LOOP_CYCLE_MS = 6L * 60_000L; // 1m ring + 5m wait
     private BroadcastReceiver chargeLimitReceiver;
     private boolean chargeAlertFiredThisSession = false;
     private long chargeSessionStartMs = 0L;
@@ -730,6 +732,42 @@ public class DayRhythmSyncService extends Service {
     private boolean lastBroadcastCharging = false;
     private int lastBroadcastEtaMinutes = -1;
     private int lastBroadcastLimit = 90;
+
+    private final Runnable chargeLoopRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isDestroyed || !chargeAlertFiredThisSession) return;
+            try {
+                Intent sticky = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+                if (sticky == null) return;
+                int level = sticky.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                int scale = sticky.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                int status = sticky.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                int plugged = sticky.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+                boolean charging = plugged != 0 && (status == BatteryManager.BATTERY_STATUS_CHARGING
+                        || status == BatteryManager.BATTERY_STATUS_FULL);
+                int pct = (level >= 0 && scale > 0) ? Math.round(level * 100f / scale) : lastBroadcastBatteryLevel;
+                SharedPreferences sp = getSharedPreferences(PREFS_CHARGE, MODE_PRIVATE);
+                int limit = sp.getInt(KEY_CHARGE_LIMIT, 90);
+                boolean enabled = sp.getBoolean(KEY_CHARGE_ALERT_ENABLED, true);
+
+                if (charging && enabled && pct >= limit) {
+                    ReminderAlarmReceiver.triggerImmediateNativeAlarm(
+                            DayRhythmSyncService.this,
+                            "🔋 الشحن وصل " + pct + "%",
+                            "افصل الشاحن لحماية البطارية",
+                            "charge",
+                            true,
+                            5
+                    );
+                    handler.postDelayed(this, CHARGE_LOOP_CYCLE_MS);
+                } else if (!charging) {
+                    chargeAlertFiredThisSession = false;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    };
 
     /** Called from the web app (JS bridge) whenever the limit or the on/off switch changes. */
     public static void saveChargeLimitSettings(Context context, int limitPct, boolean enabled) {
@@ -776,6 +814,7 @@ public class DayRhythmSyncService extends Service {
 
                 // 1. When disconnected / unplugged:
                 if (!charging) {
+                    handler.removeCallbacks(chargeLoopRunnable);
                     chargeSessionStartMs = 0L;
                     chargeSessionStartLevel = -1;
                     if (chargeAlertFiredThisSession) {
@@ -828,18 +867,19 @@ public class DayRhythmSyncService extends Service {
                 broadcastBatteryTelemetry(pct, true, etaMinutes, limit);
                 refreshPersistentNotification();
 
-                // 4. Trigger alert when reaching limit (default 90%)
+                // 4. Trigger alert when reaching limit (default 90%) — 1m ring / 5m wait loop until unplugged
                 if (enabled && pct >= limit && !chargeAlertFiredThisSession) {
                     chargeAlertFiredThisSession = true;
-                    // Trigger continuous alarm with vibration on phone
+                    handler.removeCallbacks(chargeLoopRunnable);
                     ReminderAlarmReceiver.triggerImmediateNativeAlarm(
                             DayRhythmSyncService.this,
                             "🔋 الشحن وصل " + pct + "%",
-                            "افصل الشاحن دلوقتي علشان تحافظ على عمر البطارية",
+                            "افصل الشاحن لحماية البطارية",
                             "charge",
                             true,
-                            0
+                            5
                     );
+                    handler.postDelayed(chargeLoopRunnable, CHARGE_LOOP_CYCLE_MS);
                     // Broadcast trigger to PC so desktop card pops up simultaneously
                     broadcastBatteryTelemetry(pct, true, 0, limit);
                 }
@@ -1180,13 +1220,16 @@ public class DayRhythmSyncService extends Service {
                             int snoozeMin = json.optInt("snoozeMinutes", 5);
                             long nowMs = System.currentTimeMillis();
                             long startedAtMs = frame.timestampMs > 0L ? frame.timestampMs : json.optLong("startedAtMs", nowMs);
-                            if (Math.abs(nowMs - startedAtMs) > 90_000L) return;
+                            if (Math.abs(nowMs - startedAtMs) > 300_000L) return;
 
-                            if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
+                            boolean bypassSanctuary = json.optBoolean("bypassSanctuary", false)
+                                    || "test_ring".equals(json.optString("action", ""));
+                            if (MainActivity.isInForeground && MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
                                 JSONObject detail = new JSONObject()
                                         .put("title", title)
                                         .put("body", body)
-                                        .put("kind", kind);
+                                        .put("kind", kind)
+                                        .put("bypassSanctuary", bypassSanctuary);
                                 MainActivity.activeInstance.evaluateJavascriptInWebView(
                                         "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: " + detail.toString() + " }));"
                                 );
@@ -1312,7 +1355,12 @@ public class DayRhythmSyncService extends Service {
         long nowMs = System.currentTimeMillis();
         long remainingMs = liveTargetEpochMs - nowMs;
         boolean hasUpcoming = liveTargetEpochMs > nowMs + 1000L;
-        long bucketSec = hasUpcoming ? Math.max(0L, remainingMs / 15_000L) : 0L;
+        long bucketSec = 0L;
+        if (hasUpcoming) {
+            bucketSec = (remainingMs <= 60_000L)
+                    ? ((remainingMs + 999L) / 1000L)
+                    : (1000L + ((remainingMs + 59_999L) / 60_000L));
+        }
         return bucketSec + "|" + liveEmoji + "|" + liveTitle + "|" + liveStatusLabel + "|" + liveKind
                 + "|" + liveTargetEpochMs + "|" + liveAlertsEnabled + "|" + liveAlertsLeadMinutes
                 + "|" + liveAlertsAlwaysOn + "|" + liveAlertsShowCharging + "|" + liveDescription
@@ -1339,9 +1387,9 @@ public class DayRhythmSyncService extends Service {
     }
 
     private static String formatRemainingDetailedAr(long remainingMs) {
-        if (remainingMs <= 0L) return "الآن";
-        long totalSec = (remainingMs + 500L) / 1000L;
-        if (totalSec < 60L) {
+        if (remainingMs <= 0L) return "0 ثانية";
+        long totalSec = (remainingMs + 999L) / 1000L;
+        if (totalSec <= 60L) {
             return totalSec + " ثانية";
         }
         long mins = (remainingMs + 59_999L) / 60_000L;
@@ -1448,9 +1496,9 @@ public class DayRhythmSyncService extends Service {
         String chargeTag = "";
         if (isChargingNow) {
             String etaStr = lastBroadcastEtaMinutes > 0
-                    ? ("متبقي ~" + lastBroadcastEtaMinutes + " د")
-                    : (lastBroadcastBatteryLevel >= lastBroadcastLimit ? "مكتمل — افصل الشاحن ✓" : "قيد الشحن");
-            chargeTag = "⚡ " + lastBroadcastBatteryLevel + "%/" + lastBroadcastLimit + "% · " + etaStr;
+                    ? (lastBroadcastEtaMinutes + "د")
+                    : (lastBroadcastBatteryLevel >= lastBroadcastLimit ? "افصل الشاحن" : "يشحن");
+            chargeTag = "⚡ " + lastBroadcastBatteryLevel + "% · " + etaStr;
         }
 
         String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
@@ -1469,33 +1517,26 @@ public class DayRhythmSyncService extends Service {
             applyPlatformLiveAlertFlags(builder, liveExtras, inLeadWindow, compactPill, finalCleanTitle);
 
             String titleLine = targetClock.isEmpty() ? displayTitle : (displayTitle + " · " + targetClock);
-            String compactSummaryLine = "⏳ متبقي " + remDetailed + " · " + liveStatusLabel;
-            String summaryPill = !chargeTag.isEmpty()
-                    ? chargeTag
-                    : (!liveHydrationSummary.isEmpty() ? liveHydrationSummary : (targetClock.isEmpty() ? liveStatusLabel : targetClock));
+            String compactSummaryLine = "⏳ متبقي " + remDetailed
+                    + (!chargeTag.isEmpty() ? (" · " + chargeTag) : (!liveHydrationSummary.isEmpty() ? (" · " + liveHydrationSummary) : ""));
+            String summaryPill = !targetClock.isEmpty() ? targetClock : liveStatusLabel;
 
+            // Priority-ordered concise notification lines:
+            // 1) Actionable detail / classification, 2) Next upcoming item, 3) Hydration & charge status
             StringBuilder bigSb = new StringBuilder();
-            bigSb.append("⏱ الموعد: ").append(targetClock.isEmpty() ? liveStatusLabel : targetClock)
-                    .append(" (متبقي ").append(remDetailed).append(")");
-            bigSb.append("\n📌 التصنيف: ").append(liveStatusLabel);
-            if (!liveDescription.isEmpty()) {
-                bigSb.append("\n📝 ").append(liveDescription);
-            }
+            bigSb.append(!liveDescription.isEmpty() ? liveDescription : liveStatusLabel);
             if (!liveNextUpSummary.isEmpty()) {
-                bigSb.append("\n⏭ التالي: ").append(liveNextUpSummary);
+                bigSb.append("\n⏭ ").append(liveNextUpSummary);
             }
-            if (!liveHydrationSummary.isEmpty()) {
-                bigSb.append("\n").append(liveHydrationSummary);
+            if (!liveHydrationSummary.isEmpty() || !chargeTag.isEmpty()) {
+                bigSb.append("\n");
+                if (!liveHydrationSummary.isEmpty()) bigSb.append(liveHydrationSummary);
+                if (!liveHydrationSummary.isEmpty() && !chargeTag.isEmpty()) bigSb.append(" · ");
+                if (!chargeTag.isEmpty()) bigSb.append(chargeTag);
             }
-            if (!chargeTag.isEmpty()) {
-                bigSb.append("\n").append(chargeTag);
-            }
-            if (!inLeadWindow && liveAlertsEnabled && !liveAlertsAlwaysOn) {
-                bigSb.append("\n✨ تظهر الكبسولة المباشرة قبل الموعد بـ ").append(liveAlertsLeadMinutes).append(" دقيقة");
-            }
-            bigSb.append("\n🔗 ").append(syncSubtitle);
 
-            if (inLeadWindow) {
+            boolean showSecChrono = remainingMs <= 60_000L;
+            if (inLeadWindow && showSecChrono) {
                 liveExtras.putBoolean("android.showChronometer", true);
                 liveExtras.putBoolean("android.chronometerCountdown", true);
             }
@@ -1505,8 +1546,8 @@ public class DayRhythmSyncService extends Service {
                     .setSubText(summaryPill)
                     .setShowWhen(true)
                     .setWhen(liveTargetEpochMs)
-                    .setUsesChronometer(true)
-                    .setChronometerCountDown(true)
+                    .setUsesChronometer(showSecChrono)
+                    .setChronometerCountDown(showSecChrono)
                     .setColor(accentColor)
                     .setCategory(Notification.CATEGORY_EVENT)
                     .setStyle(new Notification.BigTextStyle()
@@ -1520,37 +1561,37 @@ public class DayRhythmSyncService extends Service {
             applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, "شحن الهاتف " + lastBroadcastBatteryLevel + "%");
 
             StringBuilder bigSb = new StringBuilder();
-            bigSb.append("⚡ الشحن الحالي: ").append(lastBroadcastBatteryLevel).append("% من حد ").append(lastBroadcastLimit).append("%");
-            if (lastBroadcastEtaMinutes > 0) {
-                bigSb.append("\n⏱ الوقت المتبقي للوصول للحد: ~").append(lastBroadcastEtaMinutes).append(" دقيقة");
-            } else if (lastBroadcastBatteryLevel >= lastBroadcastLimit) {
-                bigSb.append("\n🔋 وصل للحد المطلوب — يُنصح بفصل الشاحن لحماية البطارية");
+            if (lastBroadcastBatteryLevel >= lastBroadcastLimit) {
+                bigSb.append("🔋 وصل للحد (").append(lastBroadcastLimit).append("%) — افصل الشاحن");
+            } else if (lastBroadcastEtaMinutes > 0) {
+                bigSb.append("⚡ ").append(lastBroadcastBatteryLevel).append("% من ").append(lastBroadcastLimit).append("% · متبقي ~").append(lastBroadcastEtaMinutes).append(" د");
+            } else {
+                bigSb.append("⚡ الشحن ").append(lastBroadcastBatteryLevel).append("% / ").append(lastBroadcastLimit).append("%");
             }
             if (hasUpcoming) {
-                bigSb.append("\n📅 القادم: ").append(displayTitle);
-                if (!targetClock.isEmpty()) bigSb.append(" (").append(targetClock).append(")");
+                bigSb.append("\n⏭ ").append(displayTitle);
+                if (!targetClock.isEmpty()) bigSb.append(" · ").append(targetClock);
             }
             if (!liveHydrationSummary.isEmpty()) {
                 bigSb.append("\n").append(liveHydrationSummary);
             }
-            bigSb.append("\n🔗 ").append(syncSubtitle);
 
             String shortSub = hasUpcoming
                     ? (displayTitle + " · " + formatRemainingDetailedAr(remainingMs))
-                    : syncSubtitle;
+                    : (!liveHydrationSummary.isEmpty() ? liveHydrationSummary : "حد الشحن " + lastBroadcastLimit + "%");
+            boolean showSecChrono = hasUpcoming && remainingMs <= 60_000L;
 
             builder.setContentTitle(chargeTag)
                     .setContentText(shortSub)
-                    .setSubText("⚡ " + lastBroadcastBatteryLevel + "%")
+                    .setSubText(lastBroadcastBatteryLevel + "%")
                     .setShowWhen(hasUpcoming)
                     .setWhen(hasUpcoming ? liveTargetEpochMs : nowMs)
-                    .setUsesChronometer(hasUpcoming)
-                    .setChronometerCountDown(hasUpcoming)
+                    .setUsesChronometer(showSecChrono)
+                    .setChronometerCountDown(showSecChrono)
                     .setColor(chargeColor)
                     .setCategory(Notification.CATEGORY_PROGRESS)
                     .setStyle(new Notification.BigTextStyle()
                             .setBigContentTitle(chargeTag)
-                            .setSummaryText("OnePlus 12R SuperVOOC")
                             .bigText(bigSb.toString()))
                     .addExtras(liveExtras);
 
@@ -1572,26 +1613,16 @@ public class DayRhythmSyncService extends Service {
             }
         } else {
             applyPlatformLiveAlertFlags(builder, liveExtras, false, "", "");
-            StringBuilder bigSb = new StringBuilder();
-            bigSb.append("🔗 ").append(syncSubtitle);
-            if (!liveHydrationSummary.isEmpty()) {
-                bigSb.append("\n").append(liveHydrationSummary);
-            }
-            if (!chargeTag.isEmpty()) {
-                bigSb.append("\n").append(chargeTag);
-            }
-            bigSb.append("\n✅ جدول اليوم منظم وجاهز للتنبيه التلقائي");
+            String summaryLine = !liveHydrationSummary.isEmpty()
+                    ? liveHydrationSummary
+                    : (!chargeTag.isEmpty() ? chargeTag : "الجدول جاهز للتنبيه التلقائي");
 
-            builder.setContentTitle("إيقاع اليوم | DayRhythm")
-                    .setContentText(chargeTag.isEmpty() ? syncSubtitle : (chargeTag + " · " + syncSubtitle))
-                    .setSubText(liveHydrationSummary.isEmpty() ? "مزامنة 24/7" : liveHydrationSummary)
+            builder.setContentTitle("إيقاع اليوم")
+                    .setContentText(summaryLine)
                     .setShowWhen(false)
                     .setUsesChronometer(false)
                     .setColor(0xFF7FFFD4)
                     .setCategory(Notification.CATEGORY_STATUS)
-                    .setStyle(new Notification.BigTextStyle()
-                            .setBigContentTitle("إيقاع اليوم | DayRhythm")
-                            .bigText(bigSb.toString()))
                     .addExtras(liveExtras);
         }
 

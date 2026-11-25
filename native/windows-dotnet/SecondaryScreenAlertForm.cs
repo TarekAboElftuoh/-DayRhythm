@@ -23,7 +23,7 @@ namespace DayRhythm
         private readonly NativeAlertPayload _payload;
         private readonly Action _onWaterConfirmed;
         private readonly Action<string, string> _onMedicationConfirmed;
-        private readonly Action<NativeAlertPayload, int> _onSnoozed;
+        private readonly Action<NativeAlertPayload, int, bool> _onSnoozed;
         private readonly Action _onDismissed;
         private WebView2 _web;
         private bool _actionDone;
@@ -38,7 +38,7 @@ namespace DayRhythm
             Screen target,
             Action onWaterConfirmed,
             Action<string, string> onMedicationConfirmed,
-            Action<NativeAlertPayload, int> onSnoozed,
+            Action<NativeAlertPayload, int, bool> onSnoozed,
             Action onDismissed)
         {
             _payload = payload ?? new NativeAlertPayload();
@@ -88,13 +88,21 @@ namespace DayRhythm
             _web.CoreWebView2.NavigationCompleted += (_, __) => PostAlertState();
             _web.CoreWebView2.Navigate(AlertUrl + "?v=" + DateTime.UtcNow.Ticks);
 
-            int seconds = _payload.durationSeconds > 0 ? Math.Min(_payload.durationSeconds, 120) : 120;
+            int seconds = _payload.durationSeconds > 0 ? Math.Min(_payload.durationSeconds, 60) : 60;
             var autoClose = new Timer { Interval = seconds * 1000 };
             autoClose.Tick += (_, __) =>
             {
                 autoClose.Stop();
                 autoClose.Dispose();
-                if (!IsDisposed) Close();
+                if (!IsDisposed)
+                {
+                    if (!_actionDone && !string.Equals(_payload.category, "charge", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _actionDone = true;
+                        _onSnoozed?.Invoke(_payload, 5, true);
+                    }
+                    Close();
+                }
             };
             autoClose.Start();
         }
@@ -145,7 +153,7 @@ namespace DayRhythm
                     break;
                 case "alert-snooze":
                     _actionDone = true;
-                    _onSnoozed?.Invoke(_payload, minutes > 0 ? minutes : (_payload.snoozeMinutes > 0 ? _payload.snoozeMinutes : 5));
+                    _onSnoozed?.Invoke(_payload, minutes > 0 ? minutes : (_payload.snoozeMinutes > 0 ? _payload.snoozeMinutes : 5), false);
                     Close();
                     break;
                 case "alert-dismiss":

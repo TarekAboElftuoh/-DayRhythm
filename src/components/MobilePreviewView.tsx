@@ -56,7 +56,6 @@ interface MobilePreviewViewProps {
   onOpenTravel: () => void;
   onOpenCatchUp: () => void;
   onOpenPomodoro: () => void;
-  liveCountdownSec: number;
   batteryGuard: BatteryGuardState;
   onSimulateCharge90: () => void;
   onSimulatePowerDisconnect: () => void;
@@ -65,6 +64,7 @@ interface MobilePreviewViewProps {
   hasShakeUndoActive: boolean;
   onTriggerShakeUndo: () => void;
   alarmRinging: boolean;
+  onTriggerRing?: () => void;
   onDismissTwoWay: () => void;
   deviceSettings: OnePlusDeviceSettings;
   onUpdateDeviceSettings: (patch: Partial<OnePlusDeviceSettings>) => void;
@@ -98,6 +98,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
   hasShakeUndoActive,
   onTriggerShakeUndo,
   alarmRinging,
+  onTriggerRing,
   onDismissTwoWay,
   deviceSettings,
   onUpdateDeviceSettings,
@@ -536,6 +537,30 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
             <span>تدارك اليوم</span>
           </button>
         </div>
+
+        {(onTriggerRing || alarmRinging) && (
+          <div className="pt-2 border-t border-white/[0.07] flex flex-wrap gap-2">
+            {onTriggerRing && (
+              <button
+                type="button"
+                onClick={onTriggerRing}
+                className="flex-1 min-h-[48px] px-4 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/12 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <BellRing className="w-4 h-4 shrink-0" />
+                <span>اختبار التنبيه المتزامن</span>
+              </button>
+            )}
+            {alarmRinging && (
+              <button
+                type="button"
+                onClick={onDismissTwoWay}
+                className="flex-1 min-h-[48px] px-4 rounded-xl bg-[#4ADE80] text-black hover:bg-emerald-300 text-xs font-bold transition-colors cursor-pointer"
+              >
+                إيقاف على الجهازين الآن
+              </button>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Secondary / Advanced Hardware Settings & Live Permissions */}

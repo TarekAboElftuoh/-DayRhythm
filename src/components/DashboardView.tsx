@@ -191,9 +191,6 @@ interface DashboardViewProps {
   quietMode: QuietModeType;
   quietRemainingSec: number;
   onSetQuietMode: (mode: QuietModeType, durationMinutes: number) => void;
-  liveCountdownSec: number;
-  simulateUnder60s: boolean;
-  onToggleSimulateUnder60s: () => void;
   calendarConnected: boolean;
   prayersReady?: boolean;
   locationResolutionState?: 'idle' | 'resolving_gps' | 'gps_locked' | 'timezone_fallback';
@@ -350,9 +347,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   quietMode,
   quietRemainingSec,
   onSetQuietMode,
-  liveCountdownSec,
-  simulateUnder60s,
-  onToggleSimulateUnder60s,
   calendarConnected,
   prayersReady,
   locationResolutionState,
@@ -886,12 +880,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         caption: language === 'ar' ? 'سجّل الدخول لعرض جدولك' : 'Sign in to sync schedule',
       };
     }
-    if (simulateUnder60s) {
-      return {
-        clock: `00:${String(liveCountdownSec).padStart(2, '0')}`,
-        caption: language === 'ar' ? 'أقل من دقيقة' : 'Under 1 min',
-      };
-    }
     if (!nextAlarmBlock) {
       return {
         clock: '✓',
@@ -941,8 +929,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     nextAlarmBlock,
     isNextBlockHappeningNow,
     liveClockParts.nowSecOfDay,
-    simulateUnder60s,
-    liveCountdownSec,
     language,
   ]);
 
@@ -1283,7 +1269,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             type="button"
             aria-pressed={lowEnergyActive}
             onClick={onToggleLowEnergyToday}
-            className={`min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+            className={`min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
               lowEnergyActive
                 ? 'border-emerald-400/45 bg-emerald-400/14 text-emerald-200'
                 : 'border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:border-white/15'
@@ -1308,7 +1294,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 }
                 setMeetingPickerOpen((v) => !v);
               }}
-              className={`min-h-[34px] px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+              className={`min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
                 quietMode !== 'normal'
                   ? 'border-amber-400/50 bg-amber-400/15 text-amber-200'
                   : 'border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/15'
@@ -1320,7 +1306,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
 
             {meetingPickerOpen && (
-              <div className="absolute z-30 top-full mt-1.5 right-0 w-64 rounded-xl border border-white/10 bg-[#0B0E14] p-3 shadow-2xl space-y-2.5">
+              <div className="absolute z-30 top-full mt-1.5 right-0 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-white/10 bg-[#0B0E14] p-3 shadow-2xl space-y-2.5">
                 <div className="text-[11px] text-zinc-400">اختر المدة والطريقة، وهتخلص لوحدها تلقائياً</div>
                 {(
                   [
@@ -1361,7 +1347,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <button
             type="button"
             onClick={onOpenLifeProfile}
-            className="min-h-[34px] px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] text-xs font-medium text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+            className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] text-xs font-medium text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
             title="الإعدادات والثوابت"
           >
             <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-400" />
@@ -1940,11 +1926,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="text-right sm:text-left shrink-0 flex flex-row sm:flex-col items-baseline sm:items-end justify-between sm:justify-center gap-2 pt-1 sm:pt-0 border-t border-white/[0.06] sm:border-t-0">
                 <div
                   className={`font-digits text-3xl sm:text-4xl font-bold tracking-tight leading-none whitespace-nowrap ${
-                    simulateUnder60s
-                      ? 'text-[#FF6B6B]'
-                      : isNextBlockHappeningNow
-                        ? 'text-[#4ADE80]'
-                        : 'text-[#7FFFD4]'
+                    isNextBlockHappeningNow
+                      ? 'text-[#4ADE80]'
+                      : 'text-[#7FFFD4]'
                   }`}
                 >
                   <LiveSecClock
@@ -1974,9 +1958,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenPomodoro}
-                className={`${
-                  aquaTouchMode ? 'min-h-[44px] md:min-h-[38px]' : 'min-h-[38px]'
-                } px-3 py-1.5 rounded-lg border border-white/[0.1] bg-white/[0.02] text-zinc-200 hover:border-white/25 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular transition-colors`}
+                className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-lg border border-white/[0.1] bg-white/[0.02] text-zinc-200 hover:border-white/25 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular transition-colors"
               >
                 <Timer className="w-3.5 h-3.5 text-[#7FFFD4]" />
                 <span>
@@ -1989,7 +1971,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenAssistant}
-                className="min-h-[38px] px-3 py-1.5 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.08] text-[#7FFFD4] hover:bg-[#7FFFD4]/15 text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.08] text-[#7FFFD4] hover:bg-[#7FFFD4]/15 text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               >
                 <MessageSquare className="w-3.5 h-3.5" />
                 <span>شات Gemini</span>
@@ -2507,7 +2489,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-end gap-1 shrink-0 pr-9 sm:pr-0">
+                        <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-1 shrink-0 pr-0">
                           {block.source === 'creative' && block.creativeActivityId && (
                             <button
                               type="button"
@@ -2517,7 +2499,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 );
                                 if (placement) setPendingCreativeCalendarConfirm(placement);
                               }}
-                              className="min-h-[32px] px-2.5 py-1 rounded-lg border border-cyan-400/35 bg-cyan-400/10 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-400/20 cursor-pointer whitespace-nowrap"
+                              className="min-h-[44px] sm:min-h-[32px] px-3 sm:px-2.5 py-1 rounded-lg border border-cyan-400/35 bg-cyan-400/10 text-[11px] font-semibold text-cyan-200 hover:bg-cyan-400/20 cursor-pointer whitespace-nowrap"
                             >
                               تثبيت
                             </button>
@@ -2532,7 +2514,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               );
                               onTriggerTaskAlert(block.emojiPair, cat);
                             }}
-                            className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] cursor-pointer"
+                            className="min-h-[44px] min-w-[44px] sm:min-h-[34px] sm:min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] cursor-pointer"
                             title="تجربة التنبيه"
                           >
                             <Volume2 className="w-4 h-4" />
@@ -2542,7 +2524,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               href={block.googleHtmlLink}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-[#4ADE80] hover:bg-white/[0.04]"
+                              className="min-h-[44px] min-w-[44px] sm:min-h-[34px] sm:min-w-[34px] flex items-center justify-center rounded-lg text-zinc-400 hover:text-[#4ADE80] hover:bg-white/[0.04]"
                               title="فتح في Google Calendar"
                             >
                               <ExternalLink className="w-4 h-4" />
@@ -2562,7 +2544,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                   description: block.description ?? '',
                                 })
                               }
-                              className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
+                              className="min-h-[44px] min-w-[44px] sm:min-h-[34px] sm:min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0"
                               title="حذف"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -3190,8 +3172,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             )}
 
-            {/* Tactile Interactive Cup Progress Strip */}
-            <div className="flex items-center gap-1">
+            {/* Tactile Interactive Cup Progress Strip (Wraps comfortably on narrow phones, compact single-row on desktop) */}
+            <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-1">
               {hydrationToday.slots.map((filled, idx) => {
                 const slotPlan = dailyRhythmPlan.hydrationSlots[idx];
                 return (
@@ -3204,7 +3186,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         ? `كوب ${idx + 1} · ${formatMinutes12h(slotPlan.timeMinutes, language)}`
                         : `كوب ${idx + 1}`
                     }
-                    className={`flex-1 h-8 rounded-md font-mono-tabular text-[11px] font-bold flex items-center justify-center transition-all active:scale-90 cursor-pointer select-none ${
+                    className={`min-w-[36px] min-h-[40px] sm:min-w-0 sm:flex-1 sm:h-8 rounded-lg sm:rounded-md font-mono-tabular text-xs sm:text-[11px] font-bold flex items-center justify-center transition-all active:scale-90 cursor-pointer select-none ${
                       filled
                         ? 'bg-[#7FFFD4] text-black shadow-[0_0_8px_rgba(127,255,212,0.3)] hover:bg-[#66eec2]'
                         : 'bg-white/[0.06] text-zinc-400 hover:bg-white/[0.14] hover:text-white'
@@ -3240,7 +3222,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="button"
                   onClick={onToggleWaterReminders}
-                  className={`px-2 py-1 rounded-lg border text-[11px] font-medium cursor-pointer transition-colors ${
+                  className={`min-h-[40px] sm:min-h-0 px-3 sm:px-2 py-1 rounded-lg border text-[11px] font-medium cursor-pointer transition-colors ${
                     waterRemindersEnabled
                       ? 'border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80]'
                       : 'border-white/10 text-zinc-500 hover:text-zinc-200'
@@ -3252,7 +3234,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <button
                     type="button"
                     onClick={() => void onRequestNotificationPermission()}
-                    className="px-2 py-1 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[11px] font-medium text-[#7FFFD4] hover:bg-[#7FFFD4]/20 cursor-pointer"
+                    className="min-h-[40px] sm:min-h-0 px-3 sm:px-2 py-1 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[11px] font-medium text-[#7FFFD4] hover:bg-[#7FFFD4]/20 cursor-pointer"
                   >
                     الإشعارات
                   </button>
@@ -3265,7 +3247,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       privacyEmoji: '💧',
                     })
                   }
-                  className="p-1.5 rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] cursor-pointer"
+                  className="min-w-[40px] min-h-[40px] sm:min-w-0 sm:min-h-0 p-1.5 rounded-lg text-zinc-500 hover:text-[#7FFFD4] hover:bg-white/[0.04] flex items-center justify-center cursor-pointer"
                   title="تجربة تنبيه كوب الماء"
                   aria-label="تجربة تنبيه كوب الماء"
                 >
@@ -3284,7 +3266,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     {hydrationHistory.filter((d) => d.cupsLogged >= Math.max(1, d.targetCups)).length}/7 هدف
                   </span>
                 </div>
-                <div className="grid grid-cols-7 gap-1">
+                <div className="grid grid-cols-7 gap-1 min-w-0">
                   {hydrationHistory.slice(-7).map((day, idx, arr) => {
                     const isTodayCell = idx === arr.length - 1;
                     const ratio = Math.min(1, day.cupsLogged / Math.max(1, day.targetCups));
@@ -3293,7 +3275,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <div
                         key={day.dateKey || `${day.labelAr}-${idx}`}
                         title={`${day.labelAr}: ${day.cupsLogged} من ${day.targetCups} كوب`}
-                        className={`rounded-lg border px-1 py-1.5 text-center transition-colors ${
+                        className={`min-w-0 rounded-lg border px-0.5 sm:px-1 py-1.5 text-center transition-colors ${
                           hitGoal
                             ? 'border-[#4ADE80]/35 bg-[#4ADE80]/10'
                             : isTodayCell
@@ -3845,7 +3827,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             type="button"
                             onClick={() => onToggleMedication(med.id)}
                             aria-pressed={takenToday}
-                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-all active:scale-95 cursor-pointer select-none ${
+                            className={`min-h-[42px] sm:min-h-0 px-3 sm:px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-all active:scale-95 cursor-pointer select-none ${
                               takenToday
                                 ? 'border-[#4ADE80] bg-[#4ADE80] text-black shadow-[0_0_8px_rgba(74,222,128,0.25)]'
                                 : 'border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4] hover:text-black'
@@ -3871,7 +3853,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               setDeleteMedStep(1);
                               setDeleteMedConfirmed(false);
                             }}
-                            className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer shrink-0 transition-colors"
+                            className="min-w-[42px] min-h-[42px] sm:min-w-0 sm:min-h-0 p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 flex items-center justify-center cursor-pointer shrink-0 transition-colors"
                             title={`حذف ${med.name}`}
                             aria-label={`حذف ${med.name}`}
                           >
@@ -4227,6 +4209,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
+            {dailyRhythmPlan.seasonalSleep && (
+              <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-3 py-2 text-[11px] text-zinc-300 flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold text-[#7FFFD4]">
+                  {dailyRhythmPlan.seasonalSleep.phaseLabelAr} · {dailyRhythmPlan.seasonalSleep.completedCycles} دورات (90د)
+                </span>
+                <span className="font-digits text-zinc-400">
+                  تهدئة {formatMinutes12h(dailyRhythmPlan.seasonalSleep.windDownStartMin, language)} · كافيين حتى {formatMinutes12h(dailyRhythmPlan.seasonalSleep.caffeineCutoffMin, language)}
+                </span>
+              </div>
+            )}
+
             {dailyRhythmPlan.conflictWarningAr && (
               <div className="rounded-lg border border-amber-400/30 bg-amber-400/[0.08] px-3 py-2 text-[11px] text-amber-200">
                 ⚠️ {dailyRhythmPlan.conflictWarningAr}
@@ -4250,21 +4243,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <button
                     type="button"
                     onClick={() => onLogSleepQuality('good')}
-                    className="px-2.5 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold text-[11px] hover:bg-[#66eec2] cursor-pointer"
+                    className="min-h-[40px] sm:min-h-0 px-3 sm:px-2.5 py-1.5 sm:py-1 rounded-lg bg-[#7FFFD4] text-black font-bold text-[11px] hover:bg-[#66eec2] cursor-pointer"
                   >
                     نمت كويس (-{Math.max(dailyRhythmPlan.nightlyRecoveryMin, 30)}د)
                   </button>
                   <button
                     type="button"
                     onClick={() => onLogSleepQuality('reset')}
-                    className="px-2.5 py-1 rounded-lg border border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80] font-semibold text-[11px] hover:bg-[#4ADE80]/20 cursor-pointer"
+                    className="min-h-[40px] sm:min-h-0 px-3 sm:px-2.5 py-1.5 sm:py-1 rounded-lg border border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80] font-semibold text-[11px] hover:bg-[#4ADE80]/20 cursor-pointer"
                   >
                     تصفير ✓
                   </button>
                   <button
                     type="button"
                     onClick={() => onLogSleepQuality('short_30')}
-                    className="px-2.5 py-1 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:text-white cursor-pointer"
+                    className="min-h-[40px] sm:min-h-0 px-3 sm:px-2.5 py-1.5 sm:py-1 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:text-white cursor-pointer"
                   >
                     +30 د نقص
                   </button>
@@ -4276,7 +4269,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           `عندي رصيد نوم ناقص ${dailyRhythmPlan.sleepDebtMinutes} دقيقة — فضّي لي مكان لقيلولة تعويضية 30 دقيقة النهاردة في التقويم بدون المساس بالصلاة`
                         )
                       }
-                      className="px-2.5 py-1 rounded-lg border border-indigo-400/35 bg-indigo-400/12 text-indigo-200 font-semibold text-[11px] hover:bg-indigo-400/20 cursor-pointer"
+                      className="min-h-[40px] sm:min-h-0 px-3 sm:px-2.5 py-1.5 sm:py-1 rounded-lg border border-indigo-400/35 bg-indigo-400/12 text-indigo-200 font-semibold text-[11px] hover:bg-indigo-400/20 cursor-pointer"
                     >
                       قيلولة بـ Gemini
                     </button>
@@ -4304,7 +4297,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       onLogSleepQuality('good');
                       setShowSleepCheckinEdit(false);
                     }}
-                    className="py-1.5 px-2 rounded-lg border border-[#4ADE80]/30 bg-[#4ADE80]/[0.07] text-[#4ADE80] font-semibold text-[11px] hover:bg-[#4ADE80]/15 cursor-pointer"
+                    className="min-h-[42px] sm:min-h-0 py-1.5 px-2 rounded-lg border border-[#4ADE80]/30 bg-[#4ADE80]/[0.07] text-[#4ADE80] font-semibold text-[11px] hover:bg-[#4ADE80]/15 cursor-pointer"
                   >
                     ممتاز ✓
                   </button>
@@ -4314,7 +4307,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       onLogSleepQuality('short_30');
                       setShowSleepCheckinEdit(false);
                     }}
-                    className="py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
+                    className="min-h-[42px] sm:min-h-0 py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
                   >
                     أقل (-30د)
                   </button>
@@ -4324,7 +4317,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       onLogSleepQuality('short_60');
                       setShowSleepCheckinEdit(false);
                     }}
-                    className="py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
+                    className="min-h-[42px] sm:min-h-0 py-1.5 px-2 rounded-lg border border-white/10 text-zinc-300 text-[11px] hover:border-amber-400/40 hover:text-amber-200 cursor-pointer"
                   >
                     سهر (-60د)
                   </button>

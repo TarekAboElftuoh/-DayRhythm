@@ -18,6 +18,7 @@ import {
   CapsuleSize,
   PhoneBatteryTelemetry,
 } from '../types/dayrhythm';
+import { formatCountdown, pickActiveCountdownItem } from '../hooks/useCountdown';
 
 interface DocumentPictureInPictureApi {
   requestWindow: (options?: { width?: number; height?: number }) => Promise<Window>;
@@ -250,6 +251,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
           showPhoneChargingBadge && typeof phoneBattery?.chargeTimeRemainingMin === 'number'
             ? phoneBattery.chargeTimeRemainingMin
             : -1,
+        upcomingQueue: upcomingQueue.slice(0, 4),
         orientation: prefs.orientation,
         size: prefs.size,
       });
@@ -277,7 +279,49 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
     phoneBattery,
     prefs.orientation,
     prefs.size,
+    upcomingQueue,
   ]);
+
+  const [nowTickMs, setNowTickMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (isNativeAndroidApk || isNativeWindowsExe) return;
+    const id = window.setInterval(() => setNowTickMs(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, [isNativeAndroidApk, isNativeWindowsExe]);
+
+  const primaryTrack: CapsuleTrackInfo = hasDualTimers && calendarTrack
+    ? calendarTrack
+    : {
+        emoji: nextEmoji,
+        title: nextTitle,
+        statusLabel,
+        countdownText,
+        isNow,
+        isUrgent,
+        targetEpochMs,
+        durationSeconds,
+      };
+  const activePrimary = pickActiveCountdownItem(primaryTrack, upcomingQueue, nowTickMs);
+  const activePrimaryRemMs = activePrimary.targetEpochMs > 0 ? Math.max(0, activePrimary.targetEpochMs - nowTickMs) : 0;
+  const activePrimaryClock = activePrimary.targetEpochMs > 0
+    ? formatCountdown(activePrimaryRemMs)
+    : (!activePrimary.countdownText || activePrimary.countdownText === 'الآن' ? '00:00' : activePrimary.countdownText);
+  const activePrimaryUrgent = activePrimary.targetEpochMs > 0 ? activePrimaryRemMs <= 60_000 : activePrimary.isUrgent;
+
+  const activeTask = taskTrack
+    ? pickActiveCountdownItem(
+        taskTrack,
+        upcomingQueue.filter((q) => q.targetEpochMs > nowTickMs && q.targetEpochMs !== activePrimary.targetEpochMs),
+        nowTickMs
+      )
+    : null;
+  const activeTaskRemMs = activeTask && activeTask.targetEpochMs > 0 ? Math.max(0, activeTask.targetEpochMs - nowTickMs) : 0;
+  const activeTaskClock = activeTask
+    ? activeTask.targetEpochMs > 0
+      ? formatCountdown(activeTaskRemMs)
+      : (!activeTask.countdownText || activeTask.countdownText === 'الآن' ? '00:00' : activeTask.countdownText)
+    : '';
+  const activeTaskUrgent = Boolean(activeTask && (activeTask.targetEpochMs > 0 ? activeTaskRemMs <= 60_000 : activeTask.isUrgent));
 
   // Keep open Browser Document Picture-in-Picture mini capsule updated live every second
   useEffect(() => {
@@ -292,11 +336,10 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
     const taskClockEl = doc.getElementById('dr-pip-task-clock');
     const batEl = doc.getElementById('dr-pip-bat');
 
-    const primary = hasDualTimers && calendarTrack ? calendarTrack : null;
-    const displayClock = primary ? primary.countdownText : countdownText;
-    const displayEmoji = primary ? primary.emoji : nextEmoji;
-    const primaryUrgent = primary ? primary.isUrgent : isUrgent;
-    const primaryNow = primary ? primary.isNow : isNow;
+    const displayClock = activePrimaryClock;
+    const displayEmoji = activePrimary.emoji;
+    const primaryUrgent = activePrimaryUrgent;
+    const primaryNow = activePrimary.isNow;
     const accent = primaryUrgent ? '#FF6B6B' : primaryNow ? '#4ADE80' : '#7FFFD4';
 
     if (shellEl) {
@@ -314,23 +357,23 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       emojiEl.style.fontSize = prefs.size === 'lg' ? '18px' : prefs.size === 'sm' ? '13px' : '15px';
     }
     if (taskWrapEl && taskClockEl) {
-      if (hasDualTimers && taskTrack) {
+      if (hasDualTimers && activeTask) {
         taskWrapEl.style.display = 'inline-flex';
         taskWrapEl.style.borderRight = isVertical ? 'none' : '1px solid rgba(255,255,255,0.12)';
         taskWrapEl.style.paddingRight = isVertical ? '0' : '9px';
         taskWrapEl.style.borderTop = isVertical ? '1px solid rgba(255,255,255,0.12)' : 'none';
         taskWrapEl.style.paddingTop = isVertical ? '5px' : '0';
         if (taskEmojiEl) {
-          taskEmojiEl.textContent = taskTrack.emoji;
+          taskEmojiEl.textContent = activeTask.emoji;
           taskEmojiEl.style.fontSize = prefs.size === 'lg' ? '17px' : prefs.size === 'sm' ? '13px' : '15px';
         }
-        taskClockEl.textContent = taskTrack.countdownText;
+        taskClockEl.textContent = activeTaskClock;
         taskClockEl.style.fontSize = prefs.size === 'lg' ? '15px' : prefs.size === 'sm' ? '12px' : '13.5px';
-        taskClockEl.style.color = taskTrack.isUrgent
+        taskClockEl.style.color = activeTaskUrgent
           ? '#FF6B6B'
-          : taskTrack.isNow
+          : activeTask.isNow
             ? '#4ADE80'
-            : taskTrack.emoji === '💧'
+            : activeTask.emoji === '💧'
               ? '#38BDF8'
               : '#FCD34D';
       } else {
@@ -349,13 +392,14 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       }
     }
   }, [
-    countdownText,
-    nextEmoji,
-    isUrgent,
-    isNow,
+    activePrimaryClock,
+    activePrimary.emoji,
+    activePrimaryUrgent,
+    activePrimary.isNow,
     hasDualTimers,
-    calendarTrack,
-    taskTrack,
+    activeTask,
+    activeTaskClock,
+    activeTaskUrgent,
     showPhoneChargingBadge,
     phoneBattery,
     phoneReachedLimit,
@@ -720,30 +764,30 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
           isVertical ? 'flex-col items-center rounded-2xl' : 'flex-row items-center rounded-full'
         } ${sizeTokens.shellGap} ${sizeTokens.shellPad} border border-white/[0.14] bg-gradient-to-b from-[#10151E]/95 to-[#07080B]/95 shadow-[0_12px_36px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-[#7FFFD4]/40 transition-colors cursor-grab active:cursor-grabbing`}
         title={
-          hasDualTimers && calendarTrack && taskTrack
-            ? `${calendarTrack.title} (${calendarTrack.countdownText}) · ${taskTrack.title} (${taskTrack.countdownText})`
-            : `${nextTitle} · ${statusLabel}`
+          hasDualTimers && activeTask
+            ? `${activePrimary.title} (${activePrimaryClock}) · ${activeTask.title} (${activeTaskClock})`
+            : `${activePrimary.title} · ${activePrimary.statusLabel ?? statusLabel}`
         }
       >
         <GripHorizontal className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
 
-        {hasDualTimers && calendarTrack && taskTrack ? (
+        {hasDualTimers && activeTask ? (
           <>
             <div
               className="flex items-center gap-1.5"
-              title={`${calendarTrack.title}${calendarTrack.clockLabel ? ` (${calendarTrack.clockLabel})` : ''} · ${calendarTrack.statusLabel}`}
+              title={`${activePrimary.title}${activePrimary.clockLabel ? ` (${activePrimary.clockLabel})` : ''} · ${activePrimary.statusLabel ?? statusLabel}`}
             >
-              <span className={sizeTokens.emojiCls}>{calendarTrack.emoji}</span>
+              <span className={sizeTokens.emojiCls}>{activePrimary.emoji}</span>
               <span
                 className={`${sizeTokens.clockCls} ${
-                  calendarTrack.isUrgent
+                  activePrimaryUrgent
                     ? 'text-[#FF6B6B]'
-                    : calendarTrack.isNow
+                    : activePrimary.isNow
                       ? 'text-[#4ADE80]'
                       : 'text-[#7FFFD4]'
                 }`}
               >
-                {calendarTrack.countdownText}
+                {activePrimaryClock}
               </span>
             </div>
 
@@ -757,33 +801,33 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
 
             <div
               className="flex items-center gap-1.5"
-              title={`${taskTrack.title}${taskTrack.clockLabel ? ` — الساعة ${taskTrack.clockLabel}` : ''} · ${taskTrack.statusLabel}`}
+              title={`${activeTask.title}${activeTask.clockLabel ? ` — الساعة ${activeTask.clockLabel}` : ''} · ${activeTask.statusLabel ?? ''}`}
             >
-              <span className={sizeTokens.emojiCls}>{taskTrack.emoji}</span>
+              <span className={sizeTokens.emojiCls}>{activeTask.emoji}</span>
               <span
                 className={`${sizeTokens.clockCls} ${
-                  taskTrack.isUrgent
+                  activeTaskUrgent
                     ? 'text-[#FF6B6B]'
-                    : taskTrack.isNow
+                    : activeTask.isNow
                       ? 'text-[#4ADE80]'
-                      : taskTrack.emoji === '💧'
+                      : activeTask.emoji === '💧'
                         ? 'text-sky-300'
                         : 'text-amber-300'
                 }`}
               >
-                {taskTrack.countdownText}
+                {activeTaskClock}
               </span>
             </div>
           </>
         ) : (
-          <div className="flex items-center gap-1.5" title={`${nextTitle} · ${statusLabel}`}>
-            <span className={sizeTokens.emojiCls}>{nextEmoji}</span>
+          <div className="flex items-center gap-1.5" title={`${activePrimary.title} · ${activePrimary.statusLabel ?? statusLabel}`}>
+            <span className={sizeTokens.emojiCls}>{activePrimary.emoji}</span>
             <span
               className={`${sizeTokens.clockCls} ${
-                isUrgent ? 'text-[#FF6B6B]' : isNow ? 'text-[#4ADE80]' : 'text-[#7FFFD4]'
+                activePrimaryUrgent ? 'text-[#FF6B6B]' : activePrimary.isNow ? 'text-[#4ADE80]' : 'text-[#7FFFD4]'
               }`}
             >
-              {countdownText}
+              {activePrimaryClock}
             </span>
           </div>
         )}

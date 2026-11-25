@@ -13,6 +13,7 @@ let activeContinuousSafetyTimeout: number | null = null;
 
 let batteryAlertInterval: number | null = null;
 let batteryAlertSafetyTimeout: number | null = null;
+let batteryAlertCycleTimeout: number | null = null;
 
 export const DEFAULT_SOUND_REPEATS: SoundRepeatMap = {
   prayer: 3,
@@ -34,6 +35,10 @@ export function stopSmartChargeCompleteAlert(): void {
   if (batteryAlertSafetyTimeout !== null) {
     window.clearTimeout(batteryAlertSafetyTimeout);
     batteryAlertSafetyTimeout = null;
+  }
+  if (batteryAlertCycleTimeout !== null) {
+    window.clearTimeout(batteryAlertCycleTimeout);
+    batteryAlertCycleTimeout = null;
   }
 }
 
@@ -301,6 +306,17 @@ function scheduleTone(
   osc.stop(now + durationSec + 0.03);
 }
 
+const BURST_DURATION_MS: Record<TaskSoundCategory, number> = {
+  prayer: 1450,
+  water: 480,
+  medication: 520,
+  focus_work: 660,
+  walk_health: 720,
+  sleep_suhoor: 1280,
+  meeting_event: 780,
+  general: 520,
+};
+
 function playSingleBurst(ctx: AudioContext, category: TaskSoundCategory) {
   switch (category) {
     case 'prayer':
@@ -311,10 +327,11 @@ function playSingleBurst(ctx: AudioContext, category: TaskSoundCategory) {
     case 'water':
       scheduleTone(ctx, 520, 0, 0.16, 'sine', 0.11, 980);
       scheduleTone(ctx, 640, 0.17, 0.18, 'sine', 0.12, 1240);
+      scheduleTone(ctx, 780, 0.34, 0.14, 'sine', 0.07, 1460);
       break;
     case 'medication':
-      scheduleTone(ctx, 1046.5, 0, 0.18, 'triangle', 0.1);
-      scheduleTone(ctx, 1318.5, 0.16, 0.24, 'triangle', 0.1);
+      scheduleTone(ctx, 880.0, 0, 0.20, 'triangle', 0.10);
+      scheduleTone(ctx, 1174.66, 0.18, 0.30, 'sine', 0.11);
       break;
     case 'focus_work':
       scheduleTone(ctx, 440.0, 0, 0.22, 'triangle', 0.09);
@@ -333,8 +350,10 @@ function playSingleBurst(ctx: AudioContext, category: TaskSoundCategory) {
       scheduleTone(ctx, 523.25, 0.6, 0.65, 'triangle', 0.09);
       break;
     case 'meeting_event':
-      scheduleTone(ctx, 698.46, 0, 0.11, 'square', 0.045);
-      scheduleTone(ctx, 698.46, 0.14, 0.14, 'square', 0.045);
+      // Smooth warm calendar triple chime (replaces harsh square buzz)
+      scheduleTone(ctx, 587.33, 0, 0.24, 'sine', 0.10);
+      scheduleTone(ctx, 739.99, 0.16, 0.26, 'sine', 0.10);
+      scheduleTone(ctx, 880.0, 0.32, 0.44, 'triangle', 0.11);
       break;
     default:
       scheduleTone(ctx, 587.33, 0, 0.28, 'sine', 0.08);
@@ -344,8 +363,8 @@ function playSingleBurst(ctx: AudioContext, category: TaskSoundCategory) {
 }
 
 /**
- * Plays a distinct, recognizable audio signature for each task category with configurable repeats
- * (1x, 2x, 3x, 4x, or 'continuous' until user explicitly stops/dismisses it).
+ * Plays a distinct, recognizable audio signature for each task category with smooth breathing gaps
+ * between repeats so consecutive chimes never clash (1x..4x or continuous up to 60s).
  */
 export function playTaskSignature(
   category: TaskSoundCategory,
@@ -372,8 +391,10 @@ export function playTaskSignature(
   const repeat: SoundRepeatSetting = options?.repeatCount ?? 1;
   playSingleBurst(ctx, category);
 
+  const burstMs = BURST_DURATION_MS[category] ?? 650;
+
   if (repeat === 'continuous' && typeof window !== 'undefined') {
-    const loopMs = category === 'prayer' || category === 'sleep_suhoor' ? 2100 : 1650;
+    const loopMs = Math.max(2400, burstMs + 1400);
     activeContinuousInterval = window.setInterval(() => {
       const c = getCtx();
       if (c) playSingleBurst(c, category);
@@ -388,15 +409,15 @@ export function playTaskSignature(
         }
       }
     }, loopMs);
-    // Safety auto-stop after 3 minutes so unattended device never loops endlessly
+    // Stop after 1 minute cleanly so card can auto-snooze for 5 minutes if unacknowledged
     activeContinuousSafetyTimeout = window.setTimeout(() => {
       stopContinuousAlert();
-    }, 180_000);
+    }, 60_000);
     return { playedAudio: true, vibrated: false, isContinuous: true };
   }
 
   if (typeof repeat === 'number' && repeat > 1 && typeof window !== 'undefined') {
-    const gapMs = category === 'prayer' || category === 'sleep_suhoor' ? 1850 : 1250;
+    const gapMs = Math.max(1950, burstMs + 1150);
     const clamped = Math.min(4, Math.max(1, Math.round(repeat)));
     for (let i = 1; i < clamped; i++) {
       const id = window.setTimeout(() => {
@@ -442,6 +463,7 @@ export function playBatteryFullSignature(): boolean {
 export function startSmartChargeCompleteAlert(options?: {
   sanctuary?: ActiveSanctuaryState;
   keepRingingUntilUnplugged?: boolean;
+  onCycleRestart?: () => void;
   onAutoStop?: () => void;
 }): { playedAudio: boolean; suppressedBySanctuary: boolean } {
   stopSmartChargeCompleteAlert();
@@ -458,21 +480,68 @@ export function startSmartChargeCompleteAlert(options?: {
     return { playedAudio: false, suppressedBySanctuary: true };
   }
 
-  const played = playBatteryFullSignature();
-  if (typeof window !== 'undefined') {
-    // Repeat gently every 3.4s until user taps "إيقاف التنبيه" on PC or unplugs phone
+  let played = false;
+  if (typeof window === 'undefined') {
+    played = playBatteryFullSignature();
+    return { playedAudio: played, suppressedBySanctuary: false };
+  }
+
+  // Loop protocol: ring cleanly for 1 minute -> pause silently for 5 minutes -> ring for 1 minute until unplugged.
+  const runOneMinuteBurst = () => {
+    if (batteryAlertInterval !== null) {
+      window.clearInterval(batteryAlertInterval);
+      batteryAlertInterval = null;
+    }
+    if (batteryAlertSafetyTimeout !== null) {
+      window.clearTimeout(batteryAlertSafetyTimeout);
+      batteryAlertSafetyTimeout = null;
+    }
+    playBatteryFullSignature();
     batteryAlertInterval = window.setInterval(() => {
       playBatteryFullSignature();
-    }, 3400);
+    }, 3200);
 
-    // If user enabled "keep ringing until unplugged", keep looping until charger is disconnected or manually stopped.
-    // Otherwise apply a 2-minute gentle safety auto-stop.
-    if (!options?.keepRingingUntilUnplugged) {
-      batteryAlertSafetyTimeout = window.setTimeout(() => {
-        stopSmartChargeCompleteAlert();
+    batteryAlertSafetyTimeout = window.setTimeout(() => {
+      if (batteryAlertInterval !== null) {
+        window.clearInterval(batteryAlertInterval);
+        batteryAlertInterval = null;
+      }
+      batteryAlertSafetyTimeout = null;
+      if (options?.keepRingingUntilUnplugged) {
+        // Wait 5 minutes quietly, then re-ring for another minute
+        batteryAlertCycleTimeout = window.setTimeout(() => {
+          batteryAlertCycleTimeout = null;
+          options?.onCycleRestart?.();
+          runOneMinuteBurst();
+        }, 5 * 60_000);
+      } else {
         options?.onAutoStop?.();
-      }, 120_000);
-    }
+      }
+    }, 60_000);
+  };
+
+  played = playBatteryFullSignature();
+  if (played) {
+    // Replace initial double strike cleanly by letting runOneMinuteBurst own timers after first burst
+    batteryAlertInterval = window.setInterval(() => {
+      playBatteryFullSignature();
+    }, 3200);
+    batteryAlertSafetyTimeout = window.setTimeout(() => {
+      if (batteryAlertInterval !== null) {
+        window.clearInterval(batteryAlertInterval);
+        batteryAlertInterval = null;
+      }
+      batteryAlertSafetyTimeout = null;
+      if (options?.keepRingingUntilUnplugged) {
+        batteryAlertCycleTimeout = window.setTimeout(() => {
+          batteryAlertCycleTimeout = null;
+          options?.onCycleRestart?.();
+          runOneMinuteBurst();
+        }, 5 * 60_000);
+      } else {
+        options?.onAutoStop?.();
+      }
+    }, 60_000);
   }
 
   return { playedAudio: played, suppressedBySanctuary: false };

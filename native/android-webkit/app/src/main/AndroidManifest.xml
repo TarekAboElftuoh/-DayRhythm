@@ -58,17 +58,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".compose.ComposeMainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
-            android:exported="false"
-            android:hardwareAccelerated="true"
-            android:label="@string/app_name"
-            android:launchMode="singleTask"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:windowSoftInputMode="adjustResize" />
-
         <!-- Full-screen alert when the phone is locked / screen off -->
         <activity
             android:name=".AlarmActivity"

@@ -435,6 +435,9 @@ export interface SyncedRhythmPayload {
   cupsLogged: number;
   targetCups: number;
   hydrationWeeklyCounts: number[];
+  hydrationSlotOpIds?: string[];
+  hydrationRemovedOpIds?: string[];
+  hydrationUpdatedAtMs?: number;
   dailyCommitmentDays: number;
   dailyCommitmentDoneToday: boolean;
   waterTargetDays: number;
@@ -987,6 +990,19 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
   const safeWeekly = Array.from({ length: 7 }, (_, i) =>
     clampInt(rawWeekly[i], 0, 40, 0)
   );
+  const safeSlotOpIds = Array.isArray(payload.hydrationSlotOpIds)
+    ? payload.hydrationSlotOpIds.slice(0, 40).map((s) => (typeof s === 'string' ? s.slice(0, 48) : ''))
+    : undefined;
+  const safeRemovedOpIds = Array.isArray(payload.hydrationRemovedOpIds)
+    ? payload.hydrationRemovedOpIds
+        .slice(-80)
+        .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        .map((s) => s.slice(0, 48))
+    : undefined;
+  const safeHydrationUpdatedAtMs =
+    typeof payload.hydrationUpdatedAtMs === 'number' && Number.isFinite(payload.hydrationUpdatedAtMs)
+      ? Math.max(0, Math.round(payload.hydrationUpdatedAtMs))
+      : undefined;
 
   const safeQuiet: QuietModeType = VALID_QUIET_MODES.includes(payload.quietMode)
     ? payload.quietMode
@@ -1005,6 +1021,9 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
     cupsLogged: clampInt(payload.cupsLogged, 0, 40, 0),
     targetCups: clampInt(payload.targetCups, 1, 40, 13),
     hydrationWeeklyCounts: safeWeekly,
+    ...(safeSlotOpIds ? { hydrationSlotOpIds: safeSlotOpIds } : {}),
+    ...(safeRemovedOpIds ? { hydrationRemovedOpIds: safeRemovedOpIds } : {}),
+    ...(safeHydrationUpdatedAtMs !== undefined ? { hydrationUpdatedAtMs: safeHydrationUpdatedAtMs } : {}),
     dailyCommitmentDays: clampInt(payload.dailyCommitmentDays, 0, 10000, 0),
     dailyCommitmentDoneToday: Boolean(payload.dailyCommitmentDoneToday),
     waterTargetDays: clampInt(payload.waterTargetDays, 0, 10000, 0),
@@ -1065,6 +1084,16 @@ export function subscribeUserRhythmState(
               hydrationWeeklyCounts: Array.isArray(data.hydrationWeeklyCounts)
                 ? data.hydrationWeeklyCounts.map(Number)
                 : [0, 0, 0, 0, 0, 0, 0],
+              hydrationSlotOpIds: Array.isArray(data.hydrationSlotOpIds)
+                ? (data.hydrationSlotOpIds as string[])
+                : undefined,
+              hydrationRemovedOpIds: Array.isArray(data.hydrationRemovedOpIds)
+                ? (data.hydrationRemovedOpIds as string[])
+                : undefined,
+              hydrationUpdatedAtMs:
+                typeof data.hydrationUpdatedAtMs === 'number'
+                  ? data.hydrationUpdatedAtMs
+                  : undefined,
               dailyCommitmentDays: Number(data.dailyCommitmentDays ?? 0),
               dailyCommitmentDoneToday: Boolean(data.dailyCommitmentDoneToday),
               waterTargetDays: Number(data.waterTargetDays ?? 0),
@@ -1160,6 +1189,9 @@ const ALLOWED_USER_DOC_KEYS = new Set([
   'cupsLogged',
   'targetCups',
   'hydrationWeeklyCounts',
+  'hydrationSlotOpIds',
+  'hydrationRemovedOpIds',
+  'hydrationUpdatedAtMs',
   'dailyCommitmentDays',
   'dailyCommitmentDoneToday',
   'waterTargetDays',
@@ -1333,78 +1365,6 @@ export async function saveUserRhythmState(
   const next = prev.catch(() => {}).then(() => attemptAtomicSave(false));
   pendingUserSaves.set(uid, next);
   return next;
-}
-
-/**
- * Direct real-time hydration updater — writes immediately to Firestore (matching upsertMedicationRecord pattern).
- * Completely eliminates debounce delay, ensures cross-device consistency, and prevents local state reversion.
- */
-export async function saveHydrationRecord(
-  uid: string,
-  data: {
-    hydrationDateKey: string;
-    cupsLogged: number;
-    targetCups: number;
-    hydrationWeeklyCounts: number[];
-    waterTargetDays?: number;
-    waterTargetDoneToday?: boolean;
-  }
-): Promise<void> {
-  if (!auth.currentUser || auth.currentUser.uid !== uid || auth.currentUser.isAnonymous) return;
-  const docRef = doc(db, 'users', uid);
-  const safeDateKey = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(data.hydrationDateKey)
-    ? data.hydrationDateKey
-    : new Date().toISOString().slice(0, 10);
-  const rawWeekly = Array.isArray(data.hydrationWeeklyCounts) ? data.hydrationWeeklyCounts : [];
-  const safeWeekly = Array.from({ length: 7 }, (_, i) => clampInt(rawWeekly[i], 0, 40, 0));
-
-  const patch: Record<string, unknown> = {
-    uid,
-    hydrationDateKey: safeDateKey,
-    cupsLogged: clampInt(data.cupsLogged, 0, 40, 0),
-    targetCups: clampInt(data.targetCups, 1, 40, 13),
-    hydrationWeeklyCounts: safeWeekly,
-    updatedAt: serverTimestamp(),
-  };
-
-  if (typeof data.waterTargetDays === 'number') {
-    patch.waterTargetDays = clampInt(data.waterTargetDays, 0, 10000, 0);
-  }
-  if (typeof data.waterTargetDoneToday === 'boolean') {
-    patch.waterTargetDoneToday = Boolean(data.waterTargetDoneToday);
-  }
-
-  await withFirestoreWriteRetry(
-    async () => {
-      try {
-        await updateDoc(docRef, patch);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.toLowerCase().includes('not-found') || msg.toLowerCase().includes('no document to update')) {
-          const snap = await getDoc(docRef);
-          if (!snap.exists()) {
-            await setDoc(docRef, {
-              ...patch,
-              dailyCommitmentDays: 0,
-              dailyCommitmentDoneToday: false,
-              waterTargetDays: data.waterTargetDays ?? 0,
-              waterTargetDoneToday: data.waterTargetDoneToday ?? false,
-              quietMode: 'normal',
-              adhanOverrideSilent: true,
-              surfaceTheme: 'amoled',
-              deviceSettings: DEFAULT_DEVICE_SETTINGS,
-              lifeProfile: DEFAULT_LIFE_PROFILE,
-              createdAt: serverTimestamp(),
-            });
-            return;
-          }
-        }
-        throw err;
-      }
-    },
-    OperationType.WRITE,
-    `users/${uid}`
-  );
 }
 
 /**

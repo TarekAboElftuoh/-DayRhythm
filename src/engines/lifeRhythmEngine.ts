@@ -12,6 +12,8 @@ import {
   MemoryItem,
   PrayerTimeItem,
   ScheduleBlock,
+  SeasonalSleepGuidance,
+  SeasonalSleepPhase,
   TodayCalendarMeta,
   TomorrowAlertInfo,
   WeatherHydrationInfo,
@@ -221,8 +223,10 @@ export function computeDailyRhythmPlan(
     : null;
   const wakeMin = suhoorStartMin ?? normalWakeMin;
 
-  // Earliest realistic bedtime after Isha (25m buffer for Isha prayer + wind-down)
-  const earliestBedAfterIsha = wrap1440(isha + 25);
+  // Earliest realistic bedtime after Isha (20m when seasonal night is tight, 25m normally)
+  const rawPostIshaGap = durationForward(wrap1440(isha + 20), wakeMin) - sleepLatencyMin;
+  const isTightNight = rawPostIshaGap < profile.sleepTargetMinutes;
+  const earliestBedAfterIsha = wrap1440(isha + (isTightNight ? 20 : 25));
   const maxNightWindowMin = Math.max(
     0,
     durationForward(earliestBedAfterIsha, wakeMin) - sleepLatencyMin
@@ -334,6 +338,59 @@ export function computeDailyRhythmPlan(
   const coreNightSleepMin = Math.max(0, durationForward(bedtimeMin, wakeMin) - sleepLatencyMin);
   const totalSleepMin = coreNightSleepMin + qailulahDurationMin;
 
+  // --- Year-Round Seasonal Sleep Intelligence (Circadian Cycles + Diurnal Sunrise/Sunset Protection) ---
+  const completedCycles = Math.max(2, Math.floor(coreNightSleepMin / 90));
+  const caffeineCutoffMin = wrap1440(bedtimeMin - 8 * 60);
+  const seasonalPhase: SeasonalSleepPhase =
+    maxNightWindowMin < 360
+      ? 'short_summer_night'
+      : maxNightWindowMin < profile.sleepTargetMinutes
+        ? 'transitional_tight'
+        : maxNightWindowMin >= profile.sleepTargetMinutes + 90
+          ? 'abundant_winter'
+          : 'balanced_equinox';
+
+  const phaseLabelMap: Record<SeasonalSleepPhase, string> = {
+    abundant_winter: 'ليل شتوي طويل ومريح',
+    balanced_equinox: 'توازن فصلي مثالي',
+    transitional_tight: 'ليل انتقالي قصير نسبياً',
+    short_summer_night: 'بروتوكول الصيف القصير (~5 ساعات)',
+  };
+
+  // On short summer/tight nights, start wind-down between Maghrib and Isha right after Sunset
+  const windDownStartMin =
+    seasonalPhase === 'short_summer_night' || seasonalPhase === 'transitional_tight'
+      ? Math.max(wrap1440(maghrib + 15), wrap1440(bedtimeMin - 45))
+      : wrap1440(bedtimeMin - 35);
+
+  const nsdrEarlyMin = wrap1440(dhuhr + 30);
+  const nsdrWindowAr =
+    seasonalPhase === 'short_summer_night'
+      ? sleepDebtMinutes >= 60
+        ? `استرخاء يقظ 15 د أو باور ناب 20 د كحد أقصى الساعة ${formatMinutes12h(nsdrEarlyMin)} (تنتهي قبل العصر بمسافة لتصون نوم العشاء والشروق/الغروب)`
+        : `استرخاء يقظ بدون نوم (NSDR 10–15 د) الساعة ${formatMinutes12h(nsdrEarlyMin)} مع ضوء الشروق صباحاً للحفاظ على ضغط الأدينوزين للنوم فوراً بعد العشاء`
+      : 'صفر نوم نهاري — تعويض كامل بضوء الشروق الصباحي';
+
+  const protocolSummaryAr =
+    seasonalPhase === 'short_summer_night'
+      ? `النوم بعد العشاء مباشرة (${formatMinutes12h(bedtimeMin)}) لحفظ ${completedCycles} دورات نوم كاملة (${formatDurationAr(coreNightSleepMin)})، بدء التهدئة بين المغرب والعشاء (${formatMinutes12h(windDownStartMin)})، ومنع الكافيين بعد ${formatMinutes12h(caffeineCutoffMin)}.`
+      : seasonalPhase === 'transitional_tight'
+        ? `حماية ${completedCycles} دورات كاملة (${formatDurationAr(coreNightSleepMin)}) بالنوم الفوري بعد العشاء (${formatMinutes12h(bedtimeMin)})، ونقل المذاكرة المرنة لبعد الشروق.`
+        : seasonalPhase === 'abundant_winter'
+          ? `متّسع ليلي مريح (${formatDurationAr(maxNightWindowMin)} بين العشاء والفجر) يكفي 5 دورات نوم كاملة (${formatDurationAr(coreNightSleepMin)}) مع مرونة مسائية هادئة.`
+          : `إيقاع متوازن (${completedCycles} دورات · ${formatDurationAr(coreNightSleepMin)}) من ${formatMinutes12h(bedtimeMin)} حتى ${formatMinutes12h(wakeMin)} دون نوم نهاري.`;
+
+  const seasonalSleep: SeasonalSleepGuidance = {
+    phase: seasonalPhase,
+    phaseLabelAr: phaseLabelMap[seasonalPhase],
+    astronomicalNightMin: maxNightWindowMin,
+    completedCycles,
+    windDownStartMin,
+    caffeineCutoffMin,
+    nsdrWindowAr,
+    protocolSummaryAr,
+  };
+
   // --- Scientific Hydration Distribution (12-Hour Aware, Zero Water During Fast) ---
   const hydrationSlots: HydrationScheduleSlot[] = [];
 
@@ -420,7 +477,44 @@ export function computeDailyRhythmPlan(
     sleepAdviceAr,
     conflictWarningAr,
     autoAdaptationProposalAr,
+    seasonalSleep,
     isWorkDayToday,
+  };
+}
+
+/**
+ * Computes annual summer shortest vs winter longest night (Isha+20m → Fajr-15m) at the user's coordinates
+ * so AI & sleep UI can guide year-round diurnal sleep adaptation.
+ */
+export function computeAnnualSleepForecast(location: GeoLocation): {
+  summerMinNightMin: number;
+  winterMaxNightMin: number;
+  summerFajrMin: number;
+  summerIshaMin: number;
+  winterFajrMin: number;
+  winterIshaMin: number;
+} {
+  const year = new Date().getFullYear();
+  const summerSolstice = new Date(Date.UTC(year, 5, 21, 12, 0, 0));
+  const winterSolstice = new Date(Date.UTC(year, 11, 21, 12, 0, 0));
+  const sPrayers = calculateEgyptianPrayerTimes(location, summerSolstice);
+  const wPrayers = calculateEgyptianPrayerTimes(location, winterSolstice);
+
+  const sFajr = sPrayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 240;
+  const sIsha = sPrayers.find((p) => p.id === 'isha')?.adhanMinutes ?? 1230;
+  const wFajr = wPrayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 310;
+  const wIsha = wPrayers.find((p) => p.id === 'isha')?.adhanMinutes ?? 1090;
+
+  const sNight = Math.max(0, durationForward(wrap1440(sIsha + 20), wrap1440(sFajr - 15)) - 15);
+  const wNight = Math.max(0, durationForward(wrap1440(wIsha + 25), wrap1440(wFajr - 15)) - 15);
+
+  return {
+    summerMinNightMin: sNight,
+    winterMaxNightMin: wNight,
+    summerFajrMin: sFajr,
+    summerIshaMin: sIsha,
+    winterFajrMin: wFajr,
+    winterIshaMin: wIsha,
   };
 }
 
@@ -972,6 +1066,20 @@ export function buildLifeProfileGeminiSummary(
         ? 'نوم ليلي مبكر متواصل'
         : 'نوم مرتكز + قيلولة';
 
+  const annualSleep = computeAnnualSleepForecast({
+    id: 'active',
+    nameAr: profile.currentCityName,
+    nameEn: profile.currentCityName,
+    lat: profile.currentLat,
+    lng: profile.currentLng,
+    tzOffsetHours: 2,
+    timeZone: profile.currentTimeZone,
+  });
+
+  const seasonalLine = plan.seasonalSleep
+    ? ` | الفصل النومي اليوم: ${plan.seasonalSleep.phaseLabelAr} (${plan.seasonalSleep.completedCycles} دورات × 90د · قطع الكافيين ${formatMinutes12h(plan.seasonalSleep.caffeineCutoffMin)} · بدء التهدئة ${formatMinutes12h(plan.seasonalSleep.windDownStartMin)}) | المدى السنوي بين العشاء والفجر بموقعك: أقصر ليل صيفي ${formatDurationAr(annualSleep.summerMinNightMin)} – أطول ليل شتوي ${formatDurationAr(annualSleep.winterMaxNightMin)} | إرشاد النهار: ${plan.seasonalSleep.nsdrWindowAr}`
+    : '';
+
   const sleepLine = `سياسة النوم: ${sleepPolicyText} | النوم الليلة: ${formatMinutes12h(plan.bedtimeMin)} ← الاستيقاظ: ${formatMinutes12h(plan.wakeMin)} (${formatDurationAr(plan.coreNightSleepMin)}) | الشروق: ${formatMinutes12h(plan.sunriseMin)} · الغروب: ${formatMinutes12h(plan.maghribMin)}${
     plan.suhoorStartMin !== null
       ? ` · سحور غداً الساعة ${formatMinutes12h(plan.suhoorStartMin)} (قبل الفجر بـ ${profile.suhoorLeadMinutes} د)`
@@ -984,7 +1092,7 @@ export function buildLifeProfileGeminiSummary(
     plan.eveningStudyTrimMin > 0
       ? ` · تقليص مقترح من المذاكرة المرنة المسائية: ${plan.eveningStudyTrimMin} د لحماية النوم الليلي`
       : ''
-  }`;
+  }${seasonalLine}`;
 
   const dateLine = calendarMeta
     ? `اليوم والتاريخ: ${calendarMeta.weekdayAr}، ${calendarMeta.gregorianAr}${

@@ -268,6 +268,19 @@ export function connectSpircCluster(
   let lamportSeq = Date.now();
   let retryMs = 1500;
   let retryTimer: number | null = null;
+  let pingTimer: number | null = null;
+  let pongTimeoutTimer: number | null = null;
+
+  const clearHeartbeat = () => {
+    if (pingTimer !== null) {
+      window.clearInterval(pingTimer);
+      pingTimer = null;
+    }
+    if (pongTimeoutTimer !== null) {
+      window.clearTimeout(pongTimeoutTimer);
+      pongTimeoutTimer = null;
+    }
+  };
 
   const toWsUrl = (base: string): string => {
     const clean = base.trim().replace(/\/+$/, '');
@@ -288,6 +301,24 @@ export function connectSpircCluster(
       ws.binaryType = 'arraybuffer';
       ws.onopen = () => {
         retryMs = 1500;
+        clearHeartbeat();
+        pingTimer = window.setInterval(() => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          try {
+            ws.send('ping');
+            if (pongTimeoutTimer !== null) window.clearTimeout(pongTimeoutTimer);
+            pongTimeoutTimer = window.setTimeout(() => {
+              pongTimeoutTimer = null;
+              try {
+                ws?.close();
+              } catch {
+                // ignore
+              }
+            }, 10_000);
+          } catch {
+            // ignore
+          }
+        }, 20_000);
         // Request catch-up delta from Durable Object SQLite
         const req = encodeSpircFrame({
           version: 1,
@@ -304,6 +335,10 @@ export function connectSpircCluster(
         ws?.send(req.buffer as ArrayBuffer);
       };
       ws.onmessage = (ev) => {
+        if (pongTimeoutTimer !== null) {
+          window.clearTimeout(pongTimeoutTimer);
+          pongTimeoutTimer = null;
+        }
         if (!(ev.data instanceof ArrayBuffer)) return;
         try {
           const frame = decodeSpircFrame(new Uint8Array(ev.data));
@@ -335,6 +370,7 @@ export function connectSpircCluster(
         }
       };
       ws.onclose = () => {
+        clearHeartbeat();
         ws = null;
         if (!closed) {
           retryTimer = window.setTimeout(connect, retryMs);
@@ -342,6 +378,7 @@ export function connectSpircCluster(
         }
       };
       ws.onerror = () => {
+        clearHeartbeat();
         ws?.close();
       };
     } catch {
@@ -410,6 +447,7 @@ export function connectSpircCluster(
     },
     close: () => {
       closed = true;
+      clearHeartbeat();
       if (retryTimer !== null) window.clearTimeout(retryTimer);
       ws?.close();
       ws = null;

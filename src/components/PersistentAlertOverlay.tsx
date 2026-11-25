@@ -26,6 +26,7 @@ interface PersistentAlertOverlayProps {
   defaultSnoozeMinutes?: number;
   allowVibration?: boolean;
   onDismiss: () => void;
+  onAutoSnooze?: (alert: PersistentAlertItem, minutes: number) => void;
   onConfirmWater?: () => void;
   onConfirmMedication?: (medicationId: string, doseTime24?: string) => void;
   onCompleteTask?: (taskId: string, taskListId: string) => void;
@@ -37,6 +38,7 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
   defaultSnoozeMinutes = 5,
   allowVibration = true,
   onDismiss,
+  onAutoSnooze,
   onConfirmWater,
   onConfirmMedication,
   onCompleteTask,
@@ -47,6 +49,8 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
   const lastVibratedAlertIdRef = useRef<string | null>(null);
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
+  const onAutoSnoozeRef = useRef(onAutoSnooze);
+  onAutoSnoozeRef.current = onAutoSnooze;
 
   useEffect(() => {
     if (!alert) {
@@ -80,8 +84,14 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
     const id = window.setInterval(() => {
       const t = Date.now();
       setNowMs(t);
-      if (!alert.isContinuous && t - alert.createdAtMs >= alert.durationMs) {
-        onDismissRef.current();
+      if (t - alert.createdAtMs >= alert.durationMs) {
+        if (alert.id.startsWith('charge_')) {
+          onDismissRef.current();
+        } else if (onAutoSnoozeRef.current) {
+          onAutoSnoozeRef.current(alert, 5);
+        } else {
+          onDismissRef.current();
+        }
       }
     }, 1000);
 
@@ -181,7 +191,7 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
           <button
             type="button"
             onClick={onDismiss}
-            className="min-w-[36px] min-h-[36px] p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer shrink-0 flex items-center justify-center"
+            className="min-w-[44px] min-h-[44px] sm:min-w-[36px] sm:min-h-[36px] p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer shrink-0 flex items-center justify-center"
             aria-label="إغلاق التنبيه"
             title="إغلاق وإيقاف الصوت على أجهزتك"
           >
@@ -193,11 +203,8 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
           {alert.isHydration && onConfirmWater && (
             <button
               type="button"
-              onClick={() => {
-                onConfirmWater();
-                onDismiss();
-              }}
-              className="flex-1 sm:flex-none min-h-[40px] px-3.5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center justify-center gap-1.5 cursor-pointer"
+              onClick={onConfirmWater}
+              className="flex-1 sm:flex-none min-h-[46px] sm:min-h-[40px] px-3.5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Droplets className="w-3.5 h-3.5" />
               <span>شربت فعلاً</span>
@@ -207,11 +214,8 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
           {alert.medicationId && onConfirmMedication && (
             <button
               type="button"
-              onClick={() => {
-                onConfirmMedication(alert.medicationId!, alert.medicationDoseTime24);
-                onDismiss();
-              }}
-              className="flex-1 sm:flex-none min-h-[40px] px-3.5 py-2 rounded-xl bg-rose-400 text-black text-xs font-bold hover:bg-rose-300 flex items-center justify-center gap-1.5 cursor-pointer"
+              onClick={() => onConfirmMedication(alert.medicationId!, alert.medicationDoseTime24)}
+              className="flex-1 sm:flex-none min-h-[46px] sm:min-h-[40px] px-3.5 py-2 rounded-xl bg-rose-400 text-black text-xs font-bold hover:bg-rose-300 flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Pill className="w-3.5 h-3.5" />
               <span>أخذت الجرعة</span>
@@ -221,11 +225,8 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
           {alert.taskId && alert.taskListId && onCompleteTask && (
             <button
               type="button"
-              onClick={() => {
-                onCompleteTask(alert.taskId!, alert.taskListId!);
-                onDismiss();
-              }}
-              className="flex-1 sm:flex-none min-h-[40px] px-3.5 py-2 rounded-xl bg-emerald-400 text-black text-xs font-bold hover:bg-emerald-300 flex items-center justify-center gap-1.5 cursor-pointer"
+              onClick={() => onCompleteTask(alert.taskId!, alert.taskListId!)}
+              className="flex-1 sm:flex-none min-h-[46px] sm:min-h-[40px] px-3.5 py-2 rounded-xl bg-emerald-400 text-black text-xs font-bold hover:bg-emerald-300 flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Check className="w-3.5 h-3.5" />
               <span>أنجزت المهمة</span>
@@ -235,11 +236,8 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
           {canSnooze && (
             <button
               type="button"
-              onClick={() => {
-                onSnoozeAlert?.(alert, snoozeMin);
-                onDismiss();
-              }}
-              className="min-h-[40px] px-3 py-2 rounded-xl border border-[#7FFFD4]/45 bg-[#7FFFD4]/12 text-[#7FFFD4] hover:bg-[#7FFFD4]/22 text-xs font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors"
+              onClick={() => onSnoozeAlert?.(alert, snoozeMin)}
+              className="min-h-[46px] sm:min-h-[40px] px-3 py-2 rounded-xl border border-[#7FFFD4]/45 bg-[#7FFFD4]/12 text-[#7FFFD4] hover:bg-[#7FFFD4]/22 text-xs font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors"
               title={`تأجيل التنبيه وإعادة التذكير بعد ${snoozeMin} دقيقة`}
             >
               <Clock className="w-3.5 h-3.5" />
@@ -250,7 +248,7 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
           <button
             type="button"
             onClick={onDismiss}
-            className={`min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+            className={`min-h-[46px] sm:min-h-[40px] px-3.5 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
               alert.isContinuous
                 ? 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
                 : 'border border-white/15 bg-white/[0.06] text-zinc-100 hover:bg-white/15'

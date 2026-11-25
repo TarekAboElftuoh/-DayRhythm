@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { formatCountdown, pickActiveCountdownItem } from '../hooks/useCountdown';
 
 /**
  * The Windows desktop capsule, drawn with the app's own design system (same card surface,
@@ -6,6 +7,18 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
  * DesktopCapsuleForm.cs, which sends the state; this page sends back its size, drag, menu and
  * open requests.
  */
+
+interface CapsuleQueueItem {
+  emoji: string;
+  title: string;
+  statusLabel?: string;
+  clockLabel?: string;
+  countdownText: string;
+  isNow: boolean;
+  isUrgent: boolean;
+  targetEpochMs: number;
+  durationSeconds?: number;
+}
 
 interface CapsuleState {
   emoji: string;
@@ -21,6 +34,7 @@ interface CapsuleState {
   secondaryTargetEpochMs: number;
   secondaryIsNow: boolean;
   secondaryIsUrgent: boolean;
+  upcomingQueue?: CapsuleQueueItem[];
   phoneBatteryPct: number;
   phoneCharging: boolean;
   phoneChargeLimitPct: number;
@@ -43,6 +57,7 @@ const EMPTY_STATE: CapsuleState = {
   secondaryTargetEpochMs: 0,
   secondaryIsNow: false,
   secondaryIsUrgent: false,
+  upcomingQueue: [],
   phoneBatteryPct: -1,
   phoneCharging: false,
   phoneChargeLimitPct: 90,
@@ -69,18 +84,17 @@ function post(msg: Record<string, unknown>) {
   }
 }
 
-/** Live clock from the target time; falls back to the app's text when there's no target. */
+/** Smooth clock from targetEpochMs: >60s → X دقيقة | <=60s → MM:SS down to 00:00 (never "الآن"). */
 function liveClock(targetEpochMs: number, fallback: string, baseUrgent: boolean, nowMs: number) {
-  if (fallback === 'الآن') return { text: 'الآن', urgent: true };
-  if (!targetEpochMs || targetEpochMs <= 0) return { text: fallback || '--:--', urgent: baseUrgent };
-  const remaining = Math.max(0, Math.round((targetEpochMs - nowMs) / 1000));
-  if (remaining === 0) return { text: 'الآن', urgent: true };
-  const urgent = baseUrgent || (remaining > 0 && remaining <= 60);
-  const h = Math.floor(remaining / 3600);
-  const m = Math.floor((remaining % 3600) / 60);
-  const s = remaining % 60;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return { text: h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`, urgent };
+  if (!targetEpochMs || targetEpochMs <= 0) {
+    const cleanFallback = !fallback || fallback === 'الآن' ? '00:00' : fallback;
+    return { text: cleanFallback, urgent: baseUrgent };
+  }
+  const remMs = Math.max(0, targetEpochMs - nowMs);
+  return {
+    text: formatCountdown(remMs),
+    urgent: remMs <= 60_000,
+  };
 }
 
 const accentClass = (urgent: boolean, now: boolean) =>
@@ -88,7 +102,6 @@ const accentClass = (urgent: boolean, now: boolean) =>
 
 export const DesktopCapsule: React.FC = () => {
   const [state, setState] = useState<CapsuleState>(() => {
-    // Preview helper: capsule.html?demo=1 in a browser shows sample data.
     if (new URLSearchParams(window.location.search).get('demo') === '1') {
       return {
         ...EMPTY_STATE,
@@ -109,7 +122,6 @@ export const DesktopCapsule: React.FC = () => {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const shellRef = useRef<HTMLDivElement>(null);
 
-  // State from the native window
   useEffect(() => {
     const b = bridge();
     if (!b) return;
@@ -123,13 +135,11 @@ export const DesktopCapsule: React.FC = () => {
     return () => b.removeEventListener('message', onMsg);
   }, []);
 
-  // 1-second tick for the live countdowns
   useEffect(() => {
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    const id = window.setInterval(() => setNowMs(Date.now()), 500);
     return () => window.clearInterval(id);
   }, []);
 
-  // Tell the native window our exact size so it can fit and round itself.
   useLayoutEffect(() => {
     const el = shellRef.current;
     if (!el) return;
@@ -153,21 +163,61 @@ export const DesktopCapsule: React.FC = () => {
     lg: { pad: vertical ? 'px-4 py-3' : 'px-4 py-2.5', gap: 'gap-3', emoji: 'text-lg', clock: 'text-[15px]', chip: 'text-xs' },
   }[size];
 
-  const primary = state.isNow
-    ? { text: 'الآن', urgent: true }
-    : liveClock(state.targetEpochMs, state.countdownText, state.isUrgent, nowMs);
-  const secondary = state.hasSecondaryTimer
-    ? (state.secondaryIsNow
-        ? { text: 'الآن', urgent: true }
-        : liveClock(state.secondaryTargetEpochMs, state.secondaryCountdownText, state.secondaryIsUrgent, nowMs))
+  // Auto-roll to the next event in upcomingQueue immediately when primary finishes
+  const activePrimary = pickActiveCountdownItem(
+    {
+      emoji: state.emoji,
+      title: state.title,
+      countdownText: state.countdownText,
+      isNow: state.isNow,
+      isUrgent: state.isUrgent,
+      targetEpochMs: state.targetEpochMs,
+    },
+    state.upcomingQueue,
+    nowMs
+  );
+
+  const primary = liveClock(
+    activePrimary.targetEpochMs,
+    activePrimary.countdownText,
+    activePrimary.isUrgent,
+    nowMs
+  );
+
+  const secondaryCandidate = state.hasSecondaryTimer
+    ? pickActiveCountdownItem(
+        {
+          emoji: state.secondaryEmoji,
+          title: state.secondaryTitle,
+          countdownText: state.secondaryCountdownText,
+          isNow: state.secondaryIsNow,
+          isUrgent: state.secondaryIsUrgent,
+          targetEpochMs: state.secondaryTargetEpochMs,
+        },
+        state.upcomingQueue?.filter(
+          (q) => q.targetEpochMs > nowMs && q.targetEpochMs !== activePrimary.targetEpochMs
+        ),
+        nowMs
+      )
     : null;
+
+  const secondary =
+    secondaryCandidate && (secondaryCandidate.targetEpochMs > nowMs || !secondaryCandidate.targetEpochMs)
+      ? liveClock(
+          secondaryCandidate.targetEpochMs,
+          secondaryCandidate.countdownText,
+          secondaryCandidate.isUrgent,
+          nowMs
+        )
+      : null;
+
   const showBattery = state.phoneCharging && state.phoneBatteryPct >= 0;
   const batteryFull = showBattery && state.phoneBatteryPct >= state.phoneChargeLimitPct;
   const divider = vertical ? 'border-t border-white/[0.1] pt-2' : 'border-r border-white/[0.1] pr-2.5';
 
   const tooltip = [
-    `${state.emoji} ${state.title || 'إيقاع اليوم'}`,
-    secondary && state.secondaryTitle ? `${state.secondaryEmoji} ${state.secondaryTitle}` : '',
+    `${activePrimary.emoji} ${activePrimary.title || 'إيقاع اليوم'}`,
+    secondary && secondaryCandidate?.title ? `${secondaryCandidate.emoji} ${secondaryCandidate.title}` : '',
     showBattery ? `⚡ بطارية الهاتف ${state.phoneBatteryPct}%` : '',
   ]
     .filter(Boolean)
@@ -188,17 +238,17 @@ export const DesktopCapsule: React.FC = () => {
       className={`inline-flex ${vertical ? 'flex-col items-stretch rounded-2xl' : 'flex-row items-center rounded-full'} ${tokens.pad} ${tokens.gap} bg-[#0B0E14] border border-white/[0.08] cursor-grab active:cursor-grabbing whitespace-nowrap`}
     >
       <div className="inline-flex items-center gap-1.5">
-        <span className={`${tokens.emoji} leading-none`}>{state.emoji}</span>
-        <span className={`font-digits font-bold tracking-tight ${tokens.clock} ${accentClass(primary.urgent, state.isNow)}`}>
+        <span className={`${tokens.emoji} leading-none`}>{activePrimary.emoji}</span>
+        <span className={`font-digits font-bold tracking-tight ${tokens.clock} ${accentClass(primary.urgent, activePrimary.isNow)}`}>
           {primary.text}
         </span>
       </div>
 
-      {secondary && (
+      {secondary && secondaryCandidate && (
         <div className={`inline-flex items-center gap-1.5 ${divider}`}>
-          <span className={`${tokens.emoji} leading-none`}>{state.secondaryEmoji}</span>
+          <span className={`${tokens.emoji} leading-none`}>{secondaryCandidate.emoji}</span>
           <span
-            className={`font-digits font-bold tracking-tight ${tokens.clock} ${accentClass(secondary.urgent, state.secondaryIsNow)}`}
+            className={`font-digits font-bold tracking-tight ${tokens.clock} ${accentClass(secondary.urgent, secondaryCandidate.isNow)}`}
           >
             {secondary.text}
           </span>

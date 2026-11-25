@@ -1,50 +1,69 @@
-import React, { useMemo, useState } from 'react';
-import { X, RotateCcw, ArrowLeftRight } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { X, RotateCcw, Zap, Moon, SkipForward } from 'lucide-react';
 import { CatchUpDecision, ScheduleBlock } from '../types/dayrhythm';
 import { computeCollisionFreeReflow } from '../engines/scheduleEngine';
-import { formatMinutes12h } from '../engines/prayerEngine';
+import { formatMinutes12h, getNowMinutesInTimeZone } from '../engines/prayerEngine';
 
 interface SmartCatchUpModalProps {
   isOpen: boolean;
   onClose: () => void;
   blocks: ScheduleBlock[];
+  activeTimeZone?: string;
   hasUndoSnapshot: boolean;
   onCommitReflow: (reflowed: ScheduleBlock[]) => void;
   onUndoToOriginal: () => void;
 }
 
-const SIM_NOW_OPTIONS = [
-  { label: '07:30 ص (تأخر 3 س)', min: 7 * 60 + 30 },
-  { label: '09:15 ص (تأخر صباحي)', min: 9 * 60 + 15 },
-  { label: '11:00 ص (منتصف اليوم)', min: 11 * 60 },
-  { label: '02:15 م (بعد الظهر)', min: 14 * 60 + 15 },
-];
-
 export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
   isOpen,
   onClose,
   blocks,
+  activeTimeZone = 'Africa/Cairo',
   hasUndoSnapshot,
   onCommitReflow,
   onUndoToOriginal,
 }) => {
-  const [simNowMin, setSimNowMin] = useState<number>(9 * 60 + 15);
+  const [selectedNowMin, setSelectedNowMin] = useState<number>(() =>
+    getNowMinutesInTimeZone(activeTimeZone)
+  );
   const [decisions, setDecisions] = useState<Record<string, CatchUpDecision>>({});
+
+  // Refresh to actual current clock whenever opened
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedNowMin(getNowMinutesInTimeZone(activeTimeZone));
+      setDecisions({});
+    }
+  }, [isOpen, activeTimeZone]);
 
   const overdueTasks = useMemo(
     () =>
       blocks.filter(
-        (b) => !b.isAnchor && !b.completed && !b.deleted && b.startMin < simNowMin
+        (b) => !b.isAnchor && !b.completed && !b.deleted && b.startMin < selectedNowMin
       ),
-    [blocks, simNowMin]
+    [blocks, selectedNowMin]
   );
 
   const reflowPreview = useMemo(
-    () => computeCollisionFreeReflow(blocks, simNowMin, decisions),
-    [blocks, simNowMin, decisions]
+    () => computeCollisionFreeReflow(blocks, selectedNowMin, decisions),
+    [blocks, selectedNowMin, decisions]
   );
 
   if (!isOpen) return null;
+
+  const applyBatchPreset = (mode: 'auto' | 'evening' | 'skip') => {
+    const next: Record<string, CatchUpDecision> = {};
+    for (const task of overdueTasks) {
+      if (mode === 'auto') {
+        next[task.id] = task.canShiftEvening ? 'shift_evening' : 'start_now';
+      } else if (mode === 'evening') {
+        next[task.id] = task.canShiftEvening ? 'shift_evening' : 'skip_today';
+      } else {
+        next[task.id] = 'skip_today';
+      }
+    }
+    setDecisions(next);
+  };
 
   const setDecision = (id: string, d: CatchUpDecision) => {
     setDecisions((prev) => ({ ...prev, [id]: d }));
@@ -55,241 +74,148 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
-      aria-label="تدارك اليوم والزحزحة الذكية"
+      aria-label="تدارك اليوم"
     >
-      <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-white/15 bg-[#0A0D12] p-6 text-zinc-100 shadow-2xl">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-white/15 bg-[#0A0D12] p-5 sm:p-6 text-zinc-100 shadow-2xl space-y-4">
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-white/10">
+        <div className="flex items-start justify-between gap-3 pb-3 border-b border-white/10">
           <div>
-            <h2 className="text-lg font-bold text-white">⚡ تدارك اليوم والزحزحة الذكية</h2>
+            <h2 className="text-base sm:text-lg font-bold text-white">⚡ تدارك اليوم ببساطة</h2>
             <p className="text-xs text-zinc-400 mt-0.5">
-              خوارزمية امتصاص الفجوة لضغط كتل العمل المرنة وحماية مواقيت الصلاة والنوم 09:15 م
+              رتّب المهام التي فات موعدها الآن ({formatMinutes12h(selectedNowMin, 'ar')}) — مواقيت الصلاة والنوم تبقى ثابتة
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-white cursor-pointer"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white cursor-pointer shrink-0"
             aria-label="إغلاق"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Time Simulation Bar */}
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/60 p-3">
-          <span className="text-xs font-medium text-zinc-300">
-            توقيت التدارك الحالي:
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            {SIM_NOW_OPTIONS.map((opt) => (
-              <button
-                key={opt.min}
-                type="button"
-                onClick={() => setSimNowMin(opt.min)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors ${
-                  simNowMin === opt.min
-                    ? 'bg-[#7FFFD4] text-black font-semibold'
-                    : 'bg-white/5 text-zinc-400 hover:text-white'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
+        {/* One-Tap Quick Presets */}
+        {overdueTasks.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => applyBatchPreset('auto')}
+              className="min-h-[44px] px-3 py-2 rounded-xl border border-[#7FFFD4]/40 bg-[#7FFFD4]/12 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            >
+              <Zap className="w-4 h-4 shrink-0" />
+              <span>رتّب الباقي تلقائياً الآن</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => applyBatchPreset('evening')}
+              className="min-h-[44px] px-3 py-2 rounded-xl border border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            >
+              <Moon className="w-4 h-4 text-indigo-300 shrink-0" />
+              <span>رحّل المرن للمساء</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => applyBatchPreset('skip')}
+              className="min-h-[44px] px-3 py-2 rounded-xl border border-white/10 bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            >
+              <SkipForward className="w-4 h-4 text-zinc-400 shrink-0" />
+              <span>تخطّ الفائت واكمل</span>
+            </button>
           </div>
-        </div>
+        )}
 
-        {/* Overdue Tasks Decision List */}
-        <div className="mt-5">
-          <div className="flex items-center justify-between mb-2.5">
-            <h3 className="text-sm font-semibold text-zinc-200">
-              المهام الفائتة قبل {formatMinutes12h(simNowMin)} ({overdueTasks.length})
-            </h3>
-            <span className="font-mono-tabular text-xs text-zinc-400">
-              الميزانية المتاحة W = {reflowPreview.availableBudgetMin} د
-            </span>
+        {/* Overdue List */}
+        {overdueTasks.length === 0 ? (
+          <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-sm text-zinc-400">
+            يومك متزن الآن — لا توجد مهام فائتة قبل {formatMinutes12h(selectedNowMin, 'ar')} ✓
           </div>
-
-          {overdueTasks.length === 0 ? (
-            <div className="rounded-xl border border-white/10 bg-black/40 p-6 text-center text-xs text-zinc-400">
-              لا توجد مهام مرنة فائتة قبل هذا التوقيت.
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {overdueTasks.map((task) => {
-                const currentDecision = decisions[task.id] ?? 'skip_today';
-                return (
-                  <div
-                    key={task.id}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl border border-white/10 bg-black/50 p-3"
-                  >
-                    {(() => {
-                      const ep = task.emojiPair.trim();
-                      const rawTitle = task.categoryAr.trim();
-                      const cleanTitle = rawTitle.startsWith(ep)
-                        ? rawTitle.slice(ep.length).trim()
-                        : rawTitle;
-                      return (
-                        <div className="flex items-center gap-3">
-                          <span className="text-xl">{task.emojiPair}</span>
-                          <div>
-                            {cleanTitle && (
-                              <div className="text-xs font-semibold text-white">
-                                {cleanTitle}
-                              </div>
-                            )}
-                            <div className="font-mono-tabular text-[11px] text-zinc-500">
-                              الأصل: {formatMinutes12h(task.startMin)} · {task.durationMin} دقيقة
-                            </div>
+        ) : (
+          <div className="space-y-2.5">
+            {overdueTasks.map((task) => {
+              const currentDecision = decisions[task.id] ?? 'skip_today';
+              const ep = task.emojiPair.trim();
+              const rawTitle = task.categoryAr.trim();
+              const cleanTitle = rawTitle.startsWith(ep)
+                ? rawTitle.slice(ep.length).trim()
+                : rawTitle;
+              return (
+                <div
+                  key={task.id}
+                  className="flex flex-col gap-2.5 rounded-xl border border-white/10 bg-black/50 p-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="text-lg shrink-0">{ep}</span>
+                      <div className="min-w-0">
+                        {cleanTitle && (
+                          <div className="text-xs font-semibold text-white truncate">
+                            {cleanTitle}
                           </div>
+                        )}
+                        <div className="font-digits text-[11px] text-zinc-500">
+                          كان {formatMinutes12h(task.startMin, 'ar')} · {task.durationMin} د
                         </div>
-                      );
-                    })()}
-
-                    {/* 3-Segmented Decision Pill */}
-                    <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-white/[0.04] border border-white/10 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setDecision(task.id, 'start_now')}
-                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap cursor-pointer transition-colors ${
-                          currentDecision === 'start_now'
-                            ? 'bg-[#7FFFD4] text-black font-semibold'
-                            : 'text-zinc-400 hover:text-white'
-                        }`}
-                      >
-                        ⏩ ابدأ الآن
-                      </button>
-                      <button
-                        type="button"
-                        disabled={!task.canShiftEvening}
-                        onClick={() => task.canShiftEvening && setDecision(task.id, 'shift_evening')}
-                        title={
-                          task.canShiftEvening
-                            ? undefined
-                            : 'مربوط بوقته (زي الشروق أو الغروب) — مينفعش يترحّل'
-                        }
-                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors ${
-                          !task.canShiftEvening
-                            ? 'text-zinc-600 cursor-not-allowed opacity-50'
-                            : currentDecision === 'shift_evening'
-                              ? 'bg-indigo-400 text-black font-semibold cursor-pointer'
-                              : 'text-zinc-400 hover:text-white cursor-pointer'
-                        }`}
-                      >
-                        {task.canShiftEvening ? '🌙 رحّل للمساء' : '🔒 مربوط بوقته'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setDecision(task.id, 'skip_today')}
-                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium whitespace-nowrap cursor-pointer transition-colors ${
-                          currentDecision === 'skip_today'
-                            ? 'bg-zinc-700 text-white font-semibold'
-                            : 'text-zinc-400 hover:text-white'
-                        }`}
-                      >
-                        ❌ تخطّي اليوم
-                      </button>
+                      </div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
 
-        {/* Before vs. After Visual Timeline Diff Bar */}
-        <div className="mt-6 rounded-xl border border-white/10 bg-black/60 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
-              <ArrowLeftRight className="w-4 h-4 text-[#7FFFD4]" />
-              معاينة الترتيب بدون تعارض (قبل مقابل بعد الزحزحة)
-            </h3>
-            <span className="font-mono-tabular text-[11px] text-[#4ADE80]">
-              0 تعارضات · الصلوات والنوم ثابتة 100%
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setDecision(task.id, 'start_now')}
+                      className={`min-h-[42px] px-2 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer ${
+                        currentDecision === 'start_now'
+                          ? 'bg-[#7FFFD4] text-black'
+                          : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]'
+                      }`}
+                    >
+                      ابدأ الآن
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!task.canShiftEvening}
+                      onClick={() => task.canShiftEvening && setDecision(task.id, 'shift_evening')}
+                      className={`min-h-[42px] px-2 rounded-lg text-[11px] font-semibold transition-colors ${
+                        !task.canShiftEvening
+                          ? 'bg-white/[0.02] text-zinc-600 cursor-not-allowed'
+                          : currentDecision === 'shift_evening'
+                            ? 'bg-indigo-400 text-black cursor-pointer'
+                            : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08] cursor-pointer'
+                      }`}
+                    >
+                      {task.canShiftEvening ? 'للمساء' : 'وقت ثابت'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDecision(task.id, 'skip_today')}
+                      className={`min-h-[42px] px-2 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer ${
+                        currentDecision === 'skip_today'
+                          ? 'bg-zinc-700 text-white'
+                          : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]'
+                      }`}
+                    >
+                      تخطّ اليوم
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Concise Summary */}
+        {overdueTasks.length > 0 && (
+          <div className="rounded-xl border border-white/[0.08] bg-black/50 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-300">
+            <span>النتيجة المتوقعة:</span>
+            <span className="font-digits text-[#7FFFD4] font-semibold">
+              ضغط {reflowPreview.compressedCount} · ترحيل {reflowPreview.shiftedCount} · تخطي {reflowPreview.skippedCount}
             </span>
           </div>
-
-          <div className="space-y-2.5">
-            {/* Before Bar */}
-            <div>
-              <div className="flex justify-between text-[11px] text-zinc-500 mb-1">
-                <span>الجدول الأصلي</span>
-                <span className="font-mono-tabular">04:25 ص — 09:15 م</span>
-              </div>
-              <div className="flex h-6 w-full overflow-hidden rounded-lg bg-zinc-900 border border-white/10">
-                {blocks
-                  .filter((b) => !b.deleted && b.id !== 'sleep_anchor')
-                  .map((b) => (
-                    <div
-                      key={`before-${b.id}`}
-                      title={
-                        b.categoryAr.trim().startsWith(b.emojiPair.trim())
-                          ? `${b.categoryAr} (${formatMinutes12h(b.startMin)})`
-                          : `${b.emojiPair} ${b.categoryAr}`
-                      }
-                      style={{ flexGrow: Math.max(10, b.durationMin) }}
-                      className={`h-full border-l border-black/60 flex items-center justify-center text-[11px] overflow-hidden ${
-                        b.isAnchor
-                          ? 'bg-[#7FFFD4]/25 text-[#7FFFD4]'
-                          : 'bg-zinc-800 text-zinc-300'
-                      }`}
-                    >
-                      {b.durationMin >= 35 ? b.emojiPair.split(' ')[0] : ''}
-                    </div>
-                  ))}
-              </div>
-            </div>
-
-            {/* After Bar */}
-            <div>
-              <div className="flex justify-between text-[11px] text-[#7FFFD4] mb-1">
-                <span>بعد امتصاص الفجوة</span>
-                <span className="font-mono-tabular">
-                  ضغط {reflowPreview.compressedCount} · ترحيل {reflowPreview.shiftedCount} · تخطي {reflowPreview.skippedCount}
-                </span>
-              </div>
-              <div className="flex h-6 w-full overflow-hidden rounded-lg bg-zinc-900 border border-[#7FFFD4]/30">
-                {reflowPreview.reflowedBlocks
-                  .filter(
-                    (b) =>
-                      !b.deleted &&
-                      b.id !== 'sleep_anchor' &&
-                      b.reflowStatus !== 'skipped'
-                  )
-                  .map((b) => (
-                    <div
-                      key={`after-${b.id}`}
-                      title={`${b.emojiPair} (${formatMinutes12h(b.startMin)} · ${b.durationMin}د)`}
-                      style={{ flexGrow: Math.max(10, b.durationMin) }}
-                      className={`h-full border-l border-black/60 flex items-center justify-center text-[11px] overflow-hidden ${
-                        b.isAnchor
-                          ? 'bg-[#7FFFD4]/30 text-[#7FFFD4]'
-                          : b.reflowStatus === 'shifted_evening'
-                            ? 'bg-indigo-500/35 text-indigo-200'
-                            : b.reflowStatus === 'compressed' ||
-                                b.reflowStatus === 'started_now'
-                              ? 'bg-[#4ADE80]/30 text-[#4ADE80]'
-                              : 'bg-zinc-800 text-zinc-300'
-                      }`}
-                    >
-                      {b.durationMin >= 30 ? b.emojiPair.split(' ')[0] : ''}
-                    </div>
-                  ))}
-              </div>
-            </div>
-          </div>
-
-          {reflowPreview.notesAr.length > 0 && (
-            <ul className="mt-3 space-y-1 text-xs text-zinc-400">
-              {reflowPreview.notesAr.map((note, idx) => (
-                <li key={idx}>· {note}</li>
-              ))}
-            </ul>
-          )}
-        </div>
+        )}
 
         {/* Footer Actions */}
-        <div className="mt-6 pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-3">
+        <div className="pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2.5">
           {hasUndoSnapshot ? (
             <button
               type="button"
@@ -297,14 +223,14 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
                 onUndoToOriginal();
                 onClose();
               }}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-amber-400/40 text-amber-300 text-xs font-semibold hover:bg-amber-400/10 cursor-pointer"
+              className="min-h-[44px] flex items-center gap-2 px-4 rounded-xl border border-amber-400/40 text-amber-300 text-xs font-semibold hover:bg-amber-400/10 cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              ↩️ استعادة الجدول الأصلي
+              <span>استعادة الجدول الأصلي</span>
             </button>
           ) : (
-            <span className="text-xs text-zinc-500">
-              يُحفظ الجدول الأصلي في لقطة فورية تتيح التراجع بضغطة واحدة
+            <span className="text-[11px] text-zinc-500">
+              يمكنك التراجع عن التغيير لاحقاً بضغطة واحدة
             </span>
           )}
 
@@ -314,9 +240,9 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
               onCommitReflow(reflowPreview.reflowedBlocks);
               onClose();
             }}
-            className="px-6 py-2.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
+            className="min-h-[46px] px-6 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
           >
-            اعتماد الزحزحة لليوم فقط
+            اعتماد لليوم فقط
           </button>
         </div>
       </div>

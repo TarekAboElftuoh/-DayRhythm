@@ -54,6 +54,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     public static final String EXTRA_MED_ID = "med_id";
     public static final String EXTRA_DOSE_TIME = "dose_time";
     public static final String EXTRA_SNOOZE_MIN = "snooze_min";
+    public static final String EXTRA_LOCAL_ONLY = "local_only";
 
     public static final String PREFS_ALARMS = "dayrhythm_exact_alarms_prefs";
     public static final String KEY_SCHEDULED_IDS = "scheduled_request_codes";
@@ -131,18 +132,61 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         if (key == null || key.isEmpty()) return false;
         long now = System.currentTimeMillis();
         Long prev = RECENT_FIRED_KEYS.get(key);
-        if (prev != null && (now - prev) < 60_000L) {
+        if (prev != null && (now - prev) < 10_000L) {
             return true;
         }
         RECENT_FIRED_KEYS.put(key, now);
         if (RECENT_FIRED_KEYS.size() > 40) {
-            RECENT_FIRED_KEYS.entrySet().removeIf(entry -> (now - entry.getValue()) > 60_000L);
+            RECENT_FIRED_KEYS.entrySet().removeIf(entry -> (now - entry.getValue()) > 10_000L);
         }
         return false;
     }
 
-    // Each category repeats the app's own sound for it (see soundResForKind) until dismissed.
+    // Each category repeats smoothly after completion with a comfortable breathing pause.
     private static Runnable pulseRunnable = null;
+    private static Runnable autoSnoozeRunnable = null;
+
+    public static void cancelAutoSnooze() {
+        if (autoSnoozeRunnable != null) {
+            mainHandler.removeCallbacks(autoSnoozeRunnable);
+            autoSnoozeRunnable = null;
+        }
+    }
+
+    private static void scheduleUnattendedAutoSnooze(
+            Context context,
+            int notifId,
+            String alarmId,
+            String kind,
+            String title,
+            String body,
+            String medId,
+            String doseTime
+    ) {
+        cancelAutoSnooze();
+        if (context == null || "charge".equals(kind)) return;
+        final Context app = context.getApplicationContext();
+        autoSnoozeRunnable = () -> {
+            autoSnoozeRunnable = null;
+            stopRinging();
+            cancelNotification(app, notifId);
+            closeAlarmUi(app);
+            long retryAtMs = System.currentTimeMillis() + 5L * 60_000L;
+            scheduleSingleExactAlarm(
+                    app,
+                    notifId,
+                    alarmId != null ? alarmId : ("autosnooze_" + notifId),
+                    kind != null ? kind : "general",
+                    title != null ? title : "تذكير · إيقاع اليوم",
+                    body != null ? body : "إعادة تنبيه تلقائية بعد 5 دقائق",
+                    medId != null ? medId : "",
+                    doseTime != null ? doseTime : "",
+                    retryAtMs,
+                    5
+            );
+        };
+        mainHandler.postDelayed(autoSnoozeRunnable, 60_000L);
+    }
 
     // The status bar shrinks setSmallIcon to a plain monochrome silhouette, so a full-color
     // launcher icon reads as the same indistinct blob for every category — prayer, water, task
@@ -170,17 +214,20 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
     }
 
-    private static int pulsePeriodMsForKind(String kind) {
-        if (kind == null) return 2200;
+    private static int postGapMsForKind(String kind) {
+        if (kind == null) return 1800;
         switch (kind) {
             case "medication":
-                return 1300; // most urgent: don't miss a dose
+                return 1400; // prompt spacing after chime completes
             case "water":
-                return 2600;
-            case "charge":
-                return 3200; // least urgent: just unplug when convenient
-            default:
                 return 2000;
+            case "charge":
+                return 2400; // distinct unhurried battery chime pause
+            case "prayer":
+            case "sleep_suhoor":
+                return 1900;
+            default:
+                return 1800;
         }
     }
 
@@ -257,7 +304,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             // The app's own sound for this category — the exact signature the web app plays
             // (rendered from audioEngine.ts into res/raw), strictly routed to STREAM_ALARM.
             final int soundRes = soundResForKind(context, kind);
-            final int periodMs = pulsePeriodMsForKind(kind);
+            final int postGapMs = postGapMsForKind(kind);
             final Context app = context.getApplicationContext();
             final Object token = new Object();
             synchronized (AUDIO_LOCK) {
@@ -269,14 +316,18 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     synchronized (AUDIO_LOCK) {
                         if (activeSoundToken != token) return; // stopped/replaced meanwhile
                     }
-                    playSoundOnce(app, soundRes);
-                    // Do not vibrate continuously in the repeat loop to prevent relentless phone shaking
-                    mainHandler.postDelayed(this, periodMs);
+                    playSoundOnce(app, soundRes, () -> {
+                        synchronized (AUDIO_LOCK) {
+                            if (activeSoundToken != token) return;
+                        }
+                        mainHandler.postDelayed(this, postGapMs);
+                    });
                 }
             };
             mainHandler.post(pulseRunnable);
             mainHandler.removeCallbacks(autoStopRingtoneRunnable);
-            mainHandler.postDelayed(autoStopRingtoneRunnable, continuous ? 45_000L : 8_000L);
+            // Max 1 minute continuous audio per alert window before 5-minute snooze/wait cycle
+            mainHandler.postDelayed(autoStopRingtoneRunnable, continuous ? 60_000L : 14_000L);
         } catch (Exception ignored) {
         }
 
@@ -284,6 +335,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     }
 
     public static void stopRinging() {
+        RECENT_FIRED_KEYS.clear();
         mainHandler.removeCallbacks(autoStopRingtoneRunnable);
         if (pulseRunnable != null) {
             mainHandler.removeCallbacks(pulseRunnable);
@@ -330,20 +382,20 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     name = "meeting_event";
                     break;
                 case "task":
-                    name = "focus_work";
+                    name = "task";
                     break;
                 case "charge":
-                    name = "walk_health";
+                    name = "charge";
                     break;
                 default:
-                    name = kind; // already one of the app's categories (prayer, water, ...)
+                    name = kind; // already one of the app's categories (prayer, water, medication, ...)
             }
         }
         int id = context.getResources().getIdentifier("dr_" + name, "raw", context.getPackageName());
         return id != 0 ? id : R.raw.dr_general;
     }
 
-    private static void playSoundOnce(Context app, int soundRes) {
+    private static void playSoundOnce(Context app, int soundRes, Runnable onCompleted) {
         if (app == null) return;
         try {
             AudioAttributes alarmAttrs = new AudioAttributes.Builder()
@@ -397,6 +449,9 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                         }
                     }
                 }
+                if (onCompleted != null) {
+                    mainHandler.postDelayed(onCompleted, 1400L);
+                }
                 return;
             }
 
@@ -416,6 +471,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     if (activePlayer == p) activePlayer = null;
                 }
                 p.release();
+                if (onCompleted != null) onCompleted.run();
             });
             mp.start();
         } catch (Exception ignored) {
@@ -474,6 +530,16 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     "",
                     snoozeMinutes
             );
+            scheduleUnattendedAutoSnooze(
+                    context,
+                    notifId,
+                    "live_" + notifId,
+                    kind != null ? kind : "general",
+                    title != null ? title : "تنبيه إيقاع اليوم",
+                    body != null ? body : "",
+                    "",
+                    ""
+            );
             CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
         } catch (Exception ignored) {
         }
@@ -501,11 +567,13 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
 
         if (ACTION_SNOOZE.equals(action)) {
+            cancelAutoSnooze();
             stopRinging();
             cancelNotification(context, notifId);
             closeAlarmUi(context);
-            // Stopping here stops the PC too via CloudSignalClient.
-            CloudSignalClient.sendAlarmDismiss(context, "native_snooze");
+            if (!intent.getBooleanExtra(EXTRA_LOCAL_ONLY, false)) {
+                CloudSignalClient.sendAlarmDismiss(context, "native_snooze");
+            }
             long snoozeAtMs = System.currentTimeMillis() + (long) snoozeMin * 60_000L;
             scheduleSingleExactAlarm(
                     context,
@@ -527,6 +595,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
 
         if (ACTION_MARK_DONE.equals(action)) {
+            cancelAutoSnooze();
             stopRinging();
             cancelNotification(context, notifId);
             closeAlarmUi(context);
@@ -564,6 +633,9 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
                 // Launch desktop-style AlarmActivity card over lock screen
                 launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
+
+                // If user does not acknowledge within 1 minute, automatically switch to 5-min snooze loop
+                scheduleUnattendedAutoSnooze(context, notifId, alarmId, kind, title, body, medId, doseTime);
 
                 // Spotify Connect: Ultra-low latency LAN broadcast + cloud trigger (<5ms local)
                 CloudSignalClient.sendAlarmTrigger(context, title, body, kind, snoozeMin);
@@ -901,34 +973,30 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
 
         String time12h = new java.text.SimpleDateFormat("hh:mm a", new java.util.Locale("ar")).format(new java.util.Date());
         String displayTitle = (title != null && !title.isEmpty()) ? title : "تنبيه إيقاع اليوم";
-        String baseDesc = (body != null && !body.trim().isEmpty()) ? body.trim() : "حان وقت هذا الموعد الآن";
+        String baseDesc = (body != null && !body.trim().isEmpty()) ? body.trim() : (kindLabelAr + " · " + time12h);
         String nextQueueHint = findNextScheduledSummary(context, alarmId);
 
-        StringBuilder richSb = new StringBuilder();
-        richSb.append(baseDesc);
-        if (!baseDesc.contains(kindLabelAr)) {
-            richSb.append("\n📌 ").append(kindLabelAr).append(" · ").append(time12h);
-        }
+        // Concise priority-ordered lines: 1) Core detail, 2) Next event
+        StringBuilder richSb = new StringBuilder(baseDesc);
         if (doseTime != null && !doseTime.isEmpty() && "medication".equals(kind)) {
-            richSb.append(" (موعد الجرعة: ").append(doseTime).append(")");
+            richSb.append(" (").append(doseTime).append(")");
         }
         if (!nextQueueHint.isEmpty()) {
-            richSb.append("\n⏭ التالي: ").append(nextQueueHint);
+            richSb.append("\n⏭ ").append(nextQueueHint);
         }
-        richSb.append("\n🛑 الإيقاف هنا يُغلق التنبيه على الكمبيوتر تلقائياً");
         String shownBody = richSb.toString();
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(smallIconForKind(kind))
                 .setContentTitle(displayTitle)
                 .setContentText(baseDesc)
-                .setSubText(kindLabelAr + " · " + time12h)
+                .setSubText(time12h)
                 .setStyle(new NotificationCompat.BigTextStyle()
                         .setBigContentTitle(displayTitle)
                         .setSummaryText(kindLabelAr + " · " + time12h)
                         .bigText(shownBody))
-                // Gone by itself after two minutes, same as the PC alert, instead of staying up.
-                .setTimeoutAfter(120_000L)
+                // 1 minute active notification window; auto-snooze re-rings in 5m if unhandled
+                .setTimeoutAfter(60_000L)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -1014,6 +1082,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
     }
 
     public static void cancelAllActiveAlarms(Context context) {
+        RECENT_FIRED_KEYS.clear();
+        cancelAutoSnooze();
         stopRinging();
         CloudSignalClient.stopWatching();
         if (context == null) return;

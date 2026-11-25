@@ -10,6 +10,7 @@ const ACTION_DELETE_TOMBSTONE = 2;
 const ACTION_DISMISS_ALARM = 3;
 const ACTION_BATTERY_TELEMETRY = 4;
 const ACTION_FULL_SYNC_REQUEST = 5;
+const ENTITY_ALARM = 5;
 
 export class ClusterDO implements DurableObject {
   private ctx: DurableObjectState;
@@ -183,7 +184,12 @@ export class ClusterDO implements DurableObject {
       return;
     }
 
-    if (frame.action === ACTION_UPSERT || frame.action === ACTION_DELETE_TOMBSTONE) {
+    const isTransientAlarm =
+      frame.entityKind === ENTITY_ALARM ||
+      frame.entityId === 'alarm_trigger' ||
+      frame.action === ACTION_DISMISS_ALARM;
+
+    if (!isTransientAlarm && (frame.action === ACTION_UPSERT || frame.action === ACTION_DELETE_TOMBSTONE)) {
       const accepted = this.upsertIfWinner(frame);
       if (!accepted) return;
     }

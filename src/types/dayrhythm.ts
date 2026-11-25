@@ -445,6 +445,25 @@ export interface GmailDigestItem {
   suggestedAction: CalendarActionProposal;
 }
 
+export type SeasonalSleepPhase =
+  | 'abundant_winter'
+  | 'balanced_equinox'
+  | 'transitional_tight'
+  | 'short_summer_night';
+
+export interface SeasonalSleepGuidance {
+  phase: SeasonalSleepPhase;
+  phaseLabelAr: string;
+  astronomicalNightMin: number;
+  completedCycles: number;
+  windDownStartMin: number;
+  caffeineCutoffMin: number;
+  nsdrWindowAr: string;
+  protocolSummaryAr: string;
+  summerMinNightMin?: number;
+  winterMaxNightMin?: number;
+}
+
 export interface DailyRhythmPlan {
   isFastingToday: boolean;
   isFastingTomorrow: boolean;
@@ -474,6 +493,7 @@ export interface DailyRhythmPlan {
   sleepAdviceAr: string;
   conflictWarningAr: string | null;
   autoAdaptationProposalAr: string | null;
+  seasonalSleep?: SeasonalSleepGuidance;
   isWorkDayToday: boolean;
 }
 
@@ -524,6 +544,9 @@ export interface HydrationDayLog {
   cupsLogged: number;
   targetCups: number;
   slots: boolean[];
+  slotOpIds?: string[];
+  removedOpIds?: string[];
+  hydrationUpdatedAtMs?: number;
 }
 
 export interface DualStreaks {

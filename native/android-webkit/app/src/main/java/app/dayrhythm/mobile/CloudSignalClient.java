@@ -614,12 +614,13 @@ public final class CloudSignalClient {
                                     final String fKind = kind;
                                     final int fSnooze = snoozeMin;
                                     MAIN.post(() -> {
-                                        if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
+                                        if (MainActivity.isInForeground && MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
                                             try {
                                                 JSONObject detail = new JSONObject()
                                                         .put("title", fTitle)
                                                         .put("body", fBody)
-                                                        .put("kind", fKind);
+                                                        .put("kind", fKind)
+                                                        .put("bypassSanctuary", true);
                                                 MainActivity.activeInstance.evaluateJavascriptInWebView(
                                                         "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: " + detail.toString() + " }));"
                                                 );
@@ -673,10 +674,9 @@ public final class CloudSignalClient {
                                             lastHandledOpId = opId;
                                             lastHandledTriggerMs = ts > 0L ? ts : now;
                                             MAIN.post(() -> {
-                                                if (MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
-                                                    // User is actively in app; notify webview UI without locking screen or launching alarm card
+                                                if (MainActivity.isInForeground && MainActivity.activeInstance != null && !MainActivity.activeInstance.isFinishing()) {
                                                     MainActivity.activeInstance.evaluateJavascriptInWebView(
-                                                            "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger'));"
+                                                            "window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: { bypassSanctuary: true } }));"
                                                     );
                                                 } else {
                                                     ReminderAlarmReceiver.triggerImmediateNativeAlarm(

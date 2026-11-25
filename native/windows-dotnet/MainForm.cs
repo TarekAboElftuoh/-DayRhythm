@@ -760,7 +760,7 @@ namespace DayRhythm
                         string detailJson = JsonSerializer.Serialize(new { medicationId = medId ?? "", doseTime24 = doseTime24 ?? "" });
                         DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:medication-confirmed', {{ detail: {detailJson} }}));");
                     },
-                    onSnoozed: (alertPayload, minutes) =>
+                    onSnoozed: (alertPayload, minutes, localOnly) =>
                     {
                         string detailJson = JsonSerializer.Serialize(new
                         {
@@ -773,6 +773,7 @@ namespace DayRhythm
                             medicationId = alertPayload?.medicationId ?? "",
                             medicationDoseTime24 = alertPayload?.medicationDoseTime24 ?? "",
                             minutes = minutes > 0 ? minutes : fallbackSnooze,
+                            localOnly = localOnly,
                         });
                         DispatchToWeb($"window.dispatchEvent(new CustomEvent('dayrhythm:alert-snoozed', {{ detail: {detailJson} }}));");
                     },
@@ -829,7 +830,7 @@ namespace DayRhythm
                             );
                         }
                     }),
-                    onSnoozed: (alertPayload, minutes) => RunOnUi(() =>
+                    onSnoozed: (alertPayload, minutes, localOnly) => RunOnUi(() =>
                     {
                         if (_webView?.CoreWebView2 != null)
                         {
@@ -844,6 +845,7 @@ namespace DayRhythm
                                 medicationId = alertPayload?.medicationId ?? "",
                                 medicationDoseTime24 = alertPayload?.medicationDoseTime24 ?? "",
                                 minutes = minutes > 0 ? minutes : fallbackSnooze,
+                                localOnly = localOnly,
                             });
                             _ = _webView.CoreWebView2.ExecuteScriptAsync(
                                 $"window.dispatchEvent(new CustomEvent('dayrhythm:alert-snoozed', {{ detail: {detailJson} }}));"

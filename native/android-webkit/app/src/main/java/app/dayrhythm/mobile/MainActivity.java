@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
     public static final String PREFS_NAME = "dayrhythm_mobile_prefs";
     public static final String KEY_REMOTE_WS_URL = "remote_ws_url";
     public static volatile MainActivity activeInstance = null;
+    public static volatile boolean isInForeground = false;
     private static final String KEY_BATTERY_PROMPTED = "battery_prompted_once";
     private static final String APP_HOST = "gen-lang-client-0625331922.web.app";
     private static final String APP_ORIGIN = "https://gen-lang-client-0625331922.web.app/index.html";
@@ -261,6 +262,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        isInForeground = false;
         super.onPause();
         if (webView != null) {
             webView.onPause();
@@ -469,6 +471,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        isInForeground = false;
         if (activeInstance == this) activeInstance = null;
         CookieManager.getInstance().flush();
         try {
@@ -482,9 +485,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        // Immediately silence any background looping ringtone/vibration when the user opens/resumes the app
+        isInForeground = true;
+        // Silence background native ringtone cleanly without auto-dismissing the in-app alert card.
         ReminderAlarmReceiver.stopRinging();
-        ReminderAlarmReceiver.cancelAllActiveAlarms(this);
         if (webView != null) {
             webView.onResume();
             webView.evaluateJavascript(

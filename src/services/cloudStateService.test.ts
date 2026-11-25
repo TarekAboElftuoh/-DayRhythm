@@ -198,4 +198,81 @@ describe('Cloud State Synchronization Payload Guards', () => {
       expect(isOwnEcho).toBe(true);
     });
   });
+
+  describe('Hydration 2P-Set CRDT Merge', () => {
+    it('preserves concurrent cup logs from both PC and Mobile without losing a cup', async () => {
+      const { mergeHydrationTodaySlots } = await import('./cloudStateService');
+      const merged = mergeHydrationTodaySlots(
+        {
+          dateKey: '2026-07-01',
+          targetCups: 13,
+          cupsLogged: 3,
+          slotOpIds: ['cup_pc_1', 'cup_pc_2', 'cup_pc_3'],
+          removedOpIds: [],
+          updatedAtMs: 1_700_000_010_000,
+        },
+        {
+          dateKey: '2026-07-01',
+          targetCups: 13,
+          cupsLogged: 3,
+          slotOpIds: ['cup_pc_1', 'cup_pc_2', 'cup_mob_4'],
+          removedOpIds: [],
+          updatedAtMs: 1_700_000_012_000,
+        }
+      );
+
+      expect(merged.cupsLogged).toBe(4);
+      expect(merged.slotOpIds).toContain('cup_pc_3');
+      expect(merged.slotOpIds).toContain('cup_mob_4');
+    });
+
+    it('keeps explicitly unchecked cup tombstoned even if peer still carries old opId', async () => {
+      const { mergeHydrationTodaySlots } = await import('./cloudStateService');
+      const merged = mergeHydrationTodaySlots(
+        {
+          dateKey: '2026-07-01',
+          targetCups: 13,
+          cupsLogged: 2,
+          slotOpIds: ['cup_pc_1', 'cup_pc_2', 'cup_mob_3'],
+          removedOpIds: ['cup_mob_3'],
+          updatedAtMs: 1_700_000_020_000,
+        },
+        {
+          dateKey: '2026-07-01',
+          targetCups: 13,
+          cupsLogged: 3,
+          slotOpIds: ['cup_pc_1', 'cup_pc_2', 'cup_mob_3'],
+          removedOpIds: [],
+          updatedAtMs: 1_700_000_015_000,
+        }
+      );
+
+      expect(merged.cupsLogged).toBe(2);
+      expect(merged.removedOpIds).toContain('cup_mob_3');
+    });
+
+    it('merges hydration payloads cleanly inside mergeUserSettingsPayloads', () => {
+      const merged = mergeUserSettingsPayloads(
+        {
+          hydrationDateKey: '2026-07-01',
+          targetCups: 13,
+          cupsLogged: 2,
+          hydrationSlotOpIds: ['cup_a', 'cup_b'],
+          hydrationRemovedOpIds: [],
+          hydrationUpdatedAtMs: 1000,
+        },
+        {
+          hydrationDateKey: '2026-07-01',
+          targetCups: 13,
+          cupsLogged: 2,
+          hydrationSlotOpIds: ['cup_a', 'cup_c'],
+          hydrationRemovedOpIds: [],
+          hydrationUpdatedAtMs: 1200,
+        }
+      );
+
+      expect(merged.cupsLogged).toBe(3);
+      expect(merged.hydrationSlotOpIds).toEqual(expect.arrayContaining(['cup_a', 'cup_b', 'cup_c']));
+    });
+  });
 });

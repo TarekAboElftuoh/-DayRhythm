@@ -53,7 +53,7 @@ namespace DayRhythm
         private readonly Timer _tickTimer;
         private readonly Action _onWaterConfirmed;
         private readonly Action<string, string> _onMedicationConfirmed;
-        private readonly Action<NativeAlertPayload, int> _onSnoozed;
+        private readonly Action<NativeAlertPayload, int, bool> _onSnoozed;
         private readonly Action _onDismissed;
 
         private readonly NativeAlertPayload _payload;
@@ -79,7 +79,7 @@ namespace DayRhythm
             bool preferSecondaryScreen,
             Action onWaterConfirmed,
             Action<string, string> onMedicationConfirmed,
-            Action<NativeAlertPayload, int> onSnoozed,
+            Action<NativeAlertPayload, int, bool> onSnoozed,
             Action onDismissed)
         {
             _payload = payload ?? new NativeAlertPayload();
@@ -95,7 +95,7 @@ namespace DayRhythm
             _medicationId = _payload.medicationId ?? "";
             _medicationDoseTime24 = _payload.medicationDoseTime24 ?? "";
             _isContinuous = _payload.isContinuous;
-            _totalDurationSec = _payload.durationSeconds >= 15 ? _payload.durationSeconds : 300;
+            _totalDurationSec = (_payload.durationSeconds >= 10 && _payload.durationSeconds <= 60) ? _payload.durationSeconds : 60;
             _snoozeMin = (_payload.snoozeMinutes == 5 || _payload.snoozeMinutes == 10 || _payload.snoozeMinutes == 15)
                 ? _payload.snoozeMinutes
                 : 5;
@@ -256,7 +256,7 @@ namespace DayRhythm
                     FillHover = Color.FromArgb(52, 127, 255, 212),
                     BorderColor = Color.FromArgb(120, 127, 255, 212),
                     TextColor = Color.FromArgb(127, 255, 212),
-                    OnClick = () => { _onSnoozed?.Invoke(_payload, _snoozeMin); Close(); },
+                    OnClick = () => { _onSnoozed?.Invoke(_payload, _snoozeMin, false); Close(); },
                 });
                 _buttons.Add(new HitButton
                 {
@@ -284,7 +284,7 @@ namespace DayRhythm
                     FillHover = Color.FromArgb(52, 127, 255, 212),
                     BorderColor = Color.FromArgb(120, 127, 255, 212),
                     TextColor = Color.FromArgb(127, 255, 212),
-                    OnClick = () => { _onSnoozed?.Invoke(_payload, _snoozeMin); Close(); },
+                    OnClick = () => { _onSnoozed?.Invoke(_payload, _snoozeMin, false); Close(); },
                 });
                 _buttons.Add(new HitButton
                 {
@@ -338,9 +338,13 @@ namespace DayRhythm
             int elapsed = (int)(DateTime.UtcNow - _startedUtc).TotalSeconds;
             int remaining = Math.Max(0, _totalDurationSec - elapsed);
 
-            if (!_isContinuous && remaining <= 0)
+            if (remaining <= 0)
             {
                 _tickTimer.Stop();
+                if (!string.Equals(_payload.category, "charge", StringComparison.OrdinalIgnoreCase))
+                {
+                    _onSnoozed?.Invoke(_payload, 5, true);
+                }
                 Close();
                 return;
             }
@@ -353,10 +357,8 @@ namespace DayRhythm
 
             int elapsed = (int)(DateTime.UtcNow - _startedUtc).TotalSeconds;
             int remaining = Math.Max(0, _totalDurationSec - elapsed);
-            double ratio = _isContinuous
-                ? 1.0
-                : Math.Max(0.0, Math.Min(1.0, 1.0 - (DateTime.UtcNow - _startedUtc).TotalSeconds / _totalDurationSec));
-            string countdownText = _isContinuous ? "مستمر" : $"{remaining / 60:00}:{remaining % 60:00}";
+            double ratio = Math.Max(0.0, Math.Min(1.0, 1.0 - (DateTime.UtcNow - _startedUtc).TotalSeconds / _totalDurationSec));
+            string countdownText = $"{remaining / 60:00}:{remaining % 60:00}";
 
             Color accent = _isMedication && !string.IsNullOrWhiteSpace(_medicationId)
                 ? Color.FromArgb(251, 113, 133)

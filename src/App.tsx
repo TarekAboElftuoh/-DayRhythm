@@ -107,6 +107,7 @@ import {
   setCloudAlertSession,
   broadcastAlertTrigger,
   broadcastAlertDismiss,
+  mergeHydrationTodaySlots,
   type DayRhythmAlertSession,
   type LiveSyncSignal,
   type UserSettingsPayload,
@@ -201,6 +202,7 @@ import {
 } from './engines/audioEngine';
 import { fetchOpenMeteoWeather, loadCachedWeather } from './engines/weatherEngine';
 import { triggerHapticWaveform } from './engines/hapticsEngine';
+import { formatCountdown } from './hooks/useCountdown';
 import { TopBar } from './components/TopBar';
 import { DashboardView } from './components/DashboardView';
 import {
@@ -598,7 +600,15 @@ const SKIP_PATTERN_STORAGE_KEY = 'dayrhythm_skip_pattern_counts_v1';
 // Fields that only make sense together are written together (a cup count without its date key
 // could land on the wrong day).
 const RHYTHM_FIELD_GROUPS: ReadonlyArray<ReadonlyArray<keyof SyncedRhythmPayload>> = [
-  ['hydrationDateKey', 'cupsLogged', 'targetCups', 'hydrationWeeklyCounts'],
+  [
+    'hydrationDateKey',
+    'cupsLogged',
+    'targetCups',
+    'hydrationWeeklyCounts',
+    'hydrationSlotOpIds',
+    'hydrationRemovedOpIds',
+    'hydrationUpdatedAtMs',
+  ],
   ['dailyCommitmentDays', 'dailyCommitmentDoneToday', 'waterTargetDays', 'waterTargetDoneToday'],
   ['quietMode'],
   ['adhanOverrideSilent'],
@@ -962,10 +972,13 @@ export default function App() {
   const pushToTasksVaultRef = useRef<(patch?: Partial<TasksVaultPayload>) => Promise<void>>(() => Promise.resolve());
   const spircClusterRef = useRef<SpircClusterHandle | null>(null);
   const recentCloudWriteTimestampsRef = useRef<number[]>([]);
+  const pendingBurstFlushTimerRef = useRef<number | null>(null);
+  const pendingBurstPatchRef = useRef<Partial<UserSettingsPayload> | null>(null);
+  const saveCloudUserSettingsRef = useRef<(patch?: Partial<UserSettingsPayload>) => Promise<void>>(() => Promise.resolve());
   const lastSpircFullStateRef = useRef<Record<string, unknown>>({});
   const pendingPatchesBeforeHydrationRef = useRef<Array<Partial<TasksVaultPayload>>>([]);
   const handleToggleMedicationRef = useRef<(id: string, doseTime24?: string, options?: { fromRemote?: boolean }) => void>(() => {});
-  const handleLogWaterCupRef = useRef<(options?: { fromRemote?: boolean }) => void>(() => {});
+  const handleLogWaterCupRef = useRef<(options?: { fromRemote?: boolean; waterOpId?: string; dateKey?: string }) => void>(() => {});
 
   // Any LOCALLY-initiated lifeProfile edit arms the write lock (see the Firestore listener's
   // "Date.now() < localWriteLockUntilRef.current" guard above) so a snapshot that happens to
@@ -1306,18 +1319,26 @@ export default function App() {
     return buildInitialHydrationHistory(targetCups, initialTz);
   });
 
+  const hydrationHistoryRef = useRef<HydrationDayLog[]>(hydrationHistory);
+  hydrationHistoryRef.current = hydrationHistory;
+
   // Sync today's hydration target & slot count whenever weight/height/cupSize/fasting changes
   useEffect(() => {
     setHydrationHistory((prev) => {
       const today = prev[prev.length - 1];
       if (!today || today.targetCups === targetCups) return prev;
       const next = [...prev];
-      const clampedLogged = Math.min(today.cupsLogged, targetCups);
+      const nextSlots = Array.from({ length: targetCups }, (_, idx) => Boolean(today.slots[idx]));
+      const nextSlotOpIds = Array.from({ length: targetCups }, (_, idx) =>
+        today.slotOpIds?.[idx] || (nextSlots[idx] ? `init_s${idx}` : '')
+      );
+      const nextLogged = nextSlots.filter(Boolean).length;
       next[next.length - 1] = {
         ...today,
         targetCups,
-        cupsLogged: clampedLogged,
-        slots: Array.from({ length: targetCups }, (_, idx) => idx < clampedLogged),
+        cupsLogged: nextLogged,
+        slots: nextSlots,
+        slotOpIds: nextSlotOpIds,
       };
       return next;
     });
@@ -1528,9 +1549,6 @@ export default function App() {
     }
   }, [activeBrandLogo]);
 
-  const [simulateUnder60s, setSimulateUnder60s] = useState(false);
-  const [liveCountdownSec, setLiveCountdownSec] = useState(47);
-
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
     window.setTimeout(() => {
@@ -1706,10 +1724,18 @@ export default function App() {
         '';
       if (scope === 'alarm_dismiss') {
         const alertId = typeof extraPayload?.alertId === 'string' && extraPayload.alertId ? extraPayload.alertId : 'all';
-        spircClusterRef.current?.sendDismissAlarm(alertId, action, extraPayload);
+        // Generate a shared opId so both Spirc and Firestore echoes are deduped together
+        const dismissOpId = `dism_${Date.now().toString(36)}_${clientIdRef.current.slice(-4)}`;
+        const dismissExtra = { ...(extraPayload || {}), opId: dismissOpId };
+        // 1️⃣ Spirc first (< 35ms) — immediate cross-device dismiss
+        spircClusterRef.current?.sendDismissAlarm(alertId, action, dismissExtra);
+        // 2️⃣ Firestore second (backup for offline devices)
         if (effectiveSyncUid) {
-          void broadcastAlertDismiss(effectiveSyncUid, clientIdRef.current, alertId, action, extraPayload);
+          void broadcastAlertDismiss(effectiveSyncUid, clientIdRef.current, alertId, action, dismissExtra);
         }
+        // Pre-register opId locally so our own Spirc echo is ignored
+        seenSyncOpIdsRef.current.add(dismissOpId);
+        if (seenSyncOpIdsRef.current.size > 200) seenSyncOpIdsRef.current.clear();
       } else if (scope === 'alarm_trigger') {
         spircClusterRef.current?.sendJsonState(
           'alarm_trigger',
@@ -1892,9 +1918,8 @@ export default function App() {
           : category === 'medication'
             ? 'موعد العلاج'
             : 'تقويم ومهام اليوم');
-      // Two minutes on screen at most, then it goes away by itself — a full-screen alert left up
-      // longer just burns battery on the phone and blocks the secondary monitor.
-      const durationMs = Math.min(options?.durationMs ?? 120_000, 120_000);
+      // 1 minute active card window: if unacknowledged after 60s, card auto-snoozes for 5 minutes and re-rings in a loop.
+      const durationMs = Math.min(options?.durationMs ?? 60_000, 60_000);
       const visibleDescription = cleanCalendarText(options?.description || '').slice(0, 220);
       const repeatCount: SoundRepeatSetting =
         (lifeProfile.soundRepeats ?? DEFAULT_SOUND_REPEATS)[category] ??
@@ -2049,9 +2074,9 @@ export default function App() {
         // ignore WebView2 postMessage errors
       }
 
-      // Broadcast real-time alarm trigger across devices (PC <-> Mobile) via Firestore live bus (Spotify-style session)
+      // Broadcast real-time alarm trigger across devices (PC <-> Mobile) via Spirc WebSocket + Firestore
       if (!options?.isRemoteSignal) {
-        emitCrossDeviceSync('alarm_trigger', 'trigger', undefined, {
+        emitCrossDeviceSync('alarm_trigger', options?.bypassSanctuary ? 'test_ring' : 'trigger', undefined, {
           title: visibleTitle,
           body: visibleDescription,
           kind: category,
@@ -2060,6 +2085,7 @@ export default function App() {
           snoozeMinutes: defaultSnooze,
           alertId,
           blockId: options?.blockId,
+          bypassSanctuary: Boolean(options?.bypassSanctuary),
         });
         const effectiveUid =
           firebaseUser?.uid ||
@@ -2075,6 +2101,7 @@ export default function App() {
             kind: category,
             snoozeMinutes: defaultSnooze,
             blockId: options?.blockId,
+            startedAtMs: Date.now(), // absolute timestamp so receiver syncs to same moment
           });
         }
       }
@@ -2094,9 +2121,9 @@ export default function App() {
     ]
   );
 
-  // Interactive Notification Quick Action: Snooze any alert for N minutes (default from LifeProfile: 5/10/15m)
+  // Interactive Notification & Auto-Snooze: Snooze any alert for N minutes (default from LifeProfile: 5/10/15m)
   const handleSnoozeAlert = useCallback(
-    (alertItem: PersistentAlertItem, minutes?: number) => {
+    (alertItem: PersistentAlertItem, minutes?: number, options?: { localOnly?: boolean }) => {
       const configuredDefault =
         lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15
           ? lifeProfile.defaultSnoozeMinutes
@@ -2112,22 +2139,32 @@ export default function App() {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
-      emitCrossDeviceSync('alarm_dismiss', 'snooze', undefined, { alertId: alertItem.id });
+      if (!options?.localOnly) {
+        emitCrossDeviceSync('alarm_dismiss', 'snooze', undefined, { alertId: alertItem.id });
+      }
       const timerId = window.setTimeout(() => {
         snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);
         triggerTaskAlert(alertItem.emoji || alertItem.title, alertItem.category, {
           privacyEmoji: alertItem.emoji,
           displayTitle: alertItem.title,
-          sourceLabel: `${alertItem.sourceLabel} (مؤجّل ${safeMin} د)`,
+          description: alertItem.description,
+          sourceLabel: options?.localOnly
+            ? `${alertItem.sourceLabel} (إعادة تنبيه بعد ${safeMin} د)`
+            : `${alertItem.sourceLabel} (مؤجّل ${safeMin} د)`,
           medicationId: alertItem.medicationId,
           medicationDoseTime24: alertItem.medicationDoseTime24,
           taskId: alertItem.taskId,
           taskListId: alertItem.taskListId,
+          blockId: alertItem.blockId,
         });
       }, safeMin * 60_000);
       snoozeTimersRef.current.push(timerId);
-      triggerHapticWaveform('water_cup');
-      showToast(`⏰ تم تأجيل «${alertItem.title}» لمدة ${safeMin} دقيقة وإيقافه على أجهزتك`);
+      if (!options?.localOnly) {
+        triggerHapticWaveform('water_cup');
+        showToast(`⏰ تم تأجيل «${alertItem.title}» لمدة ${safeMin} دقيقة وإيقافه على أجهزتك`);
+      } else {
+        showToast(`⏰ لم يتم الرد خلال دقيقة — سيتم إعادة التنبيه لـ «${alertItem.title}» بعد ${safeMin} دقائق`);
+      }
     },
     [emitCrossDeviceSync, lifeProfile.defaultSnoozeMinutes, showToast, stopNativeAlerts, triggerTaskAlert]
   );
@@ -3477,6 +3514,7 @@ export default function App() {
               sourceLabel?: string;
               snoozeMinutes?: number;
               blockId?: string;
+              bypassSanctuary?: boolean;
             }
           | undefined;
         const emoji = extra?.privacyEmoji || '🔔';
@@ -3490,7 +3528,7 @@ export default function App() {
           description: extra?.body,
           blockId: extra?.blockId,
           isRemoteSignal: true,
-          bypassSanctuary: false,
+          bypassSanctuary: Boolean(extra?.bypassSanctuary),
         });
         return;
       }
@@ -3790,7 +3828,7 @@ export default function App() {
       const remoteTz = remote.lifeProfile?.currentTimeZone || activeTimeZone || 'Africa/Cairo';
       const labels = getLast7DayLabels(remoteTz);
       const todayIso = getDateIsoInTimeZone(remoteTz);
-      const isSameDay = remote.hydrationDateKey === todayIso;
+      const isSameDay = !remote.hydrationDateKey || remote.hydrationDateKey === todayIso;
       const baseCounts = isSameDay
         ? (remote.hydrationWeeklyCounts || [0, 0, 0, 0, 0, 0, 0])
         : [...(remote.hydrationWeeklyCounts || [0, 0, 0, 0, 0, 0, 0]).slice(1), 0];
@@ -3798,57 +3836,91 @@ export default function App() {
       setHydrationHistory((prev) => {
         const prevToday = prev.length > 0 ? prev[prev.length - 1] : null;
         const targetVal = remote.targetCups || (prevToday ? prevToday.targetCups : 13);
-        const expectedTodayCups = isSameDay
-          ? (Date.now() < localWriteLockUntilRef.current
-              ? Math.max(remote.cupsLogged!, prevToday ? prevToday.cupsLogged : 0)
-              : remote.cupsLogged!)
-          : (prevToday && prevToday.dateKey === todayIso ? prevToday.cupsLogged : 0);
+        const remoteTodayInput = isSameDay
+          ? {
+              dateKey: todayIso,
+              targetCups: targetVal,
+              cupsLogged: remote.cupsLogged ?? 0,
+              slotOpIds: remote.hydrationSlotOpIds,
+              removedOpIds: remote.hydrationRemovedOpIds,
+              updatedAtMs: remote.hydrationUpdatedAtMs ?? 0,
+            }
+          : null;
+
+        const mergedToday = remoteTodayInput
+          ? mergeHydrationTodaySlots(
+              {
+                dateKey: prevToday?.dateKey === todayIso ? todayIso : todayIso,
+                targetCups: targetVal,
+                cupsLogged: prevToday?.dateKey === todayIso ? prevToday.cupsLogged : 0,
+                slotOpIds:
+                  prevToday?.dateKey === todayIso
+                    ? prevToday.slotOpIds ||
+                      prevToday.slots.map((filled, idx) => (filled ? `loc_s${idx}` : ''))
+                    : undefined,
+                removedOpIds: prevToday?.dateKey === todayIso ? prevToday.removedOpIds : undefined,
+                updatedAtMs:
+                  prevToday?.dateKey === todayIso ? prevToday.hydrationUpdatedAtMs ?? 0 : 0,
+              },
+              remoteTodayInput
+            )
+          : null;
+
         if (
           prevToday &&
           prevToday.dateKey === todayIso &&
-          prevToday.cupsLogged === Math.min(targetVal, expectedTodayCups) &&
+          mergedToday &&
+          prevToday.cupsLogged === mergedToday.cupsLogged &&
           prevToday.targetCups === targetVal &&
+          JSON.stringify(prevToday.slots) === JSON.stringify(mergedToday.slots) &&
+          JSON.stringify(prevToday.slotOpIds || []) === JSON.stringify(mergedToday.slotOpIds) &&
           prev.length === labels.length &&
           prev.every((d, i) => i === 6 || d.cupsLogged === (baseCounts[i] ?? 0))
         ) {
           return prev;
         }
-        return labels.map((labelAr, idx) => {
+
+        const nextHistory = labels.map((labelAr, idx) => {
           const isToday = idx === 6;
           const t = targetVal;
-          let c = isToday
-            ? isSameDay
-              ? remote.cupsLogged!
-              : 0
-            : baseCounts[idx] ?? 0;
-
           if (isToday) {
-            if (isSameDay) {
-              if (Date.now() < localWriteLockUntilRef.current) {
-                c = Math.max(c, prevToday ? prevToday.cupsLogged : 0);
-              } else {
-                c = remote.cupsLogged!;
-              }
-            } else {
-              if (prevToday && prevToday.dateKey === todayIso) {
-                c = prevToday.cupsLogged;
-              }
+            if (mergedToday) {
+              return {
+                dateKey: todayIso,
+                labelAr,
+                cupsLogged: Math.min(t, mergedToday.cupsLogged),
+                targetCups: t,
+                slots: mergedToday.slots.slice(0, t),
+                slotOpIds: mergedToday.slotOpIds.slice(0, t),
+                removedOpIds: mergedToday.removedOpIds,
+                hydrationUpdatedAtMs: mergedToday.updatedAtMs,
+              };
             }
+            if (prevToday && prevToday.dateKey === todayIso) {
+              return { ...prevToday, labelAr, targetCups: t };
+            }
+            return {
+              dateKey: todayIso,
+              labelAr,
+              cupsLogged: 0,
+              targetCups: t,
+              slots: Array.from({ length: t }, () => false),
+              slotOpIds: Array.from({ length: t }, () => ''),
+              removedOpIds: [],
+              hydrationUpdatedAtMs: 0,
+            };
           }
-
-          const slots =
-            isToday && prevToday && prevToday.dateKey === todayIso && prevToday.cupsLogged >= c && prevToday.slots.length === t
-              ? prevToday.slots
-              : Array.from({ length: t }, (_, sIdx) => sIdx < c);
-
+          const c = baseCounts[idx] ?? 0;
           return {
-            dateKey: isToday ? todayIso : `day-${idx}`,
+            dateKey: `day-${idx}`,
             labelAr,
             cupsLogged: Math.min(t, c),
             targetCups: t,
-            slots,
+            slots: Array.from({ length: t }, (_, sIdx) => sIdx < c),
           };
         });
+        hydrationHistoryRef.current = nextHistory;
+        return nextHistory;
       });
     }
 
@@ -4092,6 +4164,9 @@ export default function App() {
           cupsLogged: todayEntry?.cupsLogged ?? 0,
           targetCups: todayEntry?.targetCups ?? 13,
           hydrationWeeklyCounts: hydrationHistory.map((d) => d.cupsLogged),
+          hydrationSlotOpIds: todayEntry?.slotOpIds ?? [],
+          hydrationRemovedOpIds: todayEntry?.removedOpIds ?? [],
+          hydrationUpdatedAtMs: todayEntry?.hydrationUpdatedAtMs ?? Date.now(),
           dailyCommitmentDays: streaks.dailyCommitmentDays,
           dailyCommitmentDoneToday: streaks.dailyCommitmentDoneToday,
           waterTargetDays: streaks.waterTargetDays,
@@ -4145,13 +4220,27 @@ export default function App() {
         }
       }
 
-      // Circuit breaker: mathematically prevent any infinite cloud sync loop (max 6 writes per 4s window)
+      // Coalescing burst limiter: never drop writes on rapid taps; queue & flush tail patch after 1.2s
       const nowBurstMs = Date.now();
       recentCloudWriteTimestampsRef.current = recentCloudWriteTimestampsRef.current.filter(
         (ts) => nowBurstMs - ts < 4000
       );
       if (recentCloudWriteTimestampsRef.current.length >= 6) {
-        console.warn('[CloudSync] Circuit breaker tripped: throttling burst cloud write');
+        pendingBurstPatchRef.current = {
+          ...(pendingBurstPatchRef.current || {}),
+          ...payload,
+          updatedAtMs: nowBurstMs,
+        };
+        if (pendingBurstFlushTimerRef.current === null) {
+          pendingBurstFlushTimerRef.current = window.setTimeout(() => {
+            pendingBurstFlushTimerRef.current = null;
+            const queued = pendingBurstPatchRef.current;
+            pendingBurstPatchRef.current = null;
+            if (queued) {
+              void saveCloudUserSettingsRef.current(queued);
+            }
+          }, 1200);
+        }
         return;
       }
       recentCloudWriteTimestampsRef.current.push(nowBurstMs);
@@ -4245,6 +4334,7 @@ export default function App() {
   );
 
   const pushToTasksVaultImmediately = saveCloudUserSettingsImmediately;
+  saveCloudUserSettingsRef.current = saveCloudUserSettingsImmediately;
 
   useEffect(() => {
     pushToTasksVaultRef.current = saveCloudUserSettingsImmediately;
@@ -4296,7 +4386,12 @@ export default function App() {
           setAlarmRinging(false);
           const remoteAction = typeof payload.action === 'string' ? payload.action : '';
           if (remoteAction === 'water_confirmed') {
-            handleLogWaterCupRef.current({ fromRemote: true });
+            const waterOpId =
+              (typeof payload.waterOpId === 'string' && payload.waterOpId) ||
+              spOpId;
+            const dateKey =
+              typeof payload.hydrationDateKey === 'string' ? payload.hydrationDateKey : undefined;
+            handleLogWaterCupRef.current({ fromRemote: true, waterOpId, dateKey });
           } else if (remoteAction === 'medication_confirmed' || remoteAction === 'med_confirmed') {
             const medId = (payload.medicationId as string) || (payload.medId as string);
             const doseTime = (payload.doseTime24 as string) || (payload.doseTime as string);
@@ -4311,7 +4406,7 @@ export default function App() {
 
       if (entityKind === SPIRC_ENTITY.ALARM && frame.action === SPIRC_ACTION.UPSERT) {
         const startedMs = Number(payload.startedAtMs || frame.timestampMs || Date.now());
-        if (Math.abs(Date.now() - startedMs) <= 90_000) {
+        if (Math.abs(Date.now() - startedMs) <= 300_000) {
           window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: payload }));
         }
         return;
@@ -4415,7 +4510,13 @@ export default function App() {
               setAlarmRinging(false);
 
               if (sig.action === 'water_confirmed' || (sig.extra as any)?.kind === 'water') {
-                handleLogWaterCupRef.current({ fromRemote: true });
+                const extraW = sig.extra as Record<string, unknown> | undefined;
+                const waterOpId =
+                  (typeof extraW?.waterOpId === 'string' && extraW.waterOpId) ||
+                  sigOpId;
+                const dateKey =
+                  typeof extraW?.hydrationDateKey === 'string' ? extraW.hydrationDateKey : undefined;
+                handleLogWaterCupRef.current({ fromRemote: true, waterOpId, dateKey });
               } else if (sig.action === 'medication_confirmed' || sig.action === 'med_confirmed' || (sig.extra as any)?.kind === 'medication') {
                 const extra = sig.extra as { kind?: string; medId?: string; doseTime?: string; medicationId?: string; doseTime24?: string } | undefined;
                 const medId = extra?.medId || extra?.medicationId;
@@ -4491,7 +4592,7 @@ export default function App() {
             return;
           }
           const dismissOpId = signal.opId || `live_dism_${dismissTs}_${dismissedBy}`;
-          if (seenSyncOpIdsRef.current.has(dismissOpId)) {
+          if (!sigOp && seenSyncOpIdsRef.current.has(dismissOpId)) {
             return;
           }
           seenSyncOpIdsRef.current.add(dismissOpId);
@@ -4521,7 +4622,13 @@ export default function App() {
           }
           const action = signal.action || (signal.extra as any)?.action;
           if (action === 'water_confirmed') {
-            handleLogWaterCupRef.current({ fromRemote: true });
+            const extraW = signal.extra as Record<string, unknown> | undefined;
+            const waterOpId =
+              (typeof extraW?.waterOpId === 'string' && extraW.waterOpId) ||
+              dismissOpId;
+            const dateKey =
+              typeof extraW?.hydrationDateKey === 'string' ? extraW.hydrationDateKey : undefined;
+            handleLogWaterCupRef.current({ fromRemote: true, waterOpId, dateKey });
           } else if (action === 'medication_confirmed' || action === 'med_confirmed') {
             const extra = signal.extra as Record<string, unknown> | undefined;
             const medId = (extra?.medicationId as string) || (extra?.medId as string) || signal.alertId;
@@ -4859,6 +4966,9 @@ export default function App() {
       cupsLogged: todayEntry.cupsLogged,
       targetCups: todayEntry.targetCups,
       hydrationWeeklyCounts: hydrationHistory.map((d) => d.cupsLogged),
+      hydrationSlotOpIds: todayEntry.slotOpIds ?? [],
+      hydrationRemovedOpIds: todayEntry.removedOpIds ?? [],
+      hydrationUpdatedAtMs: todayEntry.hydrationUpdatedAtMs ?? 0,
       dailyCommitmentDays: streaks.dailyCommitmentDays,
       dailyCommitmentDoneToday: streaks.dailyCommitmentDoneToday,
       waterTargetDays: streaks.waterTargetDays,
@@ -5997,14 +6107,6 @@ export default function App() {
 
 
   useEffect(() => {
-    if (!simulateUnder60s) return;
-    const id = window.setInterval(() => {
-      setLiveCountdownSec((s) => (s <= 1 ? 59 : s - 1));
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [simulateUnder60s]);
-
-  useEffect(() => {
     if (shakeUndoSecondsLeft <= 0) return;
     const id = window.setTimeout(() => {
       setShakeUndoSecondsLeft((s) => Math.max(0, s - 1));
@@ -7089,13 +7191,14 @@ export default function App() {
 
   const handleTriggerRing = useCallback(() => {
     setAlarmRinging(true);
-    emitCrossDeviceSync('alarm_trigger', 'test_ring');
     triggerTaskAlert('🔔', 'general', {
       privacyEmoji: '🔔',
       displayTitle: 'اختبار تنبيه متزامن (الموبايل ↔ الكمبيوتر)',
-      sourceLabel: 'مزامنة فورية عبر السحابة',
+      description: 'عند الضغط على تم يتوقف التنبيه فوراً على جميع أجهزتك',
+      sourceLabel: 'مزامنة فورية (Wi-Fi / بيانات الهاتف)',
+      bypassSanctuary: true,
     });
-  }, [emitCrossDeviceSync, triggerTaskAlert]);
+  }, [triggerTaskAlert]);
 
   const handleSimulateCharge90 = () => {
     if (batteryGuard.bypassChargingLimitPct !== null) {
@@ -7174,74 +7277,107 @@ export default function App() {
       updater: (today: HydrationDayLog) => HydrationDayLog,
       dismissSignal?: { scope: 'alarm_dismiss'; action: string }
     ) => {
-      localWriteLockUntilRef.current = Date.now() + 500;
+      const prev = hydrationHistoryRef.current;
+      if (prev.length === 0) return;
+
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
+      const rolled = rollOverHydrationHistoryIfNeeded(prev, targetCups, activeTimeZone);
+      const currentToday = rolled[rolled.length - 1];
+      const updatedRaw = updater(currentToday);
+      if (updatedRaw === currentToday && rolled === prev) return;
 
-      setHydrationHistory((prev) => {
-        if (prev.length === 0) return prev;
-        const next = [...prev];
-        const updated = updater(next[next.length - 1]);
-        next[next.length - 1] = updated;
-
-        const reachedTarget = updated.cupsLogged >= updated.targetCups;
-        let nextTargetDone = streaks.waterTargetDoneToday;
-        let nextTargetDays = streaks.waterTargetDays;
-
-        if (reachedTarget && !streaks.waterTargetDoneToday) {
-          nextTargetDone = true;
-          nextTargetDays = streaks.waterTargetDays + 1;
-        } else if (!reachedTarget && streaks.waterTargetDoneToday) {
-          nextTargetDone = false;
-          nextTargetDays = Math.max(0, streaks.waterTargetDays - 1);
-        }
-
-        setStreaks((s) => ({
-          ...s,
-          waterTargetDoneToday: nextTargetDone,
-          waterTargetDays: nextTargetDays,
-        }));
-
-        const nextWeekly = next.map((d) => d.cupsLogged);
-
-        try {
-          const raw = localStorage.getItem(STORAGE_KEY);
-          const parsed = raw ? JSON.parse(raw) : {};
-          localStorage.setItem(
-            STORAGE_KEY,
-            JSON.stringify({ ...parsed, hydrationHistory: next, deviceSettings, lifeProfile })
-          );
-        } catch {
-          // ignore storage quota
-        }
-
-        // 1) Push to Google Tasks Cloud Vault immediately
-        void pushToTasksVaultImmediately({
-          hydrationDateKey: todayIso,
-          cupsLogged: updated.cupsLogged,
-          targetCups: updated.targetCups,
-          hydrationWeeklyCounts: nextWeekly,
-          waterTargetDays: nextTargetDays,
-          waterTargetDoneToday: nextTargetDone,
-          ...(dismissSignal
-            ? {
-                lastDismissSignal: {
-                  timestampMs: Date.now(),
-                  scope: dismissSignal.scope,
-                  action: dismissSignal.action,
-                  clientId: clientIdRef.current,
-                },
-              }
-            : {}),
-        });
-
-        // 2) Trigger Google Drive AppData full backup
-        void pushFullCloudBackupImmediately();
-
-        return next;
+      const nowMs = Date.now();
+      const normalizedSlotOpIds = Array.from({ length: updatedRaw.targetCups }, (_, idx) => {
+        if (!updatedRaw.slots[idx]) return '';
+        return updatedRaw.slotOpIds?.[idx] || `loc_${nowMs.toString(36)}_${idx}`;
       });
+      const updated: HydrationDayLog = {
+        ...updatedRaw,
+        dateKey: todayIso,
+        cupsLogged: updatedRaw.slots.filter(Boolean).length,
+        slotOpIds: normalizedSlotOpIds,
+        removedOpIds: (updatedRaw.removedOpIds || []).slice(-80),
+        hydrationUpdatedAtMs: nowMs,
+      };
+      const next = [...rolled];
+      next[next.length - 1] = updated;
+
+      localWriteLockUntilRef.current = nowMs + 2500;
+      hydrationHistoryRef.current = next;
+      setHydrationHistory(next);
+
+      const reachedTarget = updated.cupsLogged >= updated.targetCups;
+      let nextTargetDone = streaks.waterTargetDoneToday;
+      let nextTargetDays = streaks.waterTargetDays;
+
+      if (reachedTarget && !streaks.waterTargetDoneToday) {
+        nextTargetDone = true;
+        nextTargetDays = streaks.waterTargetDays + 1;
+      } else if (!reachedTarget && streaks.waterTargetDoneToday) {
+        nextTargetDone = false;
+        nextTargetDays = Math.max(0, streaks.waterTargetDays - 1);
+      }
+
+      setStreaks((s) => ({
+        ...s,
+        waterTargetDoneToday: nextTargetDone,
+        waterTargetDays: nextTargetDays,
+      }));
+
+      const nextWeekly = next.map((d) => d.cupsLogged);
+
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ ...parsed, hydrationHistory: next, deviceSettings, lifeProfile })
+        );
+      } catch {
+        // ignore storage quota
+      }
+
+      // Sync lastServerFieldsRef BEFORE pushing so reactive useEffect won't double-write the exact same change
+      lastServerFieldsRef.current = {
+        ...lastServerFieldsRef.current,
+        hydrationDateKey: JSON.stringify(todayIso),
+        cupsLogged: JSON.stringify(updated.cupsLogged),
+        targetCups: JSON.stringify(updated.targetCups),
+        hydrationWeeklyCounts: JSON.stringify(nextWeekly),
+        hydrationSlotOpIds: JSON.stringify(updated.slotOpIds ?? []),
+        hydrationRemovedOpIds: JSON.stringify(updated.removedOpIds ?? []),
+        hydrationUpdatedAtMs: JSON.stringify(updated.hydrationUpdatedAtMs ?? nowMs),
+        waterTargetDays: JSON.stringify(nextTargetDays),
+        waterTargetDoneToday: JSON.stringify(nextTargetDone),
+      };
+
+      void pushToTasksVaultImmediately({
+        hydrationDateKey: todayIso,
+        cupsLogged: updated.cupsLogged,
+        targetCups: updated.targetCups,
+        hydrationWeeklyCounts: nextWeekly,
+        hydrationSlotOpIds: updated.slotOpIds ?? [],
+        hydrationRemovedOpIds: updated.removedOpIds ?? [],
+        hydrationUpdatedAtMs: updated.hydrationUpdatedAtMs ?? nowMs,
+        waterTargetDays: nextTargetDays,
+        waterTargetDoneToday: nextTargetDone,
+        ...(dismissSignal
+          ? {
+              lastDismissSignal: {
+                timestampMs: nowMs,
+                scope: dismissSignal.scope,
+                action: dismissSignal.action,
+                clientId: clientIdRef.current,
+              },
+            }
+          : {}),
+      });
+
+      void pushFullCloudBackupImmediately();
     },
     [
       activeTimeZone,
+      targetCups,
       streaks,
       deviceSettings,
       lifeProfile,
@@ -7250,58 +7386,111 @@ export default function App() {
     ]
   );
 
-  const handleLogWaterCup = useCallback((options?: { fromRemote?: boolean }) => {
-    stopContinuousAlert();
-    stopNativeAlerts();
-    setActiveAudioAlert(null);
-    setPersistentAlert(null);
-    setAlarmRinging(false);
-    if (!options?.fromRemote) {
-      emitCrossDeviceSync('alarm_dismiss', 'water_confirmed', undefined, { alertId: 'water' });
-    }
+  const handleLogWaterCup = useCallback(
+    (options?: { fromRemote?: boolean; waterOpId?: string; dateKey?: string }) => {
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
 
-    updateTodayHydration((today) => {
-      const nextIdx = today.slots.findIndex((filled) => !filled);
-      if (nextIdx === -1) return today;
-      const nextSlots = [...today.slots];
-      nextSlots[nextIdx] = true;
-      const nextLogged = nextSlots.filter(Boolean).length;
-      return {
-        ...today,
-        slots: nextSlots,
-        cupsLogged: nextLogged,
-      };
-    }, options?.fromRemote ? undefined : { scope: 'alarm_dismiss', action: 'water_confirmed' });
-  }, [
-    updateTodayHydration,
-    stopContinuousAlert,
-    stopNativeAlerts,
-    emitCrossDeviceSync,
-  ]);
+      const todayIso = getDateIsoInTimeZone(activeTimeZone);
+      if (options?.dateKey && options.dateKey !== todayIso) return;
+
+      const opId =
+        options?.waterOpId ||
+        `w_${Date.now().toString(36)}_${clientIdRef.current.slice(-4)}_${Math.random().toString(36).slice(2, 5)}`;
+
+      if (!options?.fromRemote) {
+        emitCrossDeviceSync('alarm_dismiss', 'water_confirmed', undefined, {
+          alertId: 'water',
+          waterOpId: opId,
+          hydrationDateKey: todayIso,
+        });
+      }
+
+      updateTodayHydration((today) => {
+        const existingOpIds = today.slotOpIds || [];
+        const removed = today.removedOpIds || [];
+        if (existingOpIds.includes(opId) || removed.includes(opId)) {
+          return today;
+        }
+        const nextIdx = today.slots.findIndex((filled) => !filled);
+        if (nextIdx === -1) return today;
+        const nextSlots = [...today.slots];
+        nextSlots[nextIdx] = true;
+        const nextSlotOpIds = Array.from({ length: today.targetCups }, (_, i) =>
+          i === nextIdx ? opId : existingOpIds[i] || (nextSlots[i] ? `loc_s${i}` : '')
+        );
+        const nextLogged = nextSlots.filter(Boolean).length;
+        return {
+          ...today,
+          slots: nextSlots,
+          slotOpIds: nextSlotOpIds,
+          cupsLogged: nextLogged,
+        };
+      }, options?.fromRemote ? undefined : { scope: 'alarm_dismiss', action: 'water_confirmed' });
+    },
+    [
+      activeTimeZone,
+      updateTodayHydration,
+      stopContinuousAlert,
+      stopNativeAlerts,
+      emitCrossDeviceSync,
+    ]
+  );
   handleLogWaterCupRef.current = handleLogWaterCup;
 
   const handleToggleWaterSlot = (index: number) => {
-    updateTodayHydration((today) => {
-      const nextSlots = [...today.slots];
-      const becomingActive = !nextSlots[index];
-      nextSlots[index] = becomingActive;
-      const nextLogged = nextSlots.filter(Boolean).length;
+    const todayIso = getDateIsoInTimeZone(activeTimeZone);
+    const currentToday = hydrationHistoryRef.current[hydrationHistoryRef.current.length - 1];
+    const becomingActive = currentToday ? !currentToday.slots[index] : true;
+    const newOpId = becomingActive
+      ? `w_${Date.now().toString(36)}_${clientIdRef.current.slice(-4)}_${index}`
+      : '';
 
-      if (becomingActive) {
-        stopContinuousAlert();
-        stopNativeAlerts();
-        setActiveAudioAlert(null);
-        setPersistentAlert(null);
-        setAlarmRinging(false);
-        emitCrossDeviceSync('alarm_dismiss', 'water_confirmed', undefined, { alertId: 'water' });
-      }
+    if (becomingActive) {
+      stopContinuousAlert();
+      stopNativeAlerts();
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+      emitCrossDeviceSync('alarm_dismiss', 'water_confirmed', undefined, {
+        alertId: 'water',
+        waterOpId: newOpId,
+        hydrationDateKey: todayIso,
+      });
+    }
 
-      return {
-        ...today,
-        slots: nextSlots,
-        cupsLogged: nextLogged,
-      };
-    }, { scope: 'alarm_dismiss', action: 'water_confirmed' });
+    updateTodayHydration(
+      (today) => {
+        const nextSlots = [...today.slots];
+        const slotActive = !nextSlots[index];
+        nextSlots[index] = slotActive;
+        const existingOpIds = Array.from({ length: today.targetCups }, (_, i) =>
+          today.slotOpIds?.[i] || (today.slots[i] ? `loc_s${i}` : '')
+        );
+        const removedSet = new Set(today.removedOpIds || []);
+        if (slotActive) {
+          const idToUse = newOpId || `w_${Date.now().toString(36)}_${index}`;
+          removedSet.delete(idToUse);
+          existingOpIds[index] = idToUse;
+        } else {
+          const oldId = existingOpIds[index];
+          if (oldId) removedSet.add(oldId);
+          existingOpIds[index] = '';
+        }
+        const nextLogged = nextSlots.filter(Boolean).length;
+        return {
+          ...today,
+          slots: nextSlots,
+          slotOpIds: existingOpIds,
+          removedOpIds: Array.from(removedSet).slice(-80),
+          cupsLogged: nextLogged,
+        };
+      },
+      becomingActive ? { scope: 'alarm_dismiss', action: 'water_confirmed' } : undefined
+    );
   };
 
   // Handle PWA Home Screen App Shortcuts (/?action=water | meeting | voice)
@@ -7963,10 +8152,57 @@ export default function App() {
       const isAndroidNative = Boolean(
         (window as Window & { DayRhythmNative?: unknown }).DayRhythmNative
       );
+      const showChargePopupAndNotify = () => {
+        const currentTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
+        if (quietMode === 'silent_all' || activeSanctuary.type !== 'none') {
+          showToast(
+            `🔋 اكتمل شحن ${phoneBattery.deviceLabel || 'الموبايل'} (${phoneBattery.levelPct}%)`
+          );
+          return;
+        }
+        setPersistentAlert({
+          id: `charge_${Date.now().toString(36)}`,
+          emoji: `🔋 ${phoneBattery.levelPct}%`,
+          title: `وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% — افصل الشاحن الآن`,
+          sourceLabel: smartChargeKeepUntilUnplugged
+            ? 'تنبيه الشحن · يرن دقيقة كل 5 دقائق حتى الفصل'
+            : 'التنبيه الذكي لاكتمال الشحن',
+          time12h: currentTime12,
+          category: 'general',
+          createdAtMs: Date.now(),
+          durationMs: 60_000,
+          isContinuous: true,
+        });
+
+        try {
+          const wv = (
+            window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
+          ).chrome?.webview;
+          if (wv?.postMessage) {
+            wv.postMessage(
+              JSON.stringify({
+                type: 'native-alert',
+                emoji: `🔋 ${phoneBattery.levelPct}%`,
+                title: `وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% — افصل الشاحن`,
+                sourceLabel: 'تنبيه الشحن · دقيقة كل 5 دقائق حتى الفصل',
+                time12h: currentTime12,
+                category: 'charge',
+                isHydration: false,
+                isContinuous: true,
+                durationSeconds: 60,
+              })
+            );
+          }
+        } catch {
+          // ignore WebView2 postMessage errors
+        }
+      };
+
       if (!isAndroidNative) {
         const audioResult = startSmartChargeCompleteAlert({
           sanctuary: activeSanctuary,
           keepRingingUntilUnplugged: smartChargeKeepUntilUnplugged,
+          onCycleRestart: showChargePopupAndNotify,
           onAutoStop: () => setSmartChargeAudioActive(false),
         });
         if (audioResult.playedAudio) {
@@ -7974,29 +8210,13 @@ export default function App() {
         }
       }
 
-      const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
-      if (quietMode === 'silent_all' || activeSanctuary) {
-        showToast(
-          `🔋 اكتمل شحن ${phoneBattery.deviceLabel || 'الموبايل'} (${phoneBattery.levelPct}%)`
-        );
+      showChargePopupAndNotify();
+      if (quietMode === 'silent_all' || activeSanctuary.type !== 'none') {
         return;
       }
-      setPersistentAlert({
-        id: `charge_${Date.now().toString(36)}`,
-        emoji: `🔋 ${phoneBattery.levelPct}%`,
-        title: `وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% — افصل الشاحن الآن`,
-        sourceLabel: smartChargeKeepUntilUnplugged
-          ? 'تنبيه الشحن · يستمر حتى فصل الشاحن'
-          : 'التنبيه الذكي لاكتمال الشحن',
-        time12h: nowTime12,
-        category: 'general',
-        createdAtMs: Date.now(),
-        durationMs: 300_000,
-        isContinuous: smartChargeKeepUntilUnplugged,
-      });
 
       showToast(
-        `🔋 التنبيه الذكي: وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% (الحد ${phoneBattery.chargeLimitPct}%) — يمكنك فصله أو إيقاف التنبيه الآن`
+        `🔋 التنبيه الذكي: وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% (الحد ${phoneBattery.chargeLimitPct}%)`
       );
 
       // Desktop OS Notification
@@ -8007,40 +8227,13 @@ export default function App() {
       ) {
         try {
           new Notification(`🔋 اكتمل شحن الموبايل (${phoneBattery.levelPct}%)`, {
-            body: `وصل شحن ${phoneBattery.deviceLabel || 'الهاتف'} إلى ${phoneBattery.chargeLimitPct}% — افصل الشاحن أو أوقف التنبيه من لوحة التحكم.`,
+            body: `وصل شحن ${phoneBattery.deviceLabel || 'الهاتف'} إلى ${phoneBattery.chargeLimitPct}% — افصل الشاحن الآن.`,
             tag: 'dayrhythm-phone-charge-limit',
             icon: '/icon-192.png',
           });
         } catch {
           // ignore notification errors
         }
-      }
-
-      // Phone (APK): the Android background service rings its own notification at the limit
-      // (also when the app is closed), so nothing extra is triggered from here.
-
-      // Windows Secondary Monitor Toast (zero focus-steal on Screen 1!)
-      try {
-        const wv = (
-          window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
-        ).chrome?.webview;
-        if (wv?.postMessage) {
-          wv.postMessage(
-            JSON.stringify({
-              type: 'native-alert',
-              emoji: `🔋 ${phoneBattery.levelPct}%`,
-              title: `وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% — افصل الشاحن`,
-              sourceLabel: 'التنبيه الذكي لاكتمال الشحن',
-              time12h: nowTime12,
-              category: 'general',
-              isHydration: false,
-              isContinuous: smartChargeKeepUntilUnplugged,
-              durationSeconds: 300,
-            })
-          );
-        }
-      } catch {
-        // ignore WebView2 postMessage errors
       }
     }
   }, [
@@ -8672,6 +8865,7 @@ export default function App() {
           medicationId?: string;
           medicationDoseTime24?: string;
           minutes?: number;
+          localOnly?: boolean;
         }>
       ).detail;
       const alertItem: PersistentAlertItem = {
@@ -8682,12 +8876,12 @@ export default function App() {
         time12h: formatNow12hInTimeZone(activeTimeZone, 'ar'),
         category: detail?.category || 'general',
         createdAtMs: Date.now(),
-        durationMs: 300_000,
+        durationMs: 60_000,
         isHydration: Boolean(detail?.isHydration),
         medicationId: detail?.medicationId || undefined,
         medicationDoseTime24: detail?.medicationDoseTime24 || undefined,
       };
-      handleSnoozeAlert(alertItem, detail?.minutes || 15);
+      handleSnoozeAlert(alertItem, detail?.minutes || 5, { localOnly: Boolean(detail?.localOnly) });
     };
     const onNativeQuickActions = (ev: Event) => {
       const detail = (ev as CustomEvent<string>).detail;
@@ -8716,14 +8910,22 @@ export default function App() {
         body?: string;
         kind?: TaskSoundCategory;
         emoji?: string;
+        privacyEmoji?: string;
+        sourceLabel?: string;
         blockId?: string;
+        bypassSanctuary?: boolean;
+        action?: string;
       }>).detail;
-      triggerTaskAlert(detail?.emoji || '🔔', detail?.kind || 'general', {
+      setAlarmRinging(true);
+      const badge = detail?.privacyEmoji || detail?.emoji || '🔔';
+      triggerTaskAlert(badge, detail?.kind || 'general', {
+        privacyEmoji: badge,
         displayTitle: detail?.title || 'تنبيه متزامن',
         description: detail?.body,
+        sourceLabel: detail?.sourceLabel || 'مزامنة فورية بين أجهزتك',
         blockId: detail?.blockId,
         isRemoteSignal: true,
-        bypassSanctuary: false,
+        bypassSanctuary: Boolean(detail?.bypassSanctuary || detail?.action === 'test_ring'),
       });
     };
     const onVisible = () => {
@@ -8761,21 +8963,6 @@ export default function App() {
   ]);
 
   const [capsuleNowMs, setCapsuleNowMs] = useState<number>(() => Date.now());
-
-  useEffect(() => {
-    const syncNow = () => setCapsuleNowMs(Date.now());
-    const timer = window.setInterval(syncNow, 60_000);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') syncNow();
-    };
-    window.addEventListener('focus', syncNow);
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener('focus', syncNow);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, []);
 
   // Show "الورد والالتزام اليومي" ONLY when signed in AND user actually has that habit in their account
   const hasDailyWirdHabit = useMemo(() => {
@@ -8834,41 +9021,7 @@ export default function App() {
       };
     }
 
-    if (simulateUnder60s) {
-      const targetMs = capsuleNowMs + liveCountdownSec * 1000;
-      const simTrack: CapsuleTrackInfo = {
-        emoji: fallbackEmoji,
-        title: nextActiveBlock ? display.title : 'المهمة القادمة',
-        statusLabel: 'أقل من دقيقة',
-        countdownText: `00:${String(liveCountdownSec).padStart(2, '0')}`,
-        isNow: false,
-        isUrgent: true,
-        targetEpochMs: targetMs,
-        durationSeconds: 60,
-      };
-      return {
-        emoji: fallbackEmoji,
-        title: nextActiveBlock ? display.title : 'المهمة القادمة',
-        statusLabel: 'أقل من دقيقة',
-        sourceKind: (nextActiveBlock ? 'calendar' : 'none') as
-          | 'calendar'
-          | 'task'
-          | 'water'
-          | 'medication'
-          | 'none',
-        countdownText: `00:${String(liveCountdownSec).padStart(2, '0')}`,
-        isNow: false,
-        isUrgent: true,
-        progressRatio: 0,
-        targetEpochMs: targetMs,
-        durationSeconds: 60,
-        calendarTrack: simTrack,
-        taskTrack: null as CapsuleTrackInfo | null,
-        upcomingQueue: [simTrack] as CapsuleTrackInfo[],
-      };
-    }
-
-    // Active user timezone wall-clock seconds since midnight for smooth 1-second dual countdown
+    // Active user timezone wall-clock seconds since midnight for smooth countdown transitions
     const parts = new Intl.DateTimeFormat('en-GB', {
       timeZone: activeTimeZone,
       hour: '2-digit',
@@ -8903,8 +9056,8 @@ export default function App() {
       const isZeroDuration = (block.durationMin ?? 0) === 0;
       const durationSec = isZeroDuration ? 0 : Math.max(60, block.durationMin * 60);
       const endSec = startSec + durationSec;
-      if (isZeroDuration ? nowSecOfDay > startSec : endSec <= nowSecOfDay) continue;
-      const isNow = isZeroDuration ? nowSecOfDay === startSec : nowSecOfDay >= startSec && nowSecOfDay < endSec;
+      if (isZeroDuration ? nowSecOfDay >= startSec : endSec <= nowSecOfDay) continue;
+      const isNow = !isZeroDuration && nowSecOfDay >= startSec && nowSecOfDay < endSec;
       const bDisplay = resolveBlockDisplayInfo(block);
       const prayerEffectiveMin =
         block.source === 'prayer' ? block.startMin + lifeProfile.adhanLeadMinutes : block.startMin;
@@ -8921,30 +9074,24 @@ export default function App() {
       });
     }
 
-    // 2. Next Upcoming Water Cup from today's scientific hydration schedule (shows exact cup # & time!)
+    // 2. Next Upcoming Water Cup from today's scientific hydration schedule (always advance when due passes)
     const hydrationTodayEntry = hydrationHistory[hydrationHistory.length - 1];
     if (hydrationTodayEntry && dailyRhythmPlan.hydrationSlots.length > 0) {
       const nextUpcomingCup = dailyRhythmPlan.hydrationSlots.find(
-        (slot, idx) => !hydrationTodayEntry.slots[idx] && slot.timeMinutes * 60 + 5 * 60 > nowSecOfDay
+        (slot, idx) => !hydrationTodayEntry.slots[idx] && slot.timeMinutes * 60 > nowSecOfDay
       );
-      const nextDueNowCup = !nextUpcomingCup
-        ? dailyRhythmPlan.hydrationSlots.find((_, idx) => !hydrationTodayEntry.slots[idx])
-        : null;
-      const waterSlot = nextUpcomingCup ?? nextDueNowCup;
-      if (waterSlot) {
-        const startSec = waterSlot.timeMinutes * 60;
+      if (nextUpcomingCup) {
+        const startSec = nextUpcomingCup.timeMinutes * 60;
         const durationSec = 5 * 60;
-        const endSec = startSec + durationSec;
-        const isNow = nowSecOfDay >= startSec;
         candidates.push({
           sourceKind: 'water',
           emoji: '💧',
-          title: `كوب ماء ${waterSlot.cupIndex}`,
-          clockLabel: formatMinutes12h(waterSlot.timeMinutes, 'ar'),
+          title: `كوب ماء ${nextUpcomingCup.cupIndex}`,
+          clockLabel: formatMinutes12h(nextUpcomingCup.timeMinutes, 'ar'),
           startSec,
-          endSec: isNow ? nowSecOfDay : endSec,
-          targetSec: isNow ? nowSecOfDay : startSec,
-          isNow,
+          endSec: startSec + durationSec,
+          targetSec: startSec,
+          isNow: false,
           durationSec,
         });
       }
@@ -9018,20 +9165,11 @@ export default function App() {
     }
 
     candidates.sort((a, b) => a.targetSec - b.targetSec);
+    const activeCandidates = candidates.filter((c) => c.targetSec > nowSecOfDay);
 
     const buildTrack = (c: UnifiedCapsuleCandidate): CapsuleTrackInfo => {
       const remSec = Math.max(0, c.targetSec - nowSecOfDay);
-      const h = Math.floor(remSec / 3600);
-      const m = Math.floor((remSec % 3600) / 60);
-      const s = remSec % 60;
-      const countdownText =
-        c.isNow && (remSec === 0 || c.durationSec === 0)
-          ? 'الآن'
-          : c.isNow && remSec <= 60
-            ? 'الآن'
-            : h > 0
-              ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-              : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      const countdownText = formatCountdown(remSec * 1000);
       const statusLabel =
         c.sourceKind === 'water'
           ? c.isNow
@@ -9062,10 +9200,10 @@ export default function App() {
       };
     };
 
-    const nearestCalendar = candidates.find((c) => c.sourceKind === 'calendar') ?? null;
+    const nearestCalendar = activeCandidates.find((c) => c.sourceKind === 'calendar') ?? null;
     // Secondary track highlights the nearest upcoming non-calendar rhythm item (Water Cup / Medication / Timed Task)
     const nearestRhythmOrTask =
-      candidates.find((c) => c.sourceKind !== 'calendar') ?? null;
+      activeCandidates.find((c) => c.sourceKind !== 'calendar') ?? null;
 
     const calendarTrack: CapsuleTrackInfo | null = nearestCalendar
       ? buildTrack(nearestCalendar)
@@ -9097,7 +9235,7 @@ export default function App() {
           }
         : null;
 
-    const upcomingQueue: CapsuleTrackInfo[] = candidates.slice(0, 4).map(buildTrack);
+    const upcomingQueue: CapsuleTrackInfo[] = activeCandidates.slice(0, 4).map(buildTrack);
     if (upcomingQueue.length < 4 && untimedTaskFallback) {
       upcomingQueue.push({
         emoji: '☑️',
@@ -9111,7 +9249,7 @@ export default function App() {
       });
     }
 
-    const winner = candidates[0];
+    const winner = activeCandidates[0];
 
     if (winner) {
       const winnerTrack = buildTrack(winner);
@@ -9202,10 +9340,29 @@ export default function App() {
     googleTasks,
     todayCairoIso,
     nextActiveBlock,
-    simulateUnder60s,
-    liveCountdownSec,
     capsuleNowMs,
   ]);
+
+  // Wake capsule calculation right when the current/next event transition occurs (or on 60s minute ticks), avoiding per-second root re-renders.
+  useEffect(() => {
+    const syncNow = () => setCapsuleNowMs(Date.now());
+    const now = Date.now();
+    const targetMs = capsuleTimerState.targetEpochMs || 0;
+    const msToTarget = targetMs > now ? targetMs - now + 150 : 60_000;
+    const msToMinute = 60_000 - (now % 60_000) + 120;
+    const delay = Math.max(250, Math.min(60_000, msToTarget, msToMinute));
+    const timer = window.setTimeout(syncNow, delay);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncNow();
+    };
+    window.addEventListener('focus', syncNow);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', syncNow);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [capsuleNowMs, capsuleTimerState.targetEpochMs]);
 
     const lastPushedLiveStatusRef = useRef<string>('');
   useEffect(() => {
@@ -9296,6 +9453,7 @@ export default function App() {
     capsuleTimerState.statusLabel,
     capsuleTimerState.sourceKind,
     capsuleTimerState.targetEpochMs,
+    capsuleTimerState.countdownText,
     capsuleTimerState.upcomingQueue,
     deviceSettings.liveAlertsEnabled,
     deviceSettings.liveAlertsLeadMinutes,
@@ -9575,7 +9733,6 @@ ${lifeConstitution}
         isCheckingUpdates={isCheckingUpdates}
         sunMode={sunMode}
         onToggleSunMode={() => updateAppSettings({ sunMode: !appSettingsRef.current.sunMode })}
-        isLiveSynced={Boolean(firebaseUser?.uid && !firebaseUser?.isAnonymous && firestoreSynced)}
       />
 
       {toastMessage && (
@@ -9699,9 +9856,6 @@ ${lifeConstitution}
             quietMode={quietMode}
             quietRemainingSec={quietRemainingSec}
             onSetQuietMode={handleSetQuietMode}
-            liveCountdownSec={liveCountdownSec}
-            simulateUnder60s={simulateUnder60s}
-            onToggleSimulateUnder60s={() => setSimulateUnder60s((v) => !v)}
             calendarConnected={!needsAuth}
             prayersReady={prayersReady}
             locationResolutionState={locationResolutionState}
@@ -9823,7 +9977,6 @@ ${lifeConstitution}
             onOpenTravel={() => setIsTravelModalOpen(true)}
             onOpenCatchUp={() => setIsCatchUpModalOpen(true)}
             onOpenPomodoro={() => setIsPomodoroModalOpen(true)}
-            liveCountdownSec={liveCountdownSec}
             batteryGuard={batteryGuard}
             onSimulateCharge90={handleSimulateCharge90}
             onSimulatePowerDisconnect={handleSimulatePowerDisconnect}
@@ -9832,6 +9985,7 @@ ${lifeConstitution}
             hasShakeUndoActive={!!lastDeletedBlock && shakeUndoSecondsLeft > 0}
             onTriggerShakeUndo={handleTriggerShakeUndo}
             alarmRinging={alarmRinging}
+            onTriggerRing={handleTriggerRing}
             onDismissTwoWay={handleDismissTwoWay}
             deviceSettings={deviceSettings}
             onUpdateDeviceSettings={handleUpdateDeviceSettings}
@@ -9948,6 +10102,9 @@ ${lifeConstitution}
             setPersistentAlert(null);
           }
         }}
+        onAutoSnooze={(alertItem, mins) => {
+          handleSnoozeAlert(alertItem, mins, { localOnly: true });
+        }}
         onConfirmWater={() => {
           handleLogWaterCup();
           handleAcknowledgeAudioAlert();
@@ -10039,6 +10196,7 @@ ${lifeConstitution}
         isOpen={isCatchUpModalOpen}
         onClose={() => setIsCatchUpModalOpen(false)}
         blocks={liveBlocks}
+        activeTimeZone={activeTimeZone}
         hasUndoSnapshot={!!undoSnapshot}
         onCommitReflow={handleCommitReflow}
         onUndoToOriginal={handleUndoReflow}

@@ -48,6 +48,12 @@ public class AlarmActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long startedAtMs = 0L;
     private TextView elapsedView = null;
+    private final Runnable autoTimeoutRunnable = () -> {
+        if (!isFinishing()) {
+            ReminderAlarmReceiver.stopRinging();
+            finish();
+        }
+    };
     private ObjectAnimator pulseAnim = null;
     private ObjectAnimator cardAlphaAnim = null;
     private ObjectAnimator cardScaleXAnim = null;
@@ -107,13 +113,8 @@ public class AlarmActivity extends Activity {
         } catch (Exception ignored) {
         }
 
-        // Auto-dismiss safety timeout after 120s
-        handler.postDelayed(() -> {
-            if (!isFinishing()) {
-                ReminderAlarmReceiver.stopRinging();
-                finish();
-            }
-        }, 120_000L);
+        // Auto-close card after 1 minute so ReminderAlarmReceiver can auto-snooze 5 minutes if unacknowledged
+        handler.postDelayed(autoTimeoutRunnable, 60_000L);
 
         getWindow().setStatusBarColor(Color.BLACK);
         getWindow().setNavigationBarColor(Color.BLACK);
@@ -479,6 +480,7 @@ public class AlarmActivity extends Activity {
             activeInstance = null;
         }
         handler.removeCallbacks(elapsedRunnable);
+        handler.removeCallbacks(autoTimeoutRunnable);
         if (pulseAnim != null && pulseAnim.isRunning()) pulseAnim.cancel();
         if (cardAlphaAnim != null && cardAlphaAnim.isRunning()) cardAlphaAnim.cancel();
         if (cardScaleXAnim != null && cardScaleXAnim.isRunning()) cardScaleXAnim.cancel();

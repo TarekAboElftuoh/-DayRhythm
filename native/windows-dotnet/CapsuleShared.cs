@@ -9,6 +9,19 @@ using System.Windows.Forms;
 
 namespace DayRhythm
 {
+    internal sealed class CapsuleQueueItem
+    {
+        public string emoji { get; set; } = "📅";
+        public string title { get; set; } = "";
+        public string statusLabel { get; set; } = "";
+        public string clockLabel { get; set; } = "";
+        public string countdownText { get; set; } = "";
+        public bool isNow { get; set; }
+        public bool isUrgent { get; set; }
+        public long targetEpochMs { get; set; }
+        public int durationSeconds { get; set; }
+    }
+
     internal sealed class CapsuleStatePayload
     {
         public string emoji { get; set; } = "📅";
@@ -27,6 +40,7 @@ namespace DayRhythm
         public long secondaryTargetEpochMs { get; set; }
         public bool secondaryIsNow { get; set; }
         public bool secondaryIsUrgent { get; set; }
+        public CapsuleQueueItem[] upcomingQueue { get; set; } = Array.Empty<CapsuleQueueItem>();
         public int phoneBatteryPct { get; set; } = -1;
         public bool phoneCharging { get; set; }
         public int phoneChargeLimitPct { get; set; } = 90;
