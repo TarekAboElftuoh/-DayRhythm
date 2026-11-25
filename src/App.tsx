@@ -116,6 +116,14 @@ type TasksVaultPayload = UserSettingsPayload;
 const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
 const SYNC_TASK_TITLE = 'sync_state';
 import {
+  connectSpircCluster,
+  loadFromNativeSqlite,
+  persistToNativeSqlite,
+  SPIRC_ACTION,
+  SPIRC_ENTITY,
+  type SpircClusterHandle,
+} from './services/spircClient';
+import {
   auth,
   firebaseConfig,
   configuredDbId,
@@ -951,6 +959,7 @@ export default function App() {
   const [cloudPausedUntil, setCloudPausedUntil] = useState(0);
   const pendingRemoteTimerRef = useRef<number | null>(null);
   const pushToTasksVaultRef = useRef<(patch?: Partial<TasksVaultPayload>) => Promise<void>>(() => Promise.resolve());
+  const spircClusterRef = useRef<SpircClusterHandle | null>(null);
   const pendingPatchesBeforeHydrationRef = useRef<Array<Partial<TasksVaultPayload>>>([]);
   const handleToggleMedicationRef = useRef<(id: string, doseTime24?: string) => void>(() => {});
   const handleLogWaterCupRef = useRef<() => void>(() => {});
@@ -4045,9 +4054,26 @@ export default function App() {
         }
       }
 
-      // Ultra-low-latency real-time live signal (<100ms) over Google Cloud Firestore
+      // 2.5 Native Android SQLite WAL (<1ms) + Cloudflare DO Binary Protobuf WebSocket (<35ms)
+      persistToNativeSqlite(
+        'state_v3',
+        SPIRC_ENTITY.STATE_V3,
+        Date.now(),
+        clientIdRef.current,
+        Date.now(),
+        false,
+        payload
+      );
+      const sentViaSpirc = spircClusterRef.current?.sendJsonState(
+        'state_v3',
+        SPIRC_ENTITY.STATE_V3,
+        SPIRC_ACTION.UPSERT,
+        payload
+      );
+
+      // Ultra-low-latency real-time live signal (<100ms) over Google Cloud Firestore (fallback when Spirc WS is not connected)
       const liveUid = firebaseUser?.uid;
-      if (liveUid && !firebaseUser.isAnonymous) {
+      if (!sentViaSpirc && liveUid && !firebaseUser.isAnonymous) {
         const liveOpId = `live_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         void emitCloudLiveSignal(liveUid, {
           opId: liveOpId,
@@ -4126,6 +4152,39 @@ export default function App() {
   useEffect(() => {
     showToastRef.current = showToast;
   }, [showToast]);
+
+  // Connect to Cloudflare Durable Objects Binary Protobuf WebSocket + hydrate Native SQLite WAL on boot
+  useEffect(() => {
+    const cachedRows = loadFromNativeSqlite();
+    const stateRow = cachedRows.find((r) => r.entityId === 'state_v3' && !r.deleted);
+    if (stateRow?.payload && typeof stateRow.payload === 'object') {
+      applyOrDeferRef.current(stateRow.payload as unknown as SyncedRhythmPayload);
+    }
+
+    const uid =
+      firebaseUser?.uid ||
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
+      '';
+    const workerUrl = getSavedCloudApiUrl();
+    if (!uid || !workerUrl) {
+      spircClusterRef.current?.close();
+      spircClusterRef.current = null;
+      return;
+    }
+
+    const handle = connectSpircCluster(workerUrl, uid, clientIdRef.current, (entityId, entityKind, payload) => {
+      if (entityId === 'state_v3' || entityKind === SPIRC_ENTITY.STATE_V3) {
+        applyOrDeferRef.current(payload as unknown as SyncedRhythmPayload);
+      }
+    });
+    spircClusterRef.current = handle;
+    return () => {
+      handle.close();
+      if (spircClusterRef.current === handle) spircClusterRef.current = null;
+    };
+  }, [firebaseUser?.uid, authUser?.uid]);
 
   // Requirement 3 & Spotify Connect: Real-time active_alarms listener with poison-pill prevention
   useEffect(() => {
@@ -4740,33 +4799,7 @@ export default function App() {
     [syncUiPrefsCloud]
   );
 
-  // One-time migration from legacy Cairo default (30.0444, 31.2357) to user's home (الضهرية · شربين · الدقهلية)
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const migrationKey = 'dayrhythm_home_dahriya_migrated_v1';
-    try {
-      if (window.localStorage.getItem(migrationKey) === '1') return;
-    } catch {
-      return;
-    }
-    const isLegacyCairoDefault =
-      Math.abs((lifeProfile.currentLat ?? 0) - 30.0444) < 0.005 &&
-      Math.abs((lifeProfile.currentLng ?? 0) - 31.2357) < 0.005;
-    if (isLegacyCairoDefault) {
-      updateLifeProfileLocal((prev) => ({
-        ...prev,
-        currentCityName: HOME_LOCATION.nameAr,
-        currentLat: HOME_LOCATION.lat,
-        currentLng: HOME_LOCATION.lng,
-        currentTimeZone: HOME_LOCATION.timeZone || 'Africa/Cairo',
-      }));
-    }
-    try {
-      window.localStorage.setItem(migrationKey, '1');
-    } catch {
-      // ignore storage errors
-    }
-  }, [lifeProfile.currentLat, lifeProfile.currentLng]);
+  // Location is synced dynamically from Mobile GPS (and only updates when moving >= 5 km).
 
   const handleUpdateCapsulePrefs = useCallback(
     (next: CapsulePrefs) => {
@@ -5273,6 +5306,8 @@ export default function App() {
 
   useEffect(() => {
     if (!lifeProfile.autoLocationSync) return;
+    // Mobile is the sole GPS authority; PC inherits coordinates & prayer/solar times from Phone via cloud sync.
+    if (!detectIsMobileDeviceClient()) return;
     if (typeof navigator === 'undefined' || !navigator.geolocation) return;
 
     let watchId: number | null = null;

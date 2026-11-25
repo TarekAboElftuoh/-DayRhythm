@@ -191,3 +191,149 @@ export function persistToNativeSqlite(
   }
   return false;
 }
+
+export function loadFromNativeSqlite(): Array<{
+  entityId: string;
+  entityKind: number;
+  lamportSeq: number;
+  clientId: string;
+  timestampMs: number;
+  deleted: boolean;
+  payload: Record<string, unknown>;
+}> {
+  try {
+    const bridge = (window as unknown as {
+      DayRhythmAndroid?: { sqliteLoadAll?: () => string };
+    }).DayRhythmAndroid;
+    if (!bridge?.sqliteLoadAll) return [];
+    const raw = bridge.sqliteLoadAll();
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export interface SpircClusterHandle {
+  isOpen: () => boolean;
+  sendJsonState: (entityId: string, entityKind: number, action: number, payloadObj: unknown) => boolean;
+  close: () => void;
+}
+
+export function connectSpircCluster(
+  workerBaseUrl: string,
+  uid: string,
+  clientId: string,
+  onRemoteState: (entityId: string, entityKind: number, payload: Record<string, unknown>, frame: SpircFrame) => void
+): SpircClusterHandle {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let lamportSeq = Date.now();
+  let retryMs = 1500;
+  let retryTimer: number | null = null;
+
+  const toWsUrl = (base: string): string => {
+    const clean = base.trim().replace(/\/+$/, '');
+    const wsProto = clean.startsWith('https://')
+      ? clean.replace(/^https:\/\//, 'wss://')
+      : clean.startsWith('http://')
+        ? clean.replace(/^http:\/\//, 'ws://')
+        : clean.startsWith('ws://') || clean.startsWith('wss://')
+          ? clean
+          : `wss://${clean}`;
+    return `${wsProto}/ws/${encodeURIComponent(uid)}`;
+  };
+
+  const connect = () => {
+    if (closed || !workerBaseUrl || !uid) return;
+    try {
+      ws = new WebSocket(toWsUrl(workerBaseUrl));
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        retryMs = 1500;
+        // Request catch-up delta from Durable Object SQLite
+        const req = encodeSpircFrame({
+          version: 1,
+          action: SPIRC_ACTION.FULL_SYNC_REQUEST,
+          entityKind: SPIRC_ENTITY.STATE_V3,
+          entityId: 'state_v3',
+          clientId,
+          opId: `sync_${Date.now()}`,
+          lamportSeq,
+          timestampMs: Date.now(),
+          deleted: false,
+          payload: new Uint8Array(0),
+        });
+        ws?.send(req.buffer as ArrayBuffer);
+      };
+      ws.onmessage = (ev) => {
+        if (!(ev.data instanceof ArrayBuffer)) return;
+        try {
+          const frame = decodeSpircFrame(new Uint8Array(ev.data));
+          if (frame.clientId === clientId) return;
+          if (frame.lamportSeq > lamportSeq) lamportSeq = frame.lamportSeq;
+          if (frame.payload.length > 0) {
+            const parsed = JSON.parse(textDecoder.decode(frame.payload)) as Record<string, unknown>;
+            persistToNativeSqlite(
+              frame.entityId,
+              frame.entityKind,
+              frame.lamportSeq,
+              frame.clientId,
+              frame.timestampMs,
+              frame.deleted,
+              parsed
+            );
+            onRemoteState(frame.entityId, frame.entityKind, parsed, frame);
+          }
+        } catch {
+          // ignore malformed wire frame
+        }
+      };
+      ws.onclose = () => {
+        ws = null;
+        if (!closed) {
+          retryTimer = window.setTimeout(connect, retryMs);
+          retryMs = Math.min(30_000, retryMs * 2);
+        }
+      };
+      ws.onerror = () => {
+        ws?.close();
+      };
+    } catch {
+      // ignore socket errors
+    }
+  };
+
+  connect();
+
+  return {
+    isOpen: () => ws !== null && ws.readyState === WebSocket.OPEN,
+    sendJsonState: (entityId, entityKind, action, payloadObj) => {
+      lamportSeq = Math.max(lamportSeq + 1, Date.now());
+      const jsonBytes = textEncoder.encode(JSON.stringify(payloadObj ?? {}));
+      persistToNativeSqlite(entityId, entityKind, lamportSeq, clientId, Date.now(), false, payloadObj);
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      const bytes = encodeSpircFrame({
+        version: 1,
+        action,
+        entityKind,
+        entityId,
+        clientId,
+        opId: `op_${lamportSeq.toString(36)}`,
+        lamportSeq,
+        timestampMs: Date.now(),
+        deleted: false,
+        payload: jsonBytes,
+      });
+      ws.send(bytes.buffer as ArrayBuffer);
+      return true;
+    },
+    close: () => {
+      closed = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      ws?.close();
+      ws = null;
+    },
+  };
+}

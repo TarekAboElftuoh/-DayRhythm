@@ -1,26 +1,17 @@
 import { GeoLocation, PrayerTimeItem } from '../types/dayrhythm';
 
 export const HOME_LOCATION: GeoLocation = {
-  id: 'aldahriya_sherbin',
-  nameAr: 'الضهرية · شربين (الدقهلية)',
-  nameEn: 'Al-Dahriya, Sherbin, Dakahlia',
-  lat: 31.227,
-  lng: 31.6148,
+  id: 'default_cairo',
+  nameAr: 'القاهرة · مصر',
+  nameEn: 'Cairo, Egypt',
+  lat: 30.0444,
+  lng: 31.2357,
   tzOffsetHours: 2,
   timeZone: 'Africa/Cairo',
 };
 
 export const PRESET_LOCATIONS: GeoLocation[] = [
   HOME_LOCATION,
-  {
-    id: 'cairo',
-    nameAr: 'القاهرة · مصر',
-    nameEn: 'Cairo, Egypt',
-    lat: 30.0444,
-    lng: 31.2357,
-    tzOffsetHours: 2,
-    timeZone: 'Africa/Cairo',
-  },
   {
     id: 'alexandria',
     nameAr: 'الإسكندرية · مصر',
