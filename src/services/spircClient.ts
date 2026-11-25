@@ -371,10 +371,17 @@ export function connectSpircCluster(
       };
       ws.onclose = () => {
         clearHeartbeat();
+        if (ws) {
+          ws.onopen = null;
+          ws.onmessage = null;
+          ws.onerror = null;
+          ws.onclose = null;
+        }
         ws = null;
-        if (!closed) {
+        if (!closed && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+          if (retryTimer !== null) window.clearTimeout(retryTimer);
           retryTimer = window.setTimeout(connect, retryMs);
-          retryMs = Math.min(30_000, retryMs * 2);
+          retryMs = Math.min(120_000, retryMs * 2);
         }
       };
       ws.onerror = () => {
