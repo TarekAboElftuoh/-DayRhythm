@@ -84,8 +84,8 @@ export function isCustomGeminiApiKeySet(): boolean {
  * Models that answer 404 are remembered for 24 h and skipped; the last model that worked is tried first.
  */
 export const GEMINI_FAST_CHAIN = [
-  'gemini-3.5-flash',
   'gemini-3.1-flash-lite',
+  'gemini-3.5-flash',
   'gemini-4-hydrogen',
 ] as const;
 
@@ -102,6 +102,9 @@ type GeminiRoute = 'fast' | 'action';
 const GEMINI_DEAD_MODELS_KEY = 'dayrhythm_gemini_dead_models_v1';
 const GEMINI_LAST_GOOD_KEY = 'dayrhythm_gemini_last_good_v1';
 const DEAD_MODEL_TTL_MS = 24 * 60 * 60_000;
+const GEMINI_CHAT_FIRST_TOKEN_TIMEOUT_MS = 10_000;
+const GEMINI_CHAT_TOTAL_BUDGET_MS = 30_000;
+const GEMINI_CHAT_NON_STREAM_TIMEOUT_MS = 8_000;
 
 function readJsonStorage<T>(key: string, fallback: T): T {
   if (typeof window === 'undefined') return fallback;
@@ -675,15 +678,23 @@ export const GEMINI_CHAT_TOOLS = [
   },
 ];
 
-export function shouldAttachChatTools(_message?: string): boolean {
-  // Always attach tools in Chat mode so Gemini can reliably invoke tools without writing pseudo-code
-  return true;
+/** Tools cost tokens and a tool round-trip. Attach them only when the message may change data. */
+const ACTION_INTENT_PATTERN =
+  /(أضف|اضف|ضيف|ضيّف|أنشئ|انشئ|اعمل|أنشأ|جدول|جدوللي|عدّل|عدل|غيّر|غير|احذف|امسح|ألغ|الغ|ذكرني|فكّرني|فكرني|مهمة|مهمه|مهام|تاسك|موعد|حدث|أحداث|دواء|علاج|جرعة|نشاط|عادة|هدف|ذاكرة|قاعدة|احفظ|سجل|سجّل|أجل|انقل|رحّل|رتب|نظم|plan|schedule|remind|create|add|edit|delete|cancel|task|event|memory)/i;
+
+export function shouldAttachChatTools(message?: string): boolean {
+  return ACTION_INTENT_PATTERN.test(message ?? '');
 }
 
-export function buildChatSystemInstruction(payload: ChatRequestPayload): {
+export function buildChatSystemInstruction(
+  payload: ChatRequestPayload,
+  options?: { lean?: boolean }
+): {
   systemInstruction: string;
   memoriesAppliedCount: number;
 } {
+  // Plain chat does not need the calendar/tasks/meds dumps: they only add prefill latency.
+  const lean = Boolean(options?.lean);
   const todayCairo = getCairoTodayIso();
   const nowCairo12 = getCairoNowTime12();
   const dayNamesAr = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
@@ -719,7 +730,7 @@ export function buildChatSystemInstruction(payload: ChatRequestPayload): {
     .slice(0, 45)
     .sort((a, b) => String(a.start).localeCompare(String(b.start)));
   const eventsListText =
-    upcomingEvents.length > 0
+    !lean && upcomingEvents.length > 0
       ? `\n\nأحداث Google Calendar القادمة (من الآن):\n${upcomingEvents
           .map(
             (e) =>
@@ -729,7 +740,7 @@ export function buildChatSystemInstruction(payload: ChatRequestPayload): {
       : '';
 
   const tasksListText =
-    Array.isArray(payload.tasks) && payload.tasks.length > 0
+    !lean && Array.isArray(payload.tasks) && payload.tasks.length > 0
       ? `\n\nمهام Google Tasks:\n${[...payload.tasks]
           // open tasks first; completed ones only fill the remaining slots
           .sort((a, b) => Number(a.status === 'completed') - Number(b.status === 'completed'))
@@ -742,7 +753,7 @@ export function buildChatSystemInstruction(payload: ChatRequestPayload): {
       : '';
 
   const medsListText =
-    Array.isArray(payload.medications) && payload.medications.length > 0
+    !lean && Array.isArray(payload.medications) && payload.medications.length > 0
       ? `\n\nقائمة العلاجات والمكملات الحالية:\n${payload.medications
           .map((m) => {
             const doses =
@@ -764,7 +775,7 @@ export function buildChatSystemInstruction(payload: ChatRequestPayload): {
       : '';
 
   const creativeListText =
-    Array.isArray(payload.creativeActivities) && payload.creativeActivities.length > 0
+    !lean && Array.isArray(payload.creativeActivities) && payload.creativeActivities.length > 0
       ? `\n\nالأنشطة الإبداعية والهوايات المسجلة:\n${payload.creativeActivities
           .map((a) => {
             const cadAr = a.cadence === 'daily' ? 'يومي' : a.cadence === 'monthly' ? 'شهري' : 'أسبوعي';
@@ -774,11 +785,14 @@ export function buildChatSystemInstruction(payload: ChatRequestPayload): {
       : '';
 
   const longTermArchiveBlock =
-    typeof payload.longTermChatContext === 'string' && payload.longTermChatContext.trim().length > 0
+    !lean &&
+    typeof payload.longTermChatContext === 'string' &&
+    payload.longTermChatContext.trim().length > 0
       ? `\n\n=== مقتطفات مرجعية سابقة ===\n${payload.longTermChatContext.trim().slice(0, 1400)}`
       : '';
 
-  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${(payload.contextSummary ?? '').slice(0, 1800)}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+  const contextText = (payload.contextSummary ?? '').slice(0, lean ? 600 : 1800);
+  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${contextText}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
 
   return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
 }
@@ -951,7 +965,10 @@ export async function apiStreamGeminiChatClient(
 
   handlers.onStatus?.('جارٍ الرد المباشر من Google Gemini...');
 
-  const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
+  const needsTools = shouldAttachChatTools(userMessage);
+  const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload, {
+    lean: !needsTools,
+  });
   const normalizedHistory = normalizeGeminiHistory(payload.history);
   const contents = [
     ...normalizedHistory,
@@ -960,8 +977,6 @@ export async function apiStreamGeminiChatClient(
       parts: [{ text: userMessage }],
     },
   ];
-
-  const needsTools = shouldAttachChatTools(userMessage);
 
   const requestBody: Record<string, unknown> = {
     contents,
@@ -994,9 +1009,15 @@ export async function apiStreamGeminiChatClient(
     let reqTimeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-      // Per-request 28-second timeout — prevents indefinite hang when model server stalls.
+      // 10s to the FIRST token, and a 30s total budget across all fallback models: a stalled
+      // candidate can no longer burn 28s each and blow past the UI's 45s hang guard.
+      const remainingBudgetMs = GEMINI_CHAT_TOTAL_BUDGET_MS - (Date.now() - startedAt);
+      if (remainingBudgetMs < 500) break;
       const reqTimeoutCtrl = new AbortController();
-      reqTimeoutId = setTimeout(() => reqTimeoutCtrl.abort(), 28_000);
+      reqTimeoutId = setTimeout(
+        () => reqTimeoutCtrl.abort(),
+        Math.min(GEMINI_CHAT_FIRST_TOKEN_TIMEOUT_MS, remainingBudgetMs)
+      );
       const composedSignal = (() => {
         if (!handlers.signal) return reqTimeoutCtrl.signal;
         if (typeof AbortSignal.any === 'function') {
@@ -1093,6 +1114,11 @@ export async function apiStreamGeminiChatClient(
         }
         const { done, value } = await reader.read();
         if (done) break;
+        // First bytes arrived — the stream is alive, so the connect timeout must not kill it.
+        if (reqTimeoutId) {
+          clearTimeout(reqTimeoutId);
+          reqTimeoutId = undefined;
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
@@ -1182,6 +1208,11 @@ async function fetchGeminiChatNonStream(
   route: GeminiRoute
 ): Promise<{ text: string; fnCalls: GeminiFunctionCall[] } | null> {
   for (const modelCandidate of modelOrder) {
+    const fallbackCtrl = new AbortController();
+    const fallbackTimeout = setTimeout(
+      () => fallbackCtrl.abort(),
+      GEMINI_CHAT_NON_STREAM_TIMEOUT_MS
+    );
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelCandidate}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const res = await fetch(url, {
@@ -1189,6 +1220,7 @@ async function fetchGeminiChatNonStream(
         headers: { 'Content-Type': 'application/json' },
         // Plain body (no thinking override) — this is the last-resort path.
         body: JSON.stringify(withModelConfig(requestBody, modelCandidate, route, false)),
+        signal: fallbackCtrl.signal,
       });
       if (!res.ok) continue;
       const data = (await res.json()) as {
@@ -1214,6 +1246,8 @@ async function fetchGeminiChatNonStream(
       }
     } catch {
       continue;
+    } finally {
+      clearTimeout(fallbackTimeout);
     }
   }
   return null;

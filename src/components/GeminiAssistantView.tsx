@@ -322,12 +322,13 @@ function buildNormalizedHistory(
     if (merged.length === 0 && m.role !== 'user') continue;
     const prev = merged[merged.length - 1];
     if (prev && prev.role === m.role) {
-      prev.text = `${prev.text}\n\n${text}`.slice(0, 3500);
+      prev.text = `${prev.text}\n\n${text}`.slice(0, 1200);
     } else {
-      merged.push({ role: m.role, text: text.slice(0, 3500) });
+      merged.push({ role: m.role, text: text.slice(0, 1200) });
     }
   }
-  const recent = merged.slice(-18);
+  // Last 10 turns only: older history adds prefill latency with no benefit.
+  const recent = merged.slice(-10);
   while (recent.length > 0 && recent[0].role !== 'user') recent.shift();
   while (recent.length > 0 && recent[recent.length - 1].role === 'user') recent.pop();
   return recent;

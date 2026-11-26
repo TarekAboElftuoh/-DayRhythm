@@ -238,10 +238,16 @@ export function registerGeminiRoutes(app: Express): void {
     }));
   }
 
-  function buildChatSystemInstruction(payload: ChatRequestPayload): {
+  function buildChatSystemInstruction(
+    payload: ChatRequestPayload,
+    options?: { lean?: boolean }
+  ): {
     systemInstruction: string;
     memoriesAppliedCount: number;
   } {
+    // Plain conversation skips the calendar/tasks/meds dumps and the old archive:
+    // they were pure prefill latency on every "ازيك".
+    const lean = Boolean(options?.lean);
     const todayCairo = getCairoTodayIso();
     const nowCairo12 = getCairoNowTime12();
     const dayNamesAr = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
@@ -262,7 +268,7 @@ export function registerGeminiRoutes(app: Express): void {
         : '';
 
     const eventsListText =
-      Array.isArray(payload.calendarEvents) && payload.calendarEvents.length > 0
+      !lean && Array.isArray(payload.calendarEvents) && payload.calendarEvents.length > 0
         ? `\n\nأحداث Google Calendar:\n${payload.calendarEvents
             .slice(0, 18)
             .map((e) => `- [id=${e.id}${e.calendarId ? `|cal=${e.calendarId}` : ''}] ${e.summary} | ${formatServerIsoTo12h(e.start)}${e.end ? `–${formatServerIsoTo12h(e.end)}` : ''}`)
@@ -270,7 +276,7 @@ export function registerGeminiRoutes(app: Express): void {
         : '';
 
     const tasksListText =
-      Array.isArray(payload.tasks) && payload.tasks.length > 0
+      !lean && Array.isArray(payload.tasks) && payload.tasks.length > 0
         ? `\n\nمهام Google Tasks:\n${payload.tasks
             .slice(0, 15)
             .map(
@@ -281,7 +287,7 @@ export function registerGeminiRoutes(app: Express): void {
         : '';
 
     const medsListText =
-      Array.isArray(payload.medications) && payload.medications.length > 0
+      !lean && Array.isArray(payload.medications) && payload.medications.length > 0
         ? `\n\nقائمة العلاجات والمكملات الحالية:\n${payload.medications
             .map((m) => {
               const doses =
@@ -303,7 +309,7 @@ export function registerGeminiRoutes(app: Express): void {
         : '';
 
     const creativeListText =
-      Array.isArray(payload.creativeActivities) && payload.creativeActivities.length > 0
+      !lean && Array.isArray(payload.creativeActivities) && payload.creativeActivities.length > 0
         ? `\n\nالأنشطة الإبداعية والهوايات المسجلة:\n${payload.creativeActivities
             .map((a) => {
               const cadAr =
@@ -314,18 +320,25 @@ export function registerGeminiRoutes(app: Express): void {
         : '';
 
     const longTermArchiveBlock =
-      typeof payload.longTermChatContext === 'string' && payload.longTermChatContext.trim().length > 0
+      !lean &&
+      typeof payload.longTermChatContext === 'string' &&
+      payload.longTermChatContext.trim().length > 0
         ? `\n\n=== مقتطفات مرجعية سابقة ===\n${payload.longTermChatContext.trim().slice(0, 1400)}`
         : '';
 
-    const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${(payload.contextSummary ?? '').slice(0, 1800)}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+    const contextText = (payload.contextSummary ?? '').slice(0, lean ? 600 : 1800);
+    const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${contextText}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
 
     return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
   }
 
-  // Tools are attached universally so Gemini executes Function Calling reliably instead of printing raw code
-  function shouldAttachChatTools(_message?: string): boolean {
-    return true;
+  // Tools cost a tool round-trip plus their declarations on every turn. Attach them only
+  // when the message may change data; a greeting must not pay for six function schemas.
+  const ACTION_INTENT_PATTERN =
+    /(أضف|اضف|ضيف|ضيّف|أنشئ|انشئ|اعمل|أنشأ|جدول|جدوللي|عدّل|عدل|غيّر|غير|احذف|امسح|ألغ|الغ|ذكرني|فكّرني|فكرني|مهمة|مهمه|مهام|تاسك|موعد|حدث|أحداث|دواء|علاج|جرعة|نشاط|عادة|هدف|ذاكرة|قاعدة|احفظ|سجل|سجّل|أجل|انقل|رحّل|رتب|نظم|plan|schedule|remind|create|add|edit|delete|cancel|task|event|memory)/i;
+
+  function shouldAttachChatTools(message?: string): boolean {
+    return ACTION_INTENT_PATTERN.test(message ?? '');
   }
 
   // Dedicated function-calling tools for Chat (NO forced googleSearch grounding on every chat turn,
@@ -343,12 +356,11 @@ export function registerGeminiRoutes(app: Express): void {
     },
   ];
 
-  // Primary frontier fast model (gemini-3.5-flash with calibrated LOW thinking for deep reasoning and circadian precision)
-  // with fallback to gemini-4-hydrogen (pro-grade reasoning) and gemini-3.1-flash-lite (economy fallback)
+  // Fastest stable model first (measured ~0.8s to first token), then the stronger fallbacks.
   const GEMINI_CHAT_MODEL_CHAIN = [
+    'gemini-3.1-flash-lite',
     'gemini-3.5-flash',
     'gemini-4-hydrogen',
-    'gemini-3.1-flash-lite',
   ] as const;
 
   function isRetryableGeminiError(err: unknown): boolean {
@@ -574,15 +586,16 @@ export function registerGeminiRoutes(app: Express): void {
     emit({ type: 'status', text: 'جارٍ الرد السريع وفق ذاكرتك...' });
 
     const ai = getGeminiClient();
-    const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
+    const needsTools = shouldAttachChatTools(userMessage);
+    const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload, {
+      lean: !needsTools,
+    });
 
     let activeModel: string = GEMINI_CHAT_MODEL_CHAIN[0];
     let fullText = '';
     const collectedFnCalls: FunctionCall[] = [];
     let streamCompleted = false;
     let lastStreamErr: unknown = null;
-
-    const needsTools = shouldAttachChatTools(userMessage);
 
     for (const candidateModel of GEMINI_CHAT_MODEL_CHAIN) {
       if (isAborted()) return;
@@ -734,13 +747,14 @@ export function registerGeminiRoutes(app: Express): void {
       }
 
       const ai = getGeminiClient();
-      const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload);
+      const needsTools = shouldAttachChatTools(payload.message);
+      const { systemInstruction, memoriesAppliedCount } = buildChatSystemInstruction(payload, {
+        lean: !needsTools,
+      });
 
       let activeModel: string = GEMINI_CHAT_MODEL_CHAIN[0];
       let response: Awaited<ReturnType<ReturnType<GoogleGenAI['chats']['create']>['sendMessage']>> | null = null;
       let lastErr: unknown = null;
-
-      const needsTools = shouldAttachChatTools(payload.message);
 
       for (const candidateModel of GEMINI_CHAT_MODEL_CHAIN) {
         activeModel = candidateModel;
