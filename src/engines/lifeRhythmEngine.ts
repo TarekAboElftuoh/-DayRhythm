@@ -175,11 +175,12 @@ export function computeDailyRhythmPlan(
 ): DailyRhythmPlan {
   const fajr = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
   const sunrise = prayers.find((p) => p.id === 'sunrise')?.adhanMinutes ?? 6 * 60 + 15; // kept for other uses
-const redSun = prayers.find((p) => p.id === 'maghrib')?.redSunMinutes ?? null; // redSun minutes if computed
+
   const dhuhr = prayers.find((p) => p.id === 'dhuhr')?.adhanMinutes ?? 12 * 60;
   const asr = prayers.find((p) => p.id === 'asr')?.adhanMinutes ?? 15 * 60;
   const maghrib = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
-const redSun = prayers.find((p) => p.id === 'maghrib')?.redSunMinutes ?? null; // redSun minutes if computed
+  const redSun = prayers.find((p) => p.id === 'maghrib')?.redSunMinutes ?? null;
+  const safeRedSun = redSun ?? (maghrib - 35);
   const isha = prayers.find((p) => p.id === 'isha')?.adhanMinutes ?? 19 * 60;
 
   const autoFastToday =
@@ -255,7 +256,7 @@ const redSun = prayers.find((p) => p.id === 'maghrib')?.redSunMinutes ?? null; /
       const deficit = profile.sleepTargetMinutes - maxNightWindowMin;
       eveningStudyTrimMin = Math.min(180, Math.max(45, deficit + 30));
       conflictWarningAr = `الليل الفلكي بين العشاء و${suhoorStartMin !== null ? 'السحور' : 'الفجر'} هو ${formatDurationAr(maxNightWindowMin)} فقط (أقل من هدف ${formatDurationAr(profile.sleepTargetMinutes)} بـ ${formatDurationAr(deficit)}). تم تثبيت النوم مباشرة بعد العشاء (${formatMinutes12h(bedtimeMin)}) وتقليص الجلسات المسائية باكراً.`;
-      autoAdaptationProposalAr = `اقتراح التكيّف الذاتي: نقل جلسات العمل أو الدراسة المسائية للصباح بعد الشروق (${formatMinutes12h(redSun + 20)}) وتقليل وقت المهام المرنة بـ ${eveningStudyTrimMin} د لحماية نومك الليلي دون أي نوم نهاري.`;
+      autoAdaptationProposalAr = `اقتراح التكيّف الذاتي: نقل جلسات العمل أو الدراسة المسائية للصباح بعد الشروق (${formatMinutes12h(safeRedSun + 20)}) وتقليل وقت المهام المرنة بـ ${eveningStudyTrimMin} د لحماية نومك الليلي دون أي نوم نهاري.`;
       sleepAdviceAr = `نوم ليلي حصري بعد العشاء مباشرة (${formatDurationAr(maxNightWindowMin)}) مع حضور الشروق (${formatMinutes12h(sunrise)}) والغروب (${formatMinutes12h(maghrib)}).`;
     } else {
       bedtimeMin = idealBedForTarget;
