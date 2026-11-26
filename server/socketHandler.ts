@@ -1,6 +1,7 @@
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createRateLimiter, verifyFirebaseIdToken } from './security';
+import type { ChatRequestPayload, GeminiChatBridge } from './geminiRoutes';
 
 const geminiWsLimiter = createRateLimiter({
   windowMs: 60_000,
@@ -45,7 +46,7 @@ export function broadcastUserSync(
   }
 }
 
-export function attachWebSocketServer(httpServer: http.Server): WebSocketServer {
+export function attachWebSocketServer(httpServer: http.Server, chat: GeminiChatBridge): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
   httpServer.on('upgrade', (request, socket, head) => {
     const pathname = (request.url ?? '').split('?')[0];
@@ -178,7 +179,7 @@ export function attachWebSocketServer(httpServer: http.Server): WebSocketServer 
             return;
           }
           cancelledChatIds.delete(reqId);
-          void executeGeminiChatStream(
+          void chat.executeGeminiChatStream(
             msg.payload,
             (evt) => {
               if (ws.readyState !== WebSocket.OPEN || cancelledChatIds.has(reqId)) return;
@@ -192,7 +193,7 @@ export function attachWebSocketServer(httpServer: http.Server): WebSocketServer 
                   JSON.stringify({
                     type: 'gemini_chat_error',
                     requestId: reqId,
-                    error: formatFriendlyGeminiErrorAr(err),
+                    error: chat.formatErrorAr(err),
                   })
                 );
               }

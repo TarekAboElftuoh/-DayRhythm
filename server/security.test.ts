@@ -3,9 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createRateLimiter,
   extractBearerToken,
-  isAllowedCorsOrigin,
   verifyFirebaseIdToken,
 } from './security';
+import { isAllowedCorsOrigin } from './config';
 
 function signTestJwt(
   payload: Record<string, unknown>,

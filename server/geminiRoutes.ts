@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import type { Express } from 'express';
-import { Content, FunctionCall, ThinkingLevel } from '@google/genai';
+import { Content, FunctionCall, ThinkingLevel, Type, type GoogleGenAI } from '@google/genai';
 import { sanitizeGeminiOutputText, extractPendingProposalFromFunctionCalls } from '../src/services/geminiSanitizer';
 import { createRateLimiter, requireFirebaseAuth } from './security';
 
@@ -9,10 +9,24 @@ const geminiHttpLimiter = createRateLimiter({
   maxRequests: 20,
   keyPrefix: 'http_gemini',
 });
+
+interface GeminiProbeCacheEntry {
+  ok: boolean;
+  connected: boolean;
+  status: 'online' | 'degraded' | 'offline';
+  model: string;
+  latencyMs: number;
+  checkedAtIso: string;
+  error?: string;
+  expiresAtMs: number;
+}
+
+let geminiProbeCache: GeminiProbeCacheEntry | null = null;
 import {
   getGeminiClient,
   getCairoTodayIso,
   getCairoNowTime12,
+  formatServerIsoTo12h,
   DAYRHYTHM_SYSTEM_INSTRUCTION,
   proposeCalendarActionsDeclaration,
   proposeTaskActionsDeclaration,
@@ -22,7 +36,77 @@ import {
   proposeMemoryActionsDeclaration,
 } from './config';
 
-export function registerGeminiRoutes(app: Express): void {
+export interface ChatRequestPayload {
+  message?: string;
+  bypassCache?: boolean;
+  history?: Array<{ role: 'user' | 'model'; text: string }>;
+  contextSummary?: string;
+  longTermChatContext?: string;
+  memories?: Array<{
+    id: string;
+    category: string;
+    ruleText: string;
+    source?: string;
+  }>;
+  calendarEvents?: Array<{
+    id: string;
+    calendarId?: string;
+    calendarTitle?: string;
+    summary: string;
+    description?: string;
+    location?: string;
+    start: string;
+    end?: string;
+  }>;
+  tasks?: Array<{
+    id: string;
+    taskListId: string;
+    taskListTitle?: string;
+    title: string;
+    status: string;
+    due?: string;
+  }>;
+  medications?: Array<{
+    id: string;
+    name: string;
+    time24?: string;
+    times24?: string[];
+    daysOfWeek?: number[];
+    doseNote?: string;
+    takenToday?: boolean;
+    takenDosesToday?: string[];
+    courseEndDate?: string;
+    remainingDoses?: number;
+    totalDoses?: number;
+    refillAlertDays?: number;
+    takenDates?: string[];
+  }>;
+  creativeActivities?: Array<{
+    id: string;
+    name: string;
+    emoji?: string;
+    cadence?: string;
+    goalCount?: number;
+    sessionsInPeriod?: number;
+    weeklyGoalSessions: number;
+    sessionsThisWeek: number;
+    sessionMinutes: number;
+    completedToday?: boolean;
+    scheduledTime24?: string;
+    expiresOnDate?: string;
+  }>;
+}
+
+export interface GeminiChatBridge {
+  executeGeminiChatStream: (
+    payload: ChatRequestPayload,
+    emit: (event: Record<string, unknown>) => void,
+    isAborted: () => boolean
+  ) => Promise<void>;
+  formatErrorAr: (err: unknown) => string;
+}
+
+export function registerGeminiRoutes(app: Express): GeminiChatBridge {
   function markGeminiProbeOnline(model: string, latencyMs: number): void {
     geminiProbeCache = {
       ok: true,
@@ -144,67 +228,6 @@ export function registerGeminiRoutes(app: Express): void {
   });
 
   // 1. Read user's real Google Calendar events across ALL user calendars via @googleapis/calendar
-
-  interface ChatRequestPayload {
-    message?: string;
-    bypassCache?: boolean;
-    history?: Array<{ role: 'user' | 'model'; text: string }>;
-    contextSummary?: string;
-    longTermChatContext?: string;
-    memories?: Array<{
-      id: string;
-      category: string;
-      ruleText: string;
-      source?: string;
-    }>;
-    calendarEvents?: Array<{
-      id: string;
-      calendarId?: string;
-      calendarTitle?: string;
-      summary: string;
-      description?: string;
-      location?: string;
-      start: string;
-      end?: string;
-    }>;
-    tasks?: Array<{
-      id: string;
-      taskListId: string;
-      taskListTitle?: string;
-      title: string;
-      status: string;
-      due?: string;
-    }>;
-    medications?: Array<{
-      id: string;
-      name: string;
-      time24?: string;
-      times24?: string[];
-      daysOfWeek?: number[];
-      doseNote?: string;
-      takenToday?: boolean;
-      takenDosesToday?: string[];
-      courseEndDate?: string;
-      remainingDoses?: number;
-      totalDoses?: number;
-      refillAlertDays?: number;
-      takenDates?: string[];
-    }>;
-    creativeActivities?: Array<{
-      id: string;
-      name: string;
-      emoji?: string;
-      cadence?: string;
-      goalCount?: number;
-      sessionsInPeriod?: number;
-      weeklyGoalSessions: number;
-      sessionsThisWeek: number;
-      sessionMinutes: number;
-      completedToday?: boolean;
-      scheduledTime24?: string;
-      expiresOnDate?: string;
-    }>;
-  }
 
   function normalizeGeminiHistory(
     rawHistory?: Array<{ role: 'user' | 'model'; text: string }>
@@ -1723,4 +1746,243 @@ export function registerGeminiRoutes(app: Express): void {
       res.status(500).json({ error: formatFriendlyGeminiErrorAr(err) });
     }
   });
+
+  // 2d. Read-only Smart Gmail Digest (extracts actionable appointments/meetings/travel/deadlines via Gemini)
+  app.get('/api/gmail/digest', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        res.status(401).json({
+          error: 'يرجى تسجيل الدخول بحساب جوجل لقراءة ملخص Gmail.',
+          needsReauth: true,
+        });
+        return;
+      }
+
+      const listRes = await fetch(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=in:inbox+newer_than:7d',
+        {
+          headers: { Authorization: authHeader },
+          signal: AbortSignal.timeout(7000),
+        }
+      );
+
+      if (listRes.status === 401 || listRes.status === 403) {
+        const errData = (await listRes.json().catch(() => ({}))) as {
+          error?: { message?: string };
+        };
+        res.status(listRes.status).json({
+          error:
+            errData?.error?.message ||
+            'يرجى إعادة تسجيل الدخول بحساب Google لمنح صلاحية قراءة Gmail (للقراءة فقط).',
+          needsReauth: true,
+        });
+        return;
+      }
+
+      if (!listRes.ok) {
+        res.status(listRes.status).json({ error: 'تعذر الوصول إلى صندوق وارد Gmail حالياً.' });
+        return;
+      }
+
+      const listJson = (await listRes.json()) as {
+        messages?: Array<{ id?: string }>;
+      };
+      const messageIds = (listJson.messages ?? [])
+        .map((m) => m.id)
+        .filter((id): id is string => Boolean(id))
+        .slice(0, 10);
+
+      if (messageIds.length === 0) {
+        res.json({ scannedCount: 0, digestItems: [] });
+        return;
+      }
+
+      const detailResults = await Promise.allSettled(
+        messageIds.map(async (msgId) => {
+          const mRes = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+              msgId
+            )}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
+            {
+              headers: { Authorization: authHeader },
+              signal: AbortSignal.timeout(6000),
+            }
+          );
+          if (!mRes.ok) return null;
+          const mJson = (await mRes.json()) as {
+            id?: string;
+            snippet?: string;
+            payload?: { headers?: Array<{ name?: string; value?: string }> };
+          };
+          const headers = mJson.payload?.headers ?? [];
+          const getHeader = (name: string) =>
+            headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? '';
+          return {
+            id: String(mJson.id ?? msgId),
+            subject: getHeader('Subject').slice(0, 140),
+            from: getHeader('From').slice(0, 100),
+            date: getHeader('Date').slice(0, 60),
+            snippet: String(mJson.snippet ?? '').slice(0, 180),
+          };
+        })
+      );
+
+      const allEmails = detailResults
+        .map((r) => (r.status === 'fulfilled' ? r.value : null))
+        .filter((e): e is NonNullable<typeof e> => Boolean(e && (e.subject || e.snippet)));
+
+      // Pre-filter obvious OTP / security-code noise before calling Gemini
+      const noiseRegex = /(verification code|one-time password|\botp\b|security alert|رمز التحقق|كود التفعيل|unsubscribe|newsletter)/i;
+      const candidateEmails = allEmails.filter(
+        (e) => !noiseRegex.test(`${e.subject} ${e.snippet}`)
+      );
+
+      if (allEmails.length === 0 || candidateEmails.length === 0) {
+        res.json({ scannedCount: allEmails.length, digestItems: [] });
+        return;
+      }
+
+      const todayCairo = getCairoTodayIso();
+      const emailListPrompt = candidateEmails
+        .map(
+          (e, i) =>
+            `[${i + 1}] id=${e.id} | From:${e.from} | Date:${e.date} | Subj:${e.subject} | Text:${e.snippet}`
+        )
+        .join('\n');
+
+      const ai = getGeminiClient();
+      const digestModels = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'] as const;
+      let rawText = '{"items":[]}';
+      let lastDigestErr: unknown = null;
+
+      for (const digestModel of digestModels) {
+        try {
+          const genPromise = ai.models.generateContent({
+            model: digestModel,
+            contents: `اليوم (القاهرة): ${todayCairo}\nرسائل البريد:\n${emailListPrompt}\nاستخرج فقط المواعيد الحقيقية (اجتماع، مقابلة، سفر، طبي، تسليم مهم، توصيل) وتجاهل الإعلانات والنشرات. أرجع JSON فقط.`,
+            config: {
+              ...(digestModel === 'gemini-4-hydrogen'
+                ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+                : {}),
+              systemInstruction:
+                'محلل سريع لصندوق Gmail. أرجع JSON فقط وفق المخطط. بالعربية، YYYY-MM-DD للتاريخ و HH:MM للوقت. إذا لا توجد مواعيد أرجع items فارغة.',
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  items: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        messageId: { type: Type.STRING },
+                        category: {
+                          type: Type.STRING,
+                          description: 'meeting | travel | medical | deadline | delivery | other',
+                        },
+                        titleAr: { type: Type.STRING },
+                        sender: { type: Type.STRING },
+                        summaryAr: { type: Type.STRING },
+                        dateIso: { type: Type.STRING },
+                        startTime24: { type: Type.STRING },
+                        durationMinutes: { type: Type.NUMBER },
+                      },
+                      required: ['messageId', 'category', 'titleAr', 'sender', 'summaryAr'],
+                    },
+                  },
+                },
+                required: ['items'],
+              },
+            },
+          });
+
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('انتهت مهلة تحليل Gmail مؤقتاً — أعد المحاولة.')), 14_000)
+          );
+          const response = await Promise.race([genPromise, timeoutPromise]);
+          rawText = response.text ?? '{"items":[]}';
+          lastDigestErr = null;
+          break;
+        } catch (mErr: unknown) {
+          lastDigestErr = mErr;
+        }
+      }
+
+      if (lastDigestErr) {
+        throw lastDigestErr;
+      }
+
+      const emails = allEmails;
+      const parsed = JSON.parse(rawText) as {
+        items?: Array<{
+          messageId?: string;
+          category?: string;
+          titleAr?: string;
+          sender?: string;
+          summaryAr?: string;
+          dateIso?: string;
+          startTime24?: string;
+          durationMinutes?: number;
+        }>;
+      };
+
+      const validCats = new Set(['meeting', 'travel', 'medical', 'deadline', 'delivery', 'other']);
+      const catEmoji: Record<string, string> = {
+        meeting: '💼 🤝',
+        travel: '🧳 ✈️',
+        medical: '🩺 💊',
+        deadline: '📌 ⏰',
+        delivery: '📦 🚚',
+        other: '📧 📅',
+      };
+
+      const digestItems = (parsed.items ?? []).slice(0, 8).map((item, idx) => {
+        const category = validCats.has(String(item.category))
+          ? (item.category as 'meeting' | 'travel' | 'medical' | 'deadline' | 'delivery' | 'other')
+          : 'other';
+        const dateIso =
+          item.dateIso && /^\d{4}-\d{2}-\d{2}$/.test(item.dateIso)
+            ? item.dateIso
+            : todayCairo;
+        const startTime24 =
+          item.startTime24 && /^\d{1,2}:\d{2}$/.test(item.startTime24)
+            ? item.startTime24.padStart(5, '0')
+            : '10:00';
+        const durationMinutes =
+          typeof item.durationMinutes === 'number' && item.durationMinutes >= 15 && item.durationMinutes <= 360
+            ? Math.round(item.durationMinutes)
+            : 45;
+        const cleanTitle = String(item.titleAr ?? 'موعد من Gmail').trim().slice(0, 100);
+        return {
+          id: `gmail_${item.messageId ?? idx}_${idx}`,
+          messageId: String(item.messageId ?? ''),
+          category,
+          titleAr: cleanTitle,
+          sender: String(item.sender ?? '').slice(0, 80),
+          summaryAr: String(item.summaryAr ?? '').slice(0, 200),
+          dateIso,
+          startTime24,
+          durationMinutes,
+          suggestedAction: {
+            operation: 'create' as const,
+            calendarId: 'primary',
+            title: `${catEmoji[category] ?? '📧 📅'} ${cleanTitle}`,
+            dateIso,
+            startTime24,
+            durationMinutes,
+            description: `مُستخرج من Gmail (${String(item.sender ?? '').slice(0, 60)}): ${String(
+              item.summaryAr ?? ''
+            ).slice(0, 180)}`,
+          },
+        };
+      });
+
+      res.json({ scannedCount: emails.length, digestItems });
+    } catch (err: unknown) {
+      res.status(500).json({ error: formatFriendlyGeminiErrorAr(err) });
+    }
+  });
+
+  return { executeGeminiChatStream, formatErrorAr: formatFriendlyGeminiErrorAr };
 }
