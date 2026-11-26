@@ -21,8 +21,16 @@ interface NativeBridgeWindow {
 const nativeBridgeWindow = (): Window & NativeBridgeWindow =>
   window as Window & NativeBridgeWindow;
 
-/** Stable per-device id used to tag cross-device sync packets. */
+let cachedDeviceId: string | null = null;
+
+/** Stable per-device id used to tag cross-device sync packets (resolved once per app run). */
 export function resolveMyDeviceId(): string {
+  if (cachedDeviceId !== null) return cachedDeviceId;
+  cachedDeviceId = detectDeviceId();
+  return cachedDeviceId;
+}
+
+function detectDeviceId(): string {
   if (typeof window === 'undefined') return 'device_unknown';
   if (nativeBridgeWindow().DayRhythmNative) {
     return 'device_mobile';

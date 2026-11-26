@@ -147,7 +147,7 @@ export function useDeviceSync(params: UseDeviceSyncParams): UseDeviceSyncResult 
         },
       });
     },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firebaseUser?.providerData, firestoreSynced]
+    [firebaseUser?.uid, firebaseUser?.emailVerified, firestoreSynced]
   );
 
   return { emitCrossDeviceSync };

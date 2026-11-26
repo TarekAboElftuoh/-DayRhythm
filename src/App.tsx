@@ -424,9 +424,6 @@ export default function App() {
   }, [alarmRinging]);
 
   const clientIdRef = useRef<string>(resolveMyDeviceId());
-  useEffect(() => {
-    clientIdRef.current = resolveMyDeviceId();
-  }, []);
 
   useEffect(() => {
     // Kill any leftover continuous alarm or vibration on app launch
