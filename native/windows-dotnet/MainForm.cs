@@ -647,11 +647,6 @@ namespace DayRhythm
 
         private void ShowTrayBalloon(string title, string body)
         {
-            if (_trayIcon == null) return;
-            _trayIcon.BalloonTipTitle = title;
-            _trayIcon.BalloonTipText = body;
-            _trayIcon.BalloonTipIcon = ToolTipIcon.Info;
-            _trayIcon.ShowBalloonTip(5000);
         }
 
         private void InitializeDesktopCapsule()
