@@ -7001,34 +7001,6 @@ export default function App() {
     const todayIso = getDateIsoInTimeZone(activeTimeZone);
     const todayW = getWeekdayInTimeZone(activeTimeZone);
 
-    const sendSystemNotification = (
-      title: string,
-      body: string,
-      tag: string,
-      onClickAction?: () => void
-    ) => {
-      if (
-        activeSanctuary.type !== 'none' ||
-        quietMode === 'silent_all' ||
-        typeof window === 'undefined' ||
-        !('Notification' in window) ||
-        Notification.permission !== 'granted'
-      ) {
-        return;
-      }
-      try {
-        const notif = new Notification(title, { body, tag, icon: '/icon-192.png' });
-        if (onClickAction) {
-          notif.onclick = () => {
-            onClickAction();
-            notif.close();
-          };
-        }
-      } catch {
-        // ignore browser notification errors in restricted iframes
-      }
-    };
-
     // Android APK: these reminders are already exact native alarms (they ring even with the app
     // closed). Firing them here as well made the phone ring two or three times for one reminder.
     const nativeOwnsReminders = Boolean(
@@ -7045,15 +7017,10 @@ export default function App() {
           const key = `${todayIso}:water:${slot.cupIndex}`;
           if (firedReminderKeysRef.current.has(key)) return;
           firedReminderKeysRef.current.add(key);
-          const time12 = formatMinutes12h(slot.timeMinutes, 'ar');
           triggerTaskAlert('💧', 'water', {
             privacyEmoji: '💧',
             displayTitle: `موعد شرب كوب ماء (${dailyRhythmPlan.cupSizeMl} مل)`,
             sourceLabel: 'ترطيب يومي',
-          });
-          sendSystemNotification('💧', `${time12} · اضغط عند الشرب ✓`, key, () => {
-            handleLogWaterCup();
-            handleAcknowledgeAudioAlert();
           });
         }
       });
@@ -7084,7 +7051,6 @@ export default function App() {
         const key = `${todayIso}:med:${med.id}:${t24}`;
         if (firedReminderKeysRef.current.has(key)) return;
         firedReminderKeysRef.current.add(key);
-        const time12 = formatMinutes12h(medMin, 'ar');
         triggerTaskAlert('💊', 'medication', {
           privacyEmoji: '💊',
           displayTitle: `موعد الجرعة: ${med.name}`,
@@ -7092,7 +7058,6 @@ export default function App() {
           medicationId: med.id,
           medicationDoseTime24: t24,
         });
-        sendSystemNotification('💊', `${med.name} · ${time12}`, key);
       });
     });
 
@@ -7106,7 +7071,6 @@ export default function App() {
         firedReminderKeysRef.current.add(key);
         const emojiOnly = (block.emojiPair || '📅').trim();
         const cleanTitle = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
-        const time12 = formatMinutes12h(block.startMin, 'ar');
         const soundCat = classifyTaskSound(block.categoryAr, block.emojiPair, block.isAnchor);
         triggerTaskAlert(emojiOnly, soundCat, {
           privacyEmoji: emojiOnly,
@@ -7115,7 +7079,6 @@ export default function App() {
           description: block.description,
           blockId: block.id,
         });
-        sendSystemNotification(emojiOnly, `${cleanTitle} · ${time12}`, key);
       }
     });
 
@@ -7130,7 +7093,6 @@ export default function App() {
         if (firedReminderKeysRef.current.has(key)) return;
         firedReminderKeysRef.current.add(key);
         const cleanTitle = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
-        const time12 = formatMinutes12h(info.startMin, 'ar');
         const soundCat = classifyTaskSound(tk.title, '☑️', false);
         triggerTaskAlert('☑️', soundCat, {
           privacyEmoji: '☑️',
@@ -7140,7 +7102,6 @@ export default function App() {
           taskListId: tk.taskListId,
           description: tk.notes,
         });
-        sendSystemNotification('☑️ مهمة الآن', `${cleanTitle} · ${time12}`, key);
       }
     });
     } // end: reminders owned by native alarms on Android
@@ -7162,12 +7123,6 @@ export default function App() {
         const refillKey = `${todayIso}:med_refill:${med.id}`;
         if (firedReminderKeysRef.current.has(refillKey)) return;
         firedReminderKeysRef.current.add(refillKey);
-        const daysRounded = Math.ceil(daysLeft);
-        const bodyText =
-          med.remainingDoses === 0
-            ? `نفدت جرعات «${med.name}» — اشترِ عبوة جديدة اليوم`
-            : `متبقٍ ${med.remainingDoses} جرعة (حوالي ${daysRounded} ${daysRounded === 1 ? 'يوم' : 'أيام'}) — جهّز شراء جرعات جديدة`;
-        sendSystemNotification('💊 تنبيه إعادة شراء العلاج', bodyText, refillKey);
       }
     });
   }, [
@@ -7636,23 +7591,6 @@ export default function App() {
       showToast(
         `🔋 التنبيه الذكي: وصل شحن ${phoneBattery.deviceLabel || 'الموبايل'} إلى ${phoneBattery.levelPct}% (الحد ${phoneBattery.chargeLimitPct}%)`
       );
-
-      // Desktop OS Notification
-      if (
-        typeof window !== 'undefined' &&
-        'Notification' in window &&
-        Notification.permission === 'granted'
-      ) {
-        try {
-          new Notification(`🔋 اكتمل شحن الموبايل (${phoneBattery.levelPct}%)`, {
-            body: `وصل شحن ${phoneBattery.deviceLabel || 'الهاتف'} إلى ${phoneBattery.chargeLimitPct}% — افصل الشاحن الآن.`,
-            tag: 'dayrhythm-phone-charge-limit',
-            icon: '/icon-192.png',
-          });
-        } catch {
-          // ignore notification errors
-        }
-      }
     }
   }, [
     activeTimeZone,
