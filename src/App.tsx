@@ -3658,7 +3658,23 @@ export default function App() {
         if (ok) {
           setFirestoreSynced(true);
           try {
-            const updatedFields = serializeRhythmFields(sanitizeRhythmPayload(payload as SyncedRhythmPayload));
+            // Only record the fields this write actually carried. Sanitizing the raw partial
+            // patch used to fill every ABSENT key with its default (cupsLogged 0, quietMode
+            // 'normal', a default lifeProfile...) and overwrite the real known server values, so
+            // the push effect below kept seeing "changes" that never happened and rewrote them
+            // again — an endless Firestore write <-> snapshot loop that ballooned RAM.
+            const present = payload as unknown as Record<string, unknown>;
+            const sanitizedFull = sanitizeRhythmPayload(
+              payload as SyncedRhythmPayload
+            ) as unknown as Record<string, unknown>;
+            const updatedFields: Record<string, string> = {};
+            for (const group of RHYTHM_FIELD_GROUPS) {
+              for (const key of group) {
+                if (present[key] !== undefined) {
+                  updatedFields[key] = JSON.stringify(sanitizedFull[key] ?? null);
+                }
+              }
+            }
             lastServerFieldsRef.current = {
               ...lastServerFieldsRef.current,
               ...updatedFields,

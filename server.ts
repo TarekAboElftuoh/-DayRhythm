@@ -10,7 +10,7 @@ import {
   formatServerIsoTo12h,
   computeCairoEventRange,
 } from './server/config';
-import { broadcastUserSync, attachWebSocketServer } from './server/websocket';
+import { broadcastUserSync, attachWebSocketServer, syncRooms } from './server/websocket';
 import { registerGeminiRoutes } from './server/geminiRoutes';
 import { corsMiddleware } from './server/security';
 
