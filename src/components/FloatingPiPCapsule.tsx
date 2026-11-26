@@ -103,6 +103,28 @@ function formatDigitalCountdown(remainingMs: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+function resolveDigitalClock(
+  targetEpochMs: number,
+  countdownText: string | undefined,
+  nowMs: number
+): string {
+  if (targetEpochMs > 0) {
+    return formatDigitalCountdown(Math.max(0, targetEpochMs - nowMs));
+  }
+  const trimmed = (countdownText ?? '').trim();
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(trimmed)) return trimmed;
+  if (!trimmed || trimmed === 'الآن') return '00:00';
+
+  const hMatch = trimmed.match(/(\d+)\s*(?:ساعة|س|h)/i);
+  const mMatch = trimmed.match(/(\d+)\s*(?:دقيقة|دقائق|د|m)/i);
+  const sMatch = trimmed.match(/(\d+)\s*(?:ثانية|ث|s)/i);
+  const h = hMatch ? Number(hMatch[1]) : 0;
+  const m = mMatch ? Number(mMatch[1]) : 0;
+  const s = sMatch ? Number(sMatch[1]) : 0;
+  const totalMs = (h * 3600 + m * 60 + s) * 1000;
+  return totalMs > 0 ? formatDigitalCountdown(totalMs) : '00:00';
+}
+
 function formatChargeEtaShort(etaMin?: number): string {
   if (typeof etaMin !== 'number' || !Number.isFinite(etaMin) || etaMin <= 0) return '';
   const totalMin = Math.round(etaMin);
@@ -244,13 +266,14 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
         targetEpochMs,
         durationSeconds,
       };
+      const nowMs = Date.now();
       const payloadJson = JSON.stringify({
         type: 'capsule-state',
         emoji: primary.emoji,
         title: primary.title,
         statusLabel: primary.statusLabel,
         sourceKind: calendarTrack ? 'calendar' : sourceKind,
-        countdownText: primary.countdownText,
+        countdownText: resolveDigitalClock(primary.targetEpochMs, primary.countdownText, nowMs),
         isNow: primary.isNow,
         isUrgent: primary.isUrgent,
         targetEpochMs: primary.targetEpochMs,
@@ -258,7 +281,9 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
         hasSecondaryTimer: Boolean(calendarTrack && taskTrack),
         secondaryEmoji: taskTrack?.emoji ?? '💧',
         secondaryTitle: taskTrack?.title ?? '',
-        secondaryCountdownText: taskTrack?.countdownText ?? '',
+        secondaryCountdownText: taskTrack
+          ? resolveDigitalClock(taskTrack.targetEpochMs, taskTrack.countdownText, nowMs)
+          : '',
         secondaryTargetEpochMs: taskTrack?.targetEpochMs ?? 0,
         secondaryIsNow: taskTrack?.isNow ?? false,
         secondaryIsUrgent: taskTrack?.isUrgent ?? false,
@@ -269,7 +294,10 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
           showPhoneChargingBadge && typeof phoneBattery?.chargeTimeRemainingMin === 'number'
             ? phoneBattery.chargeTimeRemainingMin
             : -1,
-        upcomingQueue: upcomingQueue.slice(0, 4),
+        upcomingQueue: upcomingQueue.slice(0, 4).map((item) => ({
+          ...item,
+          countdownText: resolveDigitalClock(item.targetEpochMs, item.countdownText, nowMs),
+        })),
         orientation: prefs.orientation,
         size: prefs.size,
       });
@@ -321,9 +349,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       };
   const activePrimary = pickActiveCountdownItem(primaryTrack, upcomingQueue, nowTickMs);
   const activePrimaryRemMs = activePrimary.targetEpochMs > 0 ? Math.max(0, activePrimary.targetEpochMs - nowTickMs) : 0;
-  const activePrimaryClock = activePrimary.targetEpochMs > 0
-    ? formatDigitalCountdown(activePrimaryRemMs)
-    : (!activePrimary.countdownText || activePrimary.countdownText === 'الآن' ? '00:00' : activePrimary.countdownText);
+  const activePrimaryClock = resolveDigitalClock(activePrimary.targetEpochMs, activePrimary.countdownText, nowTickMs);
   const activePrimaryUrgent = activePrimary.targetEpochMs > 0 ? activePrimaryRemMs <= 60_000 : activePrimary.isUrgent;
 
   const activeTask = taskTrack
@@ -335,9 +361,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
     : null;
   const activeTaskRemMs = activeTask && activeTask.targetEpochMs > 0 ? Math.max(0, activeTask.targetEpochMs - nowTickMs) : 0;
   const activeTaskClock = activeTask
-    ? activeTask.targetEpochMs > 0
-      ? formatDigitalCountdown(activeTaskRemMs)
-      : (!activeTask.countdownText || activeTask.countdownText === 'الآن' ? '00:00' : activeTask.countdownText)
+    ? resolveDigitalClock(activeTask.targetEpochMs, activeTask.countdownText, nowTickMs)
     : '';
   const activeTaskUrgent = Boolean(activeTask && (activeTask.targetEpochMs > 0 ? activeTaskRemMs <= 60_000 : activeTask.isUrgent));
 
@@ -915,11 +939,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
                             : 'text-[#7FFFD4]'
                     }`}
                   >
-                    {item.targetEpochMs > 0
-                      ? formatDigitalCountdown(Math.max(0, item.targetEpochMs - nowTickMs))
-                      : item.countdownText === 'الآن' || !item.countdownText
-                        ? '00:00'
-                        : item.countdownText}
+                    {resolveDigitalClock(item.targetEpochMs, item.countdownText, nowTickMs)}
                   </span>
                 </div>
               ))}
