@@ -113,9 +113,6 @@ import {
   type UserSettingsPayload,
 } from './services/cloudStateService';
 
-type TasksVaultPayload = UserSettingsPayload;
-const VAULT_LIST_TITLE = '[DayRhythm Sync Vault]';
-const SYNC_TASK_TITLE = 'sync_state';
 import {
   connectSpircCluster,
   loadFromNativeSqlite,
@@ -217,6 +214,9 @@ import type {
 import { isAndroidNativeApp } from './services/platform';
 import { AppModals } from './components/AppModals';
 import { useBackupActions } from './hooks/useBackupActions';
+import { useDeviceSync } from './hooks/useDeviceSync';
+import { readNativeBatterySnapshot, resolveMyDeviceId, stopNativeAlerts } from './utils/deviceHelpers';
+import { SYNC_TASK_TITLE, VAULT_LIST_TITLE, type TasksVaultPayload } from './types/appTypes';
 const MobilePreviewView = lazy(() => import('./components/MobilePreviewView').then((m) => ({ default: m.MobilePreviewView })));
 const OverlaySimulatorView = lazy(() => import('./components/OverlaySimulatorView').then((m) => ({ default: m.OverlaySimulatorView })));
 const GeminiAssistantView = lazy(() => import('./components/GeminiAssistantView').then((m) => ({ default: m.GeminiAssistantView })));
@@ -422,25 +422,6 @@ export default function App() {
   useEffect(() => {
     alarmRingingRef.current = alarmRinging;
   }, [alarmRinging]);
-
-  const resolveMyDeviceId = (): string => {
-    if (typeof window === 'undefined') return 'device_unknown';
-    if ((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative) {
-      return 'device_mobile';
-    }
-    if ((window as Window & { chrome?: { webview?: { postMessage?: unknown } } }).chrome?.webview?.postMessage) {
-      return 'device_pc';
-    }
-    try {
-      const stored = localStorage.getItem('dayrhythm_device_id');
-      if (stored) return stored;
-      const gen = `device_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-      localStorage.setItem('dayrhythm_device_id', gen);
-      return gen;
-    } catch {
-      return 'device_web';
-    }
-  };
 
   const clientIdRef = useRef<string>(resolveMyDeviceId());
   useEffect(() => {
@@ -1193,145 +1174,15 @@ export default function App() {
     showToast('تم مسح الإشعارات الصامتة المحفوظة ✓');
   }, [showToast]);
 
-  const emitCrossDeviceSync = useCallback(
-    (
-      scope: WorkspaceSyncSignal['scope'],
-      action: string,
-      undoSnapshotPayload?: DeletedWorkspaceSnapshot,
-      extraPayload?: Record<string, unknown>
-    ) => {
-      const opId = `op_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-      seenSyncOpIdsRef.current.add(opId);
-      const timestampMs = Date.now();
-      const packet = {
-        type: 'broadcast',
-        opId,
-        clientId: clientIdRef.current,
-        scope,
-        action,
-        undoSnapshot: undoSnapshotPayload,
-        extra: extraPayload,
-        timestampMs,
-      };
-
-
-
-      if (typeof BroadcastChannel !== 'undefined') {
-        try {
-          const bc = new BroadcastChannel('dayrhythm_sync');
-          bc.postMessage({ ...packet, type: 'sync' });
-          bc.close();
-        } catch {
-          // ignore BroadcastChannel errors
-        }
-      }
-
-      const effectiveSyncUid =
-        firebaseUser?.uid ||
-        authUser?.uid ||
-        auth.currentUser?.uid ||
-        localStorage.getItem(ACTIVE_UID_STORAGE_KEY) ||
-        '';
-      if (scope === 'alarm_dismiss') {
-        const alertId = typeof extraPayload?.alertId === 'string' && extraPayload.alertId ? extraPayload.alertId : 'all';
-        // Generate a shared opId so both Spirc and Firestore echoes are deduped together
-        const dismissOpId = `dism_${Date.now().toString(36)}_${clientIdRef.current.slice(-4)}`;
-        const dismissExtra = { ...(extraPayload || {}), opId: dismissOpId };
-        // 1️⃣ Spirc first (< 35ms) — immediate cross-device dismiss
-        spircClusterRef.current?.sendDismissAlarm(alertId, action, dismissExtra);
-        // 2️⃣ Firestore second (backup for offline devices)
-        if (effectiveSyncUid) {
-          void broadcastAlertDismiss(effectiveSyncUid, clientIdRef.current, alertId, action, dismissExtra);
-        }
-        // Pre-register opId locally so our own Spirc echo is ignored
-        seenSyncOpIdsRef.current.add(dismissOpId);
-        if (seenSyncOpIdsRef.current.size > 200) seenSyncOpIdsRef.current.clear();
-      } else if (scope === 'alarm_trigger') {
-        spircClusterRef.current?.sendJsonState(
-          'alarm_trigger',
-          SPIRC_ENTITY.ALARM,
-          SPIRC_ACTION.UPSERT,
-          {
-            scope: 'alarm_trigger',
-            action,
-            clientId: clientIdRef.current,
-            timestampMs,
-            ...(extraPayload || {}),
-          }
-        );
-        if (effectiveSyncUid) {
-          void publishWorkspaceSyncSignal(effectiveSyncUid, {
-            opId,
-            clientId: clientIdRef.current,
-            scope,
-            action,
-            timestampMs,
-            extra: extraPayload,
-          });
-        }
-      } else if (effectiveSyncUid) {
-        void publishWorkspaceSyncSignal(effectiveSyncUid, {
-          opId,
-          clientId: clientIdRef.current,
-          scope,
-          action,
-          timestampMs,
-          extra: extraPayload,
-        });
-        void emitCloudLiveSignal(effectiveSyncUid, {
-          opId,
-          clientId: clientIdRef.current,
-          timestampMs,
-          type:
-            scope === 'tasks'
-              ? 'tasks'
-              : scope === 'calendar'
-              ? 'schedule_blocks'
-              : 'settings_patch',
-          action,
-          extra: packet,
-        });
-      }
-
-      // Also persist to Google Tasks Cloud Sync Vault so devices without active Firestore stop immediately
-      void pushToTasksVaultRef.current({
-        lastDismissSignal: {
-          timestampMs,
-          scope,
-          action,
-          clientId: clientIdRef.current,
-        },
-      });
-    },
-    [firebaseUser?.uid, firebaseUser?.emailVerified, firebaseUser?.providerData, firestoreSynced]
-  );
-
-  const stopNativeAlerts = useCallback(() => {
-    try {
-      const wv = (
-        window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }
-      ).chrome?.webview;
-      wv?.postMessage?.(JSON.stringify({ type: 'stop-alert' }));
-    } catch {
-      // ignore WebView2 postMessage errors
-    }
-    try {
-      const androidBridge = (
-        window as Window & {
-          DayRhythmNative?: {
-            dismissActiveAlerts?: () => void;
-            stopNativeAlarmSound?: () => void;
-            dismissAlarm?: () => void;
-          };
-        }
-      ).DayRhythmNative;
-      androidBridge?.stopNativeAlarmSound?.();
-      androidBridge?.dismissActiveAlerts?.();
-      androidBridge?.dismissAlarm?.();
-    } catch {
-      // ignore Android bridge errors
-    }
-  }, []);
+  const { emitCrossDeviceSync } = useDeviceSync({
+    authUser,
+    clientIdRef,
+    firebaseUser,
+    firestoreSynced,
+    pushToTasksVaultRef,
+    seenSyncOpIdsRef,
+    spircClusterRef,
+  });
 
   const handleAcknowledgeAudioAlert = useCallback(() => {
     stopContinuousAlert();
@@ -7418,42 +7269,15 @@ export default function App() {
 
     // Pull immediate native battery snapshot (includes Android BatteryManager.computeChargeTimeRemaining)
     const pullNativeBatterySnapshot = () => {
-      if (nativeWindow.DayRhythmNative?.getBatterySnapshotJson) {
-        try {
-          const parsed = JSON.parse(nativeWindow.DayRhythmNative.getBatterySnapshotJson()) as {
-            levelPct?: number;
-            charging?: boolean;
-            chargeTimeRemainingMin?: number;
-            deviceLabel?: string;
-          };
-          if (typeof parsed.levelPct === 'number') {
-            pushPhoneBattery(
-              parsed.levelPct,
-              Boolean(parsed.charging),
-              parsed.deviceLabel || 'OnePlus 12R',
-              typeof parsed.chargeTimeRemainingMin === 'number' ? parsed.chargeTimeRemainingMin : -1
-            );
-            return true;
-          }
-        } catch {
-          // ignore malformed native battery JSON
-        }
-      }
-      if (
-        nativeWindow.__dayRhythmNativeBattery &&
-        typeof nativeWindow.__dayRhythmNativeBattery.levelPct === 'number'
-      ) {
-        pushPhoneBattery(
-          nativeWindow.__dayRhythmNativeBattery.levelPct,
-          Boolean(nativeWindow.__dayRhythmNativeBattery.charging),
-          nativeWindow.__dayRhythmNativeBattery.deviceLabel || 'OnePlus 12R',
-          typeof nativeWindow.__dayRhythmNativeBattery.chargeTimeRemainingMin === 'number'
-            ? nativeWindow.__dayRhythmNativeBattery.chargeTimeRemainingMin
-            : -1
-        );
-        return true;
-      }
-      return false;
+      const snapshot = readNativeBatterySnapshot();
+      if (!snapshot) return false;
+      pushPhoneBattery(
+        snapshot.levelPct,
+        snapshot.charging,
+        snapshot.deviceLabel,
+        snapshot.chargeTimeRemainingMin
+      );
+      return true;
     };
 
     pullNativeBatterySnapshot();
