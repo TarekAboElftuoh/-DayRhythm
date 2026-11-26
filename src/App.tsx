@@ -196,6 +196,7 @@ import {
   startSmartChargeCompleteAlert,
   stopContinuousAlert,
   stopSmartChargeCompleteAlert,
+  unlockAudioContext,
 } from './engines/audioEngine';
 import { fetchOpenMeteoWeather, loadCachedWeather } from './engines/weatherEngine';
 import { triggerHapticWaveform } from './engines/hapticsEngine';
@@ -430,7 +431,6 @@ export default function App() {
   // interaction (silent 20ms blip) so every later alert card actually plays its sound.
   useEffect(() => {
     if (typeof window === 'undefined' || detectIsMobileDeviceClient()) return;
-    const warmRef: { current: AudioContext | null } = { current: null };
     let disposed = false;
     const cleanup = () => {
       window.removeEventListener('pointerdown', unlock);
@@ -440,22 +440,7 @@ export default function App() {
     const unlock = () => {
       cleanup();
       if (disposed) return;
-      try {
-        const Ctx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        if (!Ctx) return;
-        warmRef.current = new Ctx();
-        void warmRef.current.resume().catch(() => {});
-        const gain = warmRef.current.createGain();
-        gain.gain.value = 0;
-        const osc = warmRef.current.createOscillator();
-        osc.connect(gain).connect(warmRef.current.destination);
-        osc.start();
-        osc.stop(warmRef.current.currentTime + 0.02);
-      } catch {
-        // ignore audio unlock errors
-      }
+      unlockAudioContext();
     };
     window.addEventListener('pointerdown', unlock, { passive: true });
     window.addEventListener('keydown', unlock);
@@ -463,7 +448,6 @@ export default function App() {
     return () => {
       disposed = true;
       cleanup();
-      void warmRef.current?.close().catch(() => {});
     };
   }, []);
 
@@ -1369,15 +1353,16 @@ export default function App() {
       // Web Audio (AudioContext) in Chromium WebView outputs strictly to STREAM_MUSIC (Media volume),
       // which creates dual-channel playback and gets muted when the user silences Media volume.
       const isContinuous = repeatCount === 'continuous';
+      const alertId = `alert_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
       let playRes = { playedAudio: false, vibrated: false, isContinuous };
       if (!isAndroidNative) {
         playRes = playTaskSignature(category, {
           bypassSanctuary: true,
           repeatCount,
+          alertId,
         });
       }
       const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
-      const alertId = `alert_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
       const defaultSnooze =
         lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15
           ? lifeProfile.defaultSnoozeMinutes

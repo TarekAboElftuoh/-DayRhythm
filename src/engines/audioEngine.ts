@@ -10,6 +10,8 @@ let audioCtx: AudioContext | null = null;
 let activeRepeatTimers: number[] = [];
 let activeContinuousInterval: number | null = null;
 let activeContinuousSafetyTimeout: number | null = null;
+let alertPlayGeneration = 0;
+let lastPlayedAlertId: string | null = null;
 
 let batteryAlertInterval: number | null = null;
 let batteryAlertSafetyTimeout: number | null = null;
@@ -43,6 +45,8 @@ export function stopSmartChargeCompleteAlert(): void {
 }
 
 export function stopContinuousAlert(): void {
+  alertPlayGeneration += 1;
+  lastPlayedAlertId = null;
   if (typeof window === 'undefined') return;
   for (const t of activeRepeatTimers) {
     window.clearTimeout(t);
@@ -80,6 +84,33 @@ function getCtx(): AudioContext | null {
     audioCtx.resume().catch(() => {});
   }
   return audioCtx;
+}
+
+export function unlockAudioContext(): void {
+  const ctx = getCtx();
+  if (!ctx) return;
+  const playSilentBlip = () => {
+    if (ctx.state !== 'running') return;
+    try {
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      const osc = ctx.createOscillator();
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.02);
+    } catch {
+      // ignore unlock blip errors
+    }
+  };
+  if (ctx.state === 'suspended') {
+    void ctx.resume().then(playSilentBlip).catch(() => {});
+  } else {
+    playSilentBlip();
+  }
+}
+
+export function hasPlayedAlertId(alertId: string): boolean {
+  return Boolean(alertId && lastPlayedAlertId === alertId && audioCtx?.state === 'running');
 }
 
 export const TASK_SOUND_META: Record<
@@ -362,6 +393,27 @@ function playSingleBurst(ctx: AudioContext, category: TaskSoundCategory) {
   }
 }
 
+function playBurstWhenReady(
+  ctx: AudioContext,
+  category: TaskSoundCategory,
+  gen: number
+): void {
+  if (ctx.state === 'running') {
+    playSingleBurst(ctx, category);
+    return;
+  }
+  if (ctx.state === 'suspended') {
+    void ctx
+      .resume()
+      .then(() => {
+        if (gen === alertPlayGeneration && ctx.state === 'running') {
+          playSingleBurst(ctx, category);
+        }
+      })
+      .catch(() => {});
+  }
+}
+
 /**
  * Plays a distinct, recognizable audio signature for each task category with smooth breathing gaps
  * between repeats so consecutive chimes never clash (1x..4x or continuous up to 60s).
@@ -372,6 +424,7 @@ export function playTaskSignature(
     bypassSanctuary?: boolean;
     sanctuary?: ActiveSanctuaryState;
     repeatCount?: SoundRepeatSetting;
+    alertId?: string;
   }
 ): { playedAudio: boolean; vibrated: boolean; isContinuous: boolean } {
   const sanctuary = options?.sanctuary;
@@ -387,9 +440,11 @@ export function playTaskSignature(
   if (!ctx) return { playedAudio: false, vibrated: false, isContinuous: false };
 
   stopContinuousAlert();
+  const gen = alertPlayGeneration;
+  lastPlayedAlertId = options?.alertId ?? null;
 
   const repeat: SoundRepeatSetting = options?.repeatCount ?? 1;
-  playSingleBurst(ctx, category);
+  playBurstWhenReady(ctx, category, gen);
 
   const burstMs = BURST_DURATION_MS[category] ?? 650;
 
@@ -397,7 +452,7 @@ export function playTaskSignature(
     const loopMs = Math.max(2400, burstMs + 1400);
     activeContinuousInterval = window.setInterval(() => {
       const c = getCtx();
-      if (c) playSingleBurst(c, category);
+      if (c) playBurstWhenReady(c, category, gen);
       const isAndroidNative =
         typeof window !== 'undefined' &&
         Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative);
@@ -422,7 +477,7 @@ export function playTaskSignature(
     for (let i = 1; i < clamped; i++) {
       const id = window.setTimeout(() => {
         const c = getCtx();
-        if (c) playSingleBurst(c, category);
+        if (c) playBurstWhenReady(c, category, gen);
       }, i * gapMs);
       activeRepeatTimers.push(id);
     }
@@ -451,12 +506,24 @@ export function playSoftChime(
 export function playBatteryFullSignature(): boolean {
   const ctx = getCtx();
   if (!ctx) return false;
-  // Bright ascending E-major9 crystalline power-up chime (E5 -> G#5 -> B5 -> E6 + warm shimmer)
-  scheduleTone(ctx, 659.25, 0.0, 0.22, 'triangle', 0.14);
-  scheduleTone(ctx, 830.61, 0.11, 0.24, 'triangle', 0.15);
-  scheduleTone(ctx, 987.77, 0.22, 0.28, 'sine', 0.16);
-  scheduleTone(ctx, 1318.51, 0.34, 0.52, 'sine', 0.17);
-  scheduleTone(ctx, 1975.53, 0.36, 0.42, 'sine', 0.05);
+  const playChime = () => {
+    // Bright ascending E-major9 crystalline power-up chime (E5 -> G#5 -> B5 -> E6 + warm shimmer)
+    scheduleTone(ctx, 659.25, 0.0, 0.22, 'triangle', 0.14);
+    scheduleTone(ctx, 830.61, 0.11, 0.24, 'triangle', 0.15);
+    scheduleTone(ctx, 987.77, 0.22, 0.28, 'sine', 0.16);
+    scheduleTone(ctx, 1318.51, 0.34, 0.52, 'sine', 0.17);
+    scheduleTone(ctx, 1975.53, 0.36, 0.42, 'sine', 0.05);
+  };
+  if (ctx.state === 'running') {
+    playChime();
+  } else if (ctx.state === 'suspended') {
+    void ctx
+      .resume()
+      .then(() => {
+        if (ctx.state === 'running') playChime();
+      })
+      .catch(() => {});
+  }
   return true;
 }
 

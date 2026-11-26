@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bell, BellOff, Check, Clock, Droplets, Pill, X } from 'lucide-react';
+import { hasPlayedAlertId, playTaskSignature, unlockAudioContext } from '../engines/audioEngine';
 import { TaskSoundCategory } from '../types/dayrhythm';
 
 export interface PersistentAlertItem {
@@ -47,6 +48,7 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const snoozeMin = defaultSnoozeMinutes === 10 || defaultSnoozeMinutes === 15 ? defaultSnoozeMinutes : 5;
   const lastVibratedAlertIdRef = useRef<string | null>(null);
+  const lastSoundAlertIdRef = useRef<string | null>(null);
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
   const onAutoSnoozeRef = useRef(onAutoSnooze);
@@ -70,6 +72,22 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
     const isAndroidNative =
       typeof window !== 'undefined' &&
       Boolean((window as Window & { DayRhythmNative?: unknown }).DayRhythmNative);
+    const isMobileUa =
+      typeof navigator !== 'undefined' &&
+      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
+    if (!isAndroidNative && !isMobileUa && lastSoundAlertIdRef.current !== alert.id) {
+      lastSoundAlertIdRef.current = alert.id;
+      if (!alert.id.startsWith('charge_') && !hasPlayedAlertId(alert.id)) {
+        unlockAudioContext();
+        playTaskSignature(alert.category, {
+          bypassSanctuary: true,
+          repeatCount: alert.isContinuous ? 'continuous' : 1,
+          alertId: alert.id,
+        });
+      }
+    }
+
     if (allowVibration && !isAndroidNative && lastVibratedAlertIdRef.current !== alert.id) {
       lastVibratedAlertIdRef.current = alert.id;
       if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {

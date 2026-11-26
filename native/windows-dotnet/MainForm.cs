@@ -858,6 +858,14 @@ namespace DayRhythm
                     })
                 );
                 _activeToastForm.Show();
+                if (_webView?.CoreWebView2?.IsMuted == true || !Visible || WindowState == FormWindowState.Minimized)
+                {
+                    try
+                    {
+                        System.Media.SystemSounds.Asterisk.Play();
+                    }
+                    catch { }
+                }
             }
             catch { }
         }
