@@ -52,6 +52,7 @@ export interface PrayerTimeItem {
   adhanMinutes: number;
   alarmMinutes: number; // adhanMinutes - 3 (except sunrise)
   isObligatory: boolean;
+  redSunMinutes?: number;
 }
 
 export interface ScheduleBlock {

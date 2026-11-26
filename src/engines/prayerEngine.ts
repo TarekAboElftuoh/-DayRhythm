@@ -440,6 +440,8 @@ export function calculateEgyptianPrayerTimes(
 
   const sunriseHa = hourAngleForAngle(0.833) ?? 6;
   const sunriseHour = midday - sunriseHa;
+  const redSunHa = hourAngleForAngle(-6) ?? Math.max(0, sunriseHa - 0.5);
+  const redSunHour = midday + redSunHa;
   const maghribHour = midday + sunriseHa;
   const nightDurationHours = ((sunriseHour + 24 - maghribHour) % 24) || 8;
 
@@ -458,6 +460,7 @@ export function calculateEgyptianPrayerTimes(
   const sunriseMin = toMinutes(sunriseHour);
   const dhuhrMin = toMinutes(midday) + 1;
   const asrMin = toMinutes(midday + asrHourAngle());
+  const redSunMin = toMinutes(redSunHour);
   const maghribMin = toMinutes(maghribHour);
   const ishaMin = toMinutes(ishaHour);
 
@@ -506,6 +509,7 @@ export function calculateEgyptianPrayerTimes(
       adhanMinutes: maghribMin,
       alarmMinutes: (maghribMin - lead + 1440) % 1440,
       isObligatory: true,
+      redSunMinutes: redSunMin,
     },
     {
       id: 'isha',
