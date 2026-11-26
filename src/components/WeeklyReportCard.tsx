@@ -100,9 +100,6 @@ export const WeeklyReportCard: React.FC<WeeklyReportCardProps> = ({
           report.sleepDebtMin === 0
         )}
       </div>
-      <div className="text-[11px] text-zinc-400">
-        📖🌱 سلسلة الالتزام: <span className="font-mono-tabular text-zinc-200">{report.commitmentDays}</span> يوم
-      </div>
     </section>
   );
 };
