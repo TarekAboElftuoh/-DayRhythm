@@ -425,6 +425,48 @@ export default function App() {
 
   const clientIdRef = useRef<string>(resolveMyDeviceId());
 
+  // Browsers keep the Web Audio context suspended until a real user gesture, so an alarm firing
+  // hours later stayed silent on the PC while the phone rang. Warm the audio stack on the first
+  // interaction (silent 20ms blip) so every later alert card actually plays its sound.
+  useEffect(() => {
+    if (typeof window === 'undefined' || detectIsMobileDeviceClient()) return;
+    const warmRef: { current: AudioContext | null } = { current: null };
+    let disposed = false;
+    const cleanup = () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+      window.removeEventListener('touchstart', unlock);
+    };
+    const unlock = () => {
+      cleanup();
+      if (disposed) return;
+      try {
+        const Ctx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (!Ctx) return;
+        warmRef.current = new Ctx();
+        void warmRef.current.resume().catch(() => {});
+        const gain = warmRef.current.createGain();
+        gain.gain.value = 0;
+        const osc = warmRef.current.createOscillator();
+        osc.connect(gain).connect(warmRef.current.destination);
+        osc.start();
+        osc.stop(warmRef.current.currentTime + 0.02);
+      } catch {
+        // ignore audio unlock errors
+      }
+    };
+    window.addEventListener('pointerdown', unlock, { passive: true });
+    window.addEventListener('keydown', unlock);
+    window.addEventListener('touchstart', unlock, { passive: true });
+    return () => {
+      disposed = true;
+      cleanup();
+      void warmRef.current?.close().catch(() => {});
+    };
+  }, []);
+
   useEffect(() => {
     // Kill any leftover continuous alarm or vibration on app launch
     stopContinuousAlert();
@@ -3749,8 +3791,19 @@ export default function App() {
     }
 
     const handle = connectSpircCluster(workerUrl, uid, clientIdRef.current, (entityId, entityKind, payload, frame) => {
+      // Phone battery telemetry (<35ms) — drives the PC dashboard card and the floating capsule.
+      if (frame.action === SPIRC_ACTION.BATTERY_TELEMETRY || entityId === 'phone_battery') {
+        const incoming = sanitizePhoneBattery(payload);
+        if (incoming) setPhoneBattery(incoming);
+        return;
+      }
+
       if (frame.action === SPIRC_ACTION.DISMISS_ALARM || entityId === 'alarm_dismiss') {
-        const spOpId = frame.opId || `spirc_dism_${frame.timestampMs}_${frame.clientId}`;
+        // Shared opId with the Firestore echo so a single dismiss is processed exactly once.
+        const spOpId =
+          (typeof payload.opId === 'string' && payload.opId) ||
+          frame.opId ||
+          `spirc_dism_${frame.timestampMs}_${frame.clientId}`;
         if (!seenSyncOpIdsRef.current.has(spOpId)) {
           seenSyncOpIdsRef.current.add(spOpId);
           if (seenSyncOpIdsRef.current.size > 200) seenSyncOpIdsRef.current.clear();
@@ -3781,7 +3834,11 @@ export default function App() {
         return;
       }
 
-      if (entityKind === SPIRC_ENTITY.ALARM && frame.action === SPIRC_ACTION.UPSERT) {
+      // Trigger frames reach us from the phone (and from other desktop tabs) only through Spirc now.
+      if (
+        frame.action === SPIRC_ACTION.UPSERT &&
+        (entityKind === SPIRC_ENTITY.ALARM || entityId === 'alarm_trigger')
+      ) {
         const startedMs = Number(payload.startedAtMs || frame.timestampMs || Date.now());
         if (Math.abs(Date.now() - startedMs) <= 300_000) {
           window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: payload }));
@@ -7243,6 +7300,17 @@ export default function App() {
       if (changed) {
         lastSentKey = dedupeKey;
         setPhoneBattery(snapshot);
+        // Push the same change over the Spirc WebSocket so the PC dashboard + floating capsule
+        // update immediately instead of waiting for a Firestore round-trip. The native Android
+        // shell already emits its own frame, so skip it there to avoid a duplicate broadcast.
+        if (!nativeWindow.DayRhythmNative) {
+          spircClusterRef.current?.sendJsonState(
+            'phone_battery',
+            SPIRC_ENTITY.STATE_V3,
+            SPIRC_ACTION.BATTERY_TELEMETRY,
+            snapshot
+          );
+        }
       }
 
       // On Android APK, native DayRhythmSyncService already publishes battery telemetry to Firestore.

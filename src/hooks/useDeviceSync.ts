@@ -76,9 +76,10 @@ export function useDeviceSync(params: UseDeviceSyncParams): UseDeviceSyncResult 
         const dismissOpId = `dism_${Date.now().toString(36)}_${clientIdRef.current.slice(-4)}`;
         const dismissExtra = { ...(extraPayload || {}), opId: dismissOpId };
         // 1️⃣ Spirc first (< 35ms) — immediate cross-device dismiss
-        spircClusterRef.current?.sendDismissAlarm(alertId, action, dismissExtra);
-        // 2️⃣ Firestore second (backup for offline devices)
-        if (effectiveSyncUid) {
+        const sentDismissViaSpirc =
+          spircClusterRef.current?.sendDismissAlarm(alertId, action, dismissExtra) ?? false;
+        // 2️⃣ Firestore only as the fallback (never duplicate the live Spirc broadcast)
+        if (!sentDismissViaSpirc && effectiveSyncUid) {
           void broadcastAlertDismiss(
             effectiveSyncUid,
             clientIdRef.current,
@@ -91,19 +92,23 @@ export function useDeviceSync(params: UseDeviceSyncParams): UseDeviceSyncResult 
         seenSyncOpIdsRef.current.add(dismissOpId);
         if (seenSyncOpIdsRef.current.size > 200) seenSyncOpIdsRef.current.clear();
       } else if (scope === 'alarm_trigger') {
-        spircClusterRef.current?.sendJsonState(
-          'alarm_trigger',
-          SPIRC_ENTITY.ALARM,
-          SPIRC_ACTION.UPSERT,
-          {
-            scope: 'alarm_trigger',
-            action,
-            clientId: clientIdRef.current,
-            timestampMs,
-            ...(extraPayload || {}),
-          }
-        );
-        if (effectiveSyncUid) {
+        const sentTriggerViaSpirc =
+          spircClusterRef.current?.sendJsonState(
+            'alarm_trigger',
+            SPIRC_ENTITY.ALARM,
+            SPIRC_ACTION.UPSERT,
+            {
+              scope: 'alarm_trigger',
+              action,
+              opId,
+              clientId: clientIdRef.current,
+              timestampMs,
+              startedAtMs: timestampMs,
+              ...(extraPayload || {}),
+            }
+          ) ?? false;
+        // Firestore stays the fallback for devices that are offline / have no open socket
+        if (!sentTriggerViaSpirc && effectiveSyncUid) {
           void publishWorkspaceSyncSignal(effectiveSyncUid, {
             opId,
             clientId: clientIdRef.current,

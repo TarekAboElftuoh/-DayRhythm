@@ -175,15 +175,22 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       : undefined;
   const supportsDesktopPopout = Boolean(docPiP?.requestWindow);
 
-  const showPhoneChargingBadge = Boolean(
-    phoneBattery && phoneBattery.charging && Date.now() - phoneBattery.updatedAtMs < 30 * 60_000
+  // Fresh telemetry from the phone (WebSocket or Firestore) is shown even when unplugged, so the
+  // capsule always reflects the live level; the charging badges stay charging-only.
+  const phoneBatteryFresh = Boolean(
+    phoneBattery && Date.now() - phoneBattery.updatedAtMs < 30 * 60_000
   );
+  const showPhoneChargingBadge = Boolean(phoneBatteryFresh && phoneBattery?.charging);
   const phoneReachedLimit = Boolean(
     showPhoneChargingBadge && phoneBattery && phoneBattery.levelPct >= phoneBattery.chargeLimitPct
   );
   const phoneEtaShort = showPhoneChargingBadge
     ? formatChargeEtaShort(phoneBattery?.chargeTimeRemainingMin)
     : '';
+  const phoneBatteryBadge =
+    phoneBatteryFresh && phoneBattery
+      ? `${phoneBattery.charging ? '⚡' : '🔋'}${phoneBattery.levelPct}%${phoneEtaShort ? ` · ${phoneEtaShort}` : ''}`
+      : '';
   const hasDualTimers = Boolean(calendarTrack && taskTrack);
   const isVertical = prefs.orientation === 'vertical';
 
@@ -381,11 +388,9 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       }
     }
     if (batEl) {
-      if (showPhoneChargingBadge && phoneBattery) {
+      if (phoneBatteryBadge) {
         batEl.style.display = 'inline';
-        batEl.textContent = phoneEtaShort
-          ? `⚡${phoneBattery.levelPct}% · ${phoneEtaShort}`
-          : `⚡${phoneBattery.levelPct}%`;
+        batEl.textContent = phoneBatteryBadge;
         batEl.style.color = phoneReachedLimit ? '#4ADE80' : '#FCD34D';
       } else {
         batEl.style.display = 'none';
@@ -400,10 +405,8 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
     activeTask,
     activeTaskClock,
     activeTaskUrgent,
-    showPhoneChargingBadge,
-    phoneBattery,
+    phoneBatteryBadge,
     phoneReachedLimit,
-    phoneEtaShort,
     isVertical,
     prefs.size,
   ]);
@@ -505,14 +508,9 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
 
       const batEl = pipDoc.createElement('span');
       batEl.id = 'dr-pip-bat';
-      batEl.style.display = showPhoneChargingBadge ? 'inline' : 'none';
+      batEl.style.display = phoneBatteryBadge ? 'inline' : 'none';
       batEl.style.color = phoneReachedLimit ? '#4ADE80' : '#FCD34D';
-      batEl.textContent =
-        showPhoneChargingBadge && phoneBattery
-          ? phoneEtaShort
-            ? `⚡${phoneBattery.levelPct}% · ${phoneEtaShort}`
-            : `⚡${phoneBattery.levelPct}%`
-          : '';
+      batEl.textContent = phoneBatteryBadge;
 
       shellEl.append(primarySeg, taskWrapEl, batEl);
       pipDoc.body.appendChild(shellEl);
@@ -832,14 +830,14 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
           </div>
         )}
 
-        {showPhoneChargingBadge && phoneBattery && (
+        {phoneBatteryFresh && phoneBattery && (
           <span
             className={`flex items-center gap-1 font-digits text-[11px] font-bold ${
               isVertical
                 ? 'border-t border-white/[0.08] pt-1.5'
                 : 'border-r border-white/[0.12] pr-2'
             } ${phoneReachedLimit ? 'text-[#4ADE80]' : 'text-amber-300'}`}
-            title={`شحن ${phoneBattery.deviceLabel}: ${phoneBattery.levelPct}%${phoneEtaShort ? ` · متبقي ${phoneEtaShort}` : ''} (الحد ${phoneBattery.chargeLimitPct}%)`}
+            title={`بطارية ${phoneBattery.deviceLabel}: ${phoneBattery.levelPct}%${phoneEtaShort ? ` · متبقي ${phoneEtaShort}` : ''} (الحد ${phoneBattery.chargeLimitPct}%)`}
           >
             <Zap className="w-3 h-3 shrink-0" />
             <span>{phoneBattery.levelPct}%</span>
