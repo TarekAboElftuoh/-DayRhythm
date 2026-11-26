@@ -831,7 +831,7 @@ export default function App() {
     setActiveTab(tab);
   }, []);
 
-  const targetCups = dailyRhythmPlan.activeTargetCups;
+  const targetCups = dailyRhythmPlan.hydrationSlots.length || dailyRhythmPlan.activeTargetCups;
 
   const [hydrationHistory, setHydrationHistory] = useState<HydrationDayLog[]>(() => {
     const initialTz = lifeProfile.currentTimeZone || 'Africa/Cairo';
@@ -856,7 +856,7 @@ export default function App() {
   useEffect(() => {
     setHydrationHistory((prev) => {
       const today = prev[prev.length - 1];
-      if (!today || today.targetCups === targetCups) return prev;
+      if (!today || (today.targetCups === targetCups && today.slots.length === targetCups)) return prev;
       const next = [...prev];
       const nextSlots = Array.from({ length: targetCups }, (_, idx) => Boolean(today.slots[idx]));
       const nextSlotOpIds = Array.from({ length: targetCups }, (_, idx) =>

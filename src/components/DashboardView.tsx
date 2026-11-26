@@ -932,11 +932,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     language,
   ]);
 
-  const totalMl = hydrationToday.cupsLogged * dailyRhythmPlan.cupSizeMl;
-  const targetMl = hydrationToday.targetCups * dailyRhythmPlan.cupSizeMl;
+  const scheduledHydrationSlots = dailyRhythmPlan.hydrationSlots;
+  const scheduledTargetCups = scheduledHydrationSlots.length;
+  const displayedCupsLogged = scheduledHydrationSlots.filter((_, idx) =>
+    Boolean(hydrationToday.slots[idx])
+  ).length;
+  const totalMl = displayedCupsLogged * dailyRhythmPlan.cupSizeMl;
+  const targetMl = scheduledTargetCups * dailyRhythmPlan.cupSizeMl;
   const waterPct = Math.min(
     100,
-    Math.round((hydrationToday.cupsLogged / Math.max(1, hydrationToday.targetCups)) * 100)
+    Math.round((displayedCupsLogged / Math.max(1, scheduledTargetCups)) * 100)
   );
 
   const nextWaterSlot = useMemo(() => {
@@ -3153,7 +3158,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </h2>
               <div className="font-mono-tabular text-xs flex items-center gap-2">
                 <span className="font-bold text-[#7FFFD4]">
-                  {hydrationToday.cupsLogged}/{hydrationToday.targetCups}
+                  {displayedCupsLogged}/{scheduledTargetCups}
                 </span>
                 <span className="text-zinc-500">·</span>
                 <span className="text-zinc-400">
@@ -3174,18 +3179,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             {/* Tactile Interactive Cup Progress Strip (Wraps comfortably on narrow phones, compact single-row on desktop) */}
             <div className="flex flex-wrap sm:flex-nowrap items-center gap-1.5 sm:gap-1">
-              {hydrationToday.slots.map((filled, idx) => {
-                const slotPlan = dailyRhythmPlan.hydrationSlots[idx];
+              {scheduledHydrationSlots.map((slotPlan, idx) => {
+                const filled = Boolean(hydrationToday.slots[idx]);
                 return (
                   <button
-                    key={idx}
+                    key={slotPlan.cupIndex}
                     type="button"
                     onClick={() => onToggleWaterSlot(idx)}
-                    title={
-                      slotPlan
-                        ? `كوب ${idx + 1} · ${formatMinutes12h(slotPlan.timeMinutes, language)}`
-                        : `كوب ${idx + 1}`
-                    }
+                    title={`كوب ${idx + 1} · ${formatMinutes12h(slotPlan.timeMinutes, language)}`}
                     className={`min-w-[36px] min-h-[40px] sm:min-w-0 sm:flex-1 sm:h-8 rounded-lg sm:rounded-md font-mono-tabular text-xs sm:text-[11px] font-bold flex items-center justify-center transition-all active:scale-90 cursor-pointer select-none ${
                       filled
                         ? 'bg-[#7FFFD4] text-black shadow-[0_0_8px_rgba(127,255,212,0.3)] hover:bg-[#66eec2]'

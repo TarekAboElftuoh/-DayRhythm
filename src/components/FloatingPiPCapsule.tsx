@@ -18,7 +18,7 @@ import {
   CapsuleSize,
   PhoneBatteryTelemetry,
 } from '../types/dayrhythm';
-import { formatCountdown, pickActiveCountdownItem } from '../hooks/useCountdown';
+import { pickActiveCountdownItem } from '../hooks/useCountdown';
 
 interface DocumentPictureInPictureApi {
   requestWindow: (options?: { width?: number; height?: number }) => Promise<Window>;
@@ -90,14 +90,25 @@ interface FloatingPiPCapsuleProps {
   onOpenDashboard: () => void;
 }
 
+function formatDigitalCountdown(remainingMs: number): string {
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return '00:00';
+  const totalSec = Math.ceil(remainingMs / 1000);
+  if (totalSec <= 0) return '00:00';
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) {
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 function formatChargeEtaShort(etaMin?: number): string {
   if (typeof etaMin !== 'number' || !Number.isFinite(etaMin) || etaMin <= 0) return '';
-  if (etaMin >= 60) {
-    const h = Math.floor(etaMin / 60);
-    const m = etaMin % 60;
-    return m > 0 ? `${h}س ${m}د` : `${h}س`;
-  }
-  return `${etaMin}د`;
+  const totalMin = Math.round(etaMin);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
@@ -311,7 +322,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
   const activePrimary = pickActiveCountdownItem(primaryTrack, upcomingQueue, nowTickMs);
   const activePrimaryRemMs = activePrimary.targetEpochMs > 0 ? Math.max(0, activePrimary.targetEpochMs - nowTickMs) : 0;
   const activePrimaryClock = activePrimary.targetEpochMs > 0
-    ? formatCountdown(activePrimaryRemMs)
+    ? formatDigitalCountdown(activePrimaryRemMs)
     : (!activePrimary.countdownText || activePrimary.countdownText === 'الآن' ? '00:00' : activePrimary.countdownText);
   const activePrimaryUrgent = activePrimary.targetEpochMs > 0 ? activePrimaryRemMs <= 60_000 : activePrimary.isUrgent;
 
@@ -325,7 +336,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
   const activeTaskRemMs = activeTask && activeTask.targetEpochMs > 0 ? Math.max(0, activeTask.targetEpochMs - nowTickMs) : 0;
   const activeTaskClock = activeTask
     ? activeTask.targetEpochMs > 0
-      ? formatCountdown(activeTaskRemMs)
+      ? formatDigitalCountdown(activeTaskRemMs)
       : (!activeTask.countdownText || activeTask.countdownText === 'الآن' ? '00:00' : activeTask.countdownText)
     : '';
   const activeTaskUrgent = Boolean(activeTask && (activeTask.targetEpochMs > 0 ? activeTaskRemMs <= 60_000 : activeTask.isUrgent));
@@ -451,7 +462,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       setMenuOpen(false);
 
       const primary = hasDualTimers && calendarTrack ? calendarTrack : null;
-      const pClock = primary ? primary.countdownText : countdownText;
+      const pClock = activePrimaryClock;
       const pEmoji = primary ? primary.emoji : nextEmoji;
       const pAccent = (primary ? primary.isUrgent : isUrgent) ? '#FF6B6B' : '#7FFFD4';
       const tEmoji = taskTrack?.emoji ?? '💧';
@@ -503,7 +514,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       const taskClockEl = pipDoc.createElement('span');
       taskClockEl.id = 'dr-pip-task-clock';
       taskClockEl.style.color = tAccent;
-      taskClockEl.textContent = taskTrack?.countdownText ?? '';
+      taskClockEl.textContent = activeTaskClock;
       taskWrapEl.append(taskEmojiEl, taskClockEl);
 
       const batEl = pipDoc.createElement('span');
@@ -777,6 +788,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
             >
               <span className={sizeTokens.emojiCls}>{activePrimary.emoji}</span>
               <span
+                dir="ltr"
                 className={`${sizeTokens.clockCls} ${
                   activePrimaryUrgent
                     ? 'text-[#FF6B6B]'
@@ -803,6 +815,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
             >
               <span className={sizeTokens.emojiCls}>{activeTask.emoji}</span>
               <span
+                dir="ltr"
                 className={`${sizeTokens.clockCls} ${
                   activeTaskUrgent
                     ? 'text-[#FF6B6B]'
@@ -821,6 +834,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
           <div className="flex items-center gap-1.5" title={`${activePrimary.title} · ${activePrimary.statusLabel ?? statusLabel}`}>
             <span className={sizeTokens.emojiCls}>{activePrimary.emoji}</span>
             <span
+              dir="ltr"
               className={`${sizeTokens.clockCls} ${
                 activePrimaryUrgent ? 'text-[#FF6B6B]' : activePrimary.isNow ? 'text-[#4ADE80]' : 'text-[#7FFFD4]'
               }`}
@@ -890,6 +904,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
                     </div>
                   </div>
                   <span
+                    dir="ltr"
                     className={`font-digits text-[11px] font-bold shrink-0 ${
                       item.isUrgent
                         ? 'text-[#FF6B6B]'
@@ -900,7 +915,11 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
                             : 'text-[#7FFFD4]'
                     }`}
                   >
-                    {item.countdownText}
+                    {item.targetEpochMs > 0
+                      ? formatDigitalCountdown(Math.max(0, item.targetEpochMs - nowTickMs))
+                      : item.countdownText === 'الآن' || !item.countdownText
+                        ? '00:00'
+                        : item.countdownText}
                   </span>
                 </div>
               ))}
