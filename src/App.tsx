@@ -7089,6 +7089,44 @@ export default function App() {
         });
       }
     });
+
+    // 3C. Solar event alerts: Red Sun (Golden Hour, 6° above horizon) and Maghrib (Sunset)
+    // Deduplication: firedReminderKeysRef prevents re-firing same event on same day.
+    if (includePrayerAnchors) {
+      const maghribItem = prayers.find((p) => p.id === 'maghrib');
+      if (maghribItem) {
+        // redSunMinutes is stored on the maghrib item by prayerEngine
+        const redSunMin = (maghribItem as typeof maghribItem & { redSunMinutes?: number }).redSunMinutes;
+        if (typeof redSunMin === 'number') {
+          const diffRed = nowTickMin - redSunMin;
+          if (diffRed >= 0 && diffRed <= 4) {
+            const keyRed = `${todayIso}:redSun:${redSunMin}`;
+            if (!firedReminderKeysRef.current.has(keyRed)) {
+              firedReminderKeysRef.current.add(keyRed);
+              triggerTaskAlert('🌇 ☀️', 'general', {
+                privacyEmoji: '🌇',
+                displayTitle: 'الشمس الحمراء · الساعة الذهبية',
+                sourceLabel: 'مواقيت شمسية',
+                description: `الشمس الحمراء · بداية الساعة الذهبية المسائية (${formatMinutes12h(redSunMin, 'ar')}) — الغروب بعد ~6 دقائق`,
+              });
+            }
+          }
+        }
+        const diffMag = nowTickMin - maghribItem.adhanMinutes;
+        if (diffMag >= 0 && diffMag <= 4) {
+          const keyMag = `${todayIso}:maghrib_solar:${maghribItem.adhanMinutes}`;
+          if (!firedReminderKeysRef.current.has(keyMag)) {
+            firedReminderKeysRef.current.add(keyMag);
+            triggerTaskAlert('🌆', 'general', {
+              privacyEmoji: '🌆',
+              displayTitle: 'غروب الشمس',
+              sourceLabel: 'مواقيت شمسية',
+              description: `غروب الشمس (${formatMinutes12h(maghribItem.adhanMinutes, 'ar')}) — وقت المغرب`,
+            });
+          }
+        }
+      }
+    }
     } // end: reminders owned by native alarms on Android
 
     // 4. Proactive Medication Low-Stock Refill Reminder (default 3 days before running out)
@@ -7125,6 +7163,8 @@ export default function App() {
     triggerTaskAlert,
     handleLogWaterCup,
     handleAcknowledgeAudioAlert,
+    includePrayerAnchors,
+    prayers,
   ]);
 
   // Real-time Phone Battery Sync (Mobile publishes local battery; PC receives & displays)
@@ -8698,6 +8738,35 @@ export default function App() {
               triggerAtMs,
               snoozeMinutes,
             });
+          }
+          // Red Sun (Golden Hour) alarm derived from maghrib.redSunMinutes
+          if (p.id === 'maghrib') {
+            const redSunMin = (p as typeof p & { redSunMinutes?: number }).redSunMinutes;
+            if (typeof redSunMin === 'number') {
+              const rsTriggerAtMs = msForMinuteToday(redSunMin);
+              if (rsTriggerAtMs > nowMs + 1_000) {
+                alarms.push({
+                  id: `solar_redsun_${todayCairoIso}`,
+                  kind: 'prayer',
+                  title: '🌇 ☀️ الشمس الحمراء',
+                  body: `الساعة الذهبية المسائية — الغروب بعد ~6 دقائق (${formatMinutes12h(redSunMin, 'ar')})`,
+                  triggerAtMs: rsTriggerAtMs,
+                  snoozeMinutes,
+                });
+              }
+            }
+            // Maghrib solar alert (distinct from obligatory prayer alert)
+            const magTrigger = msForMinuteToday(p.adhanMinutes);
+            if (magTrigger > nowMs + 1_000) {
+              alarms.push({
+                id: `solar_maghrib_${todayCairoIso}`,
+                kind: 'prayer',
+                title: '🌆 غروب الشمس',
+                body: `وقت الغروب والمغرب (${formatMinutes12h(p.adhanMinutes, 'ar')})`,
+                triggerAtMs: magTrigger,
+                snoozeMinutes,
+              });
+            }
           }
         }
       }
