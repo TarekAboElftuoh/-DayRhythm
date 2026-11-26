@@ -1625,7 +1625,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {silentNotifications.map((sn) => (
               <div key={sn.id} className="py-2 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span>{TASK_SOUND_META[sn.soundCategory].icon}</span>
+                  <span>{TASK_SOUND_META[sn.soundCategory]?.icon ?? '🔔'}</span>
                   <span className="text-zinc-200 truncate">{sn.title}</span>
                   <span className="text-[11px] text-zinc-500 shrink-0">· {sn.reasonAr}</span>
                 </div>
