@@ -139,6 +139,7 @@ public class DayRhythmSyncService extends Service {
     private String syncSubtitle = "مزامنة لحظية نشطة 24/7";
     private String lastNotifStateKey = "";
     private long lastNotifPostMs = 0L;
+    private String lastLiveAlertStateKey = "";
 
     private final Runnable wsReconnectRunnable = this::connectBackgroundWebSocket;
 
@@ -360,6 +361,7 @@ public class DayRhythmSyncService extends Service {
         public void run() {
             if (isDestroyed) return;
             refreshPersistentNotification();
+            refreshLiveAlertCapsule();
 
             if (liveTargetEpochMs > 0L) {
                 long now = System.currentTimeMillis();
@@ -1628,7 +1630,6 @@ public class DayRhythmSyncService extends Service {
                 nm.deleteNotificationChannel("dayrhythm_live_alerts_v1");
                 nm.deleteNotificationChannel("dayrhythm_live_alerts_v2");
                 nm.deleteNotificationChannel(CHANNEL_KEEPALIVE);
-                nm.cancel(NOTIF_LIVE_ALERT_ID);
             } catch (Exception ignored) {
             }
 
@@ -1771,27 +1772,17 @@ public class DayRhythmSyncService extends Service {
         );
 
         long nowMs = System.currentTimeMillis();
-        long remainingMs = liveTargetEpochMs - nowMs;
-        Long explicitTagSec = parseLeadTagSeconds(liveTitle);
-        if (explicitTagSec == null) {
-            explicitTagSec = parseLeadTagSeconds(liveStatusLabel);
-        }
-
-        boolean hasUpcoming = liveTargetEpochMs > nowMs + 1000L;
-        long leadWindowMs = getEffectiveLeadWindowMs();
-        boolean inLeadWindow = liveAlertsEnabled && hasUpcoming && (
-                liveAlertsAlwaysOn ||
-                (explicitTagSec != null ? remainingMs <= explicitTagSec * 1000L : remainingMs <= leadWindowMs)
-        );
         boolean isChargingNow = lastBroadcastCharging && lastBroadcastBatteryLevel >= 0;
         boolean chargePromote = liveAlertsEnabled && liveAlertsShowCharging && isChargingNow;
 
+        String capsuleEmoji = sanitizeEmojis(liveEmoji, 1);
+        if (capsuleEmoji.isEmpty()) capsuleEmoji = "📅";
+        int accentColor = resolveEmojiAccentColor(capsuleEmoji);
+
         int smallIcon = getSmallIconForKind(
-                (!inLeadWindow && chargePromote) ? "charge" : liveKind
+                chargePromote && schedTargetEpochMs <= nowMs + 1000L ? "charge" : liveKind
         );
 
-        // Android 16 / OxygenOS 16 Promoted Ongoing requires platform Notification.Builder,
-        // eligible style (BigTextStyle), setOngoing(true), setContentTitle, NO setColorized(true), NO RemoteViews.
         Notification.Builder builder = new Notification.Builder(this, CHANNEL_LIVE_ALERTS)
                 .setSmallIcon(smallIcon)
                 .setOngoing(true)
@@ -1799,7 +1790,6 @@ public class DayRhythmSyncService extends Service {
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(pi);
 
-        Bundle liveExtras = new Bundle();
         String chargeTag = "";
         if (isChargingNow) {
             String etaStr = lastBroadcastEtaMinutes > 0
@@ -1808,30 +1798,14 @@ public class DayRhythmSyncService extends Service {
             chargeTag = "⚡ " + lastBroadcastBatteryLevel + "% · " + etaStr;
         }
 
-        String capsuleEmoji = sanitizeEmojis(liveEmoji, 1);
-        if (capsuleEmoji.isEmpty()) capsuleEmoji = "📅";
-        int accentColor = resolveEmojiAccentColor(capsuleEmoji);
-
-        if (hasUpcoming && inLeadWindow) {
-            String compactPill = formatChipText(capsuleEmoji, remainingMs);
-            applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, accentColor);
-        } else if (chargePromote) {
-            String chargeEmoji = lastBroadcastBatteryLevel >= lastBroadcastLimit ? "🔋" : "⚡";
-            int chargeColor = resolveEmojiAccentColor(chargeEmoji);
-            String compactPill = "\u200F" + chargeEmoji + " " + lastBroadcastBatteryLevel + "%";
-            applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, chargeColor);
-            if (!hasUpcoming) accentColor = chargeColor;
-        } else {
-            applyPlatformLiveAlertFlags(builder, liveExtras, false, "", accentColor);
-        }
-
-        // Persistent Notification Body (Upcoming Schedule ONLY)
+        // Fixed Schedule Notification (ID 1001) — never carries Live Alert / Promoted Ongoing flags
         boolean hasUpcomingSchedule = schedTargetEpochMs > nowMs + 1000L;
         if (hasUpcomingSchedule && persistentCountdownEnabled) {
             long schedRemMs = schedTargetEpochMs - nowMs;
             String cleanSched = cleanDisplayTitle(schedTitle.isEmpty() ? schedStatusLabel : schedTitle);
             if (cleanSched.isEmpty()) cleanSched = schedTitle.isEmpty() ? schedStatusLabel : schedTitle;
             String safeSchedEmoji = resolveScheduleEmojiPair(schedEmoji, cleanSched);
+            accentColor = resolveEmojiAccentColor(safeSchedEmoji);
             String titleLine = sanitizeEmojis((safeSchedEmoji.isEmpty() ? "" : safeSchedEmoji + " ") + cleanSched, 2);
             String targetClock = !schedClockLabel.isEmpty()
                     ? schedClockLabel
@@ -1850,22 +1824,17 @@ public class DayRhythmSyncService extends Service {
             int progressPct = (int) Math.round(((progressWindowMs - clampedRemMs) * 100.0) / progressWindowMs);
             progressPct = Math.max(0, Math.min(100, progressPct));
 
-            boolean showSecChrono = (inLeadWindow ? remainingMs : schedRemMs) <= 60_000L;
-            if (inLeadWindow && remainingMs <= 60_000L) {
-                liveExtras.putBoolean("android.showChronometer", true);
-                liveExtras.putBoolean("android.chronometerCountdown", true);
-            }
+            boolean showSecChrono = schedRemMs <= 60_000L;
 
             builder.setContentTitle(titleLine)
                     .setContentText(contentLine)
                     .setShowWhen(true)
-                    .setWhen(inLeadWindow ? liveTargetEpochMs : schedTargetEpochMs)
+                    .setWhen(schedTargetEpochMs)
                     .setUsesChronometer(showSecChrono)
                     .setChronometerCountDown(showSecChrono)
                     .setProgress(100, progressPct, false)
                     .setColor(accentColor)
-                    .setCategory(Notification.CATEGORY_EVENT)
-                    .addExtras(liveExtras);
+                    .setCategory(Notification.CATEGORY_EVENT);
         } else if (chargePromote) {
             int chargeColor = lastBroadcastBatteryLevel >= lastBroadcastLimit ? 0xFF4ADE80 : accentColor;
             StringBuilder bigSb = new StringBuilder();
@@ -1888,8 +1857,7 @@ public class DayRhythmSyncService extends Service {
                     .setCategory(Notification.CATEGORY_PROGRESS)
                     .setStyle(new Notification.BigTextStyle()
                             .setBigContentTitle(safeChargeTitle)
-                            .bigText(sanitizeEmojis(bigSb.toString(), 2)))
-                    .addExtras(liveExtras);
+                            .bigText(sanitizeEmojis(bigSb.toString(), 2)));
 
             if (lastBroadcastBatteryLevel >= lastBroadcastLimit) {
                 Intent dismissChargeIntent = new Intent(this, ReminderAlarmReceiver.class);
@@ -1916,16 +1884,107 @@ public class DayRhythmSyncService extends Service {
                     .setShowWhen(false)
                     .setUsesChronometer(false)
                     .setColor(accentColor)
-                    .setCategory(Notification.CATEGORY_STATUS)
-                    .addExtras(liveExtras);
+                    .setCategory(Notification.CATEGORY_STATUS);
         }
 
         return builder.build();
     }
 
     private void refreshLiveAlertCapsule() {
-        // Countdown capsule notification disabled — keeping only the single persistent status notification
-        cancelLiveAlertCapsule();
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm == null) return;
+
+        long nowMs = System.currentTimeMillis();
+        long remainingMs = liveTargetEpochMs - nowMs;
+        Long explicitTagSec = parseLeadTagSeconds(liveTitle);
+        if (explicitTagSec == null) {
+            explicitTagSec = parseLeadTagSeconds(liveStatusLabel);
+        }
+        boolean hasUpcoming = liveTargetEpochMs > nowMs + 1000L;
+        long leadWindowMs = getEffectiveLeadWindowMs();
+        boolean inLeadWindow = liveAlertsEnabled && hasUpcoming && (
+                liveAlertsAlwaysOn ||
+                (explicitTagSec != null ? remainingMs <= explicitTagSec * 1000L : remainingMs <= leadWindowMs)
+        );
+        boolean isChargingNow = lastBroadcastCharging && lastBroadcastBatteryLevel >= 0;
+        boolean chargePromote = liveAlertsEnabled && liveAlertsShowCharging && isChargingNow;
+
+        if (!inLeadWindow && !chargePromote) {
+            if (liveIslandCurrentlyShown || !lastLiveAlertStateKey.isEmpty()) {
+                cancelLiveAlertCapsule();
+            }
+            return;
+        }
+
+        String capsuleEmoji;
+        String compactPill;
+        int accentColor;
+        String iconKind;
+        long bucketSec = 0L;
+
+        if (inLeadWindow) {
+            capsuleEmoji = sanitizeEmojis(liveEmoji, 1);
+            if (capsuleEmoji.isEmpty()) capsuleEmoji = "📅";
+            compactPill = formatChipText(capsuleEmoji, remainingMs);
+            accentColor = resolveEmojiAccentColor(capsuleEmoji);
+            iconKind = liveKind;
+            bucketSec = (remainingMs <= 60_000L)
+                    ? ((remainingMs + 999L) / 1000L)
+                    : (1000L + ((remainingMs + 59_999L) / 60_000L));
+        } else {
+            capsuleEmoji = lastBroadcastBatteryLevel >= lastBroadcastLimit ? "🔋" : "⚡";
+            compactPill = "\u200F" + capsuleEmoji + " " + lastBroadcastBatteryLevel + "%";
+            accentColor = resolveEmojiAccentColor(capsuleEmoji);
+            iconKind = "charge";
+        }
+
+        String nextKey = inLeadWindow + "|" + chargePromote + "|" + bucketSec + "|" + compactPill + "|" + accentColor + "|" + iconKind;
+        if (nextKey.equals(lastLiveAlertStateKey) && liveIslandCurrentlyShown) {
+            return;
+        }
+
+        Intent openIntent = new Intent(this, MainActivity.class);
+        openIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pi = PendingIntent.getActivity(
+                this,
+                1,
+                openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        Bundle liveExtras = new Bundle();
+        Notification.Builder builder = new Notification.Builder(this, CHANNEL_LIVE_ALERTS)
+                .setSmallIcon(getSmallIconForKind(iconKind))
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setContentIntent(pi)
+                .setContentTitle(compactPill)
+                .setContentText(compactPill)
+                .setShowWhen(inLeadWindow)
+                .setColor(accentColor)
+                .setCategory(inLeadWindow ? Notification.CATEGORY_EVENT : Notification.CATEGORY_PROGRESS);
+
+        if (inLeadWindow) {
+            boolean showSecChrono = remainingMs <= 60_000L;
+            builder.setWhen(liveTargetEpochMs)
+                    .setUsesChronometer(showSecChrono)
+                    .setChronometerCountDown(showSecChrono);
+            if (showSecChrono) {
+                liveExtras.putBoolean("android.showChronometer", true);
+                liveExtras.putBoolean("android.chronometerCountdown", true);
+            }
+        }
+
+        applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, accentColor);
+        builder.addExtras(liveExtras);
+
+        try {
+            nm.notify(NOTIF_LIVE_ALERT_ID, builder.build());
+            liveIslandCurrentlyShown = true;
+            lastLiveAlertStateKey = nextKey;
+        } catch (SecurityException ignored) {
+        }
     }
 
     private void cancelLiveAlertCapsule() {
@@ -1934,5 +1993,6 @@ public class DayRhythmSyncService extends Service {
             nm.cancel(NOTIF_LIVE_ALERT_ID);
         }
         liveIslandCurrentlyShown = false;
+        lastLiveAlertStateKey = "";
     }
 }
