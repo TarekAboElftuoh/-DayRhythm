@@ -5596,20 +5596,49 @@ export default function App() {
           }))
       : [];
 
+    const sunlightBlocks: ScheduleBlock[] = sunlightSettings.enabled
+      ? sunlightSessions
+          .filter((s) => s.enabled)
+          .map((s) => ({
+            id: `sunlight_${s.id}`,
+            emojiPair: s.emoji,
+            categoryAr: s.labelAr,
+            categoryEn: s.id,
+            startMin: s.startMinutes,
+            durationMin: s.durationMinutes,
+            minDurationMin: s.durationMinutes,
+            isAnchor: true,
+            travelGroup: 'ANCHOR' as const,
+            canShiftEvening: false,
+            completed: false,
+            deleted: false,
+            dateIso: todayCairoIso,
+            description: s.isCloudBlocked
+              ? s.cloudNoteAr ?? '☁️ غيوم كثيفة — لا توجد أشعة الآن'
+              : s.descAr,
+            source: 'offline' as const,
+          }))
+      : [];
+
     if (!needsAuth) {
-      return [...todaysGoogleBlocks, ...prayerAnchors].sort((a, b) => a.startMin - b.startMin);
+      return [...todaysGoogleBlocks, ...prayerAnchors, ...sunlightBlocks].sort(
+        (a, b) => a.startMin - b.startMin
+      );
     }
 
     // Disconnected / Anonymous mode: keep schedule 100% empty until signed in (unless explicit Offline Demo)
     if (useOfflineDemo) {
-      return offlineBlocks.map((b) => ({
-        ...b,
-        completed: completedOverrides[b.id] ?? b.completed,
-        source: b.source ?? 'offline',
-      }));
+      return [
+        ...offlineBlocks.map((b) => ({
+          ...b,
+          completed: completedOverrides[b.id] ?? b.completed,
+          source: b.source ?? 'offline',
+        })),
+        ...sunlightBlocks,
+      ].sort((a, b) => a.startMin - b.startMin);
     }
 
-    return [];
+    return sunlightBlocks;
   }, [
     reflowedBlocksOverride,
     includePrayerAnchors,
@@ -5623,6 +5652,8 @@ export default function App() {
     offlineBlocks,
     lifeProfile.adhanLeadMinutes,
     activeTimeZone,
+    sunlightSettings.enabled,
+    sunlightSessions,
   ]);
 
   // Genuinely free time slots today (away from Prayers, Sleep, Work & existing Google Calendar events)
@@ -7325,24 +7356,55 @@ export default function App() {
       if (activeSanctuary.type === 'none' && quietMode !== 'silent_all') {
         playSunlightChime('end');
       }
+      triggerTaskAlert(session.emoji, 'general', {
+        privacyEmoji: session.emoji,
+        displayTitle: `انتهت جلسة ${session.labelAr}`,
+        sourceLabel: 'الأشعة المفيدة',
+        description: 'اكتملت مدة التعرّض للشمس اليوم',
+      });
     },
-    [sunlightSessions, activeTimeZone, activeSanctuary.type, quietMode]
+    [sunlightSessions, activeTimeZone, activeSanctuary.type, quietMode, triggerTaskAlert]
   );
 
-  // Daily Sunlight Exposure Chimes (lead/start + end, deduplicated per session/day)
+  // Daily Sunlight Exposure Chimes + Live/In-App Alerts (lead, start, end — deduplicated per session/day)
   useEffect(() => {
     if (!sunlightSettings.enabled) return;
     const todayIso = getDateIsoInTimeZone(activeTimeZone);
     const sanctuaryBlocked = activeSanctuary.type !== 'none' || quietMode === 'silent_all';
     for (const session of sunlightSessions) {
       if (!session.enabled || session.isCloudBlocked) continue;
-      if (nowTickMin >= session.alertMinutes && nowTickMin < session.endMinutes) {
-        const startKey = `${todayIso}:sunlight_start:${session.id}:${session.alertMinutes}`;
+      if (
+        session.leadMinutes > 0 &&
+        nowTickMin >= session.alertMinutes &&
+        nowTickMin < session.startMinutes
+      ) {
+        const leadKey = `${todayIso}:sunlight_lead:${session.id}:${session.alertMinutes}`;
+        if (!firedReminderKeysRef.current.has(leadKey)) {
+          firedReminderKeysRef.current.add(leadKey);
+          if (!sanctuaryBlocked) {
+            playSunlightChime(session.id);
+          }
+          triggerTaskAlert(session.emoji, 'general', {
+            privacyEmoji: session.emoji,
+            displayTitle: `${session.labelAr} بعد ${session.leadMinutes} د`,
+            sourceLabel: 'الأشعة المفيدة',
+            description: session.descAr,
+          });
+        }
+      }
+      if (nowTickMin >= session.startMinutes && nowTickMin < session.endMinutes) {
+        const startKey = `${todayIso}:sunlight_start:${session.id}:${session.startMinutes}`;
         if (!firedReminderKeysRef.current.has(startKey)) {
           firedReminderKeysRef.current.add(startKey);
           if (!sanctuaryBlocked) {
             playSunlightChime(session.id);
           }
+          triggerTaskAlert(session.emoji, 'general', {
+            privacyEmoji: session.emoji,
+            displayTitle: `ابدأ ${session.labelAr} الآن (${session.durationMinutes} د)`,
+            sourceLabel: 'الأشعة المفيدة',
+            description: session.descAr,
+          });
         }
       }
       if (nowTickMin >= session.endMinutes && nowTickMin <= session.endMinutes + 1) {
@@ -7352,6 +7414,12 @@ export default function App() {
           if (!sanctuaryBlocked) {
             playSunlightChime('end');
           }
+          triggerTaskAlert(session.emoji, 'general', {
+            privacyEmoji: session.emoji,
+            displayTitle: `انتهت جلسة ${session.labelAr}`,
+            sourceLabel: 'الأشعة المفيدة',
+            description: 'اكتملت مدة التعرّض للشمس اليوم',
+          });
         }
       }
     }
@@ -7362,6 +7430,7 @@ export default function App() {
     activeTimeZone,
     activeSanctuary.type,
     quietMode,
+    triggerTaskAlert,
   ]);
 
   // Real-time Phone Battery Sync (Mobile publishes local battery; PC receives & displays)
@@ -8467,6 +8536,10 @@ export default function App() {
     // 1. Remaining / active timed Google Calendar & Prayer blocks today
     for (const block of liveBlocks) {
       if (block.completed || block.deleted || block.isAllDay || acknowledgedBlockIdsRef.current.has(block.id)) continue;
+      if (block.id.startsWith('sunlight_')) {
+        const matchedSun = sunlightSessions.find((s) => `sunlight_${s.id}` === block.id);
+        if (matchedSun?.isCloudBlocked) continue;
+      }
       const startSec = block.startMin * 60;
       const isZeroDuration = (block.durationMin ?? 0) === 0;
       const durationSec = isZeroDuration ? 0 : Math.max(60, block.durationMin * 60);

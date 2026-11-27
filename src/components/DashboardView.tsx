@@ -2073,6 +2073,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </section>
 
+      {onSnoozeSunlight && (
+        <SunlightCard
+          sessions={sunlightSessions}
+          enabled={sunlightEnabled}
+          activeTimeZone={activeTimeZone}
+          cardSurface={cardSurface}
+          onSnooze={onSnoozeSunlight}
+          onSessionEnd={onSunlightSessionEnd}
+        />
+      )}
+
       {/* Main Split Grid: Primary Calendar + Tasks FIRST in DOM (optimal on OnePlus 12R & Desktop RTL) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Primary Column (7 cols): Schedule -> Tasks -> Creative -> Gmail */}
@@ -2501,6 +2512,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               {block.source === 'creative' && (
                                 <span className="text-cyan-300/80">· وقت إبداعي</span>
                               )}
+                              {block.id.startsWith('sunlight_') &&
+                                block.description?.includes('غيوم كثيفة') && (
+                                  <span className="text-zinc-400">· ☁️ غيوم كثيفة</span>
+                                )}
                             </div>
                           </div>
                         </div>
@@ -3156,17 +3171,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         {/* Support Column (5 cols): High-Frequency Daily Care FIRST — Water -> Medications -> Sleep -> Streaks */}
         <div className="lg:col-span-5 space-y-5">
-          {onSnoozeSunlight && (
-            <SunlightCard
-              sessions={sunlightSessions}
-              enabled={sunlightEnabled}
-              activeTimeZone={activeTimeZone}
-              cardSurface={cardSurface}
-              onSnooze={onSnoozeSunlight}
-              onSessionEnd={onSunlightSessionEnd}
-            />
-          )}
-
           {/* 1. Hydration Card (Promoted to #1 in Support Column — highest tap frequency) */}
           <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
             <div className="flex items-baseline justify-between gap-2">

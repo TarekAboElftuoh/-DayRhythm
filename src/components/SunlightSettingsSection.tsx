@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Pencil, Sun } from 'lucide-react';
+import { Pencil, Sun, Volume2 } from 'lucide-react';
+import { playSunlightChime } from '../engines/audioEngine';
 import {
   DEFAULT_SUNLIGHT_SETTINGS,
   type SunlightExposureMode,
@@ -82,19 +83,31 @@ export const SunlightSettingsSection: React.FC<SunlightSettingsSectionProps> = (
           <span>الأشعة المفيدة</span>
         </h3>
 
-        <button
-          type="button"
-          role="switch"
-          aria-checked={settings.enabled}
-          onClick={() => onChange({ ...settings, enabled: !settings.enabled })}
-          className={`px-3 py-1 rounded-full border font-mono-tabular text-[11px] font-semibold cursor-pointer transition-colors ${
-            settings.enabled
-              ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4]'
-              : 'border-white/15 bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
-          }`}
-        >
-          {settings.enabled ? 'مفعّل' : 'متوقف'}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => playSunlightChime('end')}
+            title="تجربة نغمة انتهاء الجلسة"
+            className="px-2.5 py-1 rounded-full border border-white/10 bg-white/[0.03] text-zinc-300 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 text-[11px] inline-flex items-center gap-1 cursor-pointer transition-colors"
+          >
+            <Volume2 className="w-3 h-3" aria-hidden="true" />
+            <span>نغمة الانتهاء</span>
+          </button>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.enabled}
+            onClick={() => onChange({ ...settings, enabled: !settings.enabled })}
+            className={`px-3 py-1 rounded-full border font-mono-tabular text-[11px] font-semibold cursor-pointer transition-colors ${
+              settings.enabled
+                ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                : 'border-white/15 bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            {settings.enabled ? 'مفعّل' : 'متوقف'}
+          </button>
+        </div>
       </div>
 
       {settings.enabled && (
@@ -195,6 +208,17 @@ export const SunlightSettingsSection: React.FC<SunlightSettingsSectionProps> = (
                     </div>
 
                     <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => playSunlightChime(id)}
+                        aria-label={`تجربة صوت ${cfg.labelAr}`}
+                        title="تجربة الصوت"
+                        className="px-2 py-1 rounded-lg border border-white/10 bg-white/[0.02] text-zinc-300 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 text-[11px] inline-flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <Volume2 className="w-3 h-3" aria-hidden="true" />
+                        <span>تجربة</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => setEditingTextId(isEditingText ? null : id)}
