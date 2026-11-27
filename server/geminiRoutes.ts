@@ -875,7 +875,7 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
 
   function extractPlaceSearchKeyword(query: string): { ar: string; en: string } {
     const q = query.trim();
-    if (/(مسجد|مساجد|جامع|جوامع|صلاة|الجماعة|mosque)/i.test(q)) return { ar: 'مسجد', en: 'mosque' };
+    if (/(مسجد|مساجد|جامع|جوامع|زاوية|صلاة|الجماعة|mosque)/i.test(q)) return { ar: 'مسجد', en: 'mosque' };
     if (/(صيدلية|صيدليات|دواء|علاج|pharmacy)/i.test(q)) return { ar: 'صيدلية', en: 'pharmacy' };
     if (/(مستشفى|مستشفيات|عيادة|طوارئ|دكتور|hospital|clinic)/i.test(q)) return { ar: 'مستشفى', en: 'hospital' };
     if (/(مطعم|مطاعم|أكل|وجبات|طعام|استراحة|restaurant)/i.test(q)) return { ar: 'مطعم', en: 'restaurant' };
@@ -891,14 +891,122 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
     return { ar: cleaned || q, en: cleaned || q };
   }
 
+  function isNearestPlaceQuery(query: string): boolean {
+    return /(أقرب|اقرب|قريب|بالقرب|حولي|جنبي|مشي|مشياً|nearest|nearby|closest|مسجد|جامع|زاوية|mosque)/i.test(
+      query
+    );
+  }
+
+  function formatMetersWalkSnippet(distanceMeters: number, address?: string): string {
+    const walkMin = Math.max(1, Math.round(distanceMeters / 80));
+    const walkLabel =
+      walkMin === 1 ? 'دقيقة مشي' : walkMin <= 10 ? `${walkMin} دقائق مشي` : `${walkMin} دقيقة مشي`;
+    return `${distanceMeters} متر · ${walkLabel}${address ? ` · ${address}` : ''}`;
+  }
+
+  function resolveOverpassTagFilter(query: string): string | null {
+    const q = query.trim();
+    if (/(مسجد|مساجد|جامع|جوامع|زاوية|صلاة|الجماعة|mosque)/i.test(q)) {
+      return '["amenity"="place_of_worship"]["religion"="muslim"]';
+    }
+    if (/(صيدلية|صيدليات|دواء|علاج|pharmacy)/i.test(q)) return '["amenity"="pharmacy"]';
+    if (/(مستشفى|مستشفيات|عيادة|طوارئ|دكتور|hospital|clinic)/i.test(q)) {
+      return '["amenity"~"^(hospital|clinic)$"]';
+    }
+    if (/(مطعم|مطاعم|أكل|وجبات|طعام|استراحة|restaurant)/i.test(q)) return '["amenity"="restaurant"]';
+    if (/(كافيه|قهوة|مقهى|cafe|coffee)/i.test(q)) return '["amenity"="cafe"]';
+    if (/(سوبر ماركت|ماركت|بقالة|supermarket)/i.test(q)) return '["shop"="supermarket"]';
+    if (/(بنزين|وقود|محطة|fuel|gas)/i.test(q)) return '["amenity"="fuel"]';
+    if (/(جيم|نادي|رياضة|gym)/i.test(q)) return '["leisure"="fitness_centre"]';
+    if (/(بنك|صراف|atm|bank)/i.test(q)) return '["amenity"~"^(bank|atm)$"]';
+    return null;
+  }
+
+  async function fetchOverpassNearbyPlaces(
+    query: string,
+    lat: number,
+    lng: number,
+    fallbackTitle: string
+  ): Promise<Array<{ title: string; uri: string; snippets: string[]; distanceMeters: number }>> {
+    const tagFilter = resolveOverpassTagFilter(query);
+    if (!tagFilter) return [];
+
+    const radii = [300, 700, 1500];
+    for (const radiusMeters of radii) {
+      const ql = `[out:json][timeout:4];(nwr${tagFilter}(around:${radiusMeters},${lat.toFixed(6)},${lng.toFixed(6)}););out center tags 15;`;
+      try {
+        const res = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': 'DayRhythmApp/1.0',
+          },
+          body: `data=${encodeURIComponent(ql)}`,
+          signal: AbortSignal.timeout(4500),
+        });
+        if (!res.ok) continue;
+        const data = (await res.json()) as {
+          elements?: Array<{
+            lat?: number;
+            lon?: number;
+            center?: { lat?: number; lon?: number };
+            tags?: Record<string, string>;
+          }>;
+        };
+        const elements = Array.isArray(data.elements) ? data.elements : [];
+        if (elements.length === 0) continue;
+
+        const dedup = new Map<
+          string,
+          { title: string; uri: string; snippets: string[]; distanceMeters: number }
+        >();
+        for (const el of elements) {
+          const pLat = typeof el.lat === 'number' ? el.lat : el.center?.lat;
+          const pLng = typeof el.lon === 'number' ? el.lon : el.center?.lon;
+          if (typeof pLat !== 'number' || typeof pLng !== 'number') continue;
+          const tags = el.tags ?? {};
+          const title = (tags['name:ar'] || tags.name || tags['name:en'] || fallbackTitle).trim();
+          const distanceMeters = Math.round(haversineKm(lat, lng, pLat, pLng) * 1000);
+          const address = [tags['addr:street'], tags['addr:suburb'], tags['addr:city']]
+            .filter(Boolean)
+            .join('، ');
+          const key = `${title.toLowerCase()}@${pLat.toFixed(4)},${pLng.toFixed(4)}`;
+          const existing = dedup.get(key);
+          if (existing && existing.distanceMeters <= distanceMeters) continue;
+          dedup.set(key, {
+            title,
+            uri: `https://www.google.com/maps/search/?api=1&query=${pLat.toFixed(6)},${pLng.toFixed(6)}`,
+            snippets: [formatMetersWalkSnippet(distanceMeters, address)],
+            distanceMeters,
+          });
+        }
+
+        const sorted = Array.from(dedup.values())
+          .sort((a, b) => a.distanceMeters - b.distanceMeters)
+          .slice(0, 7);
+        if (sorted.length > 0) return sorted;
+      } catch {
+        // Try next radius or fall through to Photon/Nominatim
+      }
+    }
+    return [];
+  }
+
   async function fetchLiveNearbyPlaces(
     query: string,
     lat: number,
     lng: number
-  ): Promise<Array<{ title: string; uri: string; snippets: string[]; distanceKm: number }>> {
+  ): Promise<Array<{ title: string; uri: string; snippets: string[]; distanceMeters: number }>> {
     const kw = extractPlaceSearchKeyword(query);
 
-    const queryDeltaBox = async (delta: number, maxDistKm: number) => {
+    if (isNearestPlaceQuery(query)) {
+      const overpassPlaces = await fetchOverpassNearbyPlaces(query, lat, lng, kw.ar);
+      if (overpassPlaces.length > 0) {
+        return overpassPlaces;
+      }
+    }
+
+    const queryDeltaBox = async (delta: number, maxDistMeters: number) => {
       const viewbox = `${(lng - delta).toFixed(4)},${(lat + delta).toFixed(4)},${(lng + delta).toFixed(4)},${(lat - delta).toFixed(4)}`;
 
       const [photonRes, nomArRes, nomEnRes] = await Promise.allSettled([
@@ -965,41 +1073,34 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
         }
       }
 
-      const dedup = new Map<string, { title: string; uri: string; snippets: string[]; distanceKm: number }>();
+      const dedup = new Map<
+        string,
+        { title: string; uri: string; snippets: string[]; distanceMeters: number }
+      >();
       for (const p of rawPlaces) {
-        const dist = haversineKm(lat, lng, p.lat, p.lng);
-        if (dist > maxDistKm) continue;
+        const distanceMeters = Math.round(haversineKm(lat, lng, p.lat, p.lng) * 1000);
+        if (distanceMeters > maxDistMeters) continue;
         const key = p.title.toLowerCase().replace(/\s+/g, ' ');
         const existing = dedup.get(key);
-        if (existing && existing.distanceKm <= dist) continue;
-        const distLabel = dist < 1 ? `${Math.round(dist * 1000)} متر` : `${dist.toFixed(1)} كم`;
-        const walkMin = Math.max(1, Math.round((dist * 1000) / 80));
+        if (existing && existing.distanceMeters <= distanceMeters) continue;
         dedup.set(key, {
           title: p.title,
           uri: `https://www.google.com/maps/search/?api=1&query=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`,
-          snippets: [`المسافة: ${distLabel} (~${walkMin} د مشياً)${p.address ? ` · ${p.address}` : ''}`],
-          distanceKm: dist,
+          snippets: [formatMetersWalkSnippet(distanceMeters, p.address)],
+          distanceMeters,
         });
       }
 
       return Array.from(dedup.values())
-        .sort((a, b) => a.distanceKm - b.distanceKm)
+        .sort((a, b) => a.distanceMeters - b.distanceMeters)
         .slice(0, 7);
     };
 
-    // Tight ~3km walking-radius box first; expand only if empty
-    let sorted = await queryDeltaBox(0.03, 3.0);
+    // Tight ~1.5km walking-radius box first; expand only if empty
+    let sorted = await queryDeltaBox(0.015, 1500);
     if (sorted.length === 0) {
-      sorted = await queryDeltaBox(0.10, 12.0);
+      sorted = await queryDeltaBox(0.05, 5000);
     }
-
-    // Always include a direct Google Maps live search link at the user's exact coordinates
-    sorted.push({
-      title: `فتح «${kw.ar}» مباشرة على خرائط Google بالقرب منك`,
-      uri: `https://www.google.com/maps/search/${encodeURIComponent(kw.ar)}/@${lat.toFixed(5)},${lng.toFixed(5)},15z`,
-      snippets: ['عرض جميع الأماكن المفتوحة والتقييمات والاتجاهات الحية على خرائط Google'],
-      distanceKm: 0,
-    });
 
     return sorted;
   }
@@ -1195,12 +1296,12 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
 
       const ai = getGeminiClient();
 
-      // 1) Try native Gemini Google Maps grounding with streaming first
+      // 1) Try native Gemini Google Maps grounding with streaming first (skip for nearest/Overpass queries)
       let nativeText = '';
       const nativePlaces: Array<{ title: string; uri: string; snippets: string[] }> = [];
       let nativeSucceeded = false;
 
-      try {
+      if (!isNearestPlaceQuery(query)) try {
         const stream = await ai.models.generateContentStream({
           model: 'gemini-3.1-flash-lite',
           contents: query,
@@ -1371,8 +1472,8 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
 
       const ai = getGeminiClient();
 
-      // 1) Try native Gemini Google Maps grounding first
-      try {
+      // 1) Try native Gemini Google Maps grounding first (skip for nearest/Overpass queries)
+      if (!isNearestPlaceQuery(query)) try {
         const response = await ai.models.generateContent({
           model: 'gemini-3.1-flash-lite',
           contents: query,

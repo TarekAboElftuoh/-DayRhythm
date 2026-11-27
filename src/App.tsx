@@ -315,7 +315,7 @@ export default function App() {
   const [includeBiweeklyPcCleanup, setIncludeBiweeklyPcCleanup] = useState<boolean>(true);
   const [surfaceTheme, setSurfaceTheme] = useState<SurfaceTheme>('amoled');
 
-  // 4 Smart Timed Quiet Modes + Auto-Revert Timer
+  // 4 Smart Timed Quiet Modes + Auto-Revert Timer (persisted with absolute quietUntilTs)
   const [quietMode, setQuietMode] = useState<QuietModeType>(() => {
     try {
       const saved = localStorage.getItem('dayrhythm_quiet_mode_v1');
@@ -327,7 +327,31 @@ export default function App() {
     }
     return 'normal';
   });
-  const [quietRemainingSec, setQuietRemainingSec] = useState<number>(0);
+  const [quietUntilTs, setQuietUntilTs] = useState<number | null>(() => {
+    try {
+      const raw = localStorage.getItem('dayrhythm_quiet_until_ts_v1');
+      if (!raw || raw === 'null') return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    } catch {
+      return null;
+    }
+  });
+  const [quietRemainingSec, setQuietRemainingSec] = useState<number>(() => {
+    try {
+      const savedMode = localStorage.getItem('dayrhythm_quiet_mode_v1');
+      if (!savedMode || savedMode === 'normal') return 0;
+      const rawUntil = localStorage.getItem('dayrhythm_quiet_until_ts_v1');
+      if (!rawUntil || rawUntil === 'null') return 0;
+      const until = Number(rawUntil);
+      if (Number.isFinite(until) && until > Date.now()) {
+        return Math.max(1, Math.ceil((until - Date.now()) / 1000));
+      }
+    } catch {
+      // ignore
+    }
+    return 0;
+  });
   const [stealthAudioOnly, setStealthAudioOnly] = useState<boolean>(() => {
     try {
       return localStorage.getItem('dayrhythm_stealth_audio_only_v1') === '1';
@@ -1794,9 +1818,14 @@ export default function App() {
     const id = window.setInterval(() => {
       setQuietRemainingSec((prev) => {
         if (prev <= 1) {
+          const nowMs = Date.now();
+          quietModeRef.current = 'normal';
           setQuietMode('normal');
+          setQuietUntilTs(null);
           try {
             localStorage.setItem('dayrhythm_quiet_mode_v1', 'normal');
+            localStorage.setItem('dayrhythm_quiet_until_ts_v1', 'null');
+            localStorage.setItem('dayrhythm_quiet_mode_updated_at_v1', String(nowMs));
           } catch {}
           showToast('🔊 انتهى مؤقت الهدوء — عاد النظام للوضع العادي تلقائياً');
           return 0;
@@ -1810,11 +1839,14 @@ export default function App() {
   const handleSetQuietMode = useCallback(
     (mode: QuietModeType, durationMinutes: number) => {
       const nowMs = Date.now();
+      const untilTs = mode === 'normal' || durationMinutes <= 0 ? null : nowMs + durationMinutes * 60_000;
       localWriteLockUntilRef.current = nowMs + 5000;
       quietModeRef.current = mode;
       setQuietMode(mode);
+      setQuietUntilTs(untilTs);
       try {
         localStorage.setItem('dayrhythm_quiet_mode_v1', mode);
+        localStorage.setItem('dayrhythm_quiet_until_ts_v1', untilTs === null ? 'null' : String(untilTs));
         localStorage.setItem('dayrhythm_quiet_mode_updated_at_v1', String(nowMs));
       } catch {}
       if (mode === 'normal') {
@@ -1830,8 +1862,13 @@ export default function App() {
       }
       appendChangelog('Web/PC', `ضبط وضع الهدوء إلى ${mode}`, `Set quiet mode to ${mode}`);
 
-      const quietPatch = {
+      const quietPatch: Partial<UserSettingsPayload> & {
+        quietUntilTs?: number | null;
+        quietModeUpdatedAt?: number;
+      } = {
         quietMode: mode,
+        quietUntilTs: untilTs,
+        quietModeUpdatedAt: nowMs,
         adhanOverrideSilent: adhanOverrideSilentRef.current,
       };
       void saveCloudUserSettingsRef.current(quietPatch);
@@ -2675,11 +2712,20 @@ export default function App() {
     const sig = `${quietMode}:${adhanOverrideSilent}`;
     if (sig === lastSyncedQuietSigRef.current) return;
     lastSyncedQuietSigRef.current = sig;
-    void pushToTasksVaultRef.current({
+    const quietMeta = {
       quietMode,
+      quietUntilTs,
+      quietModeUpdatedAt: (() => {
+        try {
+          return Number(localStorage.getItem('dayrhythm_quiet_mode_updated_at_v1') || 0) || Date.now();
+        } catch {
+          return Date.now();
+        }
+      })(),
       adhanOverrideSilent,
-    });
-  }, [quietMode, adhanOverrideSilent]);
+    };
+    void pushToTasksVaultRef.current(quietMeta);
+  }, [quietMode, quietUntilTs, adhanOverrideSilent]);
 
   // ── Permanent Google link ────────────────────────────────────────────────────────────
   const [permanentLinkActive, setPermanentLinkActive] = useState<boolean>(() => hasPermanentLink());
@@ -2835,12 +2881,30 @@ export default function App() {
             } catch {
               localQuietUpdatedAt = 0;
             }
-            if (remoteUpdatedAt >= localQuietUpdatedAt) {
+            const backupQuietMeta = backup as FullDayRhythmCloudBackup & {
+              quietUntilTs?: number | null;
+              quietModeUpdatedAt?: number;
+            };
+            const backupQuietUpdatedAt = backupQuietMeta.quietModeUpdatedAt ?? remoteUpdatedAt;
+            if (backupQuietUpdatedAt > localQuietUpdatedAt || localQuietUpdatedAt === 0) {
+              const nextUntil =
+                backup.quietMode === 'normal'
+                  ? null
+                  : typeof backupQuietMeta.quietUntilTs === 'number' && backupQuietMeta.quietUntilTs > 0
+                    ? backupQuietMeta.quietUntilTs
+                    : null;
               quietModeRef.current = backup.quietMode;
               setQuietMode(backup.quietMode);
+              setQuietUntilTs(nextUntil);
+              setQuietRemainingSec(
+                backup.quietMode !== 'normal' && nextUntil !== null && nextUntil > Date.now()
+                  ? Math.max(1, Math.ceil((nextUntil - Date.now()) / 1000))
+                  : 0
+              );
               try {
                 localStorage.setItem('dayrhythm_quiet_mode_v1', backup.quietMode);
-                localStorage.setItem('dayrhythm_quiet_mode_updated_at_v1', String(remoteUpdatedAt || Date.now()));
+                localStorage.setItem('dayrhythm_quiet_until_ts_v1', nextUntil === null ? 'null' : String(nextUntil));
+                localStorage.setItem('dayrhythm_quiet_mode_updated_at_v1', String(backupQuietUpdatedAt || Date.now()));
               } catch {
                 // ignore storage errors
               }
@@ -2879,7 +2943,10 @@ export default function App() {
       let token = customToken || (await getOrRefreshCalendarAccessToken());
       if (!token) return false;
 
-      const backup: FullDayRhythmCloudBackup = {
+      const backup: FullDayRhythmCloudBackup & {
+        quietUntilTs?: number | null;
+        quietModeUpdatedAt?: number;
+      } = {
         version: 1,
         updatedAtIso: new Date().toISOString(),
         updatedAtMs: Date.now(),
@@ -2894,6 +2961,14 @@ export default function App() {
         memories: overrides?.memories ?? memories,
         deviceSettings: overrides?.deviceSettings ?? deviceSettings,
         quietMode: overrides?.quietMode ?? quietMode,
+        quietUntilTs,
+        quietModeUpdatedAt: (() => {
+          try {
+            return Number(localStorage.getItem('dayrhythm_quiet_mode_updated_at_v1') || 0) || Date.now();
+          } catch {
+            return Date.now();
+          }
+        })(),
         adhanOverrideSilent: overrides?.adhanOverrideSilent ?? adhanOverrideSilent,
         waterRemindersEnabled: overrides?.waterRemindersEnabled ?? waterRemindersEnabled,
         phoneChargeLimitPct: overrides?.phoneChargeLimitPct ?? phoneChargeLimitPct,
@@ -2929,6 +3004,7 @@ export default function App() {
       memories,
       deviceSettings,
       quietMode,
+      quietUntilTs,
       adhanOverrideSilent,
       waterRemindersEnabled,
       phoneChargeLimitPct,
@@ -3404,16 +3480,43 @@ export default function App() {
     lastSyncedQuietSigRef.current = `${targetQuiet}:${targetAdhan}`;
 
     if (remote.quietMode && remote.quietMode !== quietModeRef.current && Date.now() >= localWriteLockUntilRef.current) {
-      quietModeRef.current = remote.quietMode;
-      setQuietMode(remote.quietMode);
+      let localQuietUpdatedAt = 0;
       try {
-        localStorage.setItem('dayrhythm_quiet_mode_v1', remote.quietMode);
-        localStorage.setItem(
-          'dayrhythm_quiet_mode_updated_at_v1',
-          String((remote as { updatedAtMs?: number }).updatedAtMs || Date.now())
-        );
+        localQuietUpdatedAt = Number(localStorage.getItem('dayrhythm_quiet_mode_updated_at_v1') || 0);
       } catch {
-        // ignore
+        localQuietUpdatedAt = 0;
+      }
+      const remoteQuietMeta = remote as {
+        quietUntilTs?: number | null;
+        quietModeUpdatedAt?: number;
+        updatedAtMs?: number;
+      };
+      const remoteQuietUpdatedAt = remoteQuietMeta.quietModeUpdatedAt ?? remoteQuietMeta.updatedAtMs ?? 0;
+      if (remoteQuietUpdatedAt > localQuietUpdatedAt || localQuietUpdatedAt === 0) {
+        const nextUntil =
+          remote.quietMode === 'normal'
+            ? null
+            : typeof remoteQuietMeta.quietUntilTs === 'number' && remoteQuietMeta.quietUntilTs > 0
+              ? remoteQuietMeta.quietUntilTs
+              : null;
+        quietModeRef.current = remote.quietMode;
+        setQuietMode(remote.quietMode);
+        setQuietUntilTs(nextUntil);
+        setQuietRemainingSec(
+          remote.quietMode !== 'normal' && nextUntil !== null && nextUntil > Date.now()
+            ? Math.max(1, Math.ceil((nextUntil - Date.now()) / 1000))
+            : 0
+        );
+        try {
+          localStorage.setItem('dayrhythm_quiet_mode_v1', remote.quietMode);
+          localStorage.setItem('dayrhythm_quiet_until_ts_v1', nextUntil === null ? 'null' : String(nextUntil));
+          localStorage.setItem(
+            'dayrhythm_quiet_mode_updated_at_v1',
+            String(remoteQuietUpdatedAt || Date.now())
+          );
+        } catch {
+          // ignore
+        }
       }
     }
     if (typeof remote.adhanOverrideSilent === 'boolean' && remote.adhanOverrideSilent !== adhanOverrideSilentRef.current) {
@@ -4133,6 +4236,7 @@ export default function App() {
       lifeProfile,
       streaks,
       quietMode,
+      quietUntilTs,
       adhanOverrideSilent,
       surfaceTheme,
       deviceSettings,
@@ -4725,7 +4829,10 @@ export default function App() {
       const token = await getOrRefreshCalendarAccessToken();
       if (!token) return;
 
-      const backup: FullDayRhythmCloudBackup = {
+      const backup: FullDayRhythmCloudBackup & {
+        quietUntilTs?: number | null;
+        quietModeUpdatedAt?: number;
+      } = {
         version: 1,
         updatedAtIso: new Date().toISOString(),
         updatedAtMs: Date.now(),
@@ -4736,6 +4843,14 @@ export default function App() {
         memories,
         deviceSettings,
         quietMode,
+        quietUntilTs,
+        quietModeUpdatedAt: (() => {
+          try {
+            return Number(localStorage.getItem('dayrhythm_quiet_mode_updated_at_v1') || 0) || Date.now();
+          } catch {
+            return Date.now();
+          }
+        })(),
         adhanOverrideSilent,
         waterRemindersEnabled,
         phoneChargeLimitPct,
@@ -4793,7 +4908,10 @@ export default function App() {
     const todayEntry = hydrationHistory[hydrationHistory.length - 1];
     if (!todayEntry) return;
 
-    const payload: TasksVaultPayload = {
+    const payload: TasksVaultPayload & {
+      quietUntilTs?: number | null;
+      quietModeUpdatedAt?: number;
+    } = {
       updatedAtMs: Date.now(),
       originClientId: clientIdRef.current,
       hydrationDateKey: getDateIsoInTimeZone(activeTimeZone),
@@ -4808,6 +4926,14 @@ export default function App() {
       waterTargetDays: streaks.waterTargetDays,
       waterTargetDoneToday: streaks.waterTargetDoneToday,
       quietMode,
+      quietUntilTs,
+      quietModeUpdatedAt: (() => {
+        try {
+          return Number(localStorage.getItem('dayrhythm_quiet_mode_updated_at_v1') || 0) || Date.now();
+        } catch {
+          return Date.now();
+        }
+      })(),
       adhanOverrideSilent,
       surfaceTheme,
       deviceSettings,

@@ -866,8 +866,29 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         setUserCoords({ lat: activeLocation.lat, lng: activeLocation.lng });
         setGpsStatus(`${activeLocation.nameAr} (احتياطي)`);
       },
-      { timeout: 6000 }
+      { enableHighAccuracy: true, maximumAge: 15000, timeout: 5000 }
     );
+  };
+
+  const resolveFreshGpsCoords = async (): Promise<{ lat: number; lng: number }> => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      return userCoords;
+    }
+    try {
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          maximumAge: 15000,
+          timeout: 5000,
+        });
+      });
+      const fresh = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      setUserCoords(fresh);
+      setGpsStatus(`GPS مباشر (${fresh.lat.toFixed(4)}, ${fresh.lng.toFixed(4)})`);
+      return fresh;
+    } catch {
+      return userCoords;
+    }
   };
 
   const handleConfirmProposal = async (
@@ -1407,11 +1428,12 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           maybeAutoExecuteProposal(streamId, preparedProposal);
         }
       } else if (activeMode === 'maps') {
+        const freshCoords = await resolveFreshGpsCoords();
         const clientCacheKey = buildClientGeminiCacheKey([
           'maps',
           normalizedQueryKey,
-          userCoords.lat.toFixed(3),
-          userCoords.lng.toFixed(3),
+          freshCoords.lat.toFixed(3),
+          freshCoords.lng.toFixed(3),
           serializedMemories.slice(0, 10).map((m) => m.ruleText),
         ]);
 
@@ -1440,8 +1462,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         const requestBody = {
           query,
           bypassCache,
-          lat: userCoords.lat,
-          lng: userCoords.lng,
+          lat: freshCoords.lat,
+          lng: freshCoords.lng,
           memories: serializedMemories,
           constitutionBrief: contextSummary.slice(0, 600),
         };
@@ -2897,6 +2919,40 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                         </div>
                       </div>
                     )}
+
+                    {/* Direct Google Maps Street-Level Fallback Button */}
+                    {m.role === 'model' && m.mode === 'maps' && (() => {
+                      const msgIdx = visibleMessages.findIndex((item) => item.id === m.id);
+                      const prevUserMsg =
+                        msgIdx > 0
+                          ? [...visibleMessages.slice(0, msgIdx)].reverse().find((item) => item.role === 'user')
+                          : undefined;
+                      const rawQuery = (m.retryPrompt || prevUserMsg?.text || m.text || '').trim();
+                      const isMosque = /(مسجد|مساجد|جامع|جوامع|زاوية|صلاة|الجماعة|mosque)/i.test(rawQuery);
+                      const fallbackKeyword = isMosque
+                        ? 'مسجد'
+                        : rawQuery
+                            .replace(/(أقرب|اقرب|في|بالقرب|من|موقعي|الحالي|المفتوحة|الآن|الان|طريقي)/g, ' ')
+                            .replace(/\s+/g, ' ')
+                            .trim() || 'أماكن قريبة';
+                      const gmapsUrl = `https://www.google.com/maps/search/${encodeURIComponent(fallbackKeyword)}/@${userCoords.lat.toFixed(6)},${userCoords.lng.toFixed(6)},18z`;
+                      return (
+                        <div className="mt-2.5 pt-2 border-t border-white/10 flex justify-start" dir="rtl">
+                          <a
+                            href={gmapsUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 px-3 py-1.5 text-xs font-semibold text-[#7FFFD4] hover:bg-[#7FFFD4]/20 transition-colors"
+                          >
+                            <MapPin className="w-3.5 h-3.5 shrink-0" />
+                            <span>
+                              {isMosque ? 'افتح أقرب مسجد على خرائط جوجل' : 'افتح على خرائط جوجل (شارعك)'}
+                            </span>
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                          </a>
+                        </div>
+                      );
+                    })()}
 
                     {/* Search Grounding Links */}
                     {m.sources && m.sources.length > 0 && (

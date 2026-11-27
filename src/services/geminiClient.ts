@@ -1275,19 +1275,96 @@ export async function apiStreamGeminiMapsClient(
 
   handlers.onStatus?.('جارٍ البحث الجغرافي المباشر حول موقعك...');
 
-  let places: Array<GroundingPlace & { distanceKm: number }> = [];
-  const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+  let places: Array<GroundingPlace & { distanceMeters: number }> = [];
+  const haversineMetersClient = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
     const toRad = (deg: number) => (deg * Math.PI) / 180;
-    const R = 6371;
+    const R = 6371000;
     const dLat = toRad(lat2 - lat1);
     const dLon = toRad(lon2 - lon1);
     const a =
       Math.sin(dLat / 2) ** 2 +
       Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(a));
+    return Math.round(2 * R * Math.asin(Math.sqrt(a)));
   };
 
-  const queryNearbyBox = async (delta: number, maxDistKm: number) => {
+  const formatMetersWalk = (distanceMeters: number, address?: string): string => {
+    const walkMin = Math.max(1, Math.round(distanceMeters / 80));
+    const walkLabel =
+      walkMin === 1 ? 'دقيقة مشي' : walkMin <= 10 ? `${walkMin} دقائق مشي` : `${walkMin} دقيقة مشي`;
+    return `${distanceMeters} متر · ${walkLabel}${address ? ` · ${address}` : ''}`;
+  };
+
+  const isMosqueQuery = /(مسجد|مساجد|جامع|جوامع|زاوية|صلاة|الجماعة|mosque)/i.test(query);
+
+  const queryOverpassClient = async (): Promise<Array<GroundingPlace & { distanceMeters: number }>> => {
+    if (!isMosqueQuery && !/(صيدلية|مستشفى|مطعم|كافيه|سوبر ماركت|بنزين|pharmacy|hospital|restaurant|cafe)/i.test(query)) {
+      return [];
+    }
+    const tagFilter = isMosqueQuery
+      ? '["amenity"="place_of_worship"]["religion"="muslim"]'
+      : /(صيدلية|pharmacy)/i.test(query)
+        ? '["amenity"="pharmacy"]'
+        : /(مستشفى|hospital|clinic)/i.test(query)
+          ? '["amenity"~"^(hospital|clinic)$"]'
+          : /(مطعم|restaurant)/i.test(query)
+            ? '["amenity"="restaurant"]'
+            : /(كافيه|cafe|coffee)/i.test(query)
+              ? '["amenity"="cafe"]'
+              : /(سوبر ماركت|supermarket)/i.test(query)
+                ? '["shop"="supermarket"]'
+                : '["amenity"="fuel"]';
+
+    for (const radiusMeters of [300, 700, 1500]) {
+      const ql = `[out:json][timeout:4];(nwr${tagFilter}(around:${radiusMeters},${lat.toFixed(6)},${lng.toFixed(6)}););out center tags 15;`;
+      try {
+        const res = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+          body: `data=${encodeURIComponent(ql)}`,
+          signal: handlers.signal,
+        });
+        if (!res.ok) continue;
+        const data = (await res.json()) as {
+          elements?: Array<{
+            lat?: number;
+            lon?: number;
+            center?: { lat?: number; lon?: number };
+            tags?: Record<string, string>;
+          }>;
+        };
+        const elements = Array.isArray(data.elements) ? data.elements : [];
+        if (elements.length === 0) continue;
+        const dedup = new Map<string, GroundingPlace & { distanceMeters: number }>();
+        for (const el of elements) {
+          const pLat = typeof el.lat === 'number' ? el.lat : el.center?.lat;
+          const pLng = typeof el.lon === 'number' ? el.lon : el.center?.lon;
+          if (typeof pLat !== 'number' || typeof pLng !== 'number') continue;
+          const tags = el.tags ?? {};
+          const title = (tags['name:ar'] || tags.name || tags['name:en'] || (isMosqueQuery ? 'مسجد قريب' : query)).trim();
+          const distanceMeters = haversineMetersClient(lat, lng, pLat, pLng);
+          const address = [tags['addr:street'], tags['addr:suburb'], tags['addr:city']].filter(Boolean).join('، ');
+          const key = `${title.toLowerCase()}@${pLat.toFixed(4)},${pLng.toFixed(4)}`;
+          const existing = dedup.get(key);
+          if (existing && existing.distanceMeters <= distanceMeters) continue;
+          dedup.set(key, {
+            title,
+            uri: `https://www.google.com/maps/search/?api=1&query=${pLat.toFixed(6)},${pLng.toFixed(6)}`,
+            snippets: [formatMetersWalk(distanceMeters, address)],
+            distanceMeters,
+          });
+        }
+        const sorted = Array.from(dedup.values())
+          .sort((a, b) => a.distanceMeters - b.distanceMeters)
+          .slice(0, 7);
+        if (sorted.length > 0) return sorted;
+      } catch {
+        // try next radius
+      }
+    }
+    return [];
+  };
+
+  const queryNearbyBox = async (delta: number, maxDistMeters: number) => {
     const viewbox = `${(lng - delta).toFixed(4)},${(lat + delta).toFixed(4)},${(lng + delta).toFixed(4)},${(lat - delta).toFixed(4)}`;
     const [photonRes, nomRes] = await Promise.allSettled([
       fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&lat=${lat}&lon=${lng}&limit=10`, {
@@ -1322,32 +1399,33 @@ export async function apiStreamGeminiMapsClient(
       }
     }
 
-    const dedup = new Map<string, GroundingPlace & { distanceKm: number }>();
+    const dedup = new Map<string, GroundingPlace & { distanceMeters: number }>();
     for (const p of raw) {
-      const dist = haversineKmClient(lat, lng, p.lat, p.lng);
-      if (dist > maxDistKm) continue;
+      const distanceMeters = haversineMetersClient(lat, lng, p.lat, p.lng);
+      if (distanceMeters > maxDistMeters) continue;
       const key = p.title.toLowerCase().replace(/\s+/g, ' ');
       const existing = dedup.get(key);
-      if (existing && existing.distanceKm <= dist) continue;
-      const distLabel = dist < 1 ? `${Math.round(dist * 1000)} متر` : `${dist.toFixed(1)} كم`;
-      const walkMin = Math.max(1, Math.round((dist * 1000) / 80));
+      if (existing && existing.distanceMeters <= distanceMeters) continue;
       dedup.set(key, {
         title: p.title,
         uri: `https://www.google.com/maps/search/?api=1&query=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`,
-        snippets: [`المسافة: ${distLabel} (~${walkMin} د مشياً)${p.address ? ` · ${p.address}` : ''}`],
-        distanceKm: dist,
+        snippets: [formatMetersWalk(distanceMeters, p.address)],
+        distanceMeters,
       });
     }
-    return Array.from(dedup.values()).sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 7);
+    return Array.from(dedup.values()).sort((a, b) => a.distanceMeters - b.distanceMeters).slice(0, 7);
   };
 
   try {
-    places = await queryNearbyBox(0.03, 3.0);
+    places = await queryOverpassClient();
     if (places.length === 0) {
-      places = await queryNearbyBox(0.10, 12.0);
+      places = await queryNearbyBox(0.015, 1500);
+    }
+    if (places.length === 0) {
+      places = await queryNearbyBox(0.05, 5000);
     }
   } catch {
-    // ignore photon/nominatim failures and let Gemini synthesize
+    // ignore overpass/photon/nominatim failures and let Gemini synthesize
   }
 
   handlers.onStatus?.('جارٍ تلخيص الأماكن عبر Gemini...');
