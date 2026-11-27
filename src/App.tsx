@@ -347,13 +347,30 @@ export default function App() {
   );
   const [changelog, setChangelog] = useState<SharedChangelogEntry[]>(INITIAL_CHANGELOG);
 
-  const [travelState, setTravelState] = useState<TravelState>({
-    active: false,
-    location: HOME_LOCATION,
-    distanceKm: 0,
-    durationMode: 'today',
-    postponedTaskIds: ['room_cleanup'],
-    enabledWorkTaskIds: ['deep_work_1', 'deep_work_2', 'practical_work_3', 'light_workout'],
+  const TRAVEL_STATE_STORAGE_KEY = 'dayrhythm_travel_state_v1';
+  const sanitizeTravelState = (raw: Partial<TravelState> | null | undefined): TravelState => ({
+    active: Boolean(raw?.active),
+    location: raw?.location && typeof raw.location.lat === 'number' ? raw.location : HOME_LOCATION,
+    distanceKm: typeof raw?.distanceKm === 'number' ? raw.distanceKm : 0,
+    durationMode: raw?.durationMode || 'until_return',
+    returnDate: typeof raw?.returnDate === 'string' && raw.returnDate ? raw.returnDate : undefined,
+    deferredCategories: Array.isArray(raw?.deferredCategories) ? raw.deferredCategories : [],
+    deferredMedIds: Array.isArray(raw?.deferredMedIds) ? raw.deferredMedIds : [],
+    updatedAt: typeof raw?.updatedAt === 'number' ? raw.updatedAt : 0,
+    postponedTaskIds: Array.isArray(raw?.postponedTaskIds) ? raw.postponedTaskIds : ['room_cleanup'],
+    enabledWorkTaskIds: Array.isArray(raw?.enabledWorkTaskIds)
+      ? raw.enabledWorkTaskIds
+      : ['deep_work_1', 'deep_work_2', 'practical_work_3', 'light_workout'],
+  });
+
+  const [travelState, setTravelState] = useState<TravelState>(() => {
+    try {
+      const saved = localStorage.getItem(TRAVEL_STATE_STORAGE_KEY);
+      if (saved) return sanitizeTravelState(JSON.parse(saved));
+    } catch {
+      // ignore storage errors
+    }
+    return sanitizeTravelState(null);
   });
 
   // Live Google Workspace & Firebase Sync State (Calendar + Tasks + Firestore + Persisted Gemini Chat)
@@ -3517,10 +3534,21 @@ export default function App() {
         setIncludeBiweeklyPcCleanup(remote.includeBiweeklyPcCleanup);
       }
     }
-    if (remote.travelState) {
-      if (JSON.stringify(remote.travelState) !== JSON.stringify(travelStateRef.current)) {
-        travelStateRef.current = remote.travelState;
-        setTravelState(remote.travelState);
+    if (remote.travelState && Date.now() >= localWriteLockUntilRef.current) {
+      const cleanRemoteTravel = sanitizeTravelState(remote.travelState);
+      const remoteTs = cleanRemoteTravel.updatedAt ?? 0;
+      const localTs = travelStateRef.current.updatedAt ?? 0;
+      if (
+        remoteTs >= localTs &&
+        JSON.stringify(cleanRemoteTravel) !== JSON.stringify(travelStateRef.current)
+      ) {
+        travelStateRef.current = cleanRemoteTravel;
+        setTravelState(cleanRemoteTravel);
+        try {
+          localStorage.setItem(TRAVEL_STATE_STORAGE_KEY, JSON.stringify(cleanRemoteTravel));
+        } catch {
+          // ignore storage errors
+        }
       }
     }
     if (remote.pomodoro) {
@@ -5593,6 +5621,12 @@ export default function App() {
             isAllDay: startInfo.isAllDay || ev.isAllDay,
             description: combinedDescription,
             source: 'google_calendar',
+            reflowStatus:
+              travelState.active &&
+              !emojiPair.includes('🕌') &&
+              travelState.deferredCategories?.includes('calendar')
+                ? 'postponed_travel'
+                : undefined,
           };
         })
         .filter((x): x is ScheduleBlock => x !== null);
@@ -5614,8 +5648,14 @@ export default function App() {
           .map((p) => ({
             id: `prayer_${p.id}`,
             emojiPair: p.emojiPair,
-            categoryAr: `أذان -${lifeProfile.adhanLeadMinutes} د · ${p.nameAr}`,
-            categoryEn: `-${lifeProfile.adhanLeadMinutes}m Adhan · ${p.nameEn}`,
+            categoryAr:
+              lifeProfile.adhanLeadMinutes > 0
+                ? `أذان -${lifeProfile.adhanLeadMinutes} د · ${p.nameAr}`
+                : `أذان ${p.nameAr}`,
+            categoryEn:
+              lifeProfile.adhanLeadMinutes > 0
+                ? `-${lifeProfile.adhanLeadMinutes}m Adhan · ${p.nameEn}`
+                : `Adhan · ${p.nameEn}`,
             startMin: p.alarmMinutes,
             durationMin: 20,
             minDurationMin: 20,
@@ -5630,8 +5670,11 @@ export default function App() {
           }))
       : [];
 
-    const sunlightBlocks: ScheduleBlock[] = sunlightSettings.enabled
-      ? sunlightSessions
+    const sunlightDeferredByTravel =
+      travelState.active && (travelState.deferredCategories?.includes('sunlight') ?? false);
+    const sunlightBlocks: ScheduleBlock[] =
+      sunlightSettings.enabled && !sunlightDeferredByTravel
+        ? sunlightSessions
           .filter((s) => s.enabled)
           .map((s) => ({
             id: `sunlight_${s.id}`,
@@ -5688,6 +5731,8 @@ export default function App() {
     activeTimeZone,
     sunlightSettings.enabled,
     sunlightSessions,
+    travelState.active,
+    travelState.deferredCategories,
   ]);
 
   // Genuinely free time slots today (away from Prayers, Sleep, Work & existing Google Calendar events)
@@ -5844,12 +5889,23 @@ export default function App() {
   }, []);
 
   const handleApplyTravel = (nextTravel: TravelState) => {
-    setTravelState(nextTravel);
+    const stamped: TravelState = {
+      ...nextTravel,
+      updatedAt: Date.now(),
+    };
+    localWriteLockUntilRef.current = Date.now() + 5000;
+    travelStateRef.current = stamped;
+    setTravelState(stamped);
+    try {
+      localStorage.setItem(TRAVEL_STATE_STORAGE_KEY, JSON.stringify(stamped));
+    } catch {
+      // ignore storage errors
+    }
     setReflowedBlocksOverride(null);
-    rebuildOfflineSchedule(effectiveDayMode, nextTravel, isFridayMode, includeBiweeklyPcCleanup);
-    appendChangelog('Web/PC', `تفعيل وضع السفر (${nextTravel.location.nameAr})`, `Activated Travel Mode`);
-    showToast('تم تفعيل وضع السفر وتحديث المواقيت.');
-    void pushToTasksVaultImmediately({ travelState: nextTravel });
+    rebuildOfflineSchedule(effectiveDayMode, stamped, isFridayMode, includeBiweeklyPcCleanup);
+    appendChangelog('Web/PC', `تفعيل وضع السفر (${stamped.location.nameAr})`, `Activated Travel Mode`);
+    showToast('تم تفعيل وضع السفر وتحديث التنبيهات.');
+    void saveCloudUserSettingsImmediately({ travelState: stamped });
   };
 
   const handleDisableTravel = () => {
@@ -5858,12 +5914,49 @@ export default function App() {
       active: false,
       location: profileLocation,
       distanceKm: 0,
+      returnDate: undefined,
+      deferredCategories: [],
+      deferredMedIds: [],
+      updatedAt: Date.now(),
     };
+    localWriteLockUntilRef.current = Date.now() + 5000;
+    travelStateRef.current = resetTravel;
     setTravelState(resetTravel);
+    try {
+      localStorage.setItem(TRAVEL_STATE_STORAGE_KEY, JSON.stringify(resetTravel));
+    } catch {
+      // ignore storage errors
+    }
     setReflowedBlocksOverride(null);
     rebuildOfflineSchedule(effectiveDayMode, resetTravel, isFridayMode, includeBiweeklyPcCleanup);
-    void pushToTasksVaultImmediately({ travelState: resetTravel });
+    showToast('تم إنهاء وضع السفر واستعادة جميع التنبيهات ✓');
+    void saveCloudUserSettingsImmediately({ travelState: resetTravel });
   };
+
+  useEffect(() => {
+    if (!travelState.active || !travelState.returnDate) return;
+    if (todayCairoIso >= travelState.returnDate) {
+      const expiredTravel: TravelState = {
+        ...travelState,
+        active: false,
+        location: profileLocation,
+        distanceKm: 0,
+        returnDate: undefined,
+        deferredCategories: [],
+        deferredMedIds: [],
+        updatedAt: Date.now(),
+      };
+      localWriteLockUntilRef.current = Date.now() + 5000;
+      travelStateRef.current = expiredTravel;
+      setTravelState(expiredTravel);
+      try {
+        localStorage.setItem(TRAVEL_STATE_STORAGE_KEY, JSON.stringify(expiredTravel));
+      } catch {
+        // ignore storage errors
+      }
+      void saveCloudUserSettingsImmediately({ travelState: expiredTravel });
+    }
+  }, [todayCairoIso, travelState, profileLocation, saveCloudUserSettingsImmediately]);
 
   const handleApplyOfflineActions = useCallback(
     (actions: CalendarActionProposal[]) => {
@@ -7206,7 +7299,8 @@ export default function App() {
     );
     if (!nativeOwnsReminders) {
     // 1. Water cup reminders (Emoji-only privacy notification — clicking confirms drinking)
-    if (waterRemindersEnabled && hydrationToday) {
+    const deferWater = travelState.active && (travelState.deferredCategories?.includes('water') ?? false);
+    if (waterRemindersEnabled && hydrationToday && !deferWater) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
         if (hydrationToday.slots[idx]) return;
         const diff = nowTickMin - slot.timeMinutes;
@@ -7224,7 +7318,9 @@ export default function App() {
     }
 
     // 2. Medication & Supplement reminders (5-min high-visibility alert + sound + quick-confirm metadata)
+    const deferredMedsSet = travelState.active ? new Set(travelState.deferredMedIds ?? []) : null;
     medications.forEach((med) => {
+      if (deferredMedsSet?.has(med.id)) return;
       if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayW)) {
         return;
       }
@@ -7259,8 +7355,19 @@ export default function App() {
     });
 
     // 3. Live Google Calendar event reminders (5-min high-visibility alert on Secondary Screen / Side Dock / Mobile)
+    const deferCalendar = travelState.active && (travelState.deferredCategories?.includes('calendar') ?? false);
     liveBlocks.forEach((block) => {
-      if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer' || acknowledgedBlockIdsRef.current.has(block.id)) return;
+      if (
+        block.deleted ||
+        block.completed ||
+        block.isAllDay ||
+        block.source === 'prayer' ||
+        block.reflowStatus === 'postponed_travel' ||
+        (deferCalendar && block.source === 'google_calendar') ||
+        acknowledgedBlockIdsRef.current.has(block.id)
+      ) {
+        return;
+      }
       const diff = nowTickMin - block.startMin;
       if (diff >= 0 && diff <= 2) {
         const key = `${todayIso}:event:${block.id}:${block.startMin}`;
@@ -7280,7 +7387,8 @@ export default function App() {
     });
 
     // 3B. Timed Google Tasks reminders (fires 5-minute persistent alert + sound when a timed task arrives!)
-    googleTasks.forEach((tk) => {
+    const deferTasks = travelState.active && (travelState.deferredCategories?.includes('tasks') ?? false);
+    if (!deferTasks) googleTasks.forEach((tk) => {
       if (tk.status === 'completed') return;
       const info = extractTaskTimeMinutesForToday(tk, todayIso, activeTimeZone);
       if (!info || !info.hasExplicitTime) return;
@@ -7403,6 +7511,7 @@ export default function App() {
   // Daily Sunlight Exposure Chimes + Live/In-App Alerts (lead, start, end — deduplicated per session/day)
   useEffect(() => {
     if (!sunlightSettings.enabled) return;
+    if (travelState.active && (travelState.deferredCategories?.includes('sunlight') ?? false)) return;
     const todayIso = getDateIsoInTimeZone(activeTimeZone);
     const sanctuaryBlocked = activeSanctuary.type !== 'none' || quietMode === 'silent_all';
     for (const session of sunlightSessions) {
@@ -8580,8 +8689,16 @@ export default function App() {
     const candidates: UnifiedCapsuleCandidate[] = [];
 
     // 1. Remaining / active timed Google Calendar & Prayer blocks today
+    const deferCalendarCapsule = travelState.active && (travelState.deferredCategories?.includes('calendar') ?? false);
     for (const block of liveBlocks) {
-      if (block.completed || block.deleted || block.isAllDay || acknowledgedBlockIdsRef.current.has(block.id)) continue;
+      if (
+        block.completed ||
+        block.deleted ||
+        block.isAllDay ||
+        block.reflowStatus === 'postponed_travel' ||
+        (deferCalendarCapsule && block.source === 'google_calendar') ||
+        acknowledgedBlockIdsRef.current.has(block.id)
+      ) continue;
       if (block.id.startsWith('sunlight_')) {
         const matchedSun = sunlightSessions.find((s) => `sunlight_${s.id}` === block.id);
         if (matchedSun?.isCloudBlocked) continue;
@@ -8609,8 +8726,9 @@ export default function App() {
     }
 
     // 2. Next Upcoming Water Cup from today's scientific hydration schedule (always advance when due passes)
+    const deferWaterCapsule = travelState.active && (travelState.deferredCategories?.includes('water') ?? false);
     const hydrationTodayEntry = hydrationHistory[hydrationHistory.length - 1];
-    if (hydrationTodayEntry && dailyRhythmPlan.hydrationSlots.length > 0) {
+    if (!deferWaterCapsule && hydrationTodayEntry && dailyRhythmPlan.hydrationSlots.length > 0) {
       const nextUpcomingCup = dailyRhythmPlan.hydrationSlots.find(
         (slot, idx) => !hydrationTodayEntry.slots[idx] && slot.timeMinutes * 60 > nowSecOfDay
       );
@@ -8632,8 +8750,10 @@ export default function App() {
     }
 
     // 3. Upcoming Medication & Supplement doses for today (not yet taken)
+    const deferredMedsCapsule = travelState.active ? new Set(travelState.deferredMedIds ?? []) : null;
     const todayWeekday = getWeekdayInTimeZone(activeTimeZone);
     for (const med of medications) {
+      if (deferredMedsCapsule?.has(med.id)) continue;
       if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayWeekday)) {
         continue;
       }
@@ -8672,7 +8792,8 @@ export default function App() {
 
     // 4. Active / upcoming Google Tasks for today (with explicit time competing directly by nearest timestamp!)
     let untimedTaskFallback: GoogleTaskItem | null = null;
-    for (const tk of googleTasks) {
+    const deferTasksCapsule = travelState.active && (travelState.deferredCategories?.includes('tasks') ?? false);
+    if (!deferTasksCapsule) for (const tk of googleTasks) {
       const info = extractTaskTimeMinutesForToday(tk, todayCairoIso, activeTimeZone);
       if (!info) continue;
       if (!info.hasExplicitTime) {
@@ -9215,7 +9336,10 @@ export default function App() {
               id: `prayer_${todayCairoIso}_${p.id}`,
               kind: 'prayer',
               title: `${p.emojiPair} ${p.nameAr}`,
-              body: `متبقي ${lifeProfile.adhanLeadMinutes} د على أذان ${p.nameAr} (${formatMinutes12h(p.adhanMinutes, 'ar')})`,
+              body:
+                lifeProfile.adhanLeadMinutes > 0
+                  ? `متبقي ${lifeProfile.adhanLeadMinutes} د على أذان ${p.nameAr} (${formatMinutes12h(p.adhanMinutes, 'ar')})`
+                  : `حان الآن موعد أذان ${p.nameAr} (${formatMinutes12h(p.adhanMinutes, 'ar')})`,
               triggerAtMs,
               snoozeMinutes,
             });
@@ -9266,7 +9390,8 @@ export default function App() {
       };
 
       // 2. Remaining Water Cups today
-      if (waterRemindersEnabled && hydrationToday) {
+      const deferWaterAlarm = travelState.active && (travelState.deferredCategories?.includes('water') ?? false);
+      if (waterRemindersEnabled && hydrationToday && !deferWaterAlarm) {
         const totalCups = dailyRhythmPlan.hydrationSlots.length || targetCups;
         dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
           if (hydrationToday.slots[idx] || isSilencedAtMinute(slot.timeMinutes)) return;
@@ -9285,7 +9410,9 @@ export default function App() {
       }
 
       // 3. Remaining Medication Doses today
+      const deferredMedsAlarm = travelState.active ? new Set(travelState.deferredMedIds ?? []) : null;
       for (const med of medications) {
+        if (deferredMedsAlarm?.has(med.id)) continue;
         if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayW)) {
           continue;
         }
@@ -9321,8 +9448,17 @@ export default function App() {
       }
 
       // 4. Upcoming Google Calendar Events today (exact simultaneous firing with PC)
+      const deferCalendarAlarm = travelState.active && (travelState.deferredCategories?.includes('calendar') ?? false);
       for (const block of liveBlocks) {
-        if (block.deleted || block.completed || block.isAllDay || block.source === 'prayer' || isSilencedAtMinute(block.startMin)) continue;
+        if (
+          block.deleted ||
+          block.completed ||
+          block.isAllDay ||
+          block.source === 'prayer' ||
+          block.reflowStatus === 'postponed_travel' ||
+          (deferCalendarAlarm && block.source === 'google_calendar') ||
+          isSilencedAtMinute(block.startMin)
+        ) continue;
         const triggerAtMs = msForMinuteToday(block.startMin);
         if (triggerAtMs > nowMs + 1_000) {
           const emoji = (block.emojiPair || '📅').trim();
@@ -9341,7 +9477,8 @@ export default function App() {
       }
 
       // 5. Timed Google Tasks today
-      for (const tk of googleTasks) {
+      const deferTasksAlarm = travelState.active && (travelState.deferredCategories?.includes('tasks') ?? false);
+      if (!deferTasksAlarm) for (const tk of googleTasks) {
         if (tk.status === 'completed') continue;
         const info = extractTaskTimeMinutesForToday(tk, todayCairoIso, activeTimeZone);
         if (!info || !info.hasExplicitTime || isSilencedAtMinute(info.startMin)) continue;
@@ -9361,7 +9498,8 @@ export default function App() {
       }
 
       // 6. Daily Sunlight Sessions (morning, noon, evening — start minus leadMinutes, and end)
-      if (sunlightSettings.enabled) {
+      const deferSunlightAlarm = travelState.active && (travelState.deferredCategories?.includes('sunlight') ?? false);
+      if (sunlightSettings.enabled && !deferSunlightAlarm) {
         for (const session of sunlightSessions) {
           if (!session.enabled || session.isCloudBlocked) continue;
           if (!isSilencedAtMinute(session.alertMinutes)) {
@@ -9451,6 +9589,7 @@ export default function App() {
     sunlightSessions,
     sunlightSettings.enabled,
     todayCairoIso,
+    travelState,
     waterRemindersEnabled,
   ]);
 
@@ -9905,7 +10044,7 @@ ${lifeConstitution}
         isLogoPickerOpen={isLogoPickerOpen}
         isPomodoroModalOpen={isPomodoroModalOpen}
         isSyncingGoogleDrive={isSyncingGoogleDrive}
-        isTravelModalOpen={isTravelModalOpen}
+        isTravelModalOpen={false}
         language={language}
         lifeProfile={lifeProfile}
         liveBlocks={liveBlocks}
@@ -9937,6 +10076,23 @@ ${lifeConstitution}
         triggerTaskAlert={triggerTaskAlert}
         undoSnapshot={undoSnapshot}
       />
+
+      {isTravelModalOpen && (
+        <Suspense fallback={null}>
+          <TravelModeModal
+            isOpen={isTravelModalOpen}
+            onClose={() => setIsTravelModalOpen(false)}
+            travelState={travelState}
+            scheduleBlocks={liveBlocks}
+            medications={medications}
+            currentLocation={activeLocation}
+            adhanLeadMinutes={lifeProfile.adhanLeadMinutes}
+            todayIso={todayCairoIso}
+            onApplyTravel={handleApplyTravel}
+            onDisableTravel={handleDisableTravel}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

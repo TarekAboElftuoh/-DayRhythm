@@ -382,12 +382,12 @@ export function computeEventRangeInTimeZone(
  * Default Authority: Egyptian General Authority of Survey (Fajr 19.5°, Isha 17.5°).
  * High-Latitude Protection: Uses One-Seventh of Night rule automatically when travelling
  * to northern latitudes (e.g., Europe/North America in summer) so Fajr & Isha never break.
- * Lead Time Rule: -3 minutes before Adhan for wudu and walking to mosque.
+ * Lead Time Rule: 0 minutes by default (exact Adhan), configurable in Settings.
  */
 export function calculateEgyptianPrayerTimes(
   location: GeoLocation,
   date: Date = new Date(),
-  adhanLeadMinutes = 3
+  adhanLeadMinutes = 0
 ): PrayerTimeItem[] {
   const lead = Math.max(0, Math.min(30, Math.round(adhanLeadMinutes)));
   const jd = julianDay(date, location.timeZone) - location.lng / (15 * 24);

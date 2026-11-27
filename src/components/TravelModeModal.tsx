@@ -1,352 +1,430 @@
-import React, { useMemo, useState } from 'react';
-import { X, MapPin, Check } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  X,
+  Plane,
+  MapPin,
+  Droplets,
+  Sun,
+  Calendar,
+  CheckSquare,
+  Pill,
+  PauseCircle,
+  PlayCircle,
+  RotateCcw,
+  Clock,
+} from 'lucide-react';
 import {
   GeoLocation,
+  MedicationItem,
   ScheduleBlock,
+  TravelDeferrableCategory,
   TravelDurationMode,
   TravelState,
 } from '../types/dayrhythm';
-import {
-  HOME_LOCATION,
-  PRESET_LOCATIONS,
-  calculateEgyptianPrayerTimes,
-  formatMinutes12h,
-  haversineDistanceKm,
-} from '../engines/prayerEngine';
+import { HOME_LOCATION } from '../engines/prayerEngine';
 
 interface TravelModeModalProps {
   isOpen: boolean;
   onClose: () => void;
   travelState: TravelState;
   scheduleBlocks: ScheduleBlock[];
+  medications?: MedicationItem[];
+  currentLocation?: GeoLocation;
+  adhanLeadMinutes?: number;
+  todayIso?: string;
   onApplyTravel: (nextState: TravelState) => void;
   onDisableTravel: () => void;
+}
+
+const CATEGORY_ITEMS: ReadonlyArray<{
+  id: TravelDeferrableCategory;
+  labelAr: string;
+  descAr: string;
+  Icon: React.ComponentType<{ className?: string }>;
+}> = [
+  { id: 'water', labelAr: 'الماية', descAr: 'تنبيهات أكواب الماء', Icon: Droplets },
+  { id: 'sunlight', labelAr: 'الأشعة المفيدة', descAr: 'جلسات التعرّض للشمس', Icon: Sun },
+  { id: 'calendar', labelAr: 'التقويم', descAr: 'مواعيد تقويم Google', Icon: Calendar },
+  { id: 'tasks', labelAr: 'المهام', descAr: 'مهام Google المجدولة', Icon: CheckSquare },
+];
+
+const DURATION_CHIPS: ReadonlyArray<{ id: TravelDurationMode; label: string }> = [
+  { id: 'until_return', label: 'مفتوح (لحد ما أرجع)' },
+  { id: '1d', label: 'يوم' },
+  { id: '2d', label: 'يومين' },
+  { id: '7d', label: 'أسبوع' },
+  { id: '14d', label: 'أسبوعين' },
+  { id: 'custom_date', label: 'تاريخ محدد 📅' },
+];
+
+function addDaysIso(baseIso: string, days: number): string {
+  const [y, m, d] = baseIso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return dt.toISOString().slice(0, 10);
+}
+
+function normalizeDurationMode(mode: TravelDurationMode): TravelDurationMode {
+  if (
+    mode === 'until_return' ||
+    mode === '1d' ||
+    mode === '2d' ||
+    mode === '7d' ||
+    mode === '14d' ||
+    mode === 'custom_date'
+  ) {
+    return mode;
+  }
+  if (mode === 'today') return '1d';
+  if (mode === 'tomorrow') return '2d';
+  return 'until_return';
 }
 
 export const TravelModeModal: React.FC<TravelModeModalProps> = ({
   isOpen,
   onClose,
   travelState,
-  scheduleBlocks,
+  medications = [],
+  currentLocation,
+  adhanLeadMinutes = 0,
+  todayIso,
   onApplyTravel,
   onDisableTravel,
 }) => {
-  const [selectedLoc, setSelectedLoc] = useState<GeoLocation>(
-    travelState.location.id === HOME_LOCATION.id
-      ? PRESET_LOCATIONS[2]
-      : travelState.location
-  );
-  const [durationMode, setDurationMode] = useState<TravelDurationMode>(
-    travelState.durationMode
-  );
-  const [postponedIds, setPostponedIds] = useState<string[]>(
-    travelState.postponedTaskIds.length > 0
-      ? travelState.postponedTaskIds
-      : scheduleBlocks.filter((b) => b.travelGroup === 'A_FIXED').map((b) => b.id)
-  );
-  const [enabledWorkIds, setEnabledWorkIds] = useState<string[]>(
-    travelState.enabledWorkTaskIds.length > 0
-      ? travelState.enabledWorkTaskIds
-      : scheduleBlocks.filter((b) => b.travelGroup === 'B_WORK').map((b) => b.id)
+  const resolvedTodayIso = useMemo(
+    () => todayIso || new Date().toISOString().slice(0, 10),
+    [todayIso]
   );
 
-  const distanceKm = useMemo(
-    () => haversineDistanceKm(HOME_LOCATION, selectedLoc),
-    [selectedLoc]
+  const [durationMode, setDurationMode] = useState<TravelDurationMode>(() =>
+    normalizeDurationMode(travelState.durationMode)
+  );
+  const [customDate, setCustomDate] = useState<string>(
+    travelState.returnDate || addDaysIso(resolvedTodayIso, 3)
+  );
+  const [deferredCategories, setDeferredCategories] = useState<TravelDeferrableCategory[]>(
+    travelState.deferredCategories ?? []
+  );
+  const [deferredMedIds, setDeferredMedIds] = useState<string[]>(
+    travelState.deferredMedIds ?? []
   );
 
-  const homePrayers = useMemo(() => calculateEgyptianPrayerTimes(HOME_LOCATION), []);
-  const travelPrayers = useMemo(() => calculateEgyptianPrayerTimes(selectedLoc), [selectedLoc]);
-
-  const groupABlocks = useMemo(
-    () => scheduleBlocks.filter((b) => b.travelGroup === 'A_FIXED' && !b.deleted),
-    [scheduleBlocks]
-  );
-  const groupBBlocks = useMemo(
-    () => scheduleBlocks.filter((b) => b.travelGroup === 'B_WORK' && !b.deleted),
-    [scheduleBlocks]
-  );
-  const groupCBlocks = useMemo(
-    () => scheduleBlocks.filter((b) => b.travelGroup === 'C_PORTABLE' && !b.deleted),
-    [scheduleBlocks]
-  );
+  useEffect(() => {
+    if (!isOpen) return;
+    setDurationMode(normalizeDurationMode(travelState.durationMode));
+    setCustomDate(travelState.returnDate || addDaysIso(resolvedTodayIso, 3));
+    setDeferredCategories(travelState.deferredCategories ?? []);
+    setDeferredMedIds(travelState.deferredMedIds ?? []);
+  }, [isOpen, travelState, resolvedTodayIso]);
 
   if (!isOpen) return null;
 
-  const togglePostponed = (id: string) => {
-    setPostponedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+  const activeLoc = currentLocation || travelState.location || HOME_LOCATION;
+
+  const computedReturnDate = (() => {
+    if (durationMode === '1d') return addDaysIso(resolvedTodayIso, 1);
+    if (durationMode === '2d') return addDaysIso(resolvedTodayIso, 2);
+    if (durationMode === '7d') return addDaysIso(resolvedTodayIso, 7);
+    if (durationMode === '14d') return addDaysIso(resolvedTodayIso, 14);
+    if (durationMode === 'custom_date') return customDate || addDaysIso(resolvedTodayIso, 1);
+    return undefined;
+  })();
+
+  const toggleCategory = (cat: TravelDeferrableCategory) => {
+    setDeferredCategories((prev) =>
+      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
     );
   };
 
-  const toggleWork = (id: string) => {
-    setEnabledWorkIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+  const toggleMed = (medId: string) => {
+    setDeferredMedIds((prev) =>
+      prev.includes(medId) ? prev.filter((id) => id !== medId) : [...prev, medId]
     );
   };
+
+  const activeCategories = CATEGORY_ITEMS.filter((c) => !deferredCategories.includes(c.id));
+  const pausedCategories = CATEGORY_ITEMS.filter((c) => deferredCategories.includes(c.id));
+
+  const activeMeds = medications.filter((m) => !deferredMedIds.includes(m.id));
+  const pausedMeds = medications.filter((m) => deferredMedIds.includes(m.id));
+
+  const totalDeferredCount = pausedCategories.length + pausedMeds.length;
 
   const handleConfirm = () => {
     onApplyTravel({
+      ...travelState,
       active: true,
-      location: selectedLoc,
-      distanceKm,
+      location: activeLoc,
       durationMode,
-      postponedTaskIds: postponedIds,
-      enabledWorkTaskIds: enabledWorkIds,
+      returnDate: computedReturnDate,
+      deferredCategories,
+      deferredMedIds,
+      updatedAt: Date.now(),
     });
+    onClose();
+  };
+
+  const handleReturnNow = () => {
+    onDisableTravel();
     onClose();
   };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-0 sm:p-4"
+      dir="rtl"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
-      aria-label="وضع السفر الذكي"
+      aria-label="وضع السفر"
     >
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-white/15 bg-[#0A0D12] p-6 text-zinc-100 shadow-2xl">
+      <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-white/15 bg-[#0A0D12] p-5 sm:p-6 text-zinc-100 shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-white/10">
-          <div>
-            <h2 className="text-lg font-bold text-white">🧳 وضع السفر الذكي</h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              إعادة معايرة مواقيت الصلاة (-3 دقائق) وتصنيف المهام حسب قابلية التنقل
-            </p>
+        <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div
+              className={`w-10 h-10 rounded-xl flex items-center justify-center border ${
+                travelState.active
+                  ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                  : 'border-white/10 bg-white/[0.04] text-zinc-300'
+              }`}
+            >
+              <Plane className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-white">وضع السفر</h2>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                {travelState.active
+                  ? 'مفعّل حالياً — اختر ما يستمر وما يؤجّل مؤقتاً'
+                  : 'أدِر تنبيهاتك وعلاجاتك بمرونة أثناء السفر'}
+              </p>
+            </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
             aria-label="إغلاق"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Section 1: GPS Auto-Detection & Prayer Delta */}
-        <div className="mt-5">
-          <div className="flex items-center justify-between mb-2.5">
-            <h3 className="text-sm font-semibold text-zinc-200 flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-[#7FFFD4]" />
-              1. الموقع الجغرافي وفارق المواقيت
-            </h3>
-            <span className="font-mono-tabular text-xs text-[#7FFFD4]">
-              {distanceKm} كم من الموقع الأساسي
-            </span>
+        {/* One-Tap Return Banner when active */}
+        {travelState.active && (
+          <div className="mt-4 rounded-xl border border-[#7FFFD4]/30 bg-[#7FFFD4]/[0.07] p-3.5 flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs space-y-0.5">
+              <div className="font-semibold text-[#7FFFD4]">أنت الآن في وضع السفر</div>
+              <div className="text-zinc-300">
+                {travelState.returnDate
+                  ? `ينتهي تلقائياً بتاريخ ${travelState.returnDate}`
+                  : 'مفتوح حتى تضغط رجعت من السفر'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleReturnNow}
+              className="min-h-[44px] px-4 py-2 rounded-xl bg-[#4ADE80] text-black text-xs font-bold hover:bg-[#3ccf71] transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>رجعت من السفر</span>
+            </button>
           </div>
+        )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {PRESET_LOCATIONS.filter((l) => l.id !== HOME_LOCATION.id).map((loc) => {
-              const active = selectedLoc.id === loc.id;
+        {/* GPS Auto Prayer Sync Info (no preset cities, no -3m text) */}
+        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs">
+          <span className="flex items-center gap-2 text-zinc-300">
+            <MapPin className="w-4 h-4 text-[#7FFFD4] shrink-0" />
+            <span>
+              الموقع الحالي:{' '}
+              <strong className="text-white font-semibold">{activeLoc.nameAr}</strong>
+            </span>
+          </span>
+          <span className="text-[11px] text-zinc-400">
+            {adhanLeadMinutes > 0
+              ? `مواقيت GPS · تنبيه -${adhanLeadMinutes} د`
+              : 'مواقيت GPS دقيقة'}
+          </span>
+        </div>
+
+        {/* Section 1: Duration Quick Chips */}
+        <div className="mt-5">
+          <div className="flex items-center gap-2 mb-2.5">
+            <Clock className="w-4 h-4 text-[#7FFFD4]" />
+            <h3 className="text-sm font-semibold text-zinc-100">مدة السفر</h3>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {DURATION_CHIPS.map((chip) => {
+              const selected = durationMode === chip.id;
               return (
                 <button
-                  key={loc.id}
+                  key={chip.id}
                   type="button"
-                  onClick={() => setSelectedLoc(loc)}
-                  className={`px-3 py-2.5 rounded-xl border text-right transition-all cursor-pointer ${
-                    active
-                      ? 'border-[#7FFFD4] bg-[#7FFFD4]/10 text-white'
-                      : 'border-white/10 bg-black/50 text-zinc-400 hover:border-white/25'
+                  aria-pressed={selected}
+                  onClick={() => setDurationMode(chip.id)}
+                  className={`min-h-[44px] px-3.5 py-2 rounded-xl border text-xs font-medium transition-colors cursor-pointer ${
+                    selected
+                      ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                      : 'border-white/10 bg-white/[0.03] text-zinc-300 hover:border-white/25 hover:text-white'
                   }`}
                 >
-                  <div className="text-xs font-semibold truncate">{loc.nameAr.split('·')[0].trim()}</div>
-                  <div className="font-mono-tabular text-[11px] text-zinc-500 mt-0.5">
-                    {haversineDistanceKm(HOME_LOCATION, loc)} km
-                  </div>
+                  {chip.label}
                 </button>
               );
             })}
           </div>
 
-          {/* Prayer Delta Preview */}
-          <div className="mt-3 rounded-xl border border-white/10 bg-black/60 p-3.5">
-            <div className="flex items-center justify-between text-xs text-zinc-400 mb-2">
-              <span>مقارنة منبهات الصلاة (-3 د قبل الأذان)</span>
-              <span className="font-mono-tabular text-zinc-300">
-                {distanceKm > 15 ? 'تحديث تلقائي مفعّل (> 15 كم)' : 'نطاق محلي'}
-              </span>
+          {durationMode === 'custom_date' && (
+            <div className="mt-3 flex items-center gap-3 rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5">
+              <label htmlFor="travel-return-date" className="text-xs text-zinc-300 whitespace-nowrap">
+                تاريخ العودة:
+              </label>
+              <input
+                id="travel-return-date"
+                type="date"
+                min={resolvedTodayIso}
+                value={customDate}
+                onChange={(e) => setCustomDate(e.target.value)}
+                className="flex-1 min-h-[40px] rounded-lg border border-white/15 bg-[#0F141C] px-3 text-xs text-white focus:outline-none focus:border-[#7FFFD4]"
+              />
             </div>
-            <div className="grid grid-cols-5 gap-2 text-center">
-              {travelPrayers
-                .filter((p) => p.isObligatory)
-                .map((tp) => {
-                  const hp = homePrayers.find((x) => x.id === tp.id)!;
-                  const delta = tp.alarmMinutes - hp.alarmMinutes;
-                  return (
-                    <div key={tp.id} className="rounded-lg bg-white/[0.03] p-2">
-                      <div className="text-[11px] text-zinc-400">{tp.nameAr}</div>
-                      <div className="font-mono-tabular text-xs font-semibold text-white mt-0.5">
-                        {formatMinutes12h(tp.alarmMinutes)}
-                      </div>
-                      <div
-                        className={`font-mono-tabular text-[11px] mt-0.5 ${
-                          delta === 0
-                            ? 'text-zinc-500'
-                            : delta > 0
-                              ? 'text-[#7FFFD4]'
-                              : 'text-amber-400'
-                        }`}
-                      >
-                        {delta === 0 ? '±0د' : delta > 0 ? `+${delta}د` : `${delta}د`}
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
-          </div>
+          )}
         </div>
 
-        {/* Section 2: 3-Group Task Matrix */}
-        <div className="mt-6">
-          <h3 className="text-sm font-semibold text-zinc-200 mb-3">
-            2. مصفوفة تصنيف المهام الثلاثية
-          </h3>
-
-          <div className="space-y-3">
-            {/* Group A: Fixed Place */}
-            <div className="rounded-xl border border-white/10 bg-black/50 p-3.5">
-              <div className="flex items-center justify-between text-xs mb-2">
-                <span className="font-semibold text-amber-300">المجموعة أ · مهام مرتبطة بالمكان</span>
-                <span className="text-zinc-500">تؤجَّل تلقائياً لتاريخ العودة</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {groupABlocks.map((b) => {
-                  const checked = postponedIds.includes(b.id);
-                  return (
-                    <button
-                      key={b.id}
-                      type="button"
-                      onClick={() => togglePostponed(b.id)}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs cursor-pointer transition-colors ${
-                        checked
-                          ? 'border-amber-400/50 bg-amber-400/10 text-amber-200'
-                          : 'border-white/10 text-zinc-400'
-                      }`}
-                    >
-                      <span className="w-4 h-4 rounded flex items-center justify-center border border-current">
-                        {checked && <Check className="w-3 h-3" />}
-                      </span>
-                      <span>{b.emojiPair}</span>
-                      {(() => {
-                        const ep = b.emojiPair.trim();
-                        const rawTitle = b.categoryAr.trim();
-                        const cleanTitle = rawTitle.startsWith(ep)
-                          ? rawTitle.slice(ep.length).trim()
-                          : rawTitle;
-                        return cleanTitle ? <span className="text-zinc-400">· {cleanTitle}</span> : null;
-                      })()}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Group B: Work & Workout Toggleable */}
-            <div className="rounded-xl border border-white/10 bg-black/50 p-3.5">
-              <div className="flex items-center justify-between text-xs mb-2">
-                <span className="font-semibold text-[#7FFFD4]">المجموعة ب · العمل واللياقة</span>
-                <span className="text-zinc-500">اختر ما يستمر معك في السفر</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {groupBBlocks.map((b) => {
-                  const enabled = enabledWorkIds.includes(b.id);
-                  return (
-                    <button
-                      key={b.id}
-                      type="button"
-                      onClick={() => toggleWork(b.id)}
-                      className={`flex items-center justify-between px-3 py-2 rounded-lg border text-xs cursor-pointer transition-colors ${
-                        enabled
-                          ? 'border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-white'
-                          : 'border-white/10 text-zinc-500'
-                      }`}
-                    >
-                      <span className="flex items-center gap-2">
-                        <span>{b.emojiPair}</span>
-                        {(() => {
-                          const ep = b.emojiPair.trim();
-                          const rawTitle = b.categoryAr.trim();
-                          const cleanTitle = rawTitle.startsWith(ep)
-                            ? rawTitle.slice(ep.length).trim()
-                            : rawTitle;
-                          return cleanTitle ? <span>{cleanTitle}</span> : null;
-                        })()}
-                      </span>
-                      <span className="text-[11px]">
-                        {enabled ? 'مفعّل' : 'مؤجل'}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Group C: Portable Habits */}
-            <div className="rounded-xl border border-white/10 bg-black/50 p-3.5">
-              <div className="flex items-center justify-between text-xs mb-2">
-                <span className="font-semibold text-[#4ADE80]">المجموعة ج · الثوابت المتنقلة</span>
-                <span className="text-zinc-500">محفوظة 100% أينما كنت</span>
-              </div>
-              <div className="text-xs text-zinc-400 leading-relaxed">
-                الصلوات الخمس (-3 د) · {groupCBlocks.slice(0, 6).map((b) => b.emojiPair).join(' · ')} · هدف الترطيب اليومي
-              </div>
-            </div>
+        {/* Section 2: Active in Travel ("مستمر في السفر") */}
+        <div className="mt-5">
+          <div className="flex items-center justify-between mb-2.5">
+            <h3 className="text-sm font-semibold text-emerald-300 flex items-center gap-1.5">
+              <PlayCircle className="w-4 h-4" />
+              <span>مستمر في السفر</span>
+            </h3>
+            <span className="text-[11px] text-zinc-400">اضغط على أي عنصر لتأجيله</span>
           </div>
-        </div>
 
-        {/* Section 3: Duration Chips */}
-        <div className="mt-6">
-          <h3 className="text-sm font-semibold text-zinc-200 mb-2.5">
-            3. مدة تفعيل وضع السفر
-          </h3>
-          <div className="grid grid-cols-3 gap-2">
-            {(
-              [
-                { id: 'today', label: 'اليوم فقط' },
-                { id: 'tomorrow', label: 'غداً أيضاً' },
-                { id: 'manual', label: 'حتى الإيقاف اليدوي' },
-              ] as const
-            ).map((opt) => (
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 space-y-2">
+            {/* Immutable Prayers badge */}
+            <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-xs">
+              <span className="text-emerald-200 font-medium">🕌 الصلوات الخمس</span>
+              <span className="text-[11px] text-emerald-300">مستمرة دائماً</span>
+            </div>
+
+            {activeCategories.map(({ id, labelAr, descAr, Icon }) => (
               <button
-                key={opt.id}
+                key={id}
                 type="button"
-                onClick={() => setDurationMode(opt.id)}
-                className={`py-2.5 px-3 rounded-xl border text-xs font-medium cursor-pointer transition-colors ${
-                  durationMode === opt.id
-                    ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                    : 'border-white/10 bg-black/50 text-zinc-400 hover:text-white'
-                }`}
+                onClick={() => toggleCategory(id)}
+                className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-white/10 bg-black/40 hover:border-amber-400/40 hover:bg-amber-400/[0.05] text-right transition-colors cursor-pointer"
               >
-                {opt.label}
+                <span className="flex items-center gap-2.5">
+                  <Icon className="w-4 h-4 text-[#7FFFD4] shrink-0" />
+                  <span>
+                    <span className="block text-xs font-medium text-white">{labelAr}</span>
+                    <span className="block text-[11px] text-zinc-400">{descAr}</span>
+                  </span>
+                </span>
+                <span className="text-[11px] text-amber-300 shrink-0">تأجيل مؤقت</span>
               </button>
             ))}
+
+            {activeMeds.map((med) => (
+              <button
+                key={med.id}
+                type="button"
+                onClick={() => toggleMed(med.id)}
+                className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-white/10 bg-black/40 hover:border-amber-400/40 hover:bg-amber-400/[0.05] text-right transition-colors cursor-pointer"
+              >
+                <span className="flex items-center gap-2.5">
+                  <Pill className="w-4 h-4 text-sky-300 shrink-0" />
+                  <span>
+                    <span className="block text-xs font-medium text-white">{med.name}</span>
+                    {med.doseNote && (
+                      <span className="block text-[11px] text-zinc-400">{med.doseNote}</span>
+                    )}
+                  </span>
+                </span>
+                <span className="text-[11px] text-amber-300 shrink-0">تأجيل مؤقت</span>
+              </button>
+            ))}
+
+            {activeCategories.length === 0 && activeMeds.length === 0 && (
+              <p className="text-xs text-zinc-500 text-center py-2">
+                تم تأجيل جميع الفئات والأدوية القابلة للتأجيل
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Section 3: Deferred in Travel ("مؤجل في السفر") */}
+        <div className="mt-4">
+          <div className="flex items-center justify-between mb-2.5">
+            <h3 className="text-sm font-semibold text-amber-300 flex items-center gap-1.5">
+              <PauseCircle className="w-4 h-4" />
+              <span>مؤجل في السفر</span>
+              {totalDeferredCount > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-amber-400/15 text-amber-200 text-[11px] font-mono-tabular">
+                  {totalDeferredCount}
+                </span>
+              )}
+            </h3>
+            <span className="text-[11px] text-zinc-400">اضغط للاستعادة</span>
+          </div>
+
+          <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.03] p-3 space-y-2">
+            {totalDeferredCount === 0 ? (
+              <p className="text-xs text-zinc-500 text-center py-2">
+                لا توجد تنبيهات مؤجلة — كل شيء يعمل كالمعتاد
+              </p>
+            ) : (
+              <>
+                {pausedCategories.map(({ id, labelAr, Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => toggleCategory(id)}
+                    className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-amber-400/30 bg-amber-400/10 hover:bg-emerald-400/10 hover:border-emerald-400/40 text-right transition-colors cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Icon className="w-4 h-4 text-amber-300 shrink-0" />
+                      <span className="text-xs font-medium text-amber-100">{labelAr}</span>
+                    </span>
+                    <span className="text-[11px] text-emerald-300 shrink-0">استعادة</span>
+                  </button>
+                ))}
+
+                {pausedMeds.map((med) => (
+                  <button
+                    key={med.id}
+                    type="button"
+                    onClick={() => toggleMed(med.id)}
+                    className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-amber-400/30 bg-amber-400/10 hover:bg-emerald-400/10 hover:border-emerald-400/40 text-right transition-colors cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Pill className="w-4 h-4 text-amber-300 shrink-0" />
+                      <span className="text-xs font-medium text-amber-100">{med.name}</span>
+                    </span>
+                    <span className="text-[11px] text-emerald-300 shrink-0">استعادة</span>
+                  </button>
+                ))}
+              </>
+            )}
           </div>
         </div>
 
         {/* Footer CTA */}
-        <div className="mt-6 pt-4 border-t border-white/10 flex flex-wrap items-center justify-between gap-3">
-          {travelState.active ? (
-            <button
-              type="button"
-              onClick={() => {
-                onDisableTravel();
-                onClose();
-              }}
-              className="px-4 py-2.5 rounded-xl border border-rose-500/40 text-rose-300 text-xs font-semibold hover:bg-rose-500/10 cursor-pointer"
-            >
-              إنهاء وضع السفر والعودة للضهرية
-            </button>
-          ) : (
-            <span className="text-xs text-zinc-500">
-              يتم تحديث المواقيت ومزامنتها تلقائياً
-            </span>
-          )}
+        <div className="mt-6 pt-4 border-t border-white/10 flex flex-wrap items-center justify-end gap-2.5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="min-h-[44px] px-4 py-2 rounded-xl border border-white/10 text-xs font-medium text-zinc-300 hover:bg-white/5 cursor-pointer"
+          >
+            إلغاء
+          </button>
           <button
             type="button"
             onClick={handleConfirm}
-            className="px-6 py-2.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] cursor-pointer"
+            className="min-h-[44px] px-6 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] transition-colors cursor-pointer"
           >
-            تفعيل وضع السفر وتحديث المواقيت
+            {travelState.active ? 'حفظ التعديلات' : 'تفعيل وضع السفر'}
           </button>
         </div>
       </div>

@@ -681,8 +681,26 @@ export function applyTravelMatrix(
 ): ScheduleBlock[] {
   if (!travel.active) return blocks;
 
+  const deferCalendar = travel.deferredCategories?.includes('calendar') ?? false;
+  const deferTasks = travel.deferredCategories?.includes('tasks') ?? false;
+
   return blocks.map((b) => {
-    if (b.isAnchor || b.travelGroup === 'ANCHOR' || b.travelGroup === 'C_PORTABLE') {
+    if (b.isAnchor || b.travelGroup === 'ANCHOR') {
+      return b;
+    }
+    if (b.source === 'google_calendar') {
+      return {
+        ...b,
+        reflowStatus: deferCalendar ? 'postponed_travel' : undefined,
+      };
+    }
+    if (deferTasks && b.travelGroup !== 'C_PORTABLE') {
+      return {
+        ...b,
+        reflowStatus: 'postponed_travel',
+      };
+    }
+    if (b.travelGroup === 'C_PORTABLE') {
       return b;
     }
     if (b.travelGroup === 'A_FIXED') {

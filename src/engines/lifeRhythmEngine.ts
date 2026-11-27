@@ -56,7 +56,7 @@ export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   sleepStrategy: 'night_only_strict',
   sleepDebtMinutes: 0,
   sleepDebtLogDateKey: '',
-  adhanLeadMinutes: 3, // -3 min before Adhan
+  adhanLeadMinutes: 0, // 0 min = exact Adhan time
   prayerSilenceMinutes: 20, // 20 min silent window from actual Adhan
   fajrSilenceMinutes: 40, // 40 min silent window from actual Fajr Adhan (time for wudu + walking to the mosque + prayer)
   oneTimeSilenceMinutes: 0,

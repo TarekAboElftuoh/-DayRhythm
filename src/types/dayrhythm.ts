@@ -21,7 +21,18 @@ export type ActiveTab = 'dashboard' | 'mobile' | 'overlay' | 'assistant';
 
 export type TravelGroup = 'A_FIXED' | 'B_WORK' | 'C_PORTABLE' | 'ANCHOR';
 
-export type TravelDurationMode = 'today' | 'tomorrow' | 'manual';
+export type TravelDurationMode =
+  | 'until_return'
+  | '1d'
+  | '2d'
+  | '7d'
+  | '14d'
+  | 'custom_date'
+  | 'today'
+  | 'tomorrow'
+  | 'manual';
+
+export type TravelDeferrableCategory = 'water' | 'sunlight' | 'calendar' | 'tasks';
 
 export type CatchUpDecision = 'start_now' | 'shift_evening' | 'skip_today';
 
@@ -385,7 +396,7 @@ export interface LifeProfile {
   sleepStrategy: SleepStrategy;
   sleepDebtMinutes: number; // 0..480 accumulated sleep deficit for gentle automatic recovery
   sleepDebtLogDateKey: string; // YYYY-MM-DD when user last checked in morning sleep quality
-  adhanLeadMinutes: number; // default 3 min before Adhan
+  adhanLeadMinutes: number; // default 0 min (exact Adhan time)
   prayerSilenceMinutes: number; // default 20 min from Adhan for Dhuhr/Asr/Maghrib/Isha
   fajrSilenceMinutes: number; // default 30 min from Adhan for Fajr
   oneTimeSilenceMinutes?: number; // 0 = inactive, 5..120 = one-time silence override via chat
@@ -624,6 +635,10 @@ export interface TravelState {
   location: GeoLocation;
   distanceKm: number;
   durationMode: TravelDurationMode;
+  returnDate?: string;
+  deferredCategories?: TravelDeferrableCategory[];
+  deferredMedIds?: string[];
+  updatedAt?: number;
   postponedTaskIds: string[];
   enabledWorkTaskIds: string[];
 }

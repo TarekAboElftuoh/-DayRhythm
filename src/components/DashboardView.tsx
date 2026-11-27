@@ -37,6 +37,7 @@ import {
   BellOff,
   BarChart3,
   Pill,
+  Plane,
 } from 'lucide-react';
 import { WeeklyReportCard } from './WeeklyReportCard';
 import { SunlightCard } from './SunlightCard';
@@ -1359,6 +1360,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             )}
           </div>
+
+          <button
+            type="button"
+            aria-pressed={travelState.active}
+            onClick={onOpenTravel}
+            className={`min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
+              travelState.active
+                ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                : 'border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:border-white/15'
+            }`}
+            title="وضع السفر وتأجيل التنبيهات مؤقتاً"
+          >
+            <Plane className="w-3.5 h-3.5" />
+            <span>{travelState.active ? 'في السفر' : 'السفر'}</span>
+            {travelState.active &&
+              ((travelState.deferredCategories?.length ?? 0) +
+                (travelState.deferredMedIds?.length ?? 0)) > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-[#7FFFD4]/20 text-[10px] font-mono-tabular">
+                  {(travelState.deferredCategories?.length ?? 0) +
+                    (travelState.deferredMedIds?.length ?? 0)}
+                </span>
+              )}
+          </button>
 
           <button
             type="button"
@@ -4108,7 +4132,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             )}
 
-            {/* On-Demand 30-Day Consumption & Refill Forecast Analytics */}
+            {/* On-Demand 14-Day Consumption & Refill Forecast Analytics */}
             {medications.length > 0 && (
               <div className="pt-2 border-t border-white/[0.06]">
                 <button
@@ -4117,7 +4141,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
                   <BarChart3 className="w-3.5 h-3.5" />
-                  <span>تحليل 30 يوم وتوقع الشراء</span>
+                  <span>تحليل 14 يوم وتوقع الشراء</span>
                   {showMedChart ? (
                     <ChevronUp className="w-3.5 h-3.5" />
                   ) : (
@@ -4235,17 +4259,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
             </div>
-
-            {dailyRhythmPlan.seasonalSleep && (
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] px-3 py-2 text-[11px] text-zinc-300 flex flex-wrap items-center justify-between gap-2">
-                <span className="font-semibold text-[#7FFFD4]">
-                  {dailyRhythmPlan.seasonalSleep.phaseLabelAr} · {dailyRhythmPlan.seasonalSleep.completedCycles} دورات (90د)
-                </span>
-                <span className="font-digits text-zinc-400">
-                  تهدئة {formatMinutes12h(dailyRhythmPlan.seasonalSleep.windDownStartMin, language)} · كافيين حتى {formatMinutes12h(dailyRhythmPlan.seasonalSleep.caffeineCutoffMin, language)}
-                </span>
-              </div>
-            )}
 
             {dailyRhythmPlan.conflictWarningAr && (
               <div className="rounded-lg border border-amber-400/30 bg-amber-400/[0.08] px-3 py-2 text-[11px] text-amber-200">
