@@ -312,7 +312,17 @@ export default function App() {
   const [surfaceTheme, setSurfaceTheme] = useState<SurfaceTheme>('amoled');
 
   // 4 Smart Timed Quiet Modes + Auto-Revert Timer
-  const [quietMode, setQuietMode] = useState<QuietModeType>('normal');
+  const [quietMode, setQuietMode] = useState<QuietModeType>(() => {
+    try {
+      const saved = localStorage.getItem('dayrhythm_quiet_mode_v1');
+      if (saved === 'normal' || saved === 'mute_audio' || saved === 'vibrate_only' || saved === 'silent_all') {
+        return saved;
+      }
+    } catch {
+      // ignore
+    }
+    return 'normal';
+  });
   const [quietRemainingSec, setQuietRemainingSec] = useState<number>(0);
   const [stealthAudioOnly, setStealthAudioOnly] = useState<boolean>(() => {
     try {
@@ -1113,6 +1123,17 @@ export default function App() {
         } catch {}
       }
 
+      if (typeof patch.phoneChargeLimitPct === 'number' || typeof patch.smartChargeAlertEnabled === 'boolean') {
+        localWriteLockUntilRef.current = Date.now() + 5000;
+        try {
+          (window as Window & { DayRhythmNative?: { setChargeLimit?: (l: number, e: boolean) => void } })
+            .DayRhythmNative?.setChargeLimit?.(next.phoneChargeLimitPct, next.smartChargeAlertEnabled);
+        } catch {
+          // ignore bridge errors
+        }
+        void saveCloudUserSettingsRef.current({ appSettings: next });
+      }
+
       void pushToTasksVaultRef.current({ appSettings: next });
       return next;
     },
@@ -1715,6 +1736,9 @@ export default function App() {
       setQuietRemainingSec((prev) => {
         if (prev <= 1) {
           setQuietMode('normal');
+          try {
+            localStorage.setItem('dayrhythm_quiet_mode_v1', 'normal');
+          } catch {}
           showToast('🔊 انتهى مؤقت الهدوء — عاد النظام للوضع العادي تلقائياً');
           return 0;
         }
@@ -1726,9 +1750,12 @@ export default function App() {
 
   const handleSetQuietMode = useCallback(
     (mode: QuietModeType, durationMinutes: number) => {
-      localWriteLockUntilRef.current = Date.now() + 300;
+      localWriteLockUntilRef.current = Date.now() + 5000;
       quietModeRef.current = mode;
       setQuietMode(mode);
+      try {
+        localStorage.setItem('dayrhythm_quiet_mode_v1', mode);
+      } catch {}
       if (mode === 'normal') {
         setQuietRemainingSec(0);
         showToast('🔊 تم التبديل للوضع العادي الكامل');
@@ -1742,10 +1769,12 @@ export default function App() {
       }
       appendChangelog('Web/PC', `ضبط وضع الهدوء إلى ${mode}`, `Set quiet mode to ${mode}`);
 
-      void pushToTasksVaultRef.current({
+      const quietPatch = {
         quietMode: mode,
         adhanOverrideSilent: adhanOverrideSilentRef.current,
-      });
+      };
+      void saveCloudUserSettingsRef.current(quietPatch);
+      void pushToTasksVaultRef.current(quietPatch);
     },
     [appendChangelog, showToast]
   );
@@ -3178,7 +3207,7 @@ export default function App() {
         }
       }
     }
-    if (remote.appSettings) {
+    if (remote.appSettings && Date.now() >= localWriteLockUntilRef.current) {
       const a = sanitizeAppSyncSettings(remote.appSettings);
       if (a) {
         const merged: AppSyncSettings = {
@@ -3212,9 +3241,14 @@ export default function App() {
     const targetAdhan = typeof remote.adhanOverrideSilent === 'boolean' ? remote.adhanOverrideSilent : adhanOverrideSilentRef.current;
     lastSyncedQuietSigRef.current = `${targetQuiet}:${targetAdhan}`;
 
-    if (remote.quietMode && remote.quietMode !== quietModeRef.current) {
+    if (remote.quietMode && remote.quietMode !== quietModeRef.current && Date.now() >= localWriteLockUntilRef.current) {
       quietModeRef.current = remote.quietMode;
       setQuietMode(remote.quietMode);
+      try {
+        localStorage.setItem('dayrhythm_quiet_mode_v1', remote.quietMode);
+      } catch {
+        // ignore
+      }
     }
     if (typeof remote.adhanOverrideSilent === 'boolean' && remote.adhanOverrideSilent !== adhanOverrideSilentRef.current) {
       adhanOverrideSilentRef.current = remote.adhanOverrideSilent;
@@ -7704,7 +7738,19 @@ export default function App() {
         : '🔕 تم إيقاف التنبيه الصوتي التلقائي لاكتمال الشحن'
     );
     updateAppSettings({ smartChargeAlertEnabled: next });
-  }, [showToast, updateAppSettings, stopSmartChargeCompleteAlert]);
+    setPhoneBattery((prev) => {
+      if (!prev) return prev;
+      const updated: PhoneBatteryTelemetry = {
+        ...prev,
+        chargeLimitPct: appSettingsRef.current.phoneChargeLimitPct,
+        updatedAtMs: Date.now(),
+      };
+      if (firebaseUser?.uid && firebaseUser.emailVerified) {
+        void publishPhoneBatteryTelemetry(firebaseUser.uid, updated).catch(() => {});
+      }
+      return updated;
+    });
+  }, [firebaseUser?.uid, firebaseUser?.emailVerified, showToast, updateAppSettings, stopSmartChargeCompleteAlert]);
 
   // Settings changed from the Gemini chat (propose_app_settings). Each field is optional.
   const handleApplyAppSettings = useCallback(
@@ -9727,6 +9773,10 @@ ${lifeConstitution}
             onDismissTwoWay={handleDismissTwoWay}
             deviceSettings={deviceSettings}
             onUpdateDeviceSettings={handleUpdateDeviceSettings}
+            phoneChargeLimitPct={phoneChargeLimitPct}
+            onUpdatePhoneChargeLimit={handleUpdatePhoneChargeLimit}
+            smartChargeAlertEnabled={smartChargeAlertEnabled}
+            onToggleSmartChargeAlertEnabled={handleToggleSmartChargeAlertEnabled}
             firestoreSynced={firestoreSynced || googleDriveSynced}
           /></Suspense>
         )}

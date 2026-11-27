@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronUp,
   Volume2,
+  VolumeX,
   ShieldCheck,
   RefreshCw,
   ExternalLink,
@@ -74,6 +75,10 @@ interface MobilePreviewViewProps {
   onRefreshGps?: () => void;
   gpsSyncing?: boolean;
   phoneBattery?: PhoneBatteryTelemetry | null;
+  phoneChargeLimitPct?: number;
+  onUpdatePhoneChargeLimit?: (limitPct: number) => void;
+  smartChargeAlertEnabled?: boolean;
+  onToggleSmartChargeAlertEnabled?: () => void;
   upcomingPreview?: {
     emoji: string;
     title: string;
@@ -107,6 +112,10 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
   onRefreshGps,
   gpsSyncing = false,
   phoneBattery,
+  phoneChargeLimitPct = 90,
+  onUpdatePhoneChargeLimit,
+  smartChargeAlertEnabled = true,
+  onToggleSmartChargeAlertEnabled,
   upcomingPreview,
 }) => {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -490,25 +499,48 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
           )}
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
-          {([null, 80, 90] as const).map((limit) => {
-            const active = batteryGuard.bypassChargingLimitPct === limit;
-            return (
-              <button
-                key={String(limit)}
-                type="button"
-                aria-pressed={active}
-                onClick={() => onToggleBypassCharging(limit)}
-                className={`min-h-[44px] px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
-                  active
-                    ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                    : 'border-white/[0.08] bg-black/40 text-zinc-300 hover:border-white/20'
-                }`}
-              >
-                {limit === null ? 'شحن عادي' : `Bypass ${limit}%`}
-              </button>
-            );
-          })}
+        <div className="space-y-2.5">
+          {onToggleSmartChargeAlertEnabled && (
+            <button
+              type="button"
+              onClick={onToggleSmartChargeAlertEnabled}
+              aria-pressed={smartChargeAlertEnabled}
+              className={`w-full min-h-[44px] px-3.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                smartChargeAlertEnabled
+                  ? 'border-[#4ADE80]/50 bg-[#4ADE80]/15 text-[#4ADE80]'
+                  : 'border-white/[0.08] bg-black/40 text-zinc-400 hover:border-white/20'
+              }`}
+            >
+              {smartChargeAlertEnabled ? (
+                <Volume2 className="w-4 h-4 shrink-0" />
+              ) : (
+                <VolumeX className="w-4 h-4 shrink-0" />
+              )}
+              <span>{smartChargeAlertEnabled ? 'التنبيه الذكي للشحن مفعّل' : 'التنبيه الذكي للشحن متوقف'}</span>
+            </button>
+          )}
+          {onUpdatePhoneChargeLimit && (
+            <div className="grid grid-cols-5 gap-1.5">
+              {[80, 85, 90, 95, 100].map((pct) => {
+                const active = phoneChargeLimitPct === pct;
+                return (
+                  <button
+                    key={pct}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => onUpdatePhoneChargeLimit(pct)}
+                    className={`min-h-[44px] px-2 rounded-xl border font-mono-tabular text-xs font-bold transition-colors cursor-pointer ${
+                      active
+                        ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                        : 'border-white/[0.08] bg-black/40 text-zinc-300 hover:border-white/20'
+                    }`}
+                  >
+                    {pct}%
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-white/[0.07]">

@@ -128,6 +128,39 @@ interface LifeProfileModalProps {
   onUpdateSunlightSettings?: (next: SunlightSettings) => void;
 }
 
+type NumericProfileKey =
+  | 'weightKg'
+  | 'heightCm'
+  | 'cupSizeMl'
+  | 'suhoorLeadMinutes'
+  | 'sleepTargetMinutes'
+  | 'adhanLeadMinutes'
+  | 'prayerSilenceMinutes'
+  | 'fajrSilenceMinutes';
+
+const NUMERIC_FIELD_BOUNDS: Record<
+  NumericProfileKey,
+  { min: number; max: number; fallback: number; allowFloat?: boolean }
+> = {
+  weightKg: { min: 40, max: 200, fallback: 70, allowFloat: true },
+  heightCm: { min: 120, max: 230, fallback: 177 },
+  cupSizeMl: { min: 100, max: 1000, fallback: 250 },
+  suhoorLeadMinutes: { min: 10, max: 120, fallback: 50 },
+  sleepTargetMinutes: { min: 240, max: 720, fallback: 450 },
+  adhanLeadMinutes: { min: 0, max: 30, fallback: 0 },
+  prayerSilenceMinutes: { min: 0, max: 60, fallback: 20 },
+  fajrSilenceMinutes: { min: 0, max: 90, fallback: 30 },
+};
+
+function clampNumericProfileField(key: NumericProfileKey, raw: string | number): number {
+  const { min, max, fallback, allowFloat } = NUMERIC_FIELD_BOUNDS[key];
+  if (typeof raw === 'string' && raw.trim() === '') return fallback;
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  const clamped = Math.min(max, Math.max(min, parsed));
+  return allowFloat ? Math.round(clamped * 10) / 10 : Math.round(clamped);
+}
+
 export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   isOpen,
   onClose,
@@ -176,6 +209,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   onUpdateSunlightSettings,
 }) => {
   const [draft, setDraft] = useState<LifeProfile>(profile);
+  const [rawInputs, setRawInputs] = useState<Partial<Record<NumericProfileKey, string>>>({});
   const isDirtyRef = React.useRef(false);
   const touchedKeysRef = React.useRef<Set<keyof LifeProfile>>(new Set());
   const updateDraft = (updater: (prev: LifeProfile) => LifeProfile) => {
@@ -297,6 +331,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     if (isOpen && !prevIsOpenRef.current) {
       // Modal just opened: initialize draft and clear dirty status
       setDraft(profile);
+      setRawInputs({});
       isDirtyRef.current = false;
       touchedKeysRef.current.clear();
       setUnlockHeight(false);
@@ -343,20 +378,62 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     });
   };
 
+  const handleNumericChange = (key: NumericProfileKey, raw: string) => {
+    setRawInputs((prev) => ({ ...prev, [key]: raw }));
+    isDirtyRef.current = true;
+    touchedKeysRef.current.add(key);
+    if (raw.trim() === '') return;
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) {
+      setDraft((prev) => ({ ...prev, [key]: parsed }));
+    }
+  };
+
+  const handleNumericBlur = (key: NumericProfileKey) => {
+    const raw = rawInputs[key];
+    const source = raw !== undefined ? raw : draft[key];
+    const clamped = clampNumericProfileField(key, source);
+    setRawInputs((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    updateDraft((p) => ({ ...p, [key]: clamped }));
+  };
+
+  const getSanitizedDraft = (): LifeProfile => {
+    const next: LifeProfile = {
+      ...draft,
+      sleepStrategy: draft.sleepStrategy || 'night_only_strict',
+    };
+    for (const key of Object.keys(NUMERIC_FIELD_BOUNDS) as NumericProfileKey[]) {
+      const raw = rawInputs[key];
+      next[key] = clampNumericProfileField(key, raw !== undefined ? raw : next[key]);
+    }
+    return next;
+  };
+
   const handleSave = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    const sanitized = getSanitizedDraft();
+    setDraft(sanitized);
+    setRawInputs({});
     isDirtyRef.current = false;
     touchedKeysRef.current.clear();
-    onSaveProfile({ ...draft, sleepStrategy: draft.sleepStrategy || 'night_only_strict' });
+    onSaveProfile(sanitized);
     onClose();
   };
 
   const handleClose = () => {
     // If the user modified any setting without explicitly clicking save, auto-save so nothing is lost!
     if (isDirtyRef.current) {
+      const sanitized = getSanitizedDraft();
+      setDraft(sanitized);
+      setRawInputs({});
       isDirtyRef.current = false;
       touchedKeysRef.current.clear();
-      onSaveProfile({ ...draft, sleepStrategy: draft.sleepStrategy || 'night_only_strict' });
+      onSaveProfile(sanitized);
     }
     onClose();
   };
@@ -476,13 +553,12 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               </span>
               <input
                 type="number"
-                min={30}
-                max={250}
+                min={40}
+                max={200}
                 step={0.5}
-                value={draft.weightKg}
-                onChange={(e) =>
-                  updateDraft((p) => ({ ...p, weightKg: Number(e.target.value) || 70 }))
-                }
+                value={rawInputs.weightKg ?? String(draft.weightKg)}
+                onChange={(e) => handleNumericChange('weightKg', e.target.value)}
+                onBlur={() => handleNumericBlur('weightKg')}
                 className="w-full rounded-lg border border-[#7FFFD4]/45 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
@@ -501,14 +577,13 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               </span>
               <input
                 type="number"
-                min={100}
-                max={240}
+                min={120}
+                max={230}
                 step={1}
                 disabled={!unlockHeight}
-                value={draft.heightCm}
-                onChange={(e) =>
-                  updateDraft((p) => ({ ...p, heightCm: Number(e.target.value) || 177 }))
-                }
+                value={rawInputs.heightCm ?? String(draft.heightCm)}
+                onChange={(e) => handleNumericChange('heightCm', e.target.value)}
+                onBlur={() => handleNumericBlur('heightCm')}
                 className={`w-full rounded-lg border px-3 py-2 font-mono-tabular focus:outline-none ${
                   unlockHeight
                     ? 'border-white/25 bg-black text-white focus:border-[#7FFFD4]'
@@ -518,16 +593,15 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             </div>
 
             <label className="space-y-1">
-              <span className="text-zinc-400 block">حجم الكوب (أي رقم: 50–2000 مل)</span>
+              <span className="text-zinc-400 block">حجم الكوب (100–1000 مل)</span>
               <input
                 type="number"
-                min={50}
-                max={2000}
+                min={100}
+                max={1000}
                 step={1}
-                value={draft.cupSizeMl}
-                onChange={(e) =>
-                  updateDraft((p) => ({ ...p, cupSizeMl: Number(e.target.value) || 250 }))
-                }
+                value={rawInputs.cupSizeMl ?? String(draft.cupSizeMl)}
+                onChange={(e) => handleNumericChange('cupSizeMl', e.target.value)}
+                onBlur={() => handleNumericBlur('cupSizeMl')}
                 className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
@@ -538,7 +612,14 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 <button
                   key={presetMl}
                   type="button"
-                  onClick={() => updateDraft((p) => ({ ...p, cupSizeMl: presetMl }))}
+                  onClick={() => {
+                    setRawInputs((prev) => {
+                      const next = { ...prev };
+                      delete next.cupSizeMl;
+                      return next;
+                    });
+                    updateDraft((p) => ({ ...p, cupSizeMl: presetMl }));
+                  }}
                   className={`px-2.5 py-1 rounded-lg border font-mono-tabular cursor-pointer ${
                     draft.cupSizeMl === presetMl
                       ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
@@ -592,27 +673,30 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
             <div className="space-y-1.5">
-              <label className="text-zinc-400 block">السحور قبل أذان الفجر (دقيقة · مرن 10–180):</label>
+              <label className="text-zinc-400 block">السحور قبل أذان الفجر (دقيقة · مرن 10–120):</label>
               <div className="flex items-center gap-1.5">
                 <input
                   type="number"
                   min={10}
-                  max={180}
+                  max={120}
                   step={5}
-                  value={draft.suhoorLeadMinutes}
-                  onChange={(e) =>
-                    updateDraft((p) => ({
-                      ...p,
-                      suhoorLeadMinutes: Number(e.target.value) || 50,
-                    }))
-                  }
+                  value={rawInputs.suhoorLeadMinutes ?? String(draft.suhoorLeadMinutes)}
+                  onChange={(e) => handleNumericChange('suhoorLeadMinutes', e.target.value)}
+                  onBlur={() => handleNumericBlur('suhoorLeadMinutes')}
                   className="w-20 rounded-lg border border-white/15 bg-black px-2.5 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
                 />
                 {[40, 50, 60].map((mins) => (
                   <button
                     key={mins}
                     type="button"
-                    onClick={() => updateDraft((p) => ({ ...p, suhoorLeadMinutes: mins }))}
+                    onClick={() => {
+                      setRawInputs((prev) => {
+                        const next = { ...prev };
+                        delete next.suhoorLeadMinutes;
+                        return next;
+                      });
+                      updateDraft((p) => ({ ...p, suhoorLeadMinutes: mins }));
+                    }}
                     className={`flex-1 py-2 rounded-lg border font-mono-tabular cursor-pointer ${
                       draft.suhoorLeadMinutes === mins
                         ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
@@ -626,20 +710,16 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             </div>
 
             <div className="space-y-1.5">
-              <label className="text-zinc-400 block">هدف النوم الليلي (دقائق · مرن 180–720):</label>
+              <label className="text-zinc-400 block">هدف النوم الليلي (دقائق · مرن 240–720):</label>
               <div className="flex items-center gap-1.5">
                 <input
                   type="number"
-                  min={180}
+                  min={240}
                   max={720}
                   step={15}
-                  value={draft.sleepTargetMinutes}
-                  onChange={(e) =>
-                    updateDraft((p) => ({
-                      ...p,
-                      sleepTargetMinutes: Number(e.target.value) || 450,
-                    }))
-                  }
+                  value={rawInputs.sleepTargetMinutes ?? String(draft.sleepTargetMinutes)}
+                  onChange={(e) => handleNumericChange('sleepTargetMinutes', e.target.value)}
+                  onBlur={() => handleNumericBlur('sleepTargetMinutes')}
                   className="w-20 rounded-lg border border-white/15 bg-black px-2.5 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
                 />
                 {[
@@ -650,7 +730,14 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   <button
                     key={opt.min}
                     type="button"
-                    onClick={() => updateDraft((p) => ({ ...p, sleepTargetMinutes: opt.min }))}
+                    onClick={() => {
+                      setRawInputs((prev) => {
+                        const next = { ...prev };
+                        delete next.sleepTargetMinutes;
+                        return next;
+                      });
+                      updateDraft((p) => ({ ...p, sleepTargetMinutes: opt.min }));
+                    }}
                     className={`flex-1 py-2 rounded-lg border font-mono-tabular cursor-pointer ${
                       draft.sleepTargetMinutes === opt.min
                         ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
@@ -688,10 +775,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 min={0}
                 max={30}
                 step={1}
-                value={draft.adhanLeadMinutes}
-                onChange={(e) =>
-                  updateDraft((p) => ({ ...p, adhanLeadMinutes: Number(e.target.value) || 0 }))
-                }
+                value={rawInputs.adhanLeadMinutes ?? String(draft.adhanLeadMinutes)}
+                onChange={(e) => handleNumericChange('adhanLeadMinutes', e.target.value)}
+                onBlur={() => handleNumericBlur('adhanLeadMinutes')}
                 className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
@@ -699,16 +785,12 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               <span className="text-zinc-400 block">كتم الصلاة من الأذان (د)</span>
               <input
                 type="number"
-                min={5}
-                max={90}
+                min={0}
+                max={60}
                 step={5}
-                value={draft.prayerSilenceMinutes}
-                onChange={(e) =>
-                  updateDraft((p) => ({
-                    ...p,
-                    prayerSilenceMinutes: Number(e.target.value) || 20,
-                  }))
-                }
+                value={rawInputs.prayerSilenceMinutes ?? String(draft.prayerSilenceMinutes)}
+                onChange={(e) => handleNumericChange('prayerSilenceMinutes', e.target.value)}
+                onBlur={() => handleNumericBlur('prayerSilenceMinutes')}
                 className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
@@ -716,16 +798,12 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               <span className="text-zinc-400 block">كتم الفجر من الأذان (د)</span>
               <input
                 type="number"
-                min={5}
+                min={0}
                 max={90}
                 step={5}
-                value={draft.fajrSilenceMinutes}
-                onChange={(e) =>
-                  updateDraft((p) => ({
-                    ...p,
-                    fajrSilenceMinutes: Number(e.target.value) || 30,
-                  }))
-                }
+                value={rawInputs.fajrSilenceMinutes ?? String(draft.fajrSilenceMinutes)}
+                onChange={(e) => handleNumericChange('fajrSilenceMinutes', e.target.value)}
+                onBlur={() => handleNumericBlur('fajrSilenceMinutes')}
                 className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
