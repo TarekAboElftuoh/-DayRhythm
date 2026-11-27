@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Drawer } from 'vaul';
 import {
   X,
   Compass,
@@ -71,6 +72,21 @@ import {
   getTimeZoneUtcOffsetHours,
   getWeekdayInTimeZone,
 } from '../engines/prayerEngine';
+
+function useIsMobileViewport(): boolean {
+  const [isMobile, setIsMobile] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = () => setIsMobile(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return isMobile;
+}
 
 interface LifeProfileModalProps {
   isOpen: boolean;
@@ -230,6 +246,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   } | null>(null);
   const [isRestoringBackup, setIsRestoringBackup] = useState(false);
   const isMobile = isMobileDevice();
+  const isMobileViewport = useIsMobileViewport();
 
   const capsuleOrientation = capsulePrefs?.orientation ?? 'horizontal';
   const capsuleSize = capsulePrefs?.size ?? 'md';
@@ -352,8 +369,6 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
       fastingOverride: 'auto',
     });
   }, [draft, prayers]);
-
-  if (!isOpen) return null;
 
   const toggleFastingDay = (dayId: number) => {
     updateDraft((prev) => {
@@ -490,40 +505,35 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     }
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-0 sm:p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="الدستور الشخصي وذاكرة Gemini الدائمة"
+  const renderFormContent = (headerTitle: React.ReactNode, isSheet: boolean) => (
+    <form
+      onSubmit={handleSave}
+      className={
+        isSheet
+          ? 'flex-1 overflow-y-auto px-4 pt-2 pb-[max(1.25rem,env(safe-area-inset-bottom))] text-zinc-100 space-y-4'
+          : 'w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl border border-white/[0.06] bg-[var(--bg-card)] p-6 text-zinc-100 shadow-2xl space-y-4'
+      }
     >
-      <form
-        onSubmit={handleSave}
-        className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 sm:p-5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-5 text-zinc-100 shadow-2xl space-y-4"
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
-          <div>
-            <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-[#7FFFD4]" />
-              <span>الإعدادات والثوابت وذاكرة Gemini</span>
-            </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              كل الإعدادات والقياسات محفوظة سحابياً — الأولوية لتحديثها عبر شات Gemini مع كامل الحرية اليدوية من هنا
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={handleClose}
-            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
-            aria-label="إغلاق"
-          >
-            <X className="w-5 h-5" />
-          </button>
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 pb-3.5 border-b border-white/[0.06]">
+        <div className="min-w-0">
+          {headerTitle}
+          <p className="text-xs text-zinc-400 mt-0.5">
+            كل الإعدادات والقياسات محفوظة سحابياً — الأولوية لتحديثها عبر شات Gemini مع كامل الحرية اليدوية من هنا
+          </p>
         </div>
+        <button
+          type="button"
+          onClick={handleClose}
+          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-white/[0.06] hover:text-white transition-colors cursor-pointer shrink-0"
+          aria-label="إغلاق"
+        >
+          <X className="w-5 h-5" />
+        </button>
+      </div>
 
         {/* 1. Scientific Hydration & Biometrics */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Droplets className="w-4 h-4 text-[#7FFFD4]" />
@@ -591,7 +601,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 value={rawInputs.cupSizeMl ?? String(draft.cupSizeMl)}
                 onChange={(e) => handleNumericChange('cupSizeMl', e.target.value)}
                 onBlur={() => handleNumericBlur('cupSizeMl')}
-                className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                className="w-full rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
           </div>
@@ -626,7 +636,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 2. Fasting Days, Flexible Suhoor Lead & Night Sleep Target */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Moon className="w-4 h-4 text-[#7FFFD4]" />
@@ -672,7 +682,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   value={rawInputs.suhoorLeadMinutes ?? String(draft.suhoorLeadMinutes)}
                   onChange={(e) => handleNumericChange('suhoorLeadMinutes', e.target.value)}
                   onBlur={() => handleNumericBlur('suhoorLeadMinutes')}
-                  className="w-20 rounded-lg border border-white/15 bg-black px-2.5 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                  className="w-20 rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-2.5 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
                 />
                 {[40, 50, 60].map((mins) => (
                   <button
@@ -709,7 +719,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                   value={rawInputs.sleepTargetMinutes ?? String(draft.sleepTargetMinutes)}
                   onChange={(e) => handleNumericChange('sleepTargetMinutes', e.target.value)}
                   onBlur={() => handleNumericBlur('sleepTargetMinutes')}
-                  className="w-20 rounded-lg border border-white/15 bg-black px-2.5 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                  className="w-20 rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-2.5 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
                 />
                 {[
                   { min: 420, label: '7 س' },
@@ -745,7 +755,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 3. Automatic Audio Silence Sanctuaries (Prayer & Sleep) */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <VolumeX className="w-4 h-4 text-[#7FFFD4]" />
@@ -767,7 +777,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 value={rawInputs.adhanLeadMinutes ?? String(draft.adhanLeadMinutes)}
                 onChange={(e) => handleNumericChange('adhanLeadMinutes', e.target.value)}
                 onBlur={() => handleNumericBlur('adhanLeadMinutes')}
-                className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                className="w-full rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
             <label className="space-y-1">
@@ -780,7 +790,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 value={rawInputs.prayerSilenceMinutes ?? String(draft.prayerSilenceMinutes)}
                 onChange={(e) => handleNumericChange('prayerSilenceMinutes', e.target.value)}
                 onBlur={() => handleNumericBlur('prayerSilenceMinutes')}
-                className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                className="w-full rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
             <label className="space-y-1">
@@ -793,7 +803,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 value={rawInputs.fajrSilenceMinutes ?? String(draft.fajrSilenceMinutes)}
                 onChange={(e) => handleNumericChange('fajrSilenceMinutes', e.target.value)}
                 onBlur={() => handleNumericBlur('fajrSilenceMinutes')}
-                className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                className="w-full rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-3 py-2 text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
               />
             </label>
           </div>
@@ -810,7 +820,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         )}
 
         {/* 4. Continuous Offline-Ready GPS Location */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Compass className="w-4 h-4 text-[#7FFFD4]" />
@@ -879,7 +889,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 5. Permanent Gemini Memory Bank (Google Cloud Vault) */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3 text-xs">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Brain className="w-4 h-4 text-[#7FFFD4]" />
@@ -894,7 +904,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             <select
               value={newMemoryCategory}
               onChange={(e) => setNewMemoryCategory(e.target.value as MemoryCategory)}
-              className="rounded-lg border border-white/15 bg-black px-2.5 py-2 text-zinc-200 focus:outline-none focus:border-[#7FFFD4]"
+              className="rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-2.5 py-2 text-zinc-200 focus:outline-none focus:border-[#7FFFD4]"
             >
               {(Object.keys(MEMORY_CATEGORY_LABELS) as MemoryCategory[]).map((cat) => (
                 <option key={cat} value={cat}>
@@ -914,7 +924,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 }
               }}
               placeholder="اكتب أي قاعدة جديدة تريد أن يتذكرها Gemini دائماً..."
-              className="flex-1 rounded-lg border border-white/15 bg-black px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+              className="flex-1 rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-3 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
             />
             <button
               type="button"
@@ -941,7 +951,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 6. Schedule, Audio & Account Settings (Moved cleanly out of the Main Dashboard) */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3 text-xs">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <SlidersHorizontal className="w-4 h-4 text-[#7FFFD4]" />
@@ -1364,7 +1374,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 7. Google Gemini Client-Side API Key & Model Settings */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3 text-xs">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Key className="w-4 h-4 text-[#7FFFD4]" />
@@ -1400,7 +1410,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
                 placeholder="AQ... أو AIza..."
-                className="w-full rounded-lg border border-white/15 bg-black px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-[#7FFFD4]"
+                className="w-full rounded-lg border border-white/[0.08] bg-[var(--bg-card)] px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-[#7FFFD4]"
               />
               <button
                 type="button"
@@ -1451,18 +1461,18 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         <AndroidPermissionsCard />
 
         {/* Footer */}
-        <div className="pt-3 border-t border-[var(--border-subtle)] flex items-center justify-between gap-2">
+        <div className="pt-3 border-t border-white/[0.06] flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             {onCheckAppUpdates && (
               <button
                 type="button"
                 onClick={onCheckAppUpdates}
-                className="min-h-[44px] px-3 py-2 rounded-xl border border-[var(--border-subtle)] text-xs text-zinc-400 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 cursor-pointer"
+                className="min-h-[44px] px-3 py-2 rounded-xl border border-white/[0.06] bg-[var(--bg-surface)] text-xs text-zinc-400 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 cursor-pointer"
               >
                 فحص التحديثات
               </button>
             )}
-            <span className="text-[10.5px] font-mono text-zinc-500/70 select-none px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06]">
+            <span className="text-[10.5px] font-mono-tabular text-zinc-500/70 select-none px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06]">
               {APP_VERSION}
             </span>
           </div>
@@ -1470,7 +1480,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             <button
               type="button"
               onClick={handleClose}
-              className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] text-xs text-zinc-300 hover:text-white cursor-pointer"
+              className="min-h-[44px] px-4 py-2 rounded-xl border border-white/[0.06] bg-[var(--bg-surface)] text-xs text-zinc-300 hover:text-white cursor-pointer"
             >
               إلغاء
             </button>
@@ -1484,6 +1494,61 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           </div>
         </div>
       </form>
+  );
+
+  if (isMobileViewport) {
+    return (
+      <Drawer.Root
+        open={isOpen}
+        onOpenChange={(open) => {
+          if (!open) handleClose();
+        }}
+        direction="bottom"
+      >
+        <Drawer.Portal>
+          <Drawer.Overlay className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md" />
+          <Drawer.Content
+            dir="rtl"
+            aria-describedby={undefined}
+            aria-label="الدستور الشخصي وذاكرة Gemini الدائمة"
+            className="fixed inset-x-0 bottom-0 z-50 flex max-h-[92dvh] flex-col rounded-t-3xl border-t border-x border-white/[0.08] bg-[var(--bg-card)] text-zinc-100 shadow-2xl outline-none"
+          >
+            <div className="pt-3 pb-1 flex justify-center shrink-0">
+              <Drawer.Handle className="h-1.5 w-11 rounded-full bg-white/20" />
+            </div>
+            {renderFormContent(
+              <Drawer.Title className="text-base font-bold text-white flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[#7FFFD4]" />
+                <span>الإعدادات والثوابت وذاكرة Gemini</span>
+              </Drawer.Title>,
+              true
+            )}
+          </Drawer.Content>
+        </Drawer.Portal>
+      </Drawer.Root>
+    );
+  }
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      dir="rtl"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="الدستور الشخصي وذاكرة Gemini الدائمة"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) handleClose();
+      }}
+    >
+      {renderFormContent(
+        <h2 className="text-lg font-bold text-white flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-[#7FFFD4]" />
+          <span>الإعدادات والثوابت وذاكرة Gemini</span>
+        </h2>,
+        false
+      )}
     </div>
   );
 };

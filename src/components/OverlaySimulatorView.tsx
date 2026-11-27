@@ -1,4 +1,5 @@
 import React from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   BellRing,
   BatteryCharging,
@@ -7,9 +8,7 @@ import {
   Volume2,
   VolumeX,
   PictureInPicture2,
-  MapPin,
   Cloud,
-  CheckCircle2,
 } from 'lucide-react';
 import {
   BatteryGuardState,
@@ -98,7 +97,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
   return (
     <div className="mx-auto max-w-[1040px] px-4 sm:px-6 py-6 space-y-5">
       {/* Clean Header */}
-      <header className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-[var(--border-subtle)]">
+      <header className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-white/[0.06]">
         <div>
           <h1 className="text-lg font-bold text-white">وضع الكمبيوتر</h1>
           <p className="text-xs text-zinc-400 mt-1">
@@ -118,9 +117,9 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
         </div>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Card 1: Desktop Capsule Shape & Size */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-3">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-card)] p-4 space-y-4">
           <div className="flex items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-bold text-white">كبسولة سطح المكتب</h2>
@@ -149,64 +148,76 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
           <div className="space-y-3 pt-1">
             <div className="space-y-1.5">
               <div className="text-xs text-zinc-400">الاتجاه</div>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-black/50 border border-[var(--border-subtle)]">
-                <button
-                  type="button"
-                  onClick={() => updateCapsule({ orientation: 'horizontal' })}
-                  className={`min-h-[44px] rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
-                    capsulePrefs.orientation === 'horizontal'
-                      ? 'bg-[#7FFFD4] text-black'
-                      : 'text-zinc-300 hover:bg-white/[0.05]'
-                  }`}
-                >
-                  <Columns2 className="w-3.5 h-3.5" />
-                  <span>عرضي (أفقي)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateCapsule({ orientation: 'vertical' })}
-                  className={`min-h-[44px] rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
-                    capsulePrefs.orientation === 'vertical'
-                      ? 'bg-[#7FFFD4] text-black'
-                      : 'text-zinc-300 hover:bg-white/[0.05]'
-                  }`}
-                >
-                  <Rows2 className="w-3.5 h-3.5" />
-                  <span>طولي (رأسي)</span>
-                </button>
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[var(--bg-surface)] border border-white/[0.06]">
+                {(
+                  [
+                    { id: 'horizontal', label: 'عرضي (أفقي)', Icon: Columns2 },
+                    { id: 'vertical', label: 'طولي (رأسي)', Icon: Rows2 },
+                  ] as const
+                ).map(({ id, label, Icon }) => {
+                  const active = capsulePrefs.orientation === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => updateCapsule({ orientation: id })}
+                      className={`relative min-h-[44px] rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer select-none ${
+                        active ? 'text-[#7FFFD4]' : 'text-zinc-300 hover:text-white'
+                      }`}
+                    >
+                      {active && (
+                        <motion.span
+                          layoutId="overlay-capsule-orientation"
+                          transition={{ type: 'spring', stiffness: 460, damping: 35 }}
+                          className="absolute inset-0 rounded-xl bg-[#7FFFD4]/12 border border-[#7FFFD4]/25"
+                        />
+                      )}
+                      <Icon className="relative z-10 w-3.5 h-3.5" />
+                      <span className="relative z-10">{label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
             <div className="space-y-1.5">
               <div className="text-xs text-zinc-400">الحجم</div>
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/50 border border-[var(--border-subtle)]">
+              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-2xl bg-[var(--bg-surface)] border border-white/[0.06]">
                 {(
                   [
                     { id: 'sm', label: 'صغير' },
                     { id: 'md', label: 'متوسط' },
                     { id: 'lg', label: 'كبير' },
                   ] as const
-                ).map((opt) => (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => updateCapsule({ size: opt.id })}
-                    className={`min-h-[44px] rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                      capsulePrefs.size === opt.id
-                        ? 'bg-[#7FFFD4] text-black'
-                        : 'text-zinc-300 hover:bg-white/[0.05]'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
+                ).map((opt) => {
+                  const active = capsulePrefs.size === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => updateCapsule({ size: opt.id })}
+                      className={`relative min-h-[44px] rounded-xl text-xs font-semibold transition-colors cursor-pointer select-none ${
+                        active ? 'text-[#7FFFD4]' : 'text-zinc-300 hover:text-white'
+                      }`}
+                    >
+                      {active && (
+                        <motion.span
+                          layoutId="overlay-capsule-size"
+                          transition={{ type: 'spring', stiffness: 460, damping: 35 }}
+                          className="absolute inset-0 rounded-xl bg-[#7FFFD4]/12 border border-[#7FFFD4]/25"
+                        />
+                      )}
+                      <span className="relative z-10">{opt.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
         </section>
 
         {/* Card 2: Live Phone Battery & Charging ETA */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-3">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-card)] p-4 space-y-4">
           <div className="flex items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
@@ -230,7 +241,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
             {batteryFresh && phoneBattery && (
               <div className="text-left">
                 <div
-                  className={`font-digits text-2xl font-extrabold leading-none ${
+                  className={`font-mono-tabular text-2xl font-extrabold leading-none ${
                     batteryAtLimit
                       ? 'text-[#4ADE80]'
                       : phoneBattery.charging
@@ -240,7 +251,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
                 >
                   {phoneBattery.levelPct}%
                 </div>
-                <div className="text-[11px] text-zinc-400 mt-1">
+                <div className="font-mono-tabular text-[11px] text-zinc-400 mt-1">
                   {phoneBattery.charging
                     ? batteryEtaLabel || 'قيد الشحن الآن'
                     : 'غير موصول بالشاحن'}
@@ -264,22 +275,30 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
                 />
               </div>
 
-              {batteryAtLimit && (
-                <div className="rounded-xl border border-[#4ADE80]/30 bg-[#4ADE80]/10 px-3 py-2 text-xs text-[#4ADE80] font-semibold">
-                  وصل الهاتف إلى الحد المحدد ({phoneBattery.chargeLimitPct}%) — يمكنك فصله من الشاحن.
-                </div>
-              )}
+              <AnimatePresence>
+                {batteryAtLimit && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -4 }}
+                    transition={{ duration: 0.2 }}
+                    className="rounded-xl border border-[#4ADE80]/30 bg-[#4ADE80]/10 px-3 py-2 text-xs text-[#4ADE80] font-semibold font-mono-tabular"
+                  >
+                    وصل الهاتف إلى الحد المحدد ({phoneBattery.chargeLimitPct}%) — يمكنك فصله من الشاحن.
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           ) : (
-            <div className="rounded-xl border border-white/[0.06] bg-black/40 px-3.5 py-3 text-xs text-zinc-400 leading-relaxed">
+            <div className="rounded-xl border border-white/[0.06] bg-[var(--bg-surface)] px-3.5 py-3 text-xs text-zinc-400 leading-relaxed">
               افتح التطبيق على هاتفك مرة واحدة بحساب Google نفسه — وستصل نسبة الشحن والوقت المتبقي هنا وفي الكبسولة تلقائياً.
             </div>
           )}
 
           {onChangeChargeLimit && (
-            <div className="space-y-1.5 pt-2 border-t border-[var(--border-subtle)]">
+            <div className="space-y-1.5 pt-3 border-t border-white/[0.06]">
               <div className="text-xs text-zinc-400">تنبيه اكتمال الشحن عند</div>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-4 gap-1.5 p-1 rounded-2xl bg-[var(--bg-surface)] border border-white/[0.06]">
                 {[80, 85, 90, 95].map((pct) => {
                   const active = (phoneBattery?.chargeLimitPct ?? 90) === pct;
                   return (
@@ -287,13 +306,18 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
                       key={pct}
                       type="button"
                       onClick={() => onChangeChargeLimit(pct)}
-                      className={`min-h-[44px] rounded-xl font-digits text-xs font-bold transition-colors cursor-pointer ${
-                        active
-                          ? 'bg-[#7FFFD4] text-black'
-                          : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]'
+                      className={`relative min-h-[44px] rounded-xl font-mono-tabular text-xs font-bold transition-colors cursor-pointer select-none ${
+                        active ? 'text-[#7FFFD4]' : 'text-zinc-300 hover:text-white'
                       }`}
                     >
-                      {pct}%
+                      {active && (
+                        <motion.span
+                          layoutId="overlay-charge-limit"
+                          transition={{ type: 'spring', stiffness: 460, damping: 35 }}
+                          className="absolute inset-0 rounded-xl bg-[#7FFFD4]/12 border border-[#7FFFD4]/25"
+                        />
+                      )}
+                      <span className="relative z-10">{pct}%</span>
                     </button>
                   );
                 })}
@@ -303,7 +327,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
         </section>
 
         {/* Card 3: Alerts & Cross-Device Instant Sync */}
-        <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-3">
+        <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-card)] p-4 space-y-4">
           <div>
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <BellRing className="w-4 h-4 text-[#7FFFD4]" />
@@ -315,7 +339,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
           </div>
 
           {/* Stealth Audio-Only Mode */}
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-black/40 px-3.5 py-3">
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-[var(--bg-surface)] px-3.5 py-3">
             <div className="min-w-0">
               <div className="text-xs font-semibold text-white flex items-center gap-1.5">
                 {stealthAudioOnly ? (
@@ -348,7 +372,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
             <span className="font-semibold text-zinc-200">{QUIET_MODE_LABELS[quietMode].ar}</span>
           </div>
 
-          <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap gap-2">
+          <div className="pt-3 border-t border-white/[0.06] flex flex-wrap gap-2">
             <button
               type="button"
               onClick={onTriggerRing}
@@ -356,15 +380,21 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
             >
               اختبار التنبيه المتزامن
             </button>
-            {alarmRinging && (
-              <button
-                type="button"
-                onClick={onDismissTwoWay}
-                className="flex-1 min-h-[44px] px-3 rounded-xl bg-[#4ADE80] text-black hover:bg-emerald-300 text-xs font-bold transition-colors cursor-pointer"
-              >
-                إيقاف على الجهازين الآن
-              </button>
-            )}
+            <AnimatePresence>
+              {alarmRinging && (
+                <motion.button
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.18 }}
+                  type="button"
+                  onClick={onDismissTwoWay}
+                  className="flex-1 min-h-[44px] px-3 rounded-xl bg-[#4ADE80] text-black hover:bg-emerald-300 text-xs font-bold transition-colors cursor-pointer"
+                >
+                  إيقاف على الجهازين الآن
+                </motion.button>
+              )}
+            </AnimatePresence>
           </div>
 
         </section>
