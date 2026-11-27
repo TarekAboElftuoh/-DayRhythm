@@ -421,6 +421,13 @@ export interface DailyWeatherPoint {
   heatBonusMl: number;
 }
 
+export interface HourlyWeatherPoint {
+  hour: number;
+  cloudCover: number;
+  uvIndex: number;
+  tempC: number;
+}
+
 export interface WeatherHydrationInfo {
   currentTempC: number;
   maxTempC: number;
@@ -431,7 +438,62 @@ export interface WeatherHydrationInfo {
   heatNoteAr: string;
   fetchedAtIso: string;
   dailyMaxTemps?: DailyWeatherPoint[];
+  hourly?: HourlyWeatherPoint[];
 }
+
+export type SunlightSessionId = 'morning' | 'noon' | 'evening';
+export type SunlightSkinTone = 'fair' | 'wheat' | 'dark';
+export type SunlightExposureMode = 'auto' | 'face_hands' | 'arms_light';
+
+export interface SunlightSessionConfig {
+  enabled: boolean;
+  autoDuration: boolean;
+  customMinutes: number;
+  labelAr: string;
+  emoji: string;
+  descAr: string;
+}
+
+export interface SunlightSettings {
+  enabled: boolean;
+  leadMinutes: number;
+  skinTone: SunlightSkinTone;
+  exposureMode: SunlightExposureMode;
+  sessions: Record<SunlightSessionId, SunlightSessionConfig>;
+}
+
+export const DEFAULT_SUNLIGHT_SETTINGS: SunlightSettings = {
+  enabled: true,
+  leadMinutes: 2,
+  skinTone: 'wheat',
+  exposureMode: 'auto',
+  sessions: {
+    morning: {
+      enabled: true,
+      autoDuration: true,
+      customMinutes: 12,
+      labelAr: 'ضوء الشروق',
+      emoji: '🌅',
+      descAr: 'ضبط الساعة البيولوجية',
+    },
+    noon: {
+      enabled: true,
+      autoDuration: true,
+      customMinutes: 15,
+      labelAr: 'شمس الظهيرة',
+      emoji: '☀️',
+      descAr: 'أشعة UVB لفيتامين د',
+    },
+    evening: {
+      enabled: true,
+      autoDuration: true,
+      customMinutes: 15,
+      labelAr: 'الشمس الحمراء',
+      emoji: '🌇',
+      descAr: 'تهدئة الأعصاب قبل النوم',
+    },
+  },
+};
 
 export interface GmailDigestItem {
   id: string;

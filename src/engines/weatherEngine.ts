@@ -1,4 +1,8 @@
-import { DailyWeatherPoint, WeatherHydrationInfo } from '../types/dayrhythm';
+import {
+  DailyWeatherPoint,
+  HourlyWeatherPoint,
+  WeatherHydrationInfo,
+} from '../types/dayrhythm';
 
 const WEATHER_CACHE_KEY = 'dayrhythm_weather_v2';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
@@ -81,7 +85,8 @@ export async function fetchOpenMeteoWeather(
         parsed?.lngKey === lngKey &&
         parsed?.data?.fetchedAtIso &&
         Array.isArray(parsed.data.dailyMaxTemps) &&
-        parsed.data.dailyMaxTemps.length >= 7
+        parsed.data.dailyMaxTemps.length >= 7 &&
+        Array.isArray(parsed.data.hourly)
       ) {
         const ageMs = Date.now() - new Date(parsed.data.fetchedAtIso).getTime();
         if (ageMs >= 0 && ageMs < CACHE_TTL_MS) {
@@ -98,7 +103,7 @@ export async function fetchOpenMeteoWeather(
       lat.toFixed(4)
     )}&longitude=${encodeURIComponent(
       lng.toFixed(4)
-    )}&current=temperature_2m,weather_code&daily=temperature_2m_max&timezone=auto&past_days=6&forecast_days=1`;
+    )}&current=temperature_2m,weather_code&hourly=cloud_cover,uv_index,temperature_2m&daily=temperature_2m_max&timezone=auto&past_days=6&forecast_days=1`;
 
     const res = await fetch(url);
     if (!res.ok) {
@@ -107,6 +112,12 @@ export async function fetchOpenMeteoWeather(
     const json = (await res.json()) as {
       current?: { temperature_2m?: number; weather_code?: number };
       daily?: { time?: string[]; temperature_2m_max?: number[] };
+      hourly?: {
+        time?: string[];
+        cloud_cover?: number[];
+        uv_index?: number[];
+        temperature_2m?: number[];
+      };
     };
 
     const currentTempC = Math.round(Number(json.current?.temperature_2m ?? 25));
@@ -132,6 +143,49 @@ export async function fetchOpenMeteoWeather(
       })
       .slice(-7);
 
+    const todayDateIso =
+      dailyMaxTemps.length > 0
+        ? dailyMaxTemps[dailyMaxTemps.length - 1].dateIso
+        : '';
+    const hourlyTimes = Array.isArray(json.hourly?.time) ? json.hourly.time : [];
+    const hourlyClouds = Array.isArray(json.hourly?.cloud_cover)
+      ? json.hourly.cloud_cover
+      : [];
+    const hourlyUvs = Array.isArray(json.hourly?.uv_index)
+      ? json.hourly.uv_index
+      : [];
+    const hourlyTemps = Array.isArray(json.hourly?.temperature_2m)
+      ? json.hourly.temperature_2m
+      : [];
+
+    const allHourly: HourlyWeatherPoint[] = hourlyTimes.map((timeIso, idx) => {
+      const parsedHour = Number(timeIso.slice(11, 13));
+      const hour = Number.isFinite(parsedHour) ? parsedHour : idx % 24;
+      const rawCloud = hourlyClouds[idx];
+      const rawUv = hourlyUvs[idx];
+      const rawTemp = hourlyTemps[idx];
+      return {
+        hour,
+        cloudCover:
+          typeof rawCloud === 'number' && Number.isFinite(rawCloud)
+            ? Math.max(0, Math.min(100, Math.round(rawCloud)))
+            : 0,
+        uvIndex:
+          typeof rawUv === 'number' && Number.isFinite(rawUv)
+            ? Math.max(0, Number(rawUv.toFixed(1)))
+            : 0,
+        tempC:
+          typeof rawTemp === 'number' && Number.isFinite(rawTemp)
+            ? Math.round(rawTemp)
+            : currentTempC,
+      };
+    });
+
+    const todayHourly = todayDateIso
+      ? allHourly.filter((_, idx) => hourlyTimes[idx]?.startsWith(todayDateIso))
+      : [];
+    const hourly = todayHourly.length > 0 ? todayHourly : allHourly.slice(-24);
+
     const todayMaxFromDaily =
       dailyMaxTemps.length > 0
         ? dailyMaxTemps[dailyMaxTemps.length - 1].maxTempC
@@ -151,6 +205,7 @@ export async function fetchOpenMeteoWeather(
       heatNoteAr,
       fetchedAtIso: new Date().toISOString(),
       dailyMaxTemps,
+      hourly,
     };
 
     try {

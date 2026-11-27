@@ -500,6 +500,52 @@ export function playSoftChime(
 }
 
 /**
+ * Gentle Web Audio chimes for daily sunlight exposure cues and completion.
+ */
+export function playSunlightChime(
+  type: 'morning' | 'noon' | 'evening' | 'end'
+): boolean {
+  const ctx = getCtx();
+  if (!ctx) return false;
+
+  const playNotes = () => {
+    if (type === 'morning') {
+      // Warm rising dawn triad (C5 -> E5 -> G5)
+      scheduleTone(ctx, 523.25, 0.0, 0.32, 'sine', 0.11);
+      scheduleTone(ctx, 659.25, 0.14, 0.36, 'sine', 0.11);
+      scheduleTone(ctx, 783.99, 0.28, 0.55, 'sine', 0.1);
+    } else if (type === 'noon') {
+      // Bright clear solar bell (G5 -> B5 -> D6)
+      scheduleTone(ctx, 783.99, 0.0, 0.26, 'triangle', 0.1);
+      scheduleTone(ctx, 987.77, 0.12, 0.3, 'sine', 0.11);
+      scheduleTone(ctx, 1174.66, 0.24, 0.48, 'sine', 0.1);
+    } else if (type === 'evening') {
+      // Soft amber descending sunset tone (A4 -> F4 -> D4)
+      scheduleTone(ctx, 440.0, 0.0, 0.38, 'sine', 0.1);
+      scheduleTone(ctx, 349.23, 0.16, 0.42, 'sine', 0.1);
+      scheduleTone(ctx, 293.66, 0.34, 0.6, 'sine', 0.09);
+    } else {
+      // Gentle completion two-note bell (E5 -> A5)
+      scheduleTone(ctx, 659.25, 0.0, 0.28, 'sine', 0.1);
+      scheduleTone(ctx, 880.0, 0.15, 0.5, 'sine', 0.11);
+    }
+  };
+
+  if (ctx.state === 'running') {
+    playNotes();
+  } else if (ctx.state === 'suspended') {
+    void ctx
+      .resume()
+      .then(() => {
+        if (ctx.state === 'running') playNotes();
+      })
+      .catch(() => {});
+  }
+
+  return true;
+}
+
+/**
  * Distinct crystalline ascending harmonic signature exclusively for
  * "Smart Charge Complete" (90% phone battery reached).
  */
