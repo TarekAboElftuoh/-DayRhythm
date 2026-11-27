@@ -479,7 +479,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
     }
 
-    private static boolean shouldShowFullScreenAlert(Context context) {
+    public static boolean shouldShowFullScreenAlert(Context context) {
         if (context == null) return true;
         try {
             PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);

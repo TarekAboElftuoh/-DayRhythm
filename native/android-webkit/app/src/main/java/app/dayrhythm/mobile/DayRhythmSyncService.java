@@ -1557,6 +1557,7 @@ public class DayRhythmSyncService extends Service {
                     if ("pong".equals(trimmed) || trimmed.contains("\"pong\"")) return;
 
                     // Direct native execution of sub-second cross-device alarm triggers & dismissals
+                    boolean skipSyncBroadcast = false;
                     try {
                         JSONObject json = new JSONObject(text);
                         String scope = json.optString("scope", "");
@@ -1568,14 +1569,16 @@ public class DayRhythmSyncService extends Service {
                             String kind = extra != null ? extra.optString("kind", "") : json.optString("action", "general");
                             if (kind == null || kind.isEmpty()) kind = "general";
                             int snoozeMin = extra != null ? extra.optInt("snoozeMinutes", 5) : 5;
+                            boolean showFullScreen = ReminderAlarmReceiver.shouldShowFullScreenAlert(DayRhythmSyncService.this);
                             ReminderAlarmReceiver.triggerImmediateNativeAlarm(
                                     DayRhythmSyncService.this,
                                     title,
                                     body,
                                     kind,
-                                    true,
+                                    showFullScreen,
                                     snoozeMin
                             );
+                            skipSyncBroadcast = true;
                         } else if ("alarm_dismiss".equals(scope)) {
                             CloudSignalClient.markRemoteDismissReceived(System.currentTimeMillis());
                             ReminderAlarmReceiver.cancelAllActiveAlarms(DayRhythmSyncService.this);
@@ -1583,10 +1586,12 @@ public class DayRhythmSyncService extends Service {
                     } catch (Exception ignored) {
                     }
 
-                    Intent syncIntent = new Intent(ACTION_WS_SYNC_MESSAGE);
-                    syncIntent.setPackage(getPackageName());
-                    syncIntent.putExtra(EXTRA_WS_PAYLOAD, text);
-                    sendBroadcast(syncIntent);
+                    if (!skipSyncBroadcast) {
+                        Intent syncIntent = new Intent(ACTION_WS_SYNC_MESSAGE);
+                        syncIntent.setPackage(getPackageName());
+                        syncIntent.putExtra(EXTRA_WS_PAYLOAD, text);
+                        sendBroadcast(syncIntent);
+                    }
                 });
             }
 
