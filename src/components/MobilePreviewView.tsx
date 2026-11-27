@@ -15,8 +15,6 @@ import {
   ExternalLink,
   AlertTriangle,
   Clock,
-  Timer,
-  Plane,
   Sparkles,
   RotateCcw,
 } from 'lucide-react';
@@ -49,14 +47,9 @@ interface MobilePreviewViewProps {
   onLogWaterCup: () => void;
   quietMode: QuietModeType;
   quietRemainingSec: number;
-  onCycleQuietMode: () => void;
-  onSetQuietMode: (mode: QuietModeType, durationMinutes: number) => void;
   adhanOverrideSilent: boolean;
   onTestAdhanChime: () => void;
   travelState: TravelState;
-  onOpenTravel: () => void;
-  onOpenCatchUp: () => void;
-  onOpenPomodoro: () => void;
   batteryGuard: BatteryGuardState;
   onSimulateCharge90: () => void;
   onSimulatePowerDisconnect: () => void;
@@ -94,10 +87,6 @@ const LEAD_MINUTE_OPTIONS: LiveAlertsLeadMinutes[] = [5, 10, 15, 20, 30];
 export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
   hydrationToday,
   quietMode,
-  onSetQuietMode,
-  onOpenTravel,
-  onOpenCatchUp,
-  onOpenPomodoro,
   batteryGuard,
   onToggleBypassCharging,
   hasShakeUndoActive,
@@ -442,49 +431,26 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
 
       </div>
 
-      {/* Primary Section 3: Synced Quiet Mode */}
-      <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-bold text-white flex items-center gap-2">
-            <Volume2 className="w-4 h-4 text-[#7FFFD4]" />
-            <span>الوضع الهادئ المتزامن (هاتف + كمبيوتر)</span>
-          </h2>
-          <span className="text-xs text-[#7FFFD4] font-semibold">
-            {QUIET_MODE_LABELS[quietMode].ar}
-          </span>
+      {/* Compact read-only status pill when Meeting Mode is active */}
+      {quietMode !== 'normal' && (
+        <div className="inline-flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-400/10 px-3.5 py-1.5 text-xs text-amber-200">
+          <Volume2 className="w-3.5 h-3.5 shrink-0" />
+          <span>وضع الاجتماع نشط: {QUIET_MODE_LABELS[quietMode].ar}</span>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {(['normal', 'mute_audio', 'vibrate_only', 'silent_all'] as QuietModeType[]).map(
-            (mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => onSetQuietMode(mode, mode === 'normal' ? 0 : 60)}
-                className={`min-h-[44px] rounded-xl border px-3 py-2 text-xs font-semibold transition-colors cursor-pointer ${
-                  quietMode === mode
-                    ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                    : 'border-white/[0.08] bg-black/40 text-zinc-300 hover:border-white/20'
-                }`}
-              >
-                {QUIET_MODE_LABELS[mode].ar}
-              </button>
-            )
-          )}
-        </div>
-      </section>
+      )}
 
-      {/* Mobile Quick Tools Strip (Pomodoro, Travel, Catch-Up, Bypass Charging, Shake-Undo) */}
+      {/* Hardware Controls: Bypass Charging, Charge Limit & Synced Alarm Test */}
       <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <BatteryCharging className="w-4 h-4 text-[#7FFFD4]" />
-              <span>الشحن التجاوزي والأدوات السريعة</span>
+              <span>الشحن التجاوزي وحماية البطارية</span>
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
               {phoneBattery
                 ? `${phoneBattery.levelPct}% · ${batteryEtaText}`
-                : 'تحكم سريع بالشحن والتركيز والسفر من الهاتف'}
+                : 'تحكم مباشر بحد الشحن والتنبيهات من الهاتف'}
             </p>
           </div>
           {hasShakeUndoActive && (
@@ -591,33 +557,6 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
               </div>
             </div>
           )}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 border-t border-white/[0.07]">
-          <button
-            type="button"
-            onClick={onOpenPomodoro}
-            className="min-h-[44px] px-3 rounded-xl border border-white/[0.08] bg-black/40 text-xs font-semibold text-zinc-200 hover:border-[#7FFFD4]/40 transition-colors cursor-pointer flex items-center justify-center gap-2"
-          >
-            <Timer className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            <span>بومودورو التركيز</span>
-          </button>
-          <button
-            type="button"
-            onClick={onOpenTravel}
-            className="min-h-[44px] px-3 rounded-xl border border-white/[0.08] bg-black/40 text-xs font-semibold text-zinc-200 hover:border-[#7FFFD4]/40 transition-colors cursor-pointer flex items-center justify-center gap-2"
-          >
-            <Plane className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            <span>وضع السفر</span>
-          </button>
-          <button
-            type="button"
-            onClick={onOpenCatchUp}
-            className="min-h-[44px] px-3 rounded-xl border border-white/[0.08] bg-black/40 text-xs font-semibold text-zinc-200 hover:border-[#7FFFD4]/40 transition-colors cursor-pointer flex items-center justify-center gap-2"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            <span>تدارك اليوم</span>
-          </button>
         </div>
 
         {(onTriggerRing || alarmRinging) && (

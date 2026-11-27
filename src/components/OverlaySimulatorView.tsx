@@ -100,7 +100,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
       {/* Clean Header */}
       <header className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/[0.08]">
         <div>
-          <h1 className="text-lg font-bold text-white">إعدادات الكمبيوتر</h1>
+          <h1 className="text-lg font-bold text-white">وضع الكمبيوتر</h1>
           <p className="text-xs text-zinc-400 mt-1">
             التحكم المباشر في كبسولة سطح المكتب، بطارية الهاتف، والتزامن اللحظي للتنبيهات
           </p>
@@ -344,7 +344,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
           </div>
 
           <div className="flex items-center justify-between gap-2 text-xs text-zinc-400 px-1">
-            <span>الوضع الهادئ الحالي</span>
+            <span>وضع الاجتماع الحالي</span>
             <span className="font-semibold text-zinc-200">{QUIET_MODE_LABELS[quietMode].ar}</span>
           </div>
 

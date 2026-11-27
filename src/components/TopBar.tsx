@@ -183,8 +183,8 @@ export const TopBar: React.FC<TopBarProps> = ({
                 type="button"
                 onClick={onToggleSunMode}
                 className="min-w-[44px] min-h-[44px] sm:min-w-[40px] sm:min-h-[40px] sm:w-10 sm:h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0"
-                title={sunMode ? 'الرجوع للمود الليلي' : 'مود الشمس (للقراءة في النور)'}
-                aria-label={sunMode ? 'المود الليلي' : 'مود الشمس'}
+                title={sunMode ? 'الرجوع للوضع الليلي' : 'الوضع النهاري (للقراءة في النور)'}
+                aria-label={sunMode ? 'الوضع الليلي' : 'الوضع النهاري'}
                 aria-pressed={sunMode}
               >
                 {sunMode ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}

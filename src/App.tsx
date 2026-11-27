@@ -10330,14 +10330,9 @@ ${lifeConstitution}
             onLogWaterCup={handleLogWaterCup}
             quietMode={quietMode}
             quietRemainingSec={quietRemainingSec}
-            onCycleQuietMode={handleCycleQuietMode}
-            onSetQuietMode={handleSetQuietMode}
             adhanOverrideSilent={adhanOverrideSilent}
             onTestAdhanChime={handleTestAdhanChime}
             travelState={travelState}
-            onOpenTravel={() => setIsTravelModalOpen(true)}
-            onOpenCatchUp={() => setIsCatchUpModalOpen(true)}
-            onOpenPomodoro={() => setIsPomodoroModalOpen(true)}
             batteryGuard={batteryGuard}
             onSimulateCharge90={handleSimulateCharge90}
             onSimulatePowerDisconnect={handleSimulatePowerDisconnect}

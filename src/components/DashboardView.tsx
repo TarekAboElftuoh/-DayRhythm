@@ -1198,24 +1198,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-zinc-400">
-            <button
-              type="button"
-              onClick={() => void onDetectGpsLocation()}
-              disabled={isDetectingGps}
-              title="تحديث الموقع عبر GPS"
-              className="text-zinc-300 hover:text-[#7FFFD4] font-medium inline-flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-60"
+            <span
+              title="الموقع الحالي"
+              className="text-zinc-300 font-medium inline-flex items-center gap-1"
             >
               <MapPin className="w-3.5 h-3.5 text-[#7FFFD4]" />
               <span>
-                {isDetectingGps
-                  ? 'جارٍ التحديد...'
-                  : travelState.active
-                    ? language === 'ar'
-                      ? travelState.location.nameAr
-                      : travelState.location.nameEn
-                    : lifeProfile.currentCityName}
+                {travelState.active
+                  ? language === 'ar'
+                    ? travelState.location.nameAr
+                    : travelState.location.nameEn
+                  : lifeProfile.currentCityName}
               </span>
-            </button>
+            </span>
 
             {weatherInfo && (
               <>
@@ -1233,17 +1228,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {phoneBattery && (
               <>
                 <span className="text-zinc-700" aria-hidden="true">·</span>
-                <button
-                  type="button"
-                  onClick={onOpenLifeProfile}
-                  className={`inline-flex items-center gap-1 font-mono-tabular transition-colors cursor-pointer ${
+                <span
+                  className={`inline-flex items-center gap-1 font-mono-tabular ${
                     phoneBattery.charging && phoneBattery.levelPct >= phoneBattery.chargeLimitPct
                       ? 'text-[#4ADE80] font-semibold'
                       : phoneBattery.charging
                         ? 'text-[#7FFFD4]'
-                        : 'text-zinc-400 hover:text-zinc-200'
+                        : 'text-zinc-400'
                   }`}
-                  title={`${phoneBattery.deviceLabel || 'الهاتف'} · حد الشحن ${phoneChargeLimitPct}%`}
+                  title={phoneBattery.deviceLabel || 'الهاتف'}
                 >
                   {phoneBattery.charging ? (
                     <BatteryCharging className="w-3.5 h-3.5 shrink-0" />
@@ -1261,7 +1254,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           : `${phoneBattery.chargeTimeRemainingMin}د`}
                       </span>
                     )}
-                </button>
+                </span>
               </>
             )}
 
@@ -1316,10 +1309,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   ? 'border-amber-400/50 bg-amber-400/15 text-amber-200'
                   : 'border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/15'
               }`}
-              title="كتم الصوت أثناء الاجتماع (بتوقيت)"
+              title="وضع الاجتماع وكتم الصوت مؤقتاً أو حتى الإلغاء"
             >
               <MicOff className="w-3.5 h-3.5" />
-              <span>{quietMode !== 'normal' ? 'إنهاء الاجتماع' : 'اجتماع'}</span>
+              <span>{quietMode !== 'normal' ? 'إنهاء وضع الاجتماع' : 'وضع الاجتماع'}</span>
             </button>
 
             {meetingPickerOpen && (
@@ -1475,13 +1468,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="flex items-center gap-2 shrink-0 text-[11px] text-zinc-400">
             <span className="font-mono-tabular">الحد: {phoneChargeLimitPct}%</span>
-            <button
-              type="button"
-              onClick={onOpenLifeProfile}
-              className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-zinc-200 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] cursor-pointer transition-colors"
-            >
-              تعديل الحد
-            </button>
           </div>
         </div>
       )}

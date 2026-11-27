@@ -181,20 +181,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   onToggleBiweeklyPcCleanup,
   calendarConnected = false,
   onGoogleSignOut,
-  quietMode = 'normal',
-  onSetQuietMode,
   soundRepeats,
   onUpdateSoundRepeat,
   onTriggerTaskAlert,
-  phoneBattery = null,
-  phoneChargeLimitPct = 90,
-  onUpdatePhoneChargeLimit,
-  smartChargeAlertEnabled = true,
-  onToggleSmartChargeAlertEnabled,
-  smartChargeKeepUntilUnplugged = true,
-  onToggleSmartChargeKeepUntilUnplugged,
-  smartChargeAudioActive = false,
-  onTestSmartChargeAlert,
   onCheckAppUpdates,
   activeBrandLogo,
   onOpenLogoPicker,
@@ -1015,34 +1004,6 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             )}
           </div>
 
-          {onSetQuietMode && (
-            <div className="space-y-2 pt-2 border-t border-white/10">
-              <div className="text-[11px] text-zinc-400">وضع الهدوء السريع</div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {(['normal', 'mute_audio', 'vibrate_only', 'silent_all'] as const).map((qm) => {
-                  const active = quietMode === qm;
-                  return (
-                    <button
-                      key={qm}
-                      type="button"
-                      onClick={() => onSetQuietMode(qm, 0)}
-                      className={`rounded-xl border p-2 text-right transition-colors cursor-pointer ${
-                        active
-                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/10 text-white'
-                          : 'border-white/10 bg-black/40 text-zinc-300 hover:border-white/25'
-                      }`}
-                    >
-                      <div className="text-[11px] font-semibold">{QUIET_MODE_LABELS[qm].ar}</div>
-                      <div className="text-[11px] text-zinc-500 mt-0.5 truncate">
-                        {QUIET_MODE_LABELS[qm].descAr}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
           {/* Configurable Default Snooze Duration (5 / 10 / 15 min, default 5) */}
           <div className="space-y-2 pt-2 border-t border-white/10">
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
@@ -1135,106 +1096,6 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
                     </div>
                   );
                 })}
-              </div>
-            </div>
-          )}
-
-          {/* Smart Charge Complete Alert Settings (Moved Inside Settings) */}
-          {onToggleSmartChargeAlertEnabled && onUpdatePhoneChargeLimit && (
-            <div className="space-y-2.5 pt-3 border-t border-white/10">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-white">
-                  <BatteryCharging className="w-4 h-4 text-[#7FFFD4]" />
-                  <span>التنبيه الذكي عند اكتمال شحن الهاتف</span>
-                </div>
-                {phoneBattery && (
-                  <span className="font-mono-tabular text-[11px] text-[#7FFFD4]">
-                    {phoneBattery.charging ? '⚡ ' : ''}
-                    {phoneBattery.levelPct}% · متبقي {Math.max(0, 100 - phoneBattery.levelPct)}% للامتلاء
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-zinc-400">
-                {isMobile
-                  ? 'حماية بطارية الهاتف من الشحن الزائد: يصدر تنبيهاً صوتياً فورياً عند وصول نسبة الشحن إلى الحد المحدد للحفاظ على عمر البطارية.'
-                  : 'يصدر إشعاراً صوتياً خاصاً على الكمبيوتر عند وصول شحن الهاتف إلى النسبة المحددة، مع إمكانية إيقافه بضغطة واحدة.'}
-              </p>
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={onToggleSmartChargeAlertEnabled}
-                  className={`px-3 py-1.5 rounded-lg border font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
-                    smartChargeAlertEnabled
-                      ? 'border-[#4ADE80]/50 bg-[#4ADE80]/15 text-[#4ADE80]'
-                      : 'border-white/10 bg-black/40 text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  {smartChargeAlertEnabled ? (
-                    <Volume2 className="w-3.5 h-3.5" />
-                  ) : (
-                    <VolumeX className="w-3.5 h-3.5" />
-                  )}
-                  <span>{smartChargeAlertEnabled ? 'التنبيه الذكي مفعّل' : 'التنبيه الذكي متوقف'}</span>
-                </button>
-
-                <span className="text-[11px] text-zinc-400">حد التنبيه:</span>
-                {[80, 85, 90, 95, 100].map((pct) => (
-                  <button
-                    key={pct}
-                    type="button"
-                    onClick={() => onUpdatePhoneChargeLimit(pct)}
-                    className={`px-2.5 py-1 rounded-lg border font-mono-tabular text-[11px] cursor-pointer transition-colors ${
-                      phoneChargeLimitPct === pct
-                        ? 'border-[#7FFFD4] bg-[#7FFFD4]/20 text-[#7FFFD4] font-bold'
-                        : 'border-white/10 text-zinc-400 hover:text-white'
-                    }`}
-                  >
-                    {pct}%
-                  </button>
-                ))}
-
-                {onToggleSmartChargeKeepUntilUnplugged && (
-                  <button
-                    type="button"
-                    onClick={onToggleSmartChargeKeepUntilUnplugged}
-                    className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
-                      smartChargeKeepUntilUnplugged
-                        ? 'border-amber-400/60 bg-amber-500/15 text-amber-200'
-                        : 'border-white/10 bg-black/40 text-zinc-400 hover:text-white'
-                    }`}
-                    title="عند التفعيل: يستمر رنين التنبيه دون توقف مؤقت حتى تفصل الشاحن عن الموبايل أو توقفه يدوياً"
-                  >
-                    <span>
-                      {smartChargeKeepUntilUnplugged
-                        ? '🔔 مستمر حتى فصل الشاحن ✓'
-                        : '⏱️ يتوقف تلقائياً بعد دقيقتين'}
-                    </span>
-                  </button>
-                )}
-
-                {onTestSmartChargeAlert && (
-                  <button
-                    type="button"
-                    onClick={onTestSmartChargeAlert}
-                    className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
-                      smartChargeAudioActive
-                        ? 'border-rose-400 bg-rose-500/20 text-rose-200 font-bold'
-                        : 'border-white/15 text-zinc-200 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4]'
-                    }`}
-                  >
-                    {smartChargeAudioActive ? (
-                      <>
-                        <BellOff className="w-3.5 h-3.5" />
-                        <span>إيقاف التنبيه</span>
-                      </>
-                    ) : (
-                      <>
-                        <Volume2 className="w-3.5 h-3.5" />
-                        <span>تجربة الصوت</span>
-                      </>
-                    )}
-                  </button>
-                )}
               </div>
             </div>
           )}
