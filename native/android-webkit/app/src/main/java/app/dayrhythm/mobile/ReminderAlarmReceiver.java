@@ -1,6 +1,7 @@
 package app.dayrhythm.mobile;
 
 import android.app.AlarmManager;
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -478,6 +479,19 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
     }
 
+    private static boolean shouldShowFullScreenAlert(Context context) {
+        if (context == null) return true;
+        try {
+            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            boolean isInteractive = pm != null && pm.isInteractive();
+            KeyguardManager km = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+            boolean isLocked = km != null && km.isKeyguardLocked();
+            return !isInteractive || isLocked;
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
     public static void triggerImmediateNativeAlarm(
             Context context,
             String title,
@@ -490,19 +504,22 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         String dedupeKey = (title != null ? title : "") + ":" + (kind != null ? kind : "");
         if (isRecentlyFired(dedupeKey)) return;
 
-        try {
-            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-            if (pm != null) {
-                // Wake screen so the card / alert is immediately visible
-                PowerManager.WakeLock wakeLock = pm.newWakeLock(
-                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK
-                                | PowerManager.ACQUIRE_CAUSES_WAKEUP
-                                | PowerManager.ON_AFTER_RELEASE,
-                        "DayRhythm:ImmediateAlarmWakeLock"
-                );
-                wakeLock.acquire(15_000L);
+        boolean fullScreen = shouldShowFullScreenAlert(context);
+        if (fullScreen) {
+            try {
+                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                if (pm != null) {
+                    // Wake screen so the card / alert is immediately visible
+                    PowerManager.WakeLock wakeLock = pm.newWakeLock(
+                            PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                                    | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                                    | PowerManager.ON_AFTER_RELEASE,
+                            "DayRhythm:ImmediateAlarmWakeLock"
+                    );
+                    wakeLock.acquire(15_000L);
+                }
+            } catch (Exception ignored) {
             }
-        } catch (Exception ignored) {
         }
 
         try {
@@ -517,19 +534,22 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     body != null ? body : "",
                     "",
                     "",
-                    sanitizeSnoozeMinutes(snoozeMinutes)
+                    sanitizeSnoozeMinutes(snoozeMinutes),
+                    fullScreen
             );
-            launchAlarmCard(
-                    context,
-                    notifId,
-                    "live_" + notifId,
-                    kind != null ? kind : "general",
-                    title != null ? title : "تنبيه إيقاع اليوم",
-                    body != null ? body : "",
-                    "",
-                    "",
-                    snoozeMinutes
-            );
+            if (fullScreen) {
+                launchAlarmCard(
+                        context,
+                        notifId,
+                        "live_" + notifId,
+                        kind != null ? kind : "general",
+                        title != null ? title : "تنبيه إيقاع اليوم",
+                        body != null ? body : "",
+                        "",
+                        "",
+                        snoozeMinutes
+                );
+            }
             scheduleUnattendedAutoSnooze(
                     context,
                     notifId,
@@ -612,27 +632,32 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             String dedupeKey = (alarmId != null && !alarmId.isEmpty() ? alarmId : (title != null ? title : "")) + ":" + (kind != null ? kind : "");
             if (isRecentlyFired(dedupeKey)) return;
 
-            try {
-                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-                if (pm != null) {
-                    PowerManager.WakeLock wakeLock = pm.newWakeLock(
-                            PowerManager.SCREEN_BRIGHT_WAKE_LOCK
-                                    | PowerManager.ACQUIRE_CAUSES_WAKEUP
-                                    | PowerManager.ON_AFTER_RELEASE,
-                            "DayRhythm:AlarmWakeLock"
-                    );
-                    wakeLock.acquire(15_000L);
+            boolean fullScreen = shouldShowFullScreenAlert(context);
+            if (fullScreen) {
+                try {
+                    PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                    if (pm != null) {
+                        PowerManager.WakeLock wakeLock = pm.newWakeLock(
+                                PowerManager.SCREEN_BRIGHT_WAKE_LOCK
+                                        | PowerManager.ACQUIRE_CAUSES_WAKEUP
+                                        | PowerManager.ON_AFTER_RELEASE,
+                                "DayRhythm:AlarmWakeLock"
+                        );
+                        wakeLock.acquire(15_000L);
+                    }
+                } catch (Exception ignored) {
                 }
-            } catch (Exception ignored) {
             }
             try {
                 // Play distinct per-category sound continuously with repeating vibration pulses
                 boolean isContinuous = true;
                 playNativeAlarmSound(context, isContinuous, kind);
-                showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
+                showInteractiveNotification(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin, fullScreen);
 
-                // Launch desktop-style AlarmActivity card over lock screen
-                launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
+                // Launch desktop-style AlarmActivity card only when screen is off or device is locked
+                if (fullScreen) {
+                    launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
+                }
 
                 // If user does not acknowledge within 1 minute, automatically switch to 5-min snooze loop
                 scheduleUnattendedAutoSnooze(context, notifId, alarmId, kind, title, body, medId, doseTime);
@@ -873,7 +898,8 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             String body,
             String medId,
             String doseTime,
-            int snoozeMin
+            int snoozeMin,
+            boolean fullScreen
     ) {
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
@@ -1003,12 +1029,14 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 .setColor(0xFF7FFFD4)
                 .setVibrate(VIBRATION_PATTERN)
                 .setAutoCancel(true)
-                .setFullScreenIntent(fullScreenPi, true)
                 .setContentIntent(dismissPi)
                 .setDeleteIntent(dismissPi)
                 .addAction(0, "🔕 إيقاف", dismissPi)
                 .addAction(0, doneLabel, donePi)
                 .addAction(0, "⏰ تأجيل " + snoozeMin + " د", snoozePi);
+        if (fullScreen) {
+            builder.setFullScreenIntent(fullScreenPi, true);
+        }
 
         try {
             // Its own id, never the service's 1001: the service rewrites 1001 with the countdown

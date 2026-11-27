@@ -9009,8 +9009,10 @@ export default function App() {
               snoozeMinutes,
             });
           }
-          // Red Sun (Golden Hour) alarm derived from maghrib.redSunMinutes
-          if (p.id === 'maghrib') {
+          // Red Sun (Golden Hour) alarm derived from maghrib.redSunMinutes (skip if evening sunlight session is active)
+          const hasActiveEveningSunlight =
+            sunlightSettings.enabled && sunlightSessions.some((s) => s.id === 'evening' && s.enabled);
+          if (p.id === 'maghrib' && !hasActiveEveningSunlight) {
             const redSunMin = (p as typeof p & { redSunMinutes?: number }).redSunMinutes;
             if (typeof redSunMin === 'number') {
               const rsTriggerAtMs = msForMinuteToday(redSunMin);
@@ -9147,6 +9149,42 @@ export default function App() {
         }
       }
 
+      // 6. Daily Sunlight Sessions (morning, noon, evening — start minus leadMinutes, and end)
+      if (sunlightSettings.enabled) {
+        for (const session of sunlightSessions) {
+          if (!session.enabled || session.isCloudBlocked) continue;
+          if (!isSilencedAtMinute(session.alertMinutes)) {
+            const startTriggerAtMs = msForMinuteToday(session.alertMinutes);
+            if (startTriggerAtMs > nowMs + 1_000) {
+              alarms.push({
+                id: `sunlight_start_${todayCairoIso}_${session.id}`,
+                kind: 'event',
+                title:
+                  session.leadMinutes > 0
+                    ? `${session.emoji} ${session.labelAr} بعد ${session.leadMinutes} د`
+                    : `${session.emoji} ابدأ ${session.labelAr} الآن`,
+                body: `${session.descAr} · ${formatMinutes12h(session.startMinutes, 'ar')} (${session.durationMinutes} د)`,
+                triggerAtMs: startTriggerAtMs,
+                snoozeMinutes,
+              });
+            }
+          }
+          if (!isSilencedAtMinute(session.endMinutes)) {
+            const endTriggerAtMs = msForMinuteToday(session.endMinutes);
+            if (endTriggerAtMs > nowMs + 1_000) {
+              alarms.push({
+                id: `sunlight_end_${todayCairoIso}_${session.id}`,
+                kind: 'event',
+                title: `${session.emoji} انتهت جلسة ${session.labelAr}`,
+                body: `اكتملت مدة التعرّض للشمس (${formatMinutes12h(session.endMinutes, 'ar')})`,
+                triggerAtMs: endTriggerAtMs,
+                snoozeMinutes,
+              });
+            }
+          }
+        }
+      }
+
       alarms.sort((a, b) => a.triggerAtMs - b.triggerAtMs);
 
       const alarmsJson = JSON.stringify(alarms.slice(0, 60));
@@ -9187,6 +9225,8 @@ export default function App() {
     medications,
     needsAuth,
     prayers,
+    sunlightSessions,
+    sunlightSettings.enabled,
     todayCairoIso,
     waterRemindersEnabled,
   ]);
