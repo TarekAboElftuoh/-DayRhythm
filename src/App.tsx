@@ -233,7 +233,6 @@ import { SYNC_TASK_TITLE, VAULT_LIST_TITLE, type TasksVaultPayload } from './typ
 const MobilePreviewView = lazy(() => import('./components/MobilePreviewView').then((m) => ({ default: m.MobilePreviewView })));
 const OverlaySimulatorView = lazy(() => import('./components/OverlaySimulatorView').then((m) => ({ default: m.OverlaySimulatorView })));
 const GeminiAssistantView = lazy(() => import('./components/GeminiAssistantView').then((m) => ({ default: m.GeminiAssistantView })));
-const TravelModeModal = lazy(() => import('./components/TravelModeModal').then((m) => ({ default: m.TravelModeModal })));
 const SmartCatchUpModal = lazy(() => import('./components/SmartCatchUpModal').then((m) => ({ default: m.SmartCatchUpModal })));
 const PomodoroModal = lazy(() => import('./components/PomodoroModal').then((m) => ({ default: m.PomodoroModal })));
 const LifeProfileModal = lazy(() => import('./components/LifeProfileModal').then((m) => ({ default: m.LifeProfileModal })));
@@ -313,7 +312,16 @@ export default function App() {
     () => new Date().getDay() === 5
   );
   const [includeBiweeklyPcCleanup, setIncludeBiweeklyPcCleanup] = useState<boolean>(true);
-  const [surfaceTheme, setSurfaceTheme] = useState<SurfaceTheme>('amoled');
+  const SURFACE_THEME_STORAGE_KEY = 'dayrhythm_surface_theme_v1';
+  const [surfaceTheme, setSurfaceTheme] = useState<SurfaceTheme>(() => {
+    try {
+      const saved = localStorage.getItem(SURFACE_THEME_STORAGE_KEY);
+      if (saved === 'amoled' || saved === 'obsidian') return saved;
+    } catch {
+      // ignore
+    }
+    return 'amoled';
+  });
 
   // 4 Smart Timed Quiet Modes + Auto-Revert Timer (persisted with absolute quietUntilTs)
   const [quietMode, setQuietMode] = useState<QuietModeType>(() => {
@@ -1285,6 +1293,15 @@ export default function App() {
   pomodoroRef.current = pomodoro;
   const periodicRitualsRef = useRef(periodicRituals);
   periodicRitualsRef.current = periodicRituals;
+  const LAST_FIRESTORE_UPDATED_AT_KEY = 'dayrhythm_firestore_updated_at_v1';
+  const lastFirestoreUpdatedAtRef = useRef<number>((() => {
+    try {
+      const parsed = Number(localStorage.getItem(LAST_FIRESTORE_UPDATED_AT_KEY) || 0);
+      return Number.isFinite(parsed) ? parsed : 0;
+    } catch {
+      return 0;
+    }
+  })());
 
   const activeBrandLogo = useMemo(() => getLogoConceptById(selectedLogoId), [selectedLogoId]);
 
@@ -2751,6 +2768,20 @@ export default function App() {
         const backup = await loadFromGoogleDriveAppData(token);
         if (backup) {
           const remoteUpdatedAt = typeof backup.updatedAtMs === 'number' ? backup.updatedAtMs : 0;
+          let latestFirestoreUpdatedAt = lastFirestoreUpdatedAtRef.current;
+          try {
+            const storedFsTs = Number(localStorage.getItem(LAST_FIRESTORE_UPDATED_AT_KEY) || 0);
+            if (Number.isFinite(storedFsTs) && storedFsTs > latestFirestoreUpdatedAt) {
+              latestFirestoreUpdatedAt = storedFsTs;
+            }
+          } catch {
+            // ignore
+          }
+          if (latestFirestoreUpdatedAt > 0 && remoteUpdatedAt <= latestFirestoreUpdatedAt) {
+            setGoogleDriveSynced(true);
+            hasHydratedGoogleDriveRef.current = true;
+            return true;
+          }
           if (backup.lifeProfile && Date.now() >= localWriteLockUntilRef.current) {
             let localProfileUpdatedAt = 0;
             try {
@@ -2760,7 +2791,7 @@ export default function App() {
             } catch {
               localProfileUpdatedAt = 0;
             }
-            if (remoteUpdatedAt >= localProfileUpdatedAt) {
+            if (remoteUpdatedAt > localProfileUpdatedAt || localProfileUpdatedAt === 0) {
               const cleanProfile = sanitizeLifeProfile(backup.lifeProfile);
               lifeProfileRef.current = cleanProfile;
               setLifeProfile(cleanProfile);
@@ -2911,6 +2942,20 @@ export default function App() {
             }
           }
           if (typeof backup.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(backup.adhanOverrideSilent);
+          const backupWithTravel = backup as FullDayRhythmCloudBackup & { travelState?: TravelState };
+          if (backupWithTravel.travelState && Date.now() >= localWriteLockUntilRef.current) {
+            const cleanDriveTravel = sanitizeTravelState(backupWithTravel.travelState);
+            const localTravelTs = travelStateRef.current.updatedAt ?? 0;
+            if ((cleanDriveTravel.updatedAt ?? 0) > localTravelTs || localTravelTs === 0) {
+              travelStateRef.current = cleanDriveTravel;
+              setTravelState(cleanDriveTravel);
+              try {
+                localStorage.setItem(TRAVEL_STATE_STORAGE_KEY, JSON.stringify(cleanDriveTravel));
+              } catch {
+                // ignore storage errors
+              }
+            }
+          }
           if (Array.isArray(backup.chatMessages) && backup.chatMessages.length > 0) {
             setChatMessages(backup.chatMessages);
             try {
@@ -2938,7 +2983,7 @@ export default function App() {
   const pushFullCloudBackupImmediately = useCallback(
     async (
       customToken?: string,
-      overrides?: Partial<FullDayRhythmCloudBackup>
+      overrides?: Partial<FullDayRhythmCloudBackup> & { travelState?: TravelState }
     ): Promise<boolean> => {
       let token = customToken || (await getOrRefreshCalendarAccessToken());
       if (!token) return false;
@@ -2946,6 +2991,7 @@ export default function App() {
       const backup: FullDayRhythmCloudBackup & {
         quietUntilTs?: number | null;
         quietModeUpdatedAt?: number;
+        travelState?: TravelState;
       } = {
         version: 1,
         updatedAtIso: new Date().toISOString(),
@@ -2976,6 +3022,7 @@ export default function App() {
         smartChargeKeepUntilUnplugged: overrides?.smartChargeKeepUntilUnplugged ?? smartChargeKeepUntilUnplugged,
         capsulePrefs: overrides?.capsulePrefs ?? capsulePrefs,
         selectedLogoId: overrides?.selectedLogoId ?? selectedLogoId,
+        travelState: overrides?.travelState ?? travelState,
         chatMessages: (overrides?.chatMessages ?? chatMessages).slice(-50),
       };
 
@@ -3012,6 +3059,7 @@ export default function App() {
       smartChargeKeepUntilUnplugged,
       capsulePrefs,
       selectedLogoId,
+      travelState,
       chatMessages,
       showToast,
     ]
@@ -3374,6 +3422,15 @@ export default function App() {
     creativeActivities?: CreativeActivityItem[];
     memories?: MemoryItem[];
   }) => {
+    const remoteTs = (remote as { updatedAtMs?: number }).updatedAtMs;
+    if (typeof remoteTs === 'number' && remoteTs > lastFirestoreUpdatedAtRef.current) {
+      lastFirestoreUpdatedAtRef.current = remoteTs;
+      try {
+        localStorage.setItem(LAST_FIRESTORE_UPDATED_AT_KEY, String(remoteTs));
+      } catch {
+        // ignore storage errors
+      }
+    }
     // ── Instant Bidirectional Remote Alarm Dismissal (Phone ↔ PC) ──
     const remoteDismiss =
       (remote as { lastDismissSignal?: { opId?: string; timestampMs: number; scope: string; action: string; clientId: string } })
@@ -3526,6 +3583,11 @@ export default function App() {
     if (remote.surfaceTheme && remote.surfaceTheme !== surfaceThemeRef.current) {
       surfaceThemeRef.current = remote.surfaceTheme;
       setSurfaceTheme(remote.surfaceTheme);
+      try {
+        localStorage.setItem(SURFACE_THEME_STORAGE_KEY, remote.surfaceTheme);
+      } catch {
+        // ignore
+      }
     }
     if (remote.deviceSettings) {
       const cleanDev = sanitizeDeviceSettings(remote.deviceSettings);
@@ -4832,6 +4894,7 @@ export default function App() {
       const backup: FullDayRhythmCloudBackup & {
         quietUntilTs?: number | null;
         quietModeUpdatedAt?: number;
+        travelState?: TravelState;
       } = {
         version: 1,
         updatedAtIso: new Date().toISOString(),
@@ -4858,6 +4921,7 @@ export default function App() {
         smartChargeKeepUntilUnplugged,
         capsulePrefs,
         selectedLogoId,
+        travelState,
         chatMessages: chatMessages.slice(-50),
       };
 
@@ -4887,6 +4951,7 @@ export default function App() {
     smartChargeKeepUntilUnplugged,
     capsulePrefs,
     selectedLogoId,
+    travelState,
     chatMessages,
   ]);
 
@@ -5111,6 +5176,11 @@ export default function App() {
     (theme: SurfaceTheme) => {
       surfaceThemeRef.current = theme;
       setSurfaceTheme(theme);
+      try {
+        localStorage.setItem(SURFACE_THEME_STORAGE_KEY, theme);
+      } catch {
+        // ignore
+      }
       void pushToTasksVaultImmediately({ surfaceTheme: theme });
     },
     [pushToTasksVaultImmediately]
@@ -6075,10 +6145,13 @@ export default function App() {
     [prayers, dailyRhythmPlan, lifeProfile, baseLiveBlocks]
   );
 
-  // Auto-place Creative Activities ONLY into genuinely free slots today
+  // Auto-place Creative Activities ONLY into genuinely free slots today (hidden on Quiet/Low-Energy days)
   const creativePlacements: CreativeActivityPlacement[] = useMemo(
-    () => computeCreativePlacements(creativeActivities, freeSlotsToday, todayCairoIso, nowTickMin),
-    [creativeActivities, freeSlotsToday, todayCairoIso, nowTickMin]
+    () =>
+      lowEnergyActive
+        ? []
+        : computeCreativePlacements(creativeActivities, freeSlotsToday, todayCairoIso, nowTickMin),
+    [lowEnergyActive, creativeActivities, freeSlotsToday, todayCairoIso, nowTickMin]
   );
 
   // Merge free-slot Creative Activities gently into the daily timeline (skip duplicates already in Calendar)
@@ -7647,6 +7720,7 @@ export default function App() {
     if (waterRemindersEnabled && hydrationToday && !deferWater) {
       dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
         if (hydrationToday.slots[idx]) return;
+        if (lowEnergyActive && idx % 2 === 1) return;
         const diff = nowTickMin - slot.timeMinutes;
         if (diff >= 0 && diff <= 4) {
           const key = `${todayIso}:water:${slot.cupIndex}`;
@@ -7708,6 +7782,7 @@ export default function App() {
         block.source === 'prayer' ||
         block.reflowStatus === 'postponed_travel' ||
         (deferCalendar && block.source === 'google_calendar') ||
+        (lowEnergyActive && !block.isAnchor && block.source !== 'google_calendar') ||
         acknowledgedBlockIdsRef.current.has(block.id)
       ) {
         return;
@@ -7732,7 +7807,7 @@ export default function App() {
 
     // 3B. Timed Google Tasks reminders (fires 5-minute persistent alert + sound when a timed task arrives!)
     const deferTasks = travelState.active && (travelState.deferredCategories?.includes('tasks') ?? false);
-    if (!deferTasks) googleTasks.forEach((tk) => {
+    if (!deferTasks && !lowEnergyActive) googleTasks.forEach((tk) => {
       if (tk.status === 'completed') return;
       const info = extractTaskTimeMinutesForToday(tk, todayIso, activeTimeZone);
       if (!info || !info.hasExplicitTime) return;
@@ -7756,7 +7831,7 @@ export default function App() {
 
     // 3C. Solar event alerts: Red Sun (Golden Hour, 6° above horizon) and Maghrib (Sunset)
     // Deduplication: firedReminderKeysRef prevents re-firing same event on same day.
-    if (includePrayerAnchors) {
+    if (includePrayerAnchors && !lowEnergyActive) {
       const maghribItem = prayers.find((p) => p.id === 'maghrib');
       if (maghribItem) {
         // redSunMinutes is stored on the maghrib item by prayerEngine
@@ -7828,6 +7903,7 @@ export default function App() {
     handleLogWaterCup,
     handleAcknowledgeAudioAlert,
     includePrayerAnchors,
+    lowEnergyActive,
     prayers,
   ]);
 
@@ -7854,7 +7930,7 @@ export default function App() {
 
   // Daily Sunlight Exposure Chimes + Live/In-App Alerts (lead, start, end — deduplicated per session/day)
   useEffect(() => {
-    if (!sunlightSettings.enabled) return;
+    if (!sunlightSettings.enabled || lowEnergyActive) return;
     if (travelState.active && (travelState.deferredCategories?.includes('sunlight') ?? false)) return;
     const todayIso = getDateIsoInTimeZone(activeTimeZone);
     const sanctuaryBlocked = activeSanctuary.type !== 'none' || quietMode === 'silent_all';
@@ -9682,12 +9758,30 @@ export default function App() {
         doseTime24?: string;
       }> = [];
 
+      const sleepDurMin = (dailyRhythmPlan.wakeMin - dailyRhythmPlan.bedtimeMin + 1440) % 1440;
+      const isFullMuteMode = quietMode === 'silent_all' || quietMode === 'mute_audio';
+      const hasFiniteQuietUntil =
+        typeof quietUntilTs === 'number' && Number.isFinite(quietUntilTs) && quietUntilTs > 0;
+      const isMutedByQuietModeAt = (triggerAtMs: number) => {
+        if (!isFullMuteMode) return false;
+        if (hasFiniteQuietUntil) return triggerAtMs <= quietUntilTs;
+        return true;
+      };
+      const isSilencedAt = (minOfDay: number, triggerAtMs: number) => {
+        if (isMutedByQuietModeAt(triggerAtMs)) return true;
+        if (sleepDurMin > 0 && sleepDurMin < 900) {
+          const m = ((minOfDay % 1440) + 1440) % 1440;
+          if (((m - dailyRhythmPlan.bedtimeMin + 1440) % 1440) < sleepDurMin) return true;
+        }
+        return false;
+      };
+
       // 1. Obligatory Prayers (-adhanLeadMinutes)
       if (includePrayerAnchors) {
         for (const p of prayers) {
           if (!p.isObligatory) continue;
           const triggerAtMs = msForMinuteToday(p.alarmMinutes);
-          if (triggerAtMs > nowMs + 1_000) {
+          if (triggerAtMs > nowMs + 1_000 && (!isMutedByQuietModeAt(triggerAtMs) || adhanOverrideSilent)) {
             alarms.push({
               id: `prayer_${todayCairoIso}_${p.id}`,
               kind: 'prayer',
@@ -9700,14 +9794,14 @@ export default function App() {
               snoozeMinutes,
             });
           }
-          // Red Sun (Golden Hour) alarm derived from maghrib.redSunMinutes (skip if evening sunlight session is active)
+          // Red Sun (Golden Hour) alarm derived from maghrib.redSunMinutes (skip if evening sunlight session is active or lowEnergyActive)
           const hasActiveEveningSunlight =
             sunlightSettings.enabled && sunlightSessions.some((s) => s.id === 'evening' && s.enabled);
-          if (p.id === 'maghrib' && !hasActiveEveningSunlight) {
+          if (p.id === 'maghrib' && !hasActiveEveningSunlight && !lowEnergyActive) {
             const redSunMin = (p as typeof p & { redSunMinutes?: number }).redSunMinutes;
             if (typeof redSunMin === 'number') {
               const rsTriggerAtMs = msForMinuteToday(redSunMin);
-              if (rsTriggerAtMs > nowMs + 1_000) {
+              if (rsTriggerAtMs > nowMs + 1_000 && !isMutedByQuietModeAt(rsTriggerAtMs)) {
                 alarms.push({
                   id: `solar_redsun_${todayCairoIso}`,
                   kind: 'prayer',
@@ -9720,7 +9814,7 @@ export default function App() {
             }
             // Maghrib solar alert (distinct from obligatory prayer alert)
             const magTrigger = msForMinuteToday(p.adhanMinutes);
-            if (magTrigger > nowMs + 1_000) {
+            if (magTrigger > nowMs + 1_000 && !isMutedByQuietModeAt(magTrigger)) {
               alarms.push({
                 id: `solar_maghrib_${todayCairoIso}`,
                 kind: 'prayer',
@@ -9734,25 +9828,15 @@ export default function App() {
         }
       }
 
-      const sleepDurMin = (dailyRhythmPlan.wakeMin - dailyRhythmPlan.bedtimeMin + 1440) % 1440;
-      const isFullMuteMode = quietMode === 'silent_all' || quietMode === 'mute_audio';
-      const isSilencedAtMinute = (minOfDay: number) => {
-        if (isFullMuteMode) return true;
-        if (sleepDurMin > 0 && sleepDurMin < 900) {
-          const m = ((minOfDay % 1440) + 1440) % 1440;
-          if (((m - dailyRhythmPlan.bedtimeMin + 1440) % 1440) < sleepDurMin) return true;
-        }
-        return false;
-      };
-
       // 2. Remaining Water Cups today
       const deferWaterAlarm = travelState.active && (travelState.deferredCategories?.includes('water') ?? false);
       if (waterRemindersEnabled && hydrationToday && !deferWaterAlarm) {
         const totalCups = dailyRhythmPlan.hydrationSlots.length || targetCups;
         dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
-          if (hydrationToday.slots[idx] || isSilencedAtMinute(slot.timeMinutes)) return;
+          if (hydrationToday.slots[idx]) return;
+          if (lowEnergyActive && idx % 2 === 1) return;
           const triggerAtMs = msForMinuteToday(slot.timeMinutes);
-          if (triggerAtMs > nowMs + 1_000) {
+          if (triggerAtMs > nowMs + 1_000 && !isSilencedAt(slot.timeMinutes, triggerAtMs)) {
             alarms.push({
               id: `water_${todayCairoIso}_${slot.cupIndex}`,
               kind: 'water',
@@ -9782,9 +9866,8 @@ export default function App() {
           const m = t24.match(/^(\d{1,2}):(\d{2})$/);
           if (!m) continue;
           const medMin = Number(m[1]) * 60 + Number(m[2]);
-          if (isSilencedAtMinute(medMin)) continue;
           const triggerAtMs = msForMinuteToday(medMin);
-          if (triggerAtMs > nowMs + 1_000) {
+          if (triggerAtMs > nowMs + 1_000 && !isSilencedAt(medMin, triggerAtMs)) {
             const stockLine =
               typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
                 ? `\n💊 الرصيد المتبقي: ${med.remainingDoses} جرعة`
@@ -9813,10 +9896,10 @@ export default function App() {
           block.source === 'prayer' ||
           block.reflowStatus === 'postponed_travel' ||
           (deferCalendarAlarm && block.source === 'google_calendar') ||
-          isSilencedAtMinute(block.startMin)
+          (lowEnergyActive && !block.isAnchor && block.source !== 'google_calendar')
         ) continue;
         const triggerAtMs = msForMinuteToday(block.startMin);
-        if (triggerAtMs > nowMs + 1_000) {
+        if (triggerAtMs > nowMs + 1_000 && !isSilencedAt(block.startMin, triggerAtMs)) {
           const emoji = (block.emojiPair || '📅').trim();
           const titleText = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
           const desc = cleanCalendarText(block.description || '').slice(0, 220);
@@ -9834,12 +9917,12 @@ export default function App() {
 
       // 5. Timed Google Tasks today
       const deferTasksAlarm = travelState.active && (travelState.deferredCategories?.includes('tasks') ?? false);
-      if (!deferTasksAlarm) for (const tk of googleTasks) {
+      if (!deferTasksAlarm && !lowEnergyActive) for (const tk of googleTasks) {
         if (tk.status === 'completed') continue;
         const info = extractTaskTimeMinutesForToday(tk, todayCairoIso, activeTimeZone);
-        if (!info || !info.hasExplicitTime || isSilencedAtMinute(info.startMin)) continue;
+        if (!info || !info.hasExplicitTime) continue;
         const triggerAtMs = msForMinuteToday(info.startMin);
-        if (triggerAtMs > nowMs + 1_000) {
+        if (triggerAtMs > nowMs + 1_000 && !isSilencedAt(info.startMin, triggerAtMs)) {
           const titleText = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
           const notes = cleanCalendarText(tk.notes || '').slice(0, 220);
           alarms.push({
@@ -9855,37 +9938,33 @@ export default function App() {
 
       // 6. Daily Sunlight Sessions (morning, noon, evening — start minus leadMinutes, and end)
       const deferSunlightAlarm = travelState.active && (travelState.deferredCategories?.includes('sunlight') ?? false);
-      if (sunlightSettings.enabled && !deferSunlightAlarm) {
+      if (sunlightSettings.enabled && !deferSunlightAlarm && !lowEnergyActive) {
         for (const session of sunlightSessions) {
           if (!session.enabled || session.isCloudBlocked) continue;
-          if (!isSilencedAtMinute(session.alertMinutes)) {
-            const startTriggerAtMs = msForMinuteToday(session.alertMinutes);
-            if (startTriggerAtMs > nowMs + 1_000) {
-              alarms.push({
-                id: `sunlight_start_${todayCairoIso}_${session.id}`,
-                kind: 'event',
-                title:
-                  session.leadMinutes > 0
-                    ? `${session.emoji} ${session.labelAr} بعد ${session.leadMinutes} د`
-                    : `${session.emoji} ابدأ ${session.labelAr} الآن`,
-                body: `${session.descAr} · ${formatMinutes12h(session.startMinutes, 'ar')} (${session.durationMinutes} د)`,
-                triggerAtMs: startTriggerAtMs,
-                snoozeMinutes,
-              });
-            }
+          const startTriggerAtMs = msForMinuteToday(session.alertMinutes);
+          if (startTriggerAtMs > nowMs + 1_000 && !isSilencedAt(session.alertMinutes, startTriggerAtMs)) {
+            alarms.push({
+              id: `sunlight_start_${todayCairoIso}_${session.id}`,
+              kind: 'event',
+              title:
+                session.leadMinutes > 0
+                  ? `${session.emoji} ${session.labelAr} بعد ${session.leadMinutes} د`
+                  : `${session.emoji} ابدأ ${session.labelAr} الآن`,
+              body: `${session.descAr} · ${formatMinutes12h(session.startMinutes, 'ar')} (${session.durationMinutes} د)`,
+              triggerAtMs: startTriggerAtMs,
+              snoozeMinutes,
+            });
           }
-          if (!isSilencedAtMinute(session.endMinutes)) {
-            const endTriggerAtMs = msForMinuteToday(session.endMinutes);
-            if (endTriggerAtMs > nowMs + 1_000) {
-              alarms.push({
-                id: `sunlight_end_${todayCairoIso}_${session.id}`,
-                kind: 'event',
-                title: `${session.emoji} انتهت جلسة ${session.labelAr}`,
-                body: `اكتملت مدة التعرّض للشمس (${formatMinutes12h(session.endMinutes, 'ar')})`,
-                triggerAtMs: endTriggerAtMs,
-                snoozeMinutes,
-              });
-            }
+          const endTriggerAtMs = msForMinuteToday(session.endMinutes);
+          if (endTriggerAtMs > nowMs + 1_000 && !isSilencedAt(session.endMinutes, endTriggerAtMs)) {
+            alarms.push({
+              id: `sunlight_end_${todayCairoIso}_${session.id}`,
+              kind: 'event',
+              title: `${session.emoji} انتهت جلسة ${session.labelAr}`,
+              body: `اكتملت مدة التعرّض للشمس (${formatMinutes12h(session.endMinutes, 'ar')})`,
+              triggerAtMs: endTriggerAtMs,
+              snoozeMinutes,
+            });
           }
         }
       }
@@ -9931,6 +10010,9 @@ export default function App() {
     dailyRhythmPlan.isFastingToday,
     targetCups,
     quietMode,
+    quietUntilTs,
+    adhanOverrideSilent,
+    lowEnergyActive,
     firebaseUser?.isAnonymous,
     firebaseUser?.uid,
     googleTasks,
@@ -10400,10 +10482,11 @@ ${lifeConstitution}
         isLogoPickerOpen={isLogoPickerOpen}
         isPomodoroModalOpen={isPomodoroModalOpen}
         isSyncingGoogleDrive={isSyncingGoogleDrive}
-        isTravelModalOpen={false}
+        isTravelModalOpen={isTravelModalOpen}
         language={language}
         lifeProfile={lifeProfile}
         liveBlocks={liveBlocks}
+        medications={medications}
         memories={memories}
         needsAuth={needsAuth}
         nextMedicationQuick={nextMedicationQuick}
@@ -10428,27 +10511,11 @@ ${lifeConstitution}
         smartChargeKeepUntilUnplugged={smartChargeKeepUntilUnplugged}
         sunlightSettings={sunlightSettings}
         handleUpdateSunlightSettings={handleUpdateSunlightSettings}
+        todayCairoIso={todayCairoIso}
         travelState={travelState}
         triggerTaskAlert={triggerTaskAlert}
         undoSnapshot={undoSnapshot}
       />
-
-      {isTravelModalOpen && (
-        <Suspense fallback={null}>
-          <TravelModeModal
-            isOpen={isTravelModalOpen}
-            onClose={() => setIsTravelModalOpen(false)}
-            travelState={travelState}
-            scheduleBlocks={liveBlocks}
-            medications={medications}
-            currentLocation={activeLocation}
-            adhanLeadMinutes={lifeProfile.adhanLeadMinutes}
-            todayIso={todayCairoIso}
-            onApplyTravel={handleApplyTravel}
-            onDisableTravel={handleDisableTravel}
-          />
-        </Suspense>
-      )}
     </div>
   );
 }

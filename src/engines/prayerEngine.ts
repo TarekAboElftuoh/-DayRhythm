@@ -435,7 +435,7 @@ export function calculateEgyptianPrayerTimes(
 
   const toMinutes = (hoursFloat: number): number => {
     const normalized = ((hoursFloat % 24) + 24) % 24;
-    return Math.round(normalized * 60);
+    return Math.round(normalized * 60) % 1440;
   };
 
   const sunriseHa = hourAngleForAngle(0.833) ?? 6;
@@ -458,7 +458,7 @@ export function calculateEgyptianPrayerTimes(
 
   const fajrMin = toMinutes(fajrHour);
   const sunriseMin = toMinutes(sunriseHour);
-  const dhuhrMin = toMinutes(midday) + 1;
+  const dhuhrMin = (toMinutes(midday) + 1) % 1440;
   const asrMin = toMinutes(midday + asrHourAngle());
   const redSunMin = toMinutes(redSunHour);
   const maghribMin = toMinutes(maghribHour);

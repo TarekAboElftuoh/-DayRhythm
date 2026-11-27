@@ -730,20 +730,66 @@ export function applyTravelMatrix(
 export function computeCollisionFreeReflow(
   blocks: ScheduleBlock[],
   nowMin: number,
-  decisions: Record<string, CatchUpDecision>
+  decisions: Record<string, CatchUpDecision>,
+  options?: {
+    bedtimeMin?: number;
+    travelState?: TravelState;
+    lowEnergyActive?: boolean;
+  }
 ): ReflowResult {
-  const cloned = blocks.map((b) => ({
-    ...b,
-    originalStartMin: b.originalStartMin ?? b.startMin,
-    originalDurationMin: b.originalDurationMin ?? b.durationMin,
-  }));
+  const travel = options?.travelState;
+  const deferCalendar = travel?.active ? (travel.deferredCategories?.includes('calendar') ?? false) : false;
+  const deferTasks = travel?.active ? (travel.deferredCategories?.includes('tasks') ?? false) : false;
+  const deferredMeds = travel?.active ? new Set(travel.deferredMedIds ?? []) : null;
+
+  const isDeferredByTravelOrEnergy = (b: ScheduleBlock): boolean => {
+    if (b.reflowStatus === 'postponed_travel') return true;
+    const isDeferredMed = Boolean(
+      deferredMeds && Array.from(deferredMeds).some((id) => b.id.includes(id))
+    );
+    if (travel?.active && !b.isAnchor) {
+      if (b.source === 'google_calendar' && deferCalendar) return true;
+      if (isDeferredMed) return true;
+      if (deferTasks && b.source !== 'google_calendar' && b.travelGroup !== 'C_PORTABLE') {
+        return true;
+      }
+    }
+    if (
+      options?.lowEnergyActive &&
+      !b.isAnchor &&
+      b.source !== 'google_calendar' &&
+      b.source !== 'prayer' &&
+      !isDeferredMed
+    ) {
+      return true;
+    }
+    return false;
+  };
+
+  const cloned = blocks.map((b) => {
+    const base = {
+      ...b,
+      originalStartMin: b.originalStartMin ?? b.startMin,
+      originalDurationMin: b.originalDurationMin ?? b.durationMin,
+    };
+    if (!base.deleted && !base.completed && isDeferredByTravelOrEnergy(base)) {
+      base.reflowStatus = options?.lowEnergyActive && !travel?.active ? 'skipped' : 'postponed_travel';
+    }
+    return base;
+  });
 
   const anchors = cloned
     .filter((b) => b.isAnchor && !b.deleted)
     .sort((a, b) => a.startMin - b.startMin);
 
   const overdueFlexible = cloned.filter(
-    (b) => !b.isAnchor && !b.completed && !b.deleted && b.startMin < nowMin
+    (b) =>
+      !b.isAnchor &&
+      !b.completed &&
+      !b.deleted &&
+      b.reflowStatus !== 'postponed_travel' &&
+      b.reflowStatus !== 'skipped' &&
+      b.startMin < nowMin
   );
 
   let compressedCount = 0;
@@ -766,8 +812,8 @@ export function computeCollisionFreeReflow(
     (b) => (decisions[b.id] ?? 'skip_today') === 'shift_evening'
   );
 
-  let eveningCursor = hm(19, 45);
-  const sleepStart = anchors.find((a) => a.id === 'sleep_anchor')?.startMin ?? hm(21, 15);
+  const sleepStart = anchors.find((a) => a.id === 'sleep_anchor')?.startMin ?? (options?.bedtimeMin ?? hm(21, 15));
+  let eveningCursor = Math.max(nowMin, sleepStart - 90);
   for (const item of shiftEveningTasks) {
     const dur = Math.min(item.durationMin, Math.max(item.minDurationMin, 25));
     if (eveningCursor + dur <= sleepStart - 25) {
@@ -791,7 +837,8 @@ export function computeCollisionFreeReflow(
         !b.completed &&
         b.startMin >= nowMin &&
         b.reflowStatus !== 'shifted_evening' &&
-        b.reflowStatus !== 'skipped'
+        b.reflowStatus !== 'skipped' &&
+        b.reflowStatus !== 'postponed_travel'
     )
     .sort((a, b) => a.startMin - b.startMin);
 
@@ -850,7 +897,13 @@ export function computeCollisionFreeReflow(
     } else {
       task.reflowStatus = 'skipped';
       skippedCount++;
-      notesAr.push(`تم إخلاء ${task.emojiPair} لحماية المراسي الثابتة والنوم 09:15 م.`);
+      const normSleep = ((sleepStart % 1440) + 1440) % 1440;
+      const sleepH24 = Math.floor(normSleep / 60);
+      const sleepM = normSleep % 60;
+      const sleepH12 = sleepH24 % 12 === 0 ? 12 : sleepH24 % 12;
+      const sleepPeriod = sleepH24 >= 12 ? 'م' : 'ص';
+      const sleepLabel = `${String(sleepH12).padStart(2, '0')}:${String(sleepM).padStart(2, '0')} ${sleepPeriod}`;
+      notesAr.push(`تم إخلاء ${task.emojiPair} لحماية المراسي الثابتة والنوم ${sleepLabel}.`);
     }
   }
 

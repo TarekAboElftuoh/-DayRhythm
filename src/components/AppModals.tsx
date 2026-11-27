@@ -113,6 +113,7 @@ export interface AppModalsProps {
   language: AppLanguage;
   lifeProfile: LifeProfile;
   liveBlocks: ScheduleBlock[];
+  medications: MedicationItem[];
   memories: MemoryItem[];
   needsAuth: boolean;
   nextMedicationQuick: FloatingPiPProps['nextMedicationQuick'];
@@ -137,6 +138,7 @@ export interface AppModalsProps {
   smartChargeKeepUntilUnplugged: boolean;
   sunlightSettings: SunlightSettings;
   handleUpdateSunlightSettings: (next: SunlightSettings) => void;
+  todayCairoIso: string;
   travelState: TravelState;
   triggerTaskAlert: LifeProfileProps['onTriggerTaskAlert'];
   undoSnapshot: ScheduleBlock[] | null;
@@ -196,6 +198,7 @@ export function AppModals(props: AppModalsProps) {
     language,
     lifeProfile,
     liveBlocks,
+    medications,
     memories,
     needsAuth,
     nextMedicationQuick,
@@ -219,6 +222,7 @@ export function AppModals(props: AppModalsProps) {
     smartChargeAudioActive,
     smartChargeKeepUntilUnplugged,
     sunlightSettings,
+    todayCairoIso,
     travelState,
     triggerTaskAlert,
     undoSnapshot,
@@ -367,6 +371,10 @@ export function AppModals(props: AppModalsProps) {
             onClose={() => setIsTravelModalOpen(false)}
             travelState={travelState}
             scheduleBlocks={liveBlocks}
+            medications={medications}
+            currentLocation={activeLocation}
+            adhanLeadMinutes={lifeProfile.adhanLeadMinutes}
+            todayIso={todayCairoIso}
             onApplyTravel={handleApplyTravel}
             onDisableTravel={handleDisableTravel}
           />
