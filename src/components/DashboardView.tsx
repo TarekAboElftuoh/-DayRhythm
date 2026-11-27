@@ -460,6 +460,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [deleteMedStep, setDeleteMedStep] = useState<1 | 2>(1);
   const [deleteMedConfirmed, setDeleteMedConfirmed] = useState(false);
   const [showSleepCheckinEdit, setShowSleepCheckinEdit] = useState(false);
+  const [scheduleCardMode, setScheduleCardMode] = useState<'schedule' | 'tasks'>('schedule');
+  const [confirmHeroCompleteId, setConfirmHeroCompleteId] = useState<string | null>(null);
   const [timelineFilter, setTimelineFilter] = useState<'today' | 'tomorrow' | 'special' | 'done'>('today');
   const [selectedTaskListId, setSelectedTaskListId] = useState<string>('all');
   const [syncLoading, setSyncLoading] = useState(false);
@@ -1022,6 +1024,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       });
   }, [googleTasks, selectedTaskListId]);
 
+  const openTasksCount = useMemo(
+    () =>
+      googleTasks.filter(
+        (tk) =>
+          tk.status !== 'completed' &&
+          tk.title !== 'sync_state' &&
+          tk.taskListTitle !== '[DayRhythm Sync Vault]'
+      ).length,
+    [googleTasks]
+  );
+
   const newEventTime24 = useMemo(() => {
     let h24 = newEvHour12 % 12;
     if (newEvPeriod === 'PM') h24 += 12;
@@ -1209,7 +1222,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   return (
-    <div className="mx-auto max-w-[1380px] px-3.5 sm:px-6 py-4 sm:py-6 pb-24 md:pb-8 space-y-4 overflow-x-hidden">
+    <div className="mx-auto max-w-[1380px] px-3.5 sm:px-6 py-4 sm:py-6 pb-24 md:pb-8 space-y-4 overflow-x-hidden text-sm md:text-[15px]">
       {/* 1. QUIET UNBOXED CONTEXT BAR — Date · Location · Weather · Inline Battery · Quick Modes */}
       <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 pb-1">
         <div className="space-y-1 min-w-0">
@@ -1319,188 +1332,199 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         {/* Unified Quick Modes Segmented Strip + Compact Utilities */}
-        <div className="flex flex-wrap items-center gap-2 max-w-full">
-          <div
-            role="group"
-            aria-label={language === 'ar' ? 'أوضاع اليوم' : 'Daily modes'}
-            className="inline-flex flex-wrap sm:flex-nowrap items-center gap-1 p-1 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] max-w-full"
-          >
-            <motion.button
-              type="button"
-              whileTap={{ scale: 0.97 }}
-              aria-pressed={lowEnergyActive}
-              onClick={onToggleLowEnergyToday}
-              className={`relative min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
-                lowEnergyActive
-                  ? 'text-[#7FFFD4] font-semibold'
-                  : 'text-zinc-400 hover:text-zinc-100'
-              }`}
-              title="تخفيف اليوم عند انخفاض الطاقة"
+        <div className="flex flex-wrap items-center gap-2 max-w-full w-full sm:w-auto">
+          <div className="flex items-center justify-between sm:justify-start gap-1.5 flex-nowrap sm:flex-wrap w-full sm:w-auto">
+            <div
+              role="group"
+              aria-label={language === 'ar' ? 'أوضاع اليوم' : 'Daily modes'}
+              className="inline-flex flex-nowrap items-center gap-1 p-1 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] max-w-full"
             >
-              <AnimatePresence>
-                {lowEnergyActive && (
-                  <motion.span
-                    layoutId="mode-pill-calm"
-                    initial={{ opacity: 0, scale: 0.94 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.94 }}
-                    transition={{ type: 'spring', stiffness: 460, damping: 34 }}
-                    className="absolute inset-0 rounded-xl bg-[#7FFFD4]/10 border border-[#7FFFD4]/25"
-                  />
-                )}
-              </AnimatePresence>
-              <Leaf className="relative z-10 w-3.5 h-3.5 shrink-0" />
-              <span className="relative z-10">{lowEnergyActive ? '✓ يوم هادئ' : 'يوم هادئ'}</span>
-            </motion.button>
-
-            <div className="relative">
               <motion.button
                 type="button"
                 whileTap={{ scale: 0.97 }}
-                aria-pressed={quietMode !== 'normal'}
-                onClick={() => {
-                  // Timed quiet mode is the single source of truth here (it's the one that actually
-                  // auto-expires on its own); if it's already running — from this button, from
-                  // Gemini, or from another device — one tap ends it early, no picker needed.
-                  if (quietMode !== 'normal') {
-                    onSetQuietMode('normal', 0);
-                    setMeetingPickerOpen(false);
-                    return;
-                  }
-                  setMeetingPickerOpen((v) => !v);
-                }}
-                className={`relative min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
-                  quietMode !== 'normal'
+                aria-pressed={lowEnergyActive}
+                aria-label={lowEnergyActive ? 'إلغاء وضع يوم هادئ' : 'يوم هادئ'}
+                onClick={onToggleLowEnergyToday}
+                className={`relative min-h-[44px] sm:min-h-[36px] min-w-[42px] sm:min-w-0 justify-center px-2.5 sm:px-3 py-1.5 rounded-xl text-xs md:text-sm font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
+                  lowEnergyActive
                     ? 'text-[#7FFFD4] font-semibold'
                     : 'text-zinc-400 hover:text-zinc-100'
                 }`}
-                title="وضع الاجتماع وكتم الصوت مؤقتاً أو حتى الإلغاء"
+                title="يوم هادئ — تخفيف اليوم عند انخفاض الطاقة"
               >
                 <AnimatePresence>
-                  {quietMode !== 'normal' && (
+                  {lowEnergyActive && (
                     <motion.span
-                      layoutId="mode-pill-meeting"
+                      layoutId="mode-pill-calm"
                       initial={{ opacity: 0, scale: 0.94 }}
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.94 }}
                       transition={{ type: 'spring', stiffness: 460, damping: 34 }}
-                      className="absolute inset-0 rounded-xl bg-[#7FFFD4]/10 border border-[#7FFFD4]/25"
+                      className="absolute inset-0 rounded-xl bg-[#7FFFD4]/15 border border-[#7FFFD4]/35"
                     />
                   )}
                 </AnimatePresence>
-                <MicOff className="relative z-10 w-3.5 h-3.5 shrink-0" />
-                <span className="relative z-10">
-                  {quietMode !== 'normal' ? 'إنهاء الاجتماع' : 'وضع الاجتماع'}
-                </span>
+                <Leaf className="relative z-10 w-4 h-4 sm:w-3.5 sm:h-3.5 shrink-0" />
+                <span className="relative z-10 hidden sm:inline">{lowEnergyActive ? '✓ يوم هادئ' : 'يوم هادئ'}</span>
               </motion.button>
 
-              <AnimatePresence>
-                {meetingPickerOpen && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -4, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -4, scale: 0.98 }}
-                    transition={{ duration: 0.16 }}
-                    className="absolute z-30 top-full mt-2 right-0 w-64 max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-3.5 space-y-2.5 shadow-xl"
-                  >
-                    <div className="text-[11px] text-zinc-400">اختر المدة والطريقة، وهتخلص لوحدها تلقائياً</div>
-                    {(
-                      [
-                        { mode: 'mute_audio' as const, label: '🔇 ميوت تام + إشعار' },
-                        { mode: 'vibrate_only' as const, label: '📳 اهتزاز فقط + إشعار' },
-                      ]
-                    ).map((row) => (
-                      <div key={row.mode} className="space-y-1">
-                        <div className="text-[11px] font-medium text-zinc-300">{row.label}</div>
-                        <div className="grid grid-cols-5 gap-1">
-                          {[15, 30, 60, 120, 0].map((mins) => (
-                            <button
-                              key={mins}
-                              type="button"
-                              onClick={() => {
-                                onSetQuietMode(row.mode, mins);
-                                setMeetingPickerOpen(false);
-                              }}
-                              className="min-h-[34px] rounded-lg bg-white/[0.04] hover:bg-white/[0.1] border border-[var(--border-subtle)] text-[11px] font-mono-tabular text-zinc-200 cursor-pointer transition-colors"
-                            >
-                              {mins === 0 ? 'مفتوح' : mins >= 60 ? `${mins / 60} س` : `${mins} د`}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => setMeetingPickerOpen(false)}
-                      className="w-full min-h-[34px] text-[11px] text-zinc-500 hover:text-zinc-300 cursor-pointer pt-1"
+              <div className="relative">
+                <motion.button
+                  type="button"
+                  whileTap={{ scale: 0.97 }}
+                  aria-pressed={quietMode !== 'normal'}
+                  aria-label={quietMode !== 'normal' ? 'إنهاء الاجتماع' : 'وضع الاجتماع'}
+                  onClick={() => {
+                    // Timed quiet mode is the single source of truth here (it's the one that actually
+                    // auto-expires on its own); if it's already running — from this button, from
+                    // Gemini, or from another device — one tap ends it early, no picker needed.
+                    if (quietMode !== 'normal') {
+                      onSetQuietMode('normal', 0);
+                      setMeetingPickerOpen(false);
+                      return;
+                    }
+                    setMeetingPickerOpen((v) => !v);
+                  }}
+                  className={`relative min-h-[44px] sm:min-h-[36px] min-w-[42px] sm:min-w-0 justify-center px-2.5 sm:px-3 py-1.5 rounded-xl text-xs md:text-sm font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
+                    quietMode !== 'normal'
+                      ? 'text-[#7FFFD4] font-semibold'
+                      : 'text-zinc-400 hover:text-zinc-100'
+                  }`}
+                  title="وضع الاجتماع وكتم الصوت مؤقتاً أو حتى الإلغاء"
+                >
+                  <AnimatePresence>
+                    {quietMode !== 'normal' && (
+                      <motion.span
+                        layoutId="mode-pill-meeting"
+                        initial={{ opacity: 0, scale: 0.94 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.94 }}
+                        transition={{ type: 'spring', stiffness: 460, damping: 34 }}
+                        className="absolute inset-0 rounded-xl bg-[#7FFFD4]/15 border border-[#7FFFD4]/35"
+                      />
+                    )}
+                  </AnimatePresence>
+                  <MicOff className="relative z-10 w-4 h-4 sm:w-3.5 sm:h-3.5 shrink-0" />
+                  <span className="relative z-10 hidden sm:inline">
+                    {quietMode !== 'normal' ? 'إنهاء الاجتماع' : 'وضع الاجتماع'}
+                  </span>
+                </motion.button>
+
+                <AnimatePresence>
+                  {meetingPickerOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                      transition={{ duration: 0.16 }}
+                      className="absolute z-30 top-full mt-2 right-0 w-64 max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-3.5 space-y-2.5 shadow-xl"
                     >
-                      إلغاء
-                    </button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                      <div className="text-[11px] text-zinc-400">اختر المدة والطريقة، وهتخلص لوحدها تلقائياً</div>
+                      {(
+                        [
+                          { mode: 'mute_audio' as const, label: '🔇 ميوت تام + إشعار' },
+                          { mode: 'vibrate_only' as const, label: '📳 اهتزاز فقط + إشعار' },
+                        ]
+                      ).map((row) => (
+                        <div key={row.mode} className="space-y-1">
+                          <div className="text-[11px] font-medium text-zinc-300">{row.label}</div>
+                          <div className="grid grid-cols-5 gap-1">
+                            {[15, 30, 60, 120, 0].map((mins) => (
+                              <button
+                                key={mins}
+                                type="button"
+                                onClick={() => {
+                                  onSetQuietMode(row.mode, mins);
+                                  setMeetingPickerOpen(false);
+                                }}
+                                className="min-h-[34px] rounded-lg bg-white/[0.04] hover:bg-white/[0.1] border border-[var(--border-subtle)] text-[11px] font-mono-tabular text-zinc-200 cursor-pointer transition-colors"
+                              >
+                                {mins === 0 ? 'مفتوح' : mins >= 60 ? `${mins / 60} س` : `${mins} د`}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setMeetingPickerOpen(false)}
+                        className="w-full min-h-[34px] text-[11px] text-zinc-500 hover:text-zinc-300 cursor-pointer pt-1"
+                      >
+                        إلغاء
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.97 }}
+                aria-pressed={travelState.active}
+                aria-label={travelState.active ? 'في السفر' : 'وضع السفر'}
+                onClick={onOpenTravel}
+                className={`relative min-h-[44px] sm:min-h-[36px] min-w-[42px] sm:min-w-0 justify-center px-2.5 sm:px-3 py-1.5 rounded-xl text-xs md:text-sm font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
+                  travelState.active
+                    ? 'text-[#7FFFD4] font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-100'
+                }`}
+                title="وضع السفر وتأجيل التنبيهات مؤقتاً"
+              >
+                <AnimatePresence>
+                  {travelState.active && (
+                    <motion.span
+                      layoutId="mode-pill-travel"
+                      initial={{ opacity: 0, scale: 0.94 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.94 }}
+                      transition={{ type: 'spring', stiffness: 460, damping: 34 }}
+                      className="absolute inset-0 rounded-xl bg-[#7FFFD4]/15 border border-[#7FFFD4]/35"
+                    />
+                  )}
+                </AnimatePresence>
+                <Plane className="relative z-10 w-4 h-4 sm:w-3.5 sm:h-3.5 shrink-0" />
+                <span className="relative z-10 hidden sm:inline">{travelState.active ? 'في السفر' : 'السفر'}</span>
+                {travelState.active &&
+                  ((travelState.deferredCategories?.length ?? 0) +
+                    (travelState.deferredMedIds?.length ?? 0)) > 0 && (
+                    <span className="relative z-10 hidden sm:inline px-1.5 py-0.5 rounded-full bg-[#7FFFD4]/20 text-[10px] font-mono-tabular">
+                      {(travelState.deferredCategories?.length ?? 0) +
+                        (travelState.deferredMedIds?.length ?? 0)}
+                    </span>
+                  )}
+              </motion.button>
             </div>
 
-            <motion.button
-              type="button"
-              whileTap={{ scale: 0.97 }}
-              aria-pressed={travelState.active}
-              onClick={onOpenTravel}
-              className={`relative min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
-                travelState.active
-                  ? 'text-[#7FFFD4] font-semibold'
-                  : 'text-zinc-400 hover:text-zinc-100'
-              }`}
-              title="وضع السفر وتأجيل التنبيهات مؤقتاً"
-            >
-              <AnimatePresence>
-                {travelState.active && (
-                  <motion.span
-                    layoutId="mode-pill-travel"
-                    initial={{ opacity: 0, scale: 0.94 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.94 }}
-                    transition={{ type: 'spring', stiffness: 460, damping: 34 }}
-                    className="absolute inset-0 rounded-xl bg-[#7FFFD4]/10 border border-[#7FFFD4]/25"
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={onOpenLifeProfile}
+                aria-label="الإعدادات والثوابت"
+                className="min-h-[44px] sm:min-h-[38px] min-w-[44px] sm:min-w-0 justify-center px-2.5 sm:px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-xs md:text-sm font-medium text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                title="الإعدادات والثوابت"
+              >
+                <SlidersHorizontal className="w-4 h-4 sm:w-3.5 sm:h-3.5 text-zinc-400 shrink-0" />
+                <span className="hidden sm:inline">الإعدادات</span>
+              </button>
+
+              {calendarConnected && (
+                <button
+                  type="button"
+                  onClick={() => onRefreshWorkspace()}
+                  aria-label="تحديث التقويم والمهام"
+                  className="min-h-[44px] sm:min-h-[38px] min-w-[44px] sm:min-w-0 justify-center px-2.5 sm:px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-xs md:text-sm text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                  title={calendarUserEmail ? `تحديث (${calendarUserEmail})` : 'تحديث'}
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 sm:w-3.5 sm:h-3.5 text-[#7FFFD4] shrink-0 ${loadingCalendarEvents || loadingTasks ? 'animate-spin' : ''}`}
                   />
-                )}
-              </AnimatePresence>
-              <Plane className="relative z-10 w-3.5 h-3.5 shrink-0" />
-              <span className="relative z-10">{travelState.active ? 'في السفر' : 'السفر'}</span>
-              {travelState.active &&
-                ((travelState.deferredCategories?.length ?? 0) +
-                  (travelState.deferredMedIds?.length ?? 0)) > 0 && (
-                  <span className="relative z-10 px-1.5 py-0.5 rounded-full bg-[#7FFFD4]/20 text-[10px] font-mono-tabular">
-                    {(travelState.deferredCategories?.length ?? 0) +
-                      (travelState.deferredMedIds?.length ?? 0)}
-                  </span>
-                )}
-            </motion.button>
+                  <span className="hidden sm:inline">تحديث</span>
+                </button>
+              )}
+            </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onOpenLifeProfile}
-            className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-xs font-medium text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
-            title="الإعدادات والثوابت"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-400" />
-            <span>الإعدادات</span>
-          </button>
-
-          {calendarConnected ? (
-            <button
-              type="button"
-              onClick={() => onRefreshWorkspace()}
-              className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-xs text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
-              title={calendarUserEmail}
-            >
-              <RefreshCw
-                className={`w-3.5 h-3.5 text-[#7FFFD4] ${loadingCalendarEvents || loadingTasks ? 'animate-spin' : ''}`}
-              />
-              <span className="hidden sm:inline">تحديث</span>
-            </button>
-          ) : (
+          {!calendarConnected && (
             <button
               type="button"
               onClick={() => {
@@ -1518,7 +1542,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <span>{isLoggingIn ? 'جارٍ الاتصال...' : 'تسجيل الدخول بحساب Google'}</span>
             </button>
           )}
-
         </div>
       </header>
 
@@ -1784,19 +1807,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               مسح الكل
             </button>
           </div>
-          <div className="divide-y divide-white/[0.07] max-h-40 overflow-y-auto">
-            {silentNotifications.map((sn) => (
-              <div key={sn.id} className="py-2 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span>{TASK_SOUND_META[sn.soundCategory]?.icon ?? '🔔'}</span>
-                  <span className="text-zinc-200 truncate">{sn.title}</span>
-                  <span className="text-[11px] text-zinc-500 shrink-0">· {sn.reasonAr}</span>
+          <div className="divide-y divide-white/[0.07] max-h-48 overflow-y-auto">
+            {silentNotifications.map((sn) => {
+              const meta = TASK_SOUND_META[sn.soundCategory];
+              const cleanTitle = (sn.title || '').replace(/[\p{Extended_Pictographic}\uFE0F\u200D\s]/gu, '').length > 0
+                ? sn.title
+                : meta?.labelAr ?? 'تنبيه مجدول';
+              const shortDesc = sn.description || sn.reasonAr;
+              return (
+                <div key={sn.id} className="py-2 flex items-start justify-between gap-2.5">
+                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                    <span className="text-base leading-none mt-0.5 shrink-0">{meta?.icon ?? '🔔'}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-zinc-100 truncate">{cleanTitle}</div>
+                      {shortDesc && (
+                        <div className="text-[11px] md:text-xs text-zinc-400 line-clamp-1 mt-0.5">
+                          {shortDesc}
+                          {sn.description && sn.reasonAr ? ` · ${sn.reasonAr}` : ''}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <span className="font-mono-tabular text-[11px] text-zinc-500 shrink-0 whitespace-nowrap mt-0.5">
+                    {sn.time12h}
+                  </span>
                 </div>
-                <span className="font-mono-tabular text-[11px] text-zinc-500 shrink-0">
-                  {sn.time12h}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -2120,12 +2157,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
 
             {/* Single Primary Accent CTA + Quiet Secondary Controls */}
-            <div className="flex flex-wrap items-center gap-2">
+            <div
+              className={`grid ${
+                nextAlarmBlock ? 'grid-cols-3' : 'grid-cols-2'
+              } sm:flex sm:flex-wrap items-center gap-1.5 sm:gap-2`}
+            >
               {nextAlarmBlock && (
                 <button
                   type="button"
-                  onClick={() => onToggleComplete(nextAlarmBlock.id)}
-                  className="min-h-[44px] sm:min-h-[38px] px-4 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] transition-colors active:scale-[0.98] cursor-pointer whitespace-nowrap"
+                  onClick={() => setConfirmHeroCompleteId(nextAlarmBlock.id)}
+                  className="min-h-[44px] sm:min-h-[38px] px-2 sm:px-4 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-[11.5px] sm:text-xs md:text-sm font-bold hover:bg-[#66eec2] transition-colors active:scale-[0.98] cursor-pointer whitespace-nowrap flex items-center justify-center"
                 >
                   ✓ تم الإنجاز
                 </button>
@@ -2134,34 +2175,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenPomodoro}
-                className="min-h-[44px] sm:min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular transition-colors"
+                className="min-h-[44px] sm:min-h-[38px] px-2 sm:px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:text-white text-[11.5px] sm:text-xs md:text-sm font-medium flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular transition-colors"
               >
-                <Timer className="w-3.5 h-3.5 text-zinc-400" />
+                <Timer className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
                 <span>
                   {pomodoro.isRunning
                     ? `${Math.floor(pomodoro.remainingSeconds / 60)}:${String(pomodoro.remainingSeconds % 60).padStart(2, '0')}`
-                    : 'بومودورو 25د'}
+                    : 'بومودورو'}
                 </span>
               </button>
 
               <button
                 type="button"
                 onClick={onOpenAssistant}
-                className={`min-h-[44px] sm:min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                className={`min-h-[44px] sm:min-h-[38px] px-2 sm:px-3.5 py-1.5 rounded-xl text-[11.5px] sm:text-xs md:text-sm flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
                   nextAlarmBlock
                     ? 'border border-[var(--border-subtle)] bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:text-white font-medium'
                     : 'bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2]'
                 }`}
               >
-                <MessageSquare className="w-3.5 h-3.5" />
-                <span>شات Gemini</span>
+                <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                <span className="sm:hidden">Gemini</span>
+                <span className="hidden sm:inline">شات Gemini</span>
               </button>
             </div>
           </div>
 
           {/* 5 Prayers Strip — Clean Horizontal Grid with Subtle Active Highlight */}
           <div className="md:col-span-6 md:border-r md:border-[var(--border-subtle)] md:pr-6 min-w-0">
-            <div className="grid grid-cols-5 gap-1.5 sm:gap-2 text-center">
+            <div className="grid grid-cols-5 gap-1 sm:gap-2 text-center">
               {prayers
                 .filter((p) => p.isObligatory)
                 .map((p) => {
@@ -2171,7 +2213,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   return (
                     <div
                       key={p.id}
-                      className={`rounded-xl border py-2.5 px-1 sm:px-2 min-w-0 transition-colors ${
+                      className={`rounded-xl border py-2.5 px-0.5 sm:px-2 min-w-0 transition-colors ${
                         isNextPrayer
                           ? 'border-[#7FFFD4]/40 bg-[#7FFFD4]/[0.07]'
                           : 'border-[var(--border-subtle)] bg-white/[0.02]'
@@ -2179,14 +2221,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     >
                       <div className="text-xs sm:text-sm leading-none">{p.emojiPair.split(' ')[1]}</div>
                       <div
-                        className={`text-[11px] mt-1.5 truncate ${
+                        className={`text-[11px] md:text-xs mt-1.5 truncate ${
                           isNextPrayer ? 'font-bold text-white' : 'font-medium text-zinc-400'
                         }`}
                       >
                         {language === 'ar' ? p.nameAr : p.nameEn}
                       </div>
                       <div
-                        className={`font-mono-tabular text-[10.5px] sm:text-xs font-semibold mt-0.5 whitespace-nowrap ${
+                        className={`font-mono-tabular text-[11px] sm:text-sm font-semibold mt-0.5 whitespace-nowrap tracking-tight sm:tracking-normal ${
                           showLivePrayer
                             ? isNextPrayer
                               ? 'text-[#7FFFD4]'
@@ -2196,7 +2238,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       >
                         {showLivePrayer ? formatMinutes12h(p.alarmMinutes, language) : '00:00'}
                       </div>
-                      <div className="font-mono-tabular text-[10px] text-zinc-500 mt-0.5 whitespace-nowrap truncate">
+                      <div className="font-mono-tabular text-[10px] sm:text-xs text-zinc-500 mt-0.5 whitespace-nowrap">
                         {showLivePrayer ? formatMinutes12h(p.adhanMinutes, language) : '00:00'}
                       </div>
                     </div>
@@ -2249,69 +2291,176 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       )}
 
       {/* Main Bento Grid (`md:`+): Balanced 7/5 Split with generous whitespace (gap-4) */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start">
-        {/* Primary Column (7 cols): Schedule -> Tasks -> Creative -> Gmail */}
-        <div className="md:col-span-7 space-y-4 min-w-0">
-          {/* 1. Today's Schedule (Timeline) */}
-          <section className={`rounded-2xl border p-4 sm:p-5 ${cardSurface}`}>
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-stretch">
+        {/* Primary Column (7 cols): Schedule & Tasks -> Creative -> Gmail */}
+        <div className="md:col-span-7 flex flex-col gap-4 min-w-0">
+          {/* 1. Today's Schedule + Google Tasks (Segmented Switch) */}
+          <section className={`rounded-2xl border p-4 sm:p-5 flex-1 ${cardSurface}`}>
             <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-[var(--border-subtle)]">
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <Calendar className="w-4 h-4 text-[#7FFFD4]" />
-                <span>جدول اليوم</span>
-                {calendarConnected && calendarEvents.length > 0 && (
-                  <span className="font-mono-tabular text-xs font-medium text-zinc-500">
-                    · {calendarEvents.length}
-                  </span>
-                )}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h2 className="text-base md:text-lg font-bold text-white flex items-center gap-2">
+                  {scheduleCardMode === 'schedule' ? (
+                    <Calendar className="w-4 h-4 text-[#7FFFD4]" />
+                  ) : (
+                    <CheckSquare className="w-4 h-4 text-[#7FFFD4]" />
+                  )}
+                  <span>{scheduleCardMode === 'schedule' ? 'جدول اليوم' : 'المهام'}</span>
+                  {scheduleCardMode === 'schedule' && calendarConnected && calendarEvents.length > 0 && (
+                    <span className="font-mono-tabular text-xs font-medium text-zinc-500">
+                      · {calendarEvents.length}
+                    </span>
+                  )}
+                  {scheduleCardMode === 'tasks' && (
+                    <span className="font-mono-tabular text-xs font-medium text-zinc-500">
+                      · {visibleTasks.length}
+                    </span>
+                  )}
+                </h2>
 
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={onOpenCatchUp}
-                  className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-[var(--border-subtle)] text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+                {/* Clean Segmented Switch: الجدول | المهام */}
+                <div
+                  role="tablist"
+                  aria-label="عرض الجدول أو المهام"
+                  className="inline-flex items-center p-0.5 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)]"
                 >
-                  <Zap className="w-3.5 h-3.5 text-[#7FFFD4]" />
-                  <span>زحزحة</span>
-                </button>
-                {hasUndoSnapshot && (
                   <button
                     type="button"
-                    onClick={onUndoReflow}
-                    className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-amber-400/35 text-amber-300 text-xs font-medium hover:bg-amber-400/10 flex items-center gap-1 cursor-pointer"
+                    role="tab"
+                    aria-selected={scheduleCardMode === 'schedule'}
+                    onClick={() => setScheduleCardMode('schedule')}
+                    className={`relative min-h-[34px] sm:min-h-[30px] px-3 py-1 rounded-lg text-xs md:text-sm font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
+                      scheduleCardMode === 'schedule'
+                        ? 'text-[#7FFFD4] font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>استعادة</span>
+                    {scheduleCardMode === 'schedule' && (
+                      <motion.span
+                        layoutId="schedule-tasks-switch-pill"
+                        transition={{ type: 'spring', stiffness: 460, damping: 35 }}
+                        className="absolute inset-0 rounded-lg bg-[#7FFFD4]/12 border border-[#7FFFD4]/25"
+                      />
+                    )}
+                    <span className="relative z-10">الجدول</span>
                   </button>
-                )}
-                {deletedBlocks.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => setShowTrash((v) => !v)}
-                    className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-[var(--border-subtle)] text-zinc-400 hover:text-white text-xs flex items-center gap-1 cursor-pointer"
-                    title="المحذوفات"
+                    role="tab"
+                    aria-selected={scheduleCardMode === 'tasks'}
+                    onClick={() => setScheduleCardMode('tasks')}
+                    className={`relative min-h-[34px] sm:min-h-[30px] px-3 py-1 rounded-lg text-xs md:text-sm font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
+                      scheduleCardMode === 'tasks'
+                        ? 'text-[#7FFFD4] font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span className="font-mono-tabular">{deletedBlocks.length}</span>
+                    {scheduleCardMode === 'tasks' && (
+                      <motion.span
+                        layoutId="schedule-tasks-switch-pill"
+                        transition={{ type: 'spring', stiffness: 460, damping: 35 }}
+                        className="absolute inset-0 rounded-lg bg-[#7FFFD4]/12 border border-[#7FFFD4]/25"
+                      />
+                    )}
+                    <span className="relative z-10">المهام</span>
+                    {openTasksCount > 0 && (
+                      <span
+                        className={`relative z-10 px-1.5 py-0.2 rounded-full text-[10px] font-mono-tabular font-bold ${
+                          scheduleCardMode === 'tasks'
+                            ? 'bg-[#7FFFD4]/25 text-[#7FFFD4]'
+                            : 'bg-white/[0.08] text-zinc-300'
+                        }`}
+                      >
+                        {openTasksCount}
+                      </span>
+                    )}
                   </button>
-                )}
-                {calendarConnected && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewEvConfirmStep(false);
-                      setNewEvMinute('');
-                      setNewEventModalOpen(true);
-                    }}
-                    className="min-h-[44px] sm:min-h-[34px] px-3.5 sm:px-3 py-1 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer whitespace-nowrap transition-colors"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>حدث</span>
-                  </button>
-                )}
+                </div>
               </div>
+
+              {scheduleCardMode === 'schedule' ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={onOpenCatchUp}
+                    className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-[var(--border-subtle)] text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] text-xs md:text-sm font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                    <span>زحزحة</span>
+                  </button>
+                  {hasUndoSnapshot && (
+                    <button
+                      type="button"
+                      onClick={onUndoReflow}
+                      className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-amber-400/35 text-amber-300 text-xs font-medium hover:bg-amber-400/10 flex items-center gap-1 cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>استعادة</span>
+                    </button>
+                  )}
+                  {deletedBlocks.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowTrash((v) => !v)}
+                      className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-[var(--border-subtle)] text-zinc-400 hover:text-white text-xs flex items-center gap-1 cursor-pointer"
+                      title="المحذوفات"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span className="font-mono-tabular">{deletedBlocks.length}</span>
+                    </button>
+                  )}
+                  {calendarConnected && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewEvConfirmStep(false);
+                        setNewEvMinute('');
+                        setNewEventModalOpen(true);
+                      }}
+                      className="min-h-[44px] sm:min-h-[34px] px-3.5 sm:px-3 py-1 rounded-xl bg-[#7FFFD4] text-black text-xs md:text-sm font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer whitespace-nowrap transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>حدث</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                calendarConnected &&
+                googleTaskLists.length > 1 && (
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedTaskListId('all')}
+                      className={`px-2.5 py-1 rounded-lg text-xs cursor-pointer transition-colors ${
+                        selectedTaskListId === 'all'
+                          ? 'bg-white/12 text-white font-semibold'
+                          : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      الكل
+                    </button>
+                    {googleTaskLists
+                      .filter((list) => list.title !== '[DayRhythm Sync Vault]')
+                      .map((list) => (
+                        <button
+                          key={list.id}
+                          type="button"
+                          onClick={() => setSelectedTaskListId(list.id)}
+                          className={`px-2.5 py-1 rounded-lg text-xs cursor-pointer transition-colors ${
+                            selectedTaskListId === list.id
+                              ? 'bg-white/12 text-white font-semibold'
+                              : 'text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          {list.title}
+                        </button>
+                      ))}
+                  </div>
+                )
+              )}
             </div>
 
+            {scheduleCardMode === 'schedule' ? (
+              <>
             {/* Clean Segmented Filter */}
             <div className="mt-3 flex items-center p-1 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] overflow-x-auto max-w-full w-fit">
               {(
@@ -2774,53 +2923,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
             )}
-          </section>
-
-          {/* 2. Google Tasks (Promoted directly below Schedule for daily action priority) */}
-          <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <CheckSquare className="w-4 h-4 text-[#7FFFD4]" />
-                <span>المهام</span>
-                <span className="font-mono-tabular text-xs font-medium text-zinc-500">
-                  · {visibleTasks.length}
-                </span>
-              </h2>
-
-              {calendarConnected && googleTaskLists.length > 1 && (
-                <div className="flex flex-wrap gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedTaskListId('all')}
-                    className={`px-2.5 py-1 rounded-lg text-xs cursor-pointer transition-colors ${
-                      selectedTaskListId === 'all'
-                        ? 'bg-white/12 text-white font-semibold'
-                        : 'text-zinc-400 hover:text-zinc-200'
-                    }`}
-                  >
-                    الكل
-                  </button>
-                  {googleTaskLists
-                    .filter((list) => list.title !== '[DayRhythm Sync Vault]')
-                    .map((list) => (
-                    <button
-                      key={list.id}
-                      type="button"
-                      onClick={() => setSelectedTaskListId(list.id)}
-                      className={`px-2.5 py-1 rounded-lg text-xs cursor-pointer transition-colors ${
-                        selectedTaskListId === list.id
-                          ? 'bg-white/12 text-white font-semibold'
-                          : 'text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      {list.title}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {!calendarConnected ? (
+              </>
+            ) : (
+              <div className="mt-3.5 space-y-3">
+                {!calendarConnected ? (
               <div className="py-4 text-center text-xs text-zinc-500">
                 سجّل الدخول بحساب Google لإدارة مهامك.
               </div>
@@ -3099,6 +3205,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </>
             )}
+              </div>
+            )}
           </section>
 
           {/* 3. Creative Activities & Hobbies (Shown only when non-empty) */}
@@ -3355,7 +3463,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
         {/* Support Column (5 cols): High-Frequency Daily Care FIRST — Water -> Medications -> Sleep -> Streaks */}
-        <div className="md:col-span-5 space-y-4 min-w-0">
+        <div className="md:col-span-5 flex flex-col gap-4 min-w-0">
           {/* 1. Hydration Card (Promoted to #1 in Support Column — highest tap frequency) */}
           <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>
             <div className="flex items-baseline justify-between gap-2">
@@ -4321,36 +4429,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             )}
           </section>
 
-          {/* 3. Sleep & Suhoor Rhythm (Checked morning/night — positioned cleanly below Water & Meds) */}
+          {/* 3. Sleep & Sun Rhythm (Checked morning/night — positioned cleanly below Water & Meds) */}
           <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <h2 className="text-sm md:text-base font-bold text-white flex items-center gap-2">
                 <Moon className="w-4 h-4 text-[#7FFFD4]" />
-                <span>النوم والسحور</span>
+                <span>إيقاع النوم والشمس</span>
               </h2>
               <button
                 type="button"
                 onClick={onOpenLifeProfile}
-                className="min-h-[44px] sm:min-h-[32px] px-2 text-xs text-zinc-400 hover:text-[#7FFFD4] cursor-pointer transition-colors"
+                className="min-h-[44px] sm:min-h-[32px] px-2 text-xs md:text-sm text-zinc-400 hover:text-[#7FFFD4] cursor-pointer transition-colors"
               >
                 الثوابت
               </button>
             </div>
 
-            <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="grid grid-cols-2 xl:grid-cols-3 gap-2 text-center">
               <div
-                className={`rounded-xl border p-2.5 ${
+                className={`rounded-xl border p-2.5 min-w-0 ${
                   dailyRhythmPlan.nightlyRecoveryMin > 0
                     ? 'border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.06]'
                     : 'border-[var(--border-subtle)] bg-white/[0.02]'
                 }`}
               >
-                <div className="text-[11px] text-zinc-400">النوم</div>
-                <div className="font-mono-tabular text-xs font-bold text-white mt-0.5">
+                <div className="text-[11px] md:text-xs text-zinc-400">النوم</div>
+                <div className="font-mono-tabular text-xs md:text-sm font-bold text-white mt-0.5 whitespace-nowrap">
                   {formatMinutes12h(dailyRhythmPlan.bedtimeMin, language)}
                 </div>
                 <div
-                  className={`text-[11px] mt-0.5 ${
+                  className={`text-[11px] md:text-xs mt-0.5 whitespace-nowrap ${
                     dailyRhythmPlan.nightlyRecoveryMin > 0 ? 'text-[#7FFFD4]' : 'text-zinc-500'
                   }`}
                 >
@@ -4361,58 +4469,58 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
 
               <div
-                className={`rounded-xl border p-2.5 ${
+                className={`rounded-xl border p-2.5 min-w-0 ${
                   dailyRhythmPlan.suhoorStartMin !== null
                     ? 'border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.06]'
                     : 'border-[var(--border-subtle)] bg-white/[0.02]'
                 }`}
               >
-                <div className="text-[11px] text-zinc-400">
+                <div className="text-[11px] md:text-xs text-zinc-400">
                   {dailyRhythmPlan.suhoorStartMin !== null ? 'سحور غداً' : 'الاستيقاظ'}
                 </div>
                 <div
-                  className={`font-mono-tabular text-xs font-bold mt-0.5 ${
+                  className={`font-mono-tabular text-xs md:text-sm font-bold mt-0.5 whitespace-nowrap ${
                     dailyRhythmPlan.suhoorStartMin !== null ? 'text-[#7FFFD4]' : 'text-white'
                   }`}
                 >
                   {formatMinutes12h(dailyRhythmPlan.wakeMin, language)}
                 </div>
-                <div className="text-[11px] text-zinc-500 mt-0.5">
+                <div className="text-[11px] md:text-xs text-zinc-500 mt-0.5 whitespace-nowrap">
                   {dailyRhythmPlan.suhoorStartMin !== null
                     ? `قبل الفجر بـ ${lifeProfile.suhoorLeadMinutes} د`
                     : 'قبل الفجر بـ 15 د'}
                 </div>
               </div>
 
-              <div className="rounded-xl border border-[var(--border-subtle)] bg-white/[0.02] p-2.5">
+              <div className="col-span-2 xl:col-span-1 rounded-xl border border-[var(--border-subtle)] bg-white/[0.02] p-2.5 min-w-0">
                 {dailyRhythmPlan.qailulahStartMin !== null ? (
                   <>
-                    <div className="text-[11px] text-zinc-400">القيلولة</div>
-                    <div className="font-mono-tabular text-xs font-bold text-[#4ADE80] mt-0.5">
+                    <div className="text-[11px] md:text-xs text-zinc-400">القيلولة</div>
+                    <div className="font-mono-tabular text-xs md:text-sm font-bold text-[#4ADE80] mt-0.5 whitespace-nowrap">
                       {formatMinutes12h(dailyRhythmPlan.qailulahStartMin, language)}
                     </div>
-                    <div className="text-[11px] text-zinc-500 mt-0.5">
+                    <div className="text-[11px] md:text-xs text-zinc-500 mt-0.5 whitespace-nowrap">
                       {dailyRhythmPlan.qailulahDurationMin} د
                     </div>
                   </>
                 ) : (
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between gap-1 text-[11px]">
-                      <span className="inline-flex items-center gap-1 text-[#FBBF24]">
+                  <div className="grid grid-cols-2 xl:grid-cols-1 gap-2 xl:gap-1 items-center">
+                    <div className="flex items-center justify-between gap-1.5 text-[11px] md:text-xs min-w-0">
+                      <span className="inline-flex items-center gap-1 text-[#FBBF24] shrink-0">
                         <Sunrise className="w-3 h-3 shrink-0" />
                         <span>الشروق</span>
                       </span>
-                      <span className="font-mono-tabular font-bold text-[#FDE68A]">
+                      <span className="font-mono-tabular font-bold text-[#FDE68A] whitespace-nowrap shrink-0">
                         {formatMinutes12h(dailyRhythmPlan.sunriseMin, language)}
                       </span>
                     </div>
-                    <div className="h-px bg-white/[0.06]" />
-                    <div className="flex items-center justify-between gap-1 text-[11px]">
-                      <span className="inline-flex items-center gap-1 text-[#FB7185]">
+                    <div className="hidden xl:block h-px bg-white/[0.06]" />
+                    <div className="flex items-center justify-between gap-1.5 text-[11px] md:text-xs min-w-0">
+                      <span className="inline-flex items-center gap-1 text-[#FB7185] shrink-0">
                         <Sunset className="w-3 h-3 shrink-0" />
                         <span>الغروب</span>
                       </span>
-                      <span className="font-mono-tabular font-bold text-[#FDA4AF]">
+                      <span className="font-mono-tabular font-bold text-[#FDA4AF] whitespace-nowrap shrink-0">
                         {formatMinutes12h(dailyRhythmPlan.maghribMin, language)}
                       </span>
                     </div>
@@ -4878,6 +4986,59 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               );
             })()}
+          </div>
+        </div>
+      )}
+
+      {/* Explicit Confirmation Modal: Complete Current Hero Task */}
+      {confirmHeroCompleteId && nextAlarmBlock && confirmHeroCompleteId === nextAlarmBlock.id && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-2 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="تأكيد إنجاز المهمة الحالية"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setConfirmHeroCompleteId(null);
+          }}
+        >
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[var(--bg-card)] p-4 sm:p-5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-5 space-y-4 shadow-2xl">
+            <h3 className="text-sm md:text-base font-bold text-[#7FFFD4] flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>تأكيد إنجاز المهمة الحالية؟</span>
+            </h3>
+            <div className="rounded-xl border border-white/10 bg-black/50 p-3.5 text-xs md:text-sm space-y-1">
+              <div className="font-bold text-white flex items-center gap-2">
+                <span>{nextAlarmBlock.emojiPair}</span>
+                <span>{nextAlarmDisplay.title}</span>
+              </div>
+              <div className="font-mono-tabular text-[11px] md:text-xs text-zinc-400">
+                {nextAlarmBlock.isAllDay
+                  ? 'طوال اليوم'
+                  : nextAlarmBlock.durationMin === 0
+                    ? formatMinutes12h(nextAlarmBlock.startMin, language)
+                    : `${formatMinutes12h(nextAlarmBlock.startMin, language)} – ${formatMinutes12h(nextAlarmBlock.startMin + nextAlarmBlock.durationMin, language)}`}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const id = confirmHeroCompleteId;
+                  setConfirmHeroCompleteId(null);
+                  onToggleComplete(id);
+                }}
+                className="flex-1 min-h-[44px] py-2.5 px-4 rounded-xl bg-[#7FFFD4] text-black text-xs md:text-sm font-bold hover:bg-[#66eec2] cursor-pointer transition-colors"
+              >
+                نعم، تم الإنجاز ✓
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmHeroCompleteId(null)}
+                className="min-h-[44px] py-2.5 px-4 rounded-xl border border-white/15 text-xs md:text-sm text-zinc-300 hover:bg-white/10 cursor-pointer"
+              >
+                إلغاء
+              </button>
+            </div>
           </div>
         </div>
       )}

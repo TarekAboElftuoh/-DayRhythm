@@ -54,6 +54,12 @@
     text-rendering: optimizeLegibility;
   }
 
+  @media (min-width: 768px) {
+    body {
+      font-size: 15px;
+    }
+  }
+
   *:focus-visible {
     outline: 2px solid rgba(127, 255, 212, 0.65);
     outline-offset: 2px;
@@ -251,4 +257,121 @@ html.theme-sun .bg-\[\#4ADE80\] {
 html.theme-sun ::selection {
   background: rgb(10 122 97 / 0.2);
   color: #0a7a61;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   🌅 Smooth Sunrise / Sunset Day-Night Theme Sweep (850ms cohesive curtain)
+   ─────────────────────────────────────────────────────────────────────────── */
+html.theme-sweeping *,
+html.theme-sweeping *::before,
+html.theme-sweeping *::after {
+  transition-property: none !important;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+html.theme-sweep-to-sun::view-transition-new(root) {
+  z-index: 9999;
+  animation: dayrhythm-sunrise-sweep 850ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+html.theme-sweep-to-sun::view-transition-old(root) {
+  z-index: 1;
+}
+
+html.theme-sweep-to-night::view-transition-new(root) {
+  z-index: 9999;
+  animation: dayrhythm-sunset-sweep 850ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+html.theme-sweep-to-night::view-transition-old(root) {
+  z-index: 1;
+}
+
+@keyframes dayrhythm-sunrise-sweep {
+  from {
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes dayrhythm-sunset-sweep {
+  from {
+    clip-path: inset(100% 0 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+@keyframes dayrhythm-wave-down {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0.95;
+  }
+  55% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+}
+
+@keyframes dayrhythm-wave-up {
+  0% {
+    transform: translateY(100%);
+    opacity: 0.95;
+  }
+  55% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+}
+
+.theme-wave-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.theme-wave-overlay--sun {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 243, 196, 0) 0%,
+    rgba(251, 191, 36, 0.28) 45%,
+    rgba(255, 255, 255, 0.44) 55%,
+    rgba(255, 243, 196, 0) 100%
+  );
+  animation: dayrhythm-wave-down 850ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.theme-wave-overlay--night {
+  background: linear-gradient(
+    0deg,
+    rgba(15, 23, 42, 0) 0%,
+    rgba(127, 255, 212, 0.16) 45%,
+    rgba(7, 10, 15, 0.55) 55%,
+    rgba(15, 23, 42, 0) 100%
+  );
+  animation: dayrhythm-wave-up 850ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.theme-sweep-to-sun::view-transition-new(root),
+  html.theme-sweep-to-night::view-transition-new(root),
+  .theme-wave-overlay--sun,
+  .theme-wave-overlay--night {
+    animation-duration: 1ms !important;
+  }
 }

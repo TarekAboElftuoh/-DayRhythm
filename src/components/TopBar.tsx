@@ -214,7 +214,7 @@ export const TopBar: React.FC<TopBarProps> = ({
               className="min-h-[44px] sm:min-h-[40px] px-3.5 sm:px-4 py-1.5 text-xs font-bold rounded-xl bg-[#7FFFD4] text-black hover:bg-[#66eec2] transition-all active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span className="sm:hidden">{language === 'ar' ? 'تدارك' : 'Catch-Up'}</span>
-              <span className="hidden sm:inline">{t(language, 'ctaCatchUp')}</span>
+              <span className="hidden sm:inline">{t(language, 'ctaCatchUp').replace(/⚡\s*/g, '')}</span>
             </button>
           </div>
         </div>

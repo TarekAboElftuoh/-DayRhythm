@@ -58,6 +58,7 @@ import {
   TaskSoundCategory,
   APP_VERSION,
 } from '../types/dayrhythm';
+import type { SanctuarySilenceMode } from '../services/cloudStateService';
 import {
   ARABIC_WEEKDAYS,
   MEMORY_CATEGORY_LABELS,
@@ -410,6 +411,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
     const next: LifeProfile = {
       ...draft,
       sleepStrategy: draft.sleepStrategy || 'night_only_strict',
+      sanctuarySilenceMode: draft.sanctuarySilenceMode ?? 'silent_inbox',
     };
     for (const key of Object.keys(NUMERIC_FIELD_BOUNDS) as NumericProfileKey[]) {
       const raw = rawInputs[key];
@@ -807,6 +809,60 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               />
             </label>
           </div>
+          <div className="space-y-2 pt-1">
+            <span className="text-xs text-zinc-400 block">
+              سلوك التنبيهات أثناء صمت الصلاة والنوم:
+            </span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              {(
+                [
+                  {
+                    id: 'silent_inbox' as SanctuarySilenceMode,
+                    title: 'كتم الصوت + حفظ في الصامت',
+                    desc: 'حفظ التنبيه في صندوق الصامت فقط بدون إزعاج',
+                  },
+                  {
+                    id: 'silent_notif' as SanctuarySilenceMode,
+                    title: 'إشعار صامت بدون صوت',
+                    desc: 'إظهار إشعار مرئي صامت دون رنين أو اهتزاز',
+                  },
+                  {
+                    id: 'vibrate_notif' as SanctuarySilenceMode,
+                    title: 'اهتزاز + إشعار بدون صوت',
+                    desc: 'اهتزاز خفيف وإشعار مرئي مع كتم الصوت تماماً',
+                  },
+                  {
+                    id: 'hide_all' as SanctuarySilenceMode,
+                    title: 'إخفاء تام',
+                    desc: 'إخفاء جميع التنبيهات كلياً طوال فترة الصمت',
+                  },
+                ] as const
+              ).map((opt) => {
+                const active = (draft.sanctuarySilenceMode ?? 'silent_inbox') === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() =>
+                      updateDraft((p) => ({ ...p, sanctuarySilenceMode: opt.id }))
+                    }
+                    className={`rounded-xl border p-2.5 text-right transition-colors cursor-pointer ${
+                      active
+                        ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/12 text-[#7FFFD4]'
+                        : 'border-white/[0.08] bg-[var(--bg-card)] text-zinc-300 hover:border-white/20'
+                    }`}
+                  >
+                    <div className="font-semibold">{opt.title}</div>
+                    <div className="text-[11px] text-zinc-400 mt-0.5 leading-snug">
+                      {opt.desc}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <p className="text-[11px] text-zinc-500">
             وقت صلاة الجمعة يُمدّد الكتم تلقائياً إلى 50 دقيقة، وفي وقت النوم يُكتم الصوت كلياً حتى الاستيقاظ مع حفظ التنبيهات الصامتة.
           </p>

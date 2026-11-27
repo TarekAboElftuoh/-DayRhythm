@@ -30,6 +30,21 @@ import {
   WorkspaceSyncSignal,
 } from '../types/dayrhythm';
 
+export type SanctuarySilenceMode =
+  | 'silent_inbox'
+  | 'silent_notif'
+  | 'vibrate_notif'
+  | 'hide_all';
+
+declare module '../types/dayrhythm' {
+  interface LifeProfile {
+    sanctuarySilenceMode?: SanctuarySilenceMode;
+  }
+  interface SilentNotificationItem {
+    description?: string;
+  }
+}
+
 export interface ActiveAlarmItem {
   id: string;
   uid: string;
@@ -53,6 +68,7 @@ export interface UserSettingsPayload {
   appSettings?: AppSyncSettings;
   quietMode?: QuietModeType;
   adhanOverrideSilent?: boolean;
+  sanctuaryOverrideUntilMs?: number;
   surfaceTheme?: SurfaceTheme;
   hydrationHistory?: HydrationDayLog[];
   streaks?: DualStreaks;

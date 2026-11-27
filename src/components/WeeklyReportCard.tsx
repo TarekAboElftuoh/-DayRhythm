@@ -62,15 +62,15 @@ export const WeeklyReportCard: React.FC<WeeklyReportCardProps> = ({
   }, [hydrationHistory, medications, streaks.dailyCommitmentDays, lifeProfile.sleepDebtMinutes, todayIso]);
 
   const stat = (label: string, value: string, good: boolean) => (
-    <div className="min-w-0 rounded-lg bg-white/[0.03] px-2 py-1.5 text-center">
-      <div className={`font-mono-tabular text-sm font-bold ${good ? 'text-[#7FFFD4]' : 'text-zinc-100'}`}>{value}</div>
-      <div className="text-[11px] text-zinc-400 truncate">{label}</div>
+    <div className="min-w-0 rounded-lg bg-white/[0.03] px-2 py-2 text-center flex flex-col justify-center">
+      <div className={`font-mono-tabular text-sm md:text-[15px] font-bold ${good ? 'text-[#7FFFD4]' : 'text-zinc-100'}`}>{value}</div>
+      <div className="text-[11px] md:text-xs text-zinc-400 leading-snug whitespace-nowrap mt-0.5">{label}</div>
     </div>
   );
 
   return (
     <section className={`rounded-2xl border p-4 space-y-2.5 ${cardSurface}`} aria-label="تقرير الأسبوع">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-bold text-white flex items-center gap-2">
           <CalendarCheck className="w-4 h-4 text-[#7FFFD4]" />
           <span>آخر 7 أيام</span>
@@ -90,7 +90,7 @@ export const WeeklyReportCard: React.FC<WeeklyReportCardProps> = ({
           })}
         </div>
       </div>
-      <div className="grid grid-cols-4 gap-1.5">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-1.5">
         {stat('💧 الترطيب', `${report.waterPct}%`, report.waterPct >= 90)}
         {stat('🎯 أيام الهدف', `${report.waterDaysHit}/7`, report.waterDaysHit >= 6)}
         {stat('💊 العلاجات', report.medsPct === null ? '—' : `${report.medsPct}%`, (report.medsPct ?? 0) >= 90)}

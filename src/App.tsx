@@ -113,6 +113,7 @@ import {
   mergeHydrationTodaySlots,
   type DayRhythmAlertSession,
   type LiveSyncSignal,
+  type SanctuarySilenceMode,
   type UserSettingsPayload,
 } from './services/cloudStateService';
 
@@ -139,11 +140,11 @@ import {
   sanitizeCreativeActivityId,
   sanitizeCreativeActivityItem,
   sanitizeDeviceSettings,
-  sanitizeLifeProfile,
+  sanitizeLifeProfile as firebaseSanitizeLifeProfile,
   sanitizeMedicationItem,
   sanitizeMemoryId,
   sanitizeMemoryItem,
-  sanitizeRhythmPayload,
+  sanitizeRhythmPayload as firebaseSanitizeRhythmPayload,
   sanitizeSoundRepeats,
   sanitizeUiPrefs,
   sanitizeAppSyncSettings,
@@ -153,6 +154,32 @@ import {
   type SyncedRhythmPayload,
   triggerFirestoreRecovery,
 } from './firebase';
+
+const VALID_SANCTUARY_SILENCE_MODES: ReadonlyArray<SanctuarySilenceMode> = [
+  'silent_inbox',
+  'silent_notif',
+  'vibrate_notif',
+  'hide_all',
+];
+
+function sanitizeLifeProfile(raw: Partial<LifeProfile> | undefined): LifeProfile {
+  const base = firebaseSanitizeLifeProfile(raw);
+  const rawMode = raw?.sanctuarySilenceMode;
+  const sanctuarySilenceMode: SanctuarySilenceMode = VALID_SANCTUARY_SILENCE_MODES.includes(
+    rawMode as SanctuarySilenceMode
+  )
+    ? (rawMode as SanctuarySilenceMode)
+    : 'silent_inbox';
+  return { ...base, sanctuarySilenceMode };
+}
+
+function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayload {
+  const clean = firebaseSanitizeRhythmPayload(payload);
+  return {
+    ...clean,
+    lifeProfile: sanitizeLifeProfile(payload.lifeProfile),
+  };
+}
 import {
   loadDeletedMedicationIds,
   loadMedicationsUpdatedAt,
@@ -741,7 +768,46 @@ export default function App() {
   );
 
   const tomorrowAlert: TomorrowAlertInfo | null = useMemo(() => {
-    const base = analyzeTomorrowAlert(calendarEvents, tomorrowInfo.tomorrowIso, tomorrowInfo.tomorrowW);
+    const routineKeywords =
+      /(نوم|استيقاظ|الصلوات|صلاة|صلاه|الفجر|الظهر|العصر|المغرب|العشاء|الوتر|وتر|الضحى|قيام|تراويح|الجمعة|سنن|أذكار|اذكار|قرآن|قران|ورد|شرب|ماء|ماية|مياه|ترطيب|فطار|إفطار|افطار|غداء|عشاء|سحور|وجبة|تنظيف|ترتيب|الأوضة|الاوضة|اوضة|أوضة|الغرفة|الغرفه|غرفة|غرفه|مذاكرة|مراجعة|جيم|تمرين|رياضة|مشي|روتين|قيلولة|استحمام|دش|مكمل|فيتامين|بذور اليقطين|دواء|علاج|قهوة|شاي|شمس|sunlight)/i;
+    const externalSpecialPattern =
+      /(سفر|رحلة|طيران|مطار|قطار|دكتور|طبيب|عيادة|مستشفى|تحليل|مقابلة|إنترفيو|انترفيو|امتحان|اختبار|تسليم|اجتماع|لقاء|مكالمة|مؤتمر|موعد|زيارة|مناسبة|حجز|flight|airport|travel|trip|doctor|clinic|hospital|interview|exam|deadline|meeting|call|sync|appointment|visit|booking)/i;
+
+    const normalizeEvSig = (ev: GoogleCalendarEventItem): string => {
+      const cleaned = cleanCalendarText(ev.summary || '').toLowerCase();
+      return cleaned
+        .replace(/\d{1,2}:\d{2}\s*(ص|م|am|pm)?/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    const sigDays = new Map<string, Set<string>>();
+    for (const ev of calendarEvents) {
+      const dIso = String(ev.start ?? '').slice(0, 10);
+      if (!dIso) continue;
+      const sig = normalizeEvSig(ev);
+      if (!sig) continue;
+      if (!sigDays.has(sig)) sigDays.set(sig, new Set());
+      sigDays.get(sig)!.add(dIso);
+    }
+
+    const nonRoutineTomorrowEvents = calendarEvents.filter((ev) => {
+      const dIso = String(ev.start ?? '').slice(0, 10);
+      if (dIso !== tomorrowInfo.tomorrowIso) return false;
+      if (ev.isRecurring || ev.recurringEventId) return false;
+      const sig = normalizeEvSig(ev);
+      const text = `${ev.summary ?? ''} ${ev.description ?? ''} ${ev.location ?? ''}`;
+      if (externalSpecialPattern.test(text)) return true;
+      if (sig && (sigDays.get(sig)?.size ?? 1) >= 2) return false;
+      if (routineKeywords.test(text)) return false;
+      return true;
+    });
+
+    const base = analyzeTomorrowAlert(
+      nonRoutineTomorrowEvents,
+      tomorrowInfo.tomorrowIso,
+      tomorrowInfo.tomorrowW
+    );
     if (!specialFastTomorrow) return base;
     const headline = `${specialFastTomorrow.emoji} بكرة ${specialFastTomorrow.nameAr} — صيام سُنّة`;
     const detail = 'السحور ومواعيد المية اتظبطوا تلقائياً على الصيام';
@@ -774,6 +840,8 @@ export default function App() {
       return 0;
     }
   });
+  const sanctuaryOverrideUntilMsRef = useRef<number>(sanctuaryOverrideUntilMs);
+  sanctuaryOverrideUntilMsRef.current = sanctuaryOverrideUntilMs;
 
   const rawActiveSanctuary: ActiveSanctuaryState = useMemo(
     () =>
@@ -830,6 +898,8 @@ export default function App() {
           : 1440 - nowTickMin + endsAtMin
         : 60;
     const untilMs = Date.now() + Math.max(1, deltaMin) * 60_000;
+    localWriteLockUntilRef.current = Date.now() + 5000;
+    sanctuaryOverrideUntilMsRef.current = untilMs;
     setSanctuaryOverrideUntilMs(untilMs);
     try {
       localStorage.setItem('dayrhythm_sanctuary_override_until_v1', String(untilMs));
@@ -837,6 +907,9 @@ export default function App() {
       // ignore storage errors
     }
     lastScheduledAlarmsJsonRef.current = '';
+    lastSyncedCloudAlarmsJsonRef.current = '';
+    void saveCloudUserSettingsRef.current({ sanctuaryOverrideUntilMs: untilMs });
+    void pushToTasksVaultRef.current({ sanctuaryOverrideUntilMs: untilMs });
   }, [rawActiveSanctuary.endsAtMin, nowTickMin]);
 
   // Auto-revert one-time prayer silence override immediately after that single prayer finishes
@@ -1033,6 +1106,8 @@ export default function App() {
       return false;
     }
   });
+  const [themeWaveDirection, setThemeWaveDirection] = useState<'sun' | 'night' | null>(null);
+  const themeWaveTimerRef = useRef<number | null>(null);
 
   // ── ☀️ Daily Sunlight Exposure Settings & Snooze ─────────────────────────────────
   const SUNLIGHT_SETTINGS_STORAGE_KEY = 'dayrhythm_sunlight_settings_v1';
@@ -1631,9 +1706,35 @@ export default function App() {
       const isAndroidNative = Boolean(androidNative);
 
       if (!options?.bypassSanctuary && activeSanctuary.type !== 'none') {
-        if (!isAndroidNative) {
-          playTaskSignature(category, { sanctuary: activeSanctuary, repeatCount: 1 });
+        const isPrayerOrSleep =
+          activeSanctuary.type === 'prayer' || activeSanctuary.type === 'sleep';
+        const silenceMode: SanctuarySilenceMode = isPrayerOrSleep
+          ? lifeProfile.sanctuarySilenceMode ?? 'silent_inbox'
+          : 'silent_inbox';
+
+        if (silenceMode === 'hide_all') {
+          return;
         }
+
+        const cleanedTitle = cleanCalendarText(visibleTitle);
+        const hasReadableChars =
+          cleanedTitle.replace(/[\p{Extended_Pictographic}\uFE0F\u200D\s]/gu, '').length > 0;
+        const readableTitle = hasReadableChars ? cleanedTitle : meta.labelAr;
+        const shortDescription = visibleDescription || visibleSource;
+
+        if (!isPrayerOrSleep && !isAndroidNative) {
+          playTaskSignature(category, { sanctuary: activeSanctuary, repeatCount: 1 });
+        } else if (silenceMode === 'vibrate_notif' && !isAndroidNative) {
+          triggerHapticWaveform('pomodoro');
+          if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+            try {
+              navigator.vibrate([160, 80, 160]);
+            } catch {
+              // ignore
+            }
+          }
+        }
+
         const reasonAr =
           activeSanctuary.type === 'prayer'
             ? 'وقت الصلاة'
@@ -1642,14 +1743,41 @@ export default function App() {
               : 'وضع الاجتماع';
         const item: SilentNotificationItem = {
           id: `sn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
-          title: privacyBadge,
+          title: readableTitle,
+          description: shortDescription,
           reasonAr,
           time12h: formatNow12hInTimeZone(activeTimeZone, 'ar'),
           soundCategory: category,
           createdAtIso: new Date().toISOString(),
         };
         setSilentNotifications((prev) => [item, ...prev].slice(0, 25));
-        showToast(`🔕 ${privacyBadge}`);
+
+        if (silenceMode === 'silent_notif' || silenceMode === 'vibrate_notif') {
+          if (
+            typeof window !== 'undefined' &&
+            'Notification' in window &&
+            Notification.permission === 'granted'
+          ) {
+            try {
+              new Notification(readableTitle, {
+                body: shortDescription ? `${shortDescription} · ${reasonAr}` : reasonAr,
+                silent: true,
+              });
+            } catch {
+              // ignore notification error
+            }
+          }
+          showToast(
+            `${silenceMode === 'vibrate_notif' ? '📳' : '🔕'} ${readableTitle}${
+              shortDescription ? ` — ${shortDescription}` : ''
+            }`
+          );
+          return;
+        }
+
+        showToast(
+          `🔕 ${readableTitle}${shortDescription ? ` — ${shortDescription}` : ''}`
+        );
         return;
       }
 
@@ -1812,6 +1940,7 @@ export default function App() {
       emitCrossDeviceSync,
       lifeProfile.cupSizeMl,
       lifeProfile.defaultSnoozeMinutes,
+      lifeProfile.sanctuarySilenceMode,
       lifeProfile.soundRepeats,
       showToast,
     ]
@@ -2695,6 +2824,54 @@ export default function App() {
     }
   }, [sunMode]);
 
+  const handleToggleSunMode = useCallback(() => {
+    const nextSun = !appSettingsRef.current.sunMode;
+    const rootEl = document.documentElement;
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (prefersReducedMotion) {
+      updateAppSettings({ sunMode: nextSun });
+      return;
+    }
+
+    const docWithTransition = document as Document & {
+      startViewTransition?: (callback: () => void) => { finished: Promise<void> };
+    };
+
+    const sweepClass = nextSun ? 'theme-sweep-to-sun' : 'theme-sweep-to-night';
+    if (themeWaveTimerRef.current !== null) {
+      window.clearTimeout(themeWaveTimerRef.current);
+      themeWaveTimerRef.current = null;
+    }
+
+    if (typeof docWithTransition.startViewTransition === 'function') {
+      rootEl.classList.remove('theme-sweep-to-sun', 'theme-sweep-to-night');
+      rootEl.classList.add('theme-sweeping', sweepClass);
+      const transition = docWithTransition.startViewTransition(() => {
+        flushSync(() => {
+          updateAppSettings({ sunMode: nextSun });
+        });
+        rootEl.classList.toggle('theme-sun', nextSun);
+      });
+      transition.finished.finally(() => {
+        rootEl.classList.remove('theme-sweeping', 'theme-sweep-to-sun', 'theme-sweep-to-night');
+      });
+      return;
+    }
+
+    rootEl.classList.add('theme-sweeping');
+    setThemeWaveDirection(nextSun ? 'sun' : 'night');
+    updateAppSettings({ sunMode: nextSun });
+    themeWaveTimerRef.current = window.setTimeout(() => {
+      themeWaveTimerRef.current = null;
+      rootEl.classList.remove('theme-sweeping');
+      setThemeWaveDirection(null);
+    }, 860);
+  }, [updateAppSettings]);
+
   // Daily cloud quota spent: hold saves (local stays the truth, badge stays steady instead of
   // flipping every second), then retry automatically when the pause ends.
   useEffect(() => {
@@ -2985,6 +3162,30 @@ export default function App() {
             }
           }
           if (typeof backup.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(backup.adhanOverrideSilent);
+          const backupWithSanctuary = backup as FullDayRhythmCloudBackup & {
+            sanctuaryOverrideUntilMs?: number;
+          };
+          if (
+            typeof backupWithSanctuary.sanctuaryOverrideUntilMs === 'number' &&
+            Date.now() >= localWriteLockUntilRef.current
+          ) {
+            const incomingUntil = Math.max(0, Math.round(backupWithSanctuary.sanctuaryOverrideUntilMs));
+            const effectiveUntil = incomingUntil > Date.now() ? incomingUntil : 0;
+            if (effectiveUntil !== sanctuaryOverrideUntilMsRef.current) {
+              sanctuaryOverrideUntilMsRef.current = effectiveUntil;
+              setSanctuaryOverrideUntilMs(effectiveUntil);
+              lastScheduledAlarmsJsonRef.current = '';
+              try {
+                if (effectiveUntil > 0) {
+                  localStorage.setItem('dayrhythm_sanctuary_override_until_v1', String(effectiveUntil));
+                } else {
+                  localStorage.removeItem('dayrhythm_sanctuary_override_until_v1');
+                }
+              } catch {
+                // ignore storage errors
+              }
+            }
+          }
           const backupWithTravel = backup as FullDayRhythmCloudBackup & { travelState?: TravelState };
           if (backupWithTravel.travelState && Date.now() >= localWriteLockUntilRef.current) {
             const cleanDriveTravel = sanitizeTravelState(backupWithTravel.travelState);
@@ -3034,6 +3235,7 @@ export default function App() {
       const backup: FullDayRhythmCloudBackup & {
         quietUntilTs?: number | null;
         quietModeUpdatedAt?: number;
+        sanctuaryOverrideUntilMs?: number;
         travelState?: TravelState;
       } = {
         version: 1,
@@ -3059,6 +3261,7 @@ export default function App() {
           }
         })(),
         adhanOverrideSilent: overrides?.adhanOverrideSilent ?? adhanOverrideSilent,
+        sanctuaryOverrideUntilMs,
         waterRemindersEnabled: overrides?.waterRemindersEnabled ?? waterRemindersEnabled,
         phoneChargeLimitPct: overrides?.phoneChargeLimitPct ?? phoneChargeLimitPct,
         smartChargeAlertEnabled: overrides?.smartChargeAlertEnabled ?? smartChargeAlertEnabled,
@@ -3623,6 +3826,29 @@ export default function App() {
       adhanOverrideSilentRef.current = remote.adhanOverrideSilent;
       setAdhanOverrideSilent(remote.adhanOverrideSilent);
     }
+    const remoteSanctuaryOverride = (remote as { sanctuaryOverrideUntilMs?: number }).sanctuaryOverrideUntilMs;
+    if (
+      typeof remoteSanctuaryOverride === 'number' &&
+      Date.now() >= localWriteLockUntilRef.current
+    ) {
+      const incomingUntil = Math.max(0, Math.round(remoteSanctuaryOverride));
+      const effectiveUntil = incomingUntil > Date.now() ? incomingUntil : 0;
+      if (effectiveUntil !== sanctuaryOverrideUntilMsRef.current) {
+        sanctuaryOverrideUntilMsRef.current = effectiveUntil;
+        setSanctuaryOverrideUntilMs(effectiveUntil);
+        lastScheduledAlarmsJsonRef.current = '';
+        lastSyncedCloudAlarmsJsonRef.current = '';
+        try {
+          if (effectiveUntil > 0) {
+            localStorage.setItem('dayrhythm_sanctuary_override_until_v1', String(effectiveUntil));
+          } else {
+            localStorage.removeItem('dayrhythm_sanctuary_override_until_v1');
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
     if (remote.surfaceTheme && remote.surfaceTheme !== surfaceThemeRef.current) {
       surfaceThemeRef.current = remote.surfaceTheme;
       setSurfaceTheme(remote.surfaceTheme);
@@ -4177,6 +4403,7 @@ export default function App() {
           waterTargetDoneToday: streaks.waterTargetDoneToday,
           quietMode,
           adhanOverrideSilent,
+          sanctuaryOverrideUntilMs,
           surfaceTheme,
           deviceSettings,
           lifeProfile: currentProfile,
@@ -4937,6 +5164,7 @@ export default function App() {
       const backup: FullDayRhythmCloudBackup & {
         quietUntilTs?: number | null;
         quietModeUpdatedAt?: number;
+        sanctuaryOverrideUntilMs?: number;
         travelState?: TravelState;
       } = {
         version: 1,
@@ -4958,6 +5186,7 @@ export default function App() {
           }
         })(),
         adhanOverrideSilent,
+        sanctuaryOverrideUntilMs,
         waterRemindersEnabled,
         phoneChargeLimitPct,
         smartChargeAlertEnabled,
@@ -4988,6 +5217,7 @@ export default function App() {
     deviceSettings,
     quietMode,
     adhanOverrideSilent,
+    sanctuaryOverrideUntilMs,
     waterRemindersEnabled,
     phoneChargeLimitPct,
     smartChargeAlertEnabled,
@@ -9812,6 +10042,7 @@ export default function App() {
       };
       const isSilencedAt = (minOfDay: number, triggerAtMs: number) => {
         if (isMutedByQuietModeAt(triggerAtMs)) return true;
+        if (sanctuaryOverrideUntilMs > triggerAtMs) return false;
         if (sleepDurMin > 0 && sleepDurMin < 900) {
           const m = ((minOfDay % 1440) + 1440) % 1440;
           if (((m - dailyRhythmPlan.bedtimeMin + 1440) % 1440) < sleepDurMin) return true;
@@ -10055,6 +10286,7 @@ export default function App() {
     quietMode,
     quietUntilTs,
     adhanOverrideSilent,
+    sanctuaryOverrideUntilMs,
     lowEnergyActive,
     firebaseUser?.isAnonymous,
     firebaseUser?.uid,
@@ -10122,6 +10354,16 @@ ${lifeConstitution}
         surfaceTheme === 'amoled' ? 'bg-black' : 'bg-[#070A0F]'
       } text-zinc-100 pb-16`}
     >
+      {themeWaveDirection && (
+        <div
+          aria-hidden="true"
+          className={`theme-wave-overlay ${
+            themeWaveDirection === 'sun'
+              ? 'theme-wave-overlay--sun'
+              : 'theme-wave-overlay--night'
+          }`}
+        />
+      )}
       <TopBar
         activeTab={activeTab}
         onSelectTab={handleSelectTab}
@@ -10132,7 +10374,7 @@ ${lifeConstitution}
         onCheckAppUpdates={handleCheckAppUpdates}
         isCheckingUpdates={isCheckingUpdates}
         sunMode={sunMode}
-        onToggleSunMode={() => updateAppSettings({ sunMode: !appSettingsRef.current.sunMode })}
+        onToggleSunMode={handleToggleSunMode}
       />
 
       {toastMessage && (
