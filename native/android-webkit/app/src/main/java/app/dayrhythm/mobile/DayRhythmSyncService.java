@@ -1768,9 +1768,6 @@ public class DayRhythmSyncService extends Service {
                 .setOnlyAlertOnce(true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(pi);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setSilent(true);
-        }
 
         Bundle liveExtras = new Bundle();
         String chargeTag = "";
