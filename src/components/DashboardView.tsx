@@ -39,6 +39,8 @@ import {
   Pill,
 } from 'lucide-react';
 import { WeeklyReportCard } from './WeeklyReportCard';
+import { SunlightCard } from './SunlightCard';
+import type { ComputedSunlightSession } from '../engines/sunlightEngine';
 // Charts (recharts) are only shown when expanded, so load them on demand to keep app start-up light.
 const HydrationWeeklyChart = lazy(() =>
   import('./HydrationWeeklyChart').then((m) => ({ default: m.HydrationWeeklyChart }))
@@ -81,6 +83,7 @@ import {
   SoundRepeatMap,
   SoundRepeatSetting,
   SurfaceTheme,
+  SunlightSessionId,
   SyncTierMode,
   TaskActionProposal,
   TaskExecutionResult,
@@ -298,6 +301,10 @@ interface DashboardViewProps {
   onDismissWorkspaceUndo: () => void;
   wsConnected: boolean;
   activeOneTimeSilenceMinutes: number;
+  sunlightSessions?: ComputedSunlightSession[];
+  sunlightEnabled?: boolean;
+  onSnoozeSunlight?: (id: SunlightSessionId) => void;
+  onSunlightSessionEnd?: (id: SunlightSessionId) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -428,6 +435,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onDismissWorkspaceUndo,
   wsConnected,
   activeOneTimeSilenceMinutes,
+  sunlightSessions = [],
+  sunlightEnabled = false,
+  onSnoozeSunlight,
+  onSunlightSessionEnd,
 }) => {
   const [showTrash, setShowTrash] = useState(false);
   const [showSilentInbox, setShowSilentInbox] = useState(false);
@@ -3145,6 +3156,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         {/* Support Column (5 cols): High-Frequency Daily Care FIRST — Water -> Medications -> Sleep -> Streaks */}
         <div className="lg:col-span-5 space-y-5">
+          {onSnoozeSunlight && (
+            <SunlightCard
+              sessions={sunlightSessions}
+              enabled={sunlightEnabled}
+              activeTimeZone={activeTimeZone}
+              cardSurface={cardSurface}
+              onSnooze={onSnoozeSunlight}
+              onSessionEnd={onSunlightSessionEnd}
+            />
+          )}
+
           {/* 1. Hydration Card (Promoted to #1 in Support Column — highest tap frequency) */}
           <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
             <div className="flex items-baseline justify-between gap-2">

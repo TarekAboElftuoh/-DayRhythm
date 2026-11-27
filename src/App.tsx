@@ -46,7 +46,10 @@ import {
   SharedChangelogEntry,
   SilentNotificationItem,
   SoundRepeatSetting,
+  SunlightSessionId,
+  SunlightSettings,
   SurfaceTheme,
+  DEFAULT_SUNLIGHT_SETTINGS,
   SyncTierMode,
   TaskActionProposal,
   TaskExecutionResult,
@@ -192,6 +195,7 @@ import {
   evaluateAudioSanctuary,
   playBatteryFullSignature,
   playSoftChime,
+  playSunlightChime,
   playTaskSignature,
   startSmartChargeCompleteAlert,
   stopContinuousAlert,
@@ -199,6 +203,10 @@ import {
   unlockAudioContext,
 } from './engines/audioEngine';
 import { fetchOpenMeteoWeather, loadCachedWeather } from './engines/weatherEngine';
+import {
+  computeDailySunlightSessions,
+  type ComputedSunlightSession,
+} from './engines/sunlightEngine';
 import { triggerHapticWaveform } from './engines/hapticsEngine';
 import { formatCountdown } from './hooks/useCountdown';
 import { TopBar } from './components/TopBar';
@@ -899,6 +907,145 @@ export default function App() {
       return false;
     }
   });
+
+  // ── ☀️ Daily Sunlight Exposure Settings & Snooze ─────────────────────────────────
+  const SUNLIGHT_SETTINGS_STORAGE_KEY = 'dayrhythm_sunlight_settings_v1';
+
+  const sanitizeSunlightSettings = useCallback((raw: unknown): SunlightSettings => {
+    if (!raw || typeof raw !== 'object') return DEFAULT_SUNLIGHT_SETTINGS;
+    const obj = raw as Record<string, unknown>;
+    const skinTone =
+      obj.skinTone === 'fair' || obj.skinTone === 'wheat' || obj.skinTone === 'dark'
+        ? obj.skinTone
+        : DEFAULT_SUNLIGHT_SETTINGS.skinTone;
+    const exposureMode =
+      obj.exposureMode === 'auto' ||
+      obj.exposureMode === 'face_hands' ||
+      obj.exposureMode === 'arms_light'
+        ? obj.exposureMode
+        : DEFAULT_SUNLIGHT_SETTINGS.exposureMode;
+    const rawSessions =
+      obj.sessions && typeof obj.sessions === 'object'
+        ? (obj.sessions as Record<string, unknown>)
+        : {};
+    const sanitizeSession = (id: SunlightSessionId) => {
+      const def = DEFAULT_SUNLIGHT_SETTINGS.sessions[id];
+      const s =
+        rawSessions[id] && typeof rawSessions[id] === 'object'
+          ? (rawSessions[id] as Record<string, unknown>)
+          : {};
+      return {
+        enabled: typeof s.enabled === 'boolean' ? s.enabled : def.enabled,
+        autoDuration: typeof s.autoDuration === 'boolean' ? s.autoDuration : def.autoDuration,
+        customMinutes:
+          typeof s.customMinutes === 'number' && Number.isFinite(s.customMinutes)
+            ? Math.round(s.customMinutes)
+            : def.customMinutes,
+        labelAr: typeof s.labelAr === 'string' && s.labelAr.trim() ? s.labelAr : def.labelAr,
+        emoji: typeof s.emoji === 'string' && s.emoji.trim() ? s.emoji : def.emoji,
+        descAr: typeof s.descAr === 'string' && s.descAr.trim() ? s.descAr : def.descAr,
+      };
+    };
+    return {
+      enabled: typeof obj.enabled === 'boolean' ? obj.enabled : DEFAULT_SUNLIGHT_SETTINGS.enabled,
+      leadMinutes:
+        typeof obj.leadMinutes === 'number' && Number.isFinite(obj.leadMinutes)
+          ? Math.max(0, Math.min(15, Math.round(obj.leadMinutes)))
+          : DEFAULT_SUNLIGHT_SETTINGS.leadMinutes,
+      skinTone,
+      exposureMode,
+      sessions: {
+        morning: sanitizeSession('morning'),
+        noon: sanitizeSession('noon'),
+        evening: sanitizeSession('evening'),
+      },
+    };
+  }, []);
+
+  const [sunlightSettings, setSunlightSettings] = useState<SunlightSettings>(() => {
+    try {
+      const saved = localStorage.getItem('dayrhythm_sunlight_settings_v1');
+      if (!saved) return DEFAULT_SUNLIGHT_SETTINGS;
+      return sanitizeSunlightSettings(JSON.parse(saved));
+    } catch {
+      return DEFAULT_SUNLIGHT_SETTINGS;
+    }
+  });
+
+  const handleUpdateSunlightSettings = useCallback(
+    (next: SunlightSettings) => {
+      const clean = sanitizeSunlightSettings(next);
+      setSunlightSettings(clean);
+      try {
+        localStorage.setItem(SUNLIGHT_SETTINGS_STORAGE_KEY, JSON.stringify(clean));
+      } catch {
+        // ignore storage errors
+      }
+    },
+    [sanitizeSunlightSettings]
+  );
+
+  const [sunlightSnooze, setSunlightSnooze] = useState<{
+    dateKey: string;
+    offsets: Record<SunlightSessionId, number>;
+  }>(() => ({
+    dateKey: todayCairoIso,
+    offsets: { morning: 0, noon: 0, evening: 0 },
+  }));
+
+  useEffect(() => {
+    setSunlightSnooze((prev) =>
+      prev.dateKey === todayCairoIso
+        ? prev
+        : { dateKey: todayCairoIso, offsets: { morning: 0, noon: 0, evening: 0 } }
+    );
+  }, [todayCairoIso]);
+
+  const sunlightSessions = useMemo<ComputedSunlightSession[]>(() => {
+    const base = computeDailySunlightSessions(
+      prayers,
+      weatherInfo,
+      sunlightSettings,
+      nowTickMin
+    );
+    const activeOffsets =
+      sunlightSnooze.dateKey === todayCairoIso ? sunlightSnooze.offsets : null;
+    return base.map((s) => {
+      const snoozeMin = activeOffsets ? activeOffsets[s.id] ?? 0 : 0;
+      const startMinutes = s.startMinutes + snoozeMin;
+      const endMinutes = s.endMinutes + snoozeMin;
+      const alertMinutes = Math.max(0, startMinutes - s.leadMinutes);
+      const canSnooze =
+        Math.max(nowTickMin, startMinutes) + 5 + s.durationMinutes <=
+        s.windowEndMinutes;
+      return {
+        ...s,
+        startMinutes,
+        endMinutes,
+        alertMinutes,
+        canSnooze,
+      };
+    });
+  }, [prayers, weatherInfo, sunlightSettings, nowTickMin, sunlightSnooze, todayCairoIso]);
+
+  const handleSnoozeSunlight = useCallback(
+    (id: SunlightSessionId) => {
+      setSunlightSnooze((prev) => {
+        const baseOffsets =
+          prev.dateKey === todayCairoIso
+            ? prev.offsets
+            : { morning: 0, noon: 0, evening: 0 };
+        return {
+          dateKey: todayCairoIso,
+          offsets: {
+            ...baseOffsets,
+            [id]: (baseOffsets[id] ?? 0) + 5,
+          },
+        };
+      });
+    },
+    [todayCairoIso]
+  );
 
   const appSettingsRef = useRef<AppSyncSettings>({
     phoneChargeLimitPct,
@@ -7167,6 +7314,56 @@ export default function App() {
     prayers,
   ]);
 
+  const handleSunlightSessionEnd = useCallback(
+    (id: SunlightSessionId) => {
+      const session = sunlightSessions.find((s) => s.id === id);
+      if (!session || !session.enabled || session.isCloudBlocked) return;
+      const todayIso = getDateIsoInTimeZone(activeTimeZone);
+      const endKey = `${todayIso}:sunlight_end:${id}`;
+      if (firedReminderKeysRef.current.has(endKey)) return;
+      firedReminderKeysRef.current.add(endKey);
+      if (activeSanctuary.type === 'none' && quietMode !== 'silent_all') {
+        playSunlightChime('end');
+      }
+    },
+    [sunlightSessions, activeTimeZone, activeSanctuary.type, quietMode]
+  );
+
+  // Daily Sunlight Exposure Chimes (lead/start + end, deduplicated per session/day)
+  useEffect(() => {
+    if (!sunlightSettings.enabled) return;
+    const todayIso = getDateIsoInTimeZone(activeTimeZone);
+    const sanctuaryBlocked = activeSanctuary.type !== 'none' || quietMode === 'silent_all';
+    for (const session of sunlightSessions) {
+      if (!session.enabled || session.isCloudBlocked) continue;
+      if (nowTickMin >= session.alertMinutes && nowTickMin < session.endMinutes) {
+        const startKey = `${todayIso}:sunlight_start:${session.id}:${session.alertMinutes}`;
+        if (!firedReminderKeysRef.current.has(startKey)) {
+          firedReminderKeysRef.current.add(startKey);
+          if (!sanctuaryBlocked) {
+            playSunlightChime(session.id);
+          }
+        }
+      }
+      if (nowTickMin >= session.endMinutes && nowTickMin <= session.endMinutes + 1) {
+        const endKey = `${todayIso}:sunlight_end:${session.id}`;
+        if (!firedReminderKeysRef.current.has(endKey)) {
+          firedReminderKeysRef.current.add(endKey);
+          if (!sanctuaryBlocked) {
+            playSunlightChime('end');
+          }
+        }
+      }
+    }
+  }, [
+    sunlightSettings.enabled,
+    sunlightSessions,
+    nowTickMin,
+    activeTimeZone,
+    activeSanctuary.type,
+    quietMode,
+  ]);
+
   // Real-time Phone Battery Sync (Mobile publishes local battery; PC receives & displays)
   useEffect(() => {
     const isMobileClient = detectIsMobileDeviceClient();
@@ -9189,6 +9386,10 @@ ${lifeConstitution}
             onDismissWorkspaceUndo={() => setLastDeletedWorkspaceItem(null)}
             wsConnected={wsConnected}
             activeOneTimeSilenceMinutes={activeOneTimeSilenceMinutes}
+            sunlightSessions={sunlightSessions}
+            sunlightEnabled={sunlightSettings.enabled}
+            onSnoozeSunlight={handleSnoozeSunlight}
+            onSunlightSessionEnd={handleSunlightSessionEnd}
           />
         )}
 
@@ -9390,6 +9591,8 @@ ${lifeConstitution}
         smartChargeAlertEnabled={smartChargeAlertEnabled}
         smartChargeAudioActive={smartChargeAudioActive}
         smartChargeKeepUntilUnplugged={smartChargeKeepUntilUnplugged}
+        sunlightSettings={sunlightSettings}
+        handleUpdateSunlightSettings={handleUpdateSunlightSettings}
         travelState={travelState}
         triggerTaskAlert={triggerTaskAlert}
         undoSnapshot={undoSnapshot}

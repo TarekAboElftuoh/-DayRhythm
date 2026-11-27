@@ -10,6 +10,7 @@ import {
   QuietModeType,
   ScheduleBlock,
   SoundRepeatSetting,
+  SunlightSettings,
   TaskActionProposal,
   TaskExecutionResult,
   TaskSoundCategory,
@@ -134,6 +135,8 @@ export interface AppModalsProps {
   smartChargeAlertEnabled: boolean;
   smartChargeAudioActive: boolean;
   smartChargeKeepUntilUnplugged: boolean;
+  sunlightSettings: SunlightSettings;
+  handleUpdateSunlightSettings: (next: SunlightSettings) => void;
   travelState: TravelState;
   triggerTaskAlert: LifeProfileProps['onTriggerTaskAlert'];
   undoSnapshot: ScheduleBlock[] | null;
@@ -179,6 +182,7 @@ export function AppModals(props: AppModalsProps) {
     handleUpdateMemory,
     handleUpdatePhoneChargeLimit,
     handleUpdateSoundRepeat,
+    handleUpdateSunlightSettings,
     includeBiweeklyPcCleanup,
     includePrayerAnchors,
     isCatchUpModalOpen,
@@ -214,6 +218,7 @@ export function AppModals(props: AppModalsProps) {
     smartChargeAlertEnabled,
     smartChargeAudioActive,
     smartChargeKeepUntilUnplugged,
+    sunlightSettings,
     travelState,
     triggerTaskAlert,
     undoSnapshot,
@@ -349,6 +354,8 @@ export function AppModals(props: AppModalsProps) {
             isSyncingGoogleDrive={isSyncingGoogleDrive}
             onExportBackupJson={handleExportBackupJson}
             onImportBackupJson={handleImportBackupJson}
+            sunlightSettings={sunlightSettings}
+            onUpdateSunlightSettings={handleUpdateSunlightSettings}
           />
         </Suspense>
       )}

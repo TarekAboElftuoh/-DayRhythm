@@ -32,6 +32,7 @@ import {
 import { getDriveApiStatus } from '../services/googleDriveStorage';
 import { MemoryItemCard } from './MemoryItemCard';
 import { AndroidPermissionsCard } from './AndroidPermissionsCard';
+import { SunlightSettingsSection } from './SunlightSettingsSection';
 import type { CapsulePrefs } from './FloatingPiPCapsule';
 import { isMobileDevice } from '../services/platform';
 import {
@@ -52,6 +53,7 @@ import {
   QuietModeType,
   SoundRepeatMap,
   SoundRepeatSetting,
+  SunlightSettings,
   TaskSoundCategory,
   APP_VERSION,
 } from '../types/dayrhythm';
@@ -122,6 +124,8 @@ interface LifeProfileModalProps {
     ok: boolean;
     summaryAr: string;
   }>;
+  sunlightSettings?: SunlightSettings;
+  onUpdateSunlightSettings?: (next: SunlightSettings) => void;
 }
 
 export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
@@ -168,6 +172,8 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
   isSyncingGoogleDrive = false,
   onExportBackupJson,
   onImportBackupJson,
+  sunlightSettings,
+  onUpdateSunlightSettings,
 }) => {
   const [draft, setDraft] = useState<LifeProfile>(profile);
   const isDirtyRef = React.useRef(false);
@@ -728,6 +734,13 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             وقت صلاة الجمعة يُمدّد الكتم تلقائياً إلى 50 دقيقة، وفي وقت النوم يُكتم الصوت كلياً حتى الاستيقاظ مع حفظ التنبيهات الصامتة.
           </p>
         </section>
+
+        {sunlightSettings && onUpdateSunlightSettings && (
+          <SunlightSettingsSection
+            settings={sunlightSettings}
+            onChange={onUpdateSunlightSettings}
+          />
+        )}
 
         {/* 4. Continuous Offline-Ready GPS Location */}
         <section className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-3">
