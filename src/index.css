@@ -6,6 +6,30 @@
     --font-ar: "Cairo", "Readex Pro", system-ui, sans-serif;
     --font-en: "Plus Jakarta Sans", system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+    /* AMOLED theme (default) */
+    --bg-surface: #000000;
+    --bg-card: #07080a;
+    --border-subtle: rgba(255, 255, 255, 0.1);
+    --text-primary: #f4f4f5;
+    --text-muted: #a1a1aa;
+    --accent-primary: #7fffd4;
+    --status-success: #4ade80;
+    --status-warning: #fbbf24;
+    --status-danger: #fb7185;
+  }
+
+  .app-root:not(.bg-black) {
+    /* Dark (Obsidian) theme */
+    --bg-surface: #070a0f;
+    --bg-card: #0e131b;
+    --border-subtle: rgba(255, 255, 255, 0.1);
+    --text-primary: #f4f4f5;
+    --text-muted: #a1a1aa;
+    --accent-primary: #7fffd4;
+    --status-success: #4ade80;
+    --status-warning: #fbbf24;
+    --status-danger: #fb7185;
   }
 
   html {
@@ -69,10 +93,18 @@
   }
 }
 
-.font-mono-tabular {
-  font-family: var(--font-ar);
+.font-mono-tabular,
+.tabular-nums,
+time,
+[data-clock],
+[data-countdown],
+[data-metric] {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
+}
+
+.font-mono-tabular {
+  font-family: var(--font-ar);
 }
 
 .font-digits {
@@ -124,6 +156,15 @@
    ─────────────────────────────────────────────────────────────────────────── */
 html.theme-sun {
   color-scheme: light;
+  --bg-surface: #eef1f4;
+  --bg-card: #ffffff;
+  --border-subtle: rgba(0, 0, 0, 0.1);
+  --text-primary: #0b0d10;
+  --text-muted: #52525b;
+  --accent-primary: #0a7a61;
+  --status-success: #15803d;
+  --status-warning: #b45309;
+  --status-danger: #dc2626;
   --color-black: #ffffff;
   --color-white: #0b0d10;
   --color-zinc-50: #18181b;

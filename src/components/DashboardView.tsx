@@ -640,8 +640,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const cardSurface =
     surfaceTheme === 'amoled'
-      ? 'bg-[#07080A] border-white/[0.08]'
-      : 'bg-[#0E131B] border-white/[0.09] shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]';
+      ? 'bg-[var(--bg-card)] border-[var(--border-subtle)]'
+      : 'bg-[var(--bg-card)] border-[var(--border-subtle)] shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]';
 
   const activeBlocks = useMemo(
     () => blocks.filter((b) => !b.deleted),
@@ -2613,7 +2613,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </section>
 
           {/* 2. Google Tasks (Promoted directly below Schedule for daily action priority) */}
-          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
+          <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
               <h2 className="text-base font-bold text-white flex items-center gap-2">
                 <CheckSquare className="w-4 h-4 text-[#7FFFD4]" />
@@ -3182,7 +3182,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         {/* Support Column (5 cols): High-Frequency Daily Care FIRST — Water -> Medications -> Sleep -> Streaks */}
         <div className="lg:col-span-5 space-y-5">
           {/* 1. Hydration Card (Promoted to #1 in Support Column — highest tap frequency) */}
-          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
+          <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
             <div className="flex items-baseline justify-between gap-2">
               <h2 className="text-base font-bold text-white flex items-center gap-2">
                 <Droplets className="w-4 h-4 text-[#7FFFD4]" />
@@ -3427,7 +3427,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </section>
 
           {/* 2. Medications & Supplements (Clean Dedicated Card right below Water) */}
-          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
+          <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
               <div className="flex items-baseline gap-2 flex-wrap">
                 <h2 className="text-base font-bold text-white flex items-center gap-2">
@@ -4147,7 +4147,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </section>
 
           {/* 3. Sleep & Suhoor Rhythm (Checked morning/night — positioned cleanly below Water & Meds) */}
-          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3.5 ${cardSurface}`}>
+          <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
                 <Moon className="w-4 h-4 text-[#7FFFD4]" />
@@ -4366,8 +4366,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Quick Create Google Calendar Event Modal (Streamlined 1-Tap Presets + Smart Conflict Check) */}
       {newEventModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
-          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-2 sm:p-4">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-4 space-y-3 shadow-2xl">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-[#7FFFD4]" />
@@ -4709,8 +4709,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Explicit Confirmation Modal: Delete Event from Google Calendar */}
       {confirmDeleteGoogleEv && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
-          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-rose-500/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-2 sm:p-4">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-rose-500/40 bg-[var(--bg-card)] p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-4 space-y-3 shadow-2xl">
             <h3 className="text-sm font-bold text-rose-300">
               تأكيد حذف الحدث من Google Calendar
             </h3>

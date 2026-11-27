@@ -141,9 +141,9 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
   const promotedGranted = androidPerms ? Boolean(androidPerms.promotedAlerts ?? androidPerms.notifications) : null;
 
   return (
-    <div className="mx-auto max-w-[920px] px-4 sm:px-6 py-5 sm:py-6 space-y-5">
+    <div className="mx-auto max-w-[920px] px-4 sm:px-6 py-5 sm:py-6 space-y-4">
       {/* Clean Header */}
-      <header className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/[0.08]">
+      <header className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-[var(--border-subtle)]">
         <div>
           <h1 className="text-lg font-bold text-white">إعدادات الهاتف (OnePlus 12R)</h1>
           <p className="text-xs text-zinc-400 mt-1">
@@ -176,7 +176,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
       )}
 
       {/* Primary Section 1: OnePlus 12R Dynamic Island (Live Alerts) + Persistent Countdown Notification */}
-      <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-5">
+      <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
@@ -233,7 +233,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
             <button
               type="button"
               onClick={openLiveAlertSettings}
-              className="min-h-[36px] px-2.5 rounded-lg text-[11px] font-medium text-zinc-300 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer flex items-center gap-1"
+              className="min-h-[44px] sm:min-h-[36px] px-2.5 rounded-xl text-[11px] font-medium text-zinc-300 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer flex items-center gap-1"
             >
               <span>فتح الإعدادات</span>
               <ExternalLink className="w-3 h-3" />
@@ -269,7 +269,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                           liveAlertsAlwaysOn: false,
                         })
                       }
-                      className={`min-h-[42px] px-2 rounded-lg text-xs font-bold font-digits transition-colors cursor-pointer ${
+                      className={`min-h-[44px] px-2 rounded-xl text-xs font-bold font-digits transition-colors cursor-pointer ${
                         selected
                           ? 'bg-[#7FFFD4] text-black'
                           : 'text-zinc-300 hover:text-white hover:bg-white/[0.05]'
@@ -287,7 +287,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                       liveAlertsAlwaysOn: !alwaysOn,
                     })
                   }
-                  className={`min-h-[42px] px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                  className={`min-h-[44px] px-2 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
                     alwaysOn
                       ? 'bg-[#7FFFD4] text-black'
                       : 'text-zinc-300 hover:text-white hover:bg-white/[0.05]'
@@ -315,7 +315,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                 onClick={() =>
                   onUpdateDeviceSettings({ liveAlertsShowCharging: !showChargingPill })
                 }
-                className={`min-h-[40px] px-3.5 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                className={`min-h-[44px] px-3.5 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
                   showChargingPill
                     ? 'bg-[#7FFFD4] text-black'
                     : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
@@ -389,9 +389,9 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
       </section>
 
       {/* Primary Section 2: GPS (the phone is the location source for the PC) */}
-      <div className="grid grid-cols-1 gap-5">
+      <div className="grid grid-cols-1 gap-4">
         {/* GPS Authority -> PC */}
-        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-3">
           <div className="space-y-1">
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <MapPin className="w-4 h-4 text-[#7FFFD4]" />
@@ -440,14 +440,14 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
       )}
 
       {/* Hardware Controls: Bypass Charging, Charge Limit & Synced Alarm Test */}
-      <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+      <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <BatteryCharging className="w-4 h-4 text-[#7FFFD4]" />
               <span>الشحن التجاوزي وحماية البطارية</span>
             </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
+            <p className="text-xs text-zinc-400 mt-0.5 font-mono-tabular">
               {phoneBattery
                 ? `${phoneBattery.levelPct}% · ${batteryEtaText}`
                 : 'تحكم مباشر بحد الشحن والتنبيهات من الهاتف'}
@@ -457,7 +457,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
             <button
               type="button"
               onClick={onTriggerShakeUndo}
-              className="min-h-[40px] px-3.5 rounded-xl bg-amber-400 text-black text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              className="min-h-[44px] px-3.5 rounded-xl bg-amber-400 text-black text-xs font-bold flex items-center gap-1.5 cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>تراجع عن آخر حذف</span>
@@ -503,7 +503,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                       )
                     }
                     aria-pressed={batteryGuard.bypassChargingLimitPct !== null}
-                    className={`min-h-[32px] px-2.5 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
+                    className={`min-h-[44px] sm:min-h-[34px] px-2.5 rounded-xl border text-[11px] font-bold transition-colors cursor-pointer ${
                       batteryGuard.bypassChargingLimitPct !== null
                         ? 'border-[#4ADE80]/50 bg-[#4ADE80]/15 text-[#4ADE80]'
                         : 'border-white/10 bg-white/[0.04] text-zinc-400 hover:border-white/20'
@@ -585,11 +585,11 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
       </section>
 
       {/* Secondary / Advanced Hardware Settings & Live Permissions */}
-      <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] overflow-hidden">
+      <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] overflow-hidden">
         <button
           type="button"
           onClick={() => setAdvancedOpen((v) => !v)}
-          className="w-full min-h-[52px] px-5 py-3.5 flex items-center justify-between gap-3 text-right hover:bg-white/[0.02] transition-colors cursor-pointer"
+          className="w-full min-h-[52px] px-4 py-3.5 flex items-center justify-between gap-3 text-right hover:bg-white/[0.02] transition-colors cursor-pointer"
         >
           <span className="flex items-center gap-2 text-xs font-bold text-zinc-200">
             <SlidersHorizontal className="w-4 h-4 text-zinc-400" />
@@ -628,7 +628,7 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
                       type="button"
                       aria-pressed={enabled}
                       onClick={() => onUpdateDeviceSettings({ [item.key]: !enabled })}
-                      className={`min-h-[40px] px-3.5 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                      className={`min-h-[44px] px-3.5 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
                         enabled
                           ? 'bg-[#7FFFD4] text-black'
                           : 'bg-white/[0.06] text-zinc-300 hover:text-white'

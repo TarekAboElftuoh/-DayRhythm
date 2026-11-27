@@ -96,9 +96,9 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
   };
 
   return (
-    <div className="mx-auto max-w-[1040px] px-4 sm:px-6 py-6 space-y-6">
+    <div className="mx-auto max-w-[1040px] px-4 sm:px-6 py-6 space-y-5">
       {/* Clean Header */}
-      <header className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-white/[0.08]">
+      <header className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-[var(--border-subtle)]">
         <div>
           <h1 className="text-lg font-bold text-white">وضع الكمبيوتر</h1>
           <p className="text-xs text-zinc-400 mt-1">
@@ -118,9 +118,9 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
         </div>
       </header>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4">
         {/* Card 1: Desktop Capsule Shape & Size */}
-        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-bold text-white">كبسولة سطح المكتب</h2>
@@ -138,7 +138,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
                     // ignore
                   }
                 }}
-                className="px-3 py-1.5 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
               >
                 <PictureInPicture2 className="w-3.5 h-3.5" />
                 <span>إظهار الآن</span>
@@ -149,11 +149,11 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
           <div className="space-y-3 pt-1">
             <div className="space-y-1.5">
               <div className="text-xs text-zinc-400">الاتجاه</div>
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-black/50 border border-white/[0.07]">
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-black/50 border border-[var(--border-subtle)]">
                 <button
                   type="button"
                   onClick={() => updateCapsule({ orientation: 'horizontal' })}
-                  className={`min-h-[38px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                  className={`min-h-[44px] rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                     capsulePrefs.orientation === 'horizontal'
                       ? 'bg-[#7FFFD4] text-black'
                       : 'text-zinc-300 hover:bg-white/[0.05]'
@@ -165,7 +165,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
                 <button
                   type="button"
                   onClick={() => updateCapsule({ orientation: 'vertical' })}
-                  className={`min-h-[38px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                  className={`min-h-[44px] rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                     capsulePrefs.orientation === 'vertical'
                       ? 'bg-[#7FFFD4] text-black'
                       : 'text-zinc-300 hover:bg-white/[0.05]'
@@ -179,7 +179,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
 
             <div className="space-y-1.5">
               <div className="text-xs text-zinc-400">الحجم</div>
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/50 border border-white/[0.07]">
+              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-black/50 border border-[var(--border-subtle)]">
                 {(
                   [
                     { id: 'sm', label: 'صغير' },
@@ -191,7 +191,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
                     key={opt.id}
                     type="button"
                     onClick={() => updateCapsule({ size: opt.id })}
-                    className={`min-h-[36px] rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    className={`min-h-[44px] rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
                       capsulePrefs.size === opt.id
                         ? 'bg-[#7FFFD4] text-black'
                         : 'text-zinc-300 hover:bg-white/[0.05]'
@@ -206,7 +206,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
         </section>
 
         {/* Card 2: Live Phone Battery & Charging ETA */}
-        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <div>
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
@@ -277,7 +277,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
           )}
 
           {onChangeChargeLimit && (
-            <div className="space-y-1.5 pt-1 border-t border-white/[0.07]">
+            <div className="space-y-1.5 pt-2 border-t border-[var(--border-subtle)]">
               <div className="text-xs text-zinc-400">تنبيه اكتمال الشحن عند</div>
               <div className="grid grid-cols-4 gap-1.5">
                 {[80, 85, 90, 95].map((pct) => {
@@ -287,7 +287,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
                       key={pct}
                       type="button"
                       onClick={() => onChangeChargeLimit(pct)}
-                      className={`min-h-[34px] rounded-lg font-digits text-xs font-bold transition-colors cursor-pointer ${
+                      className={`min-h-[44px] rounded-xl font-digits text-xs font-bold transition-colors cursor-pointer ${
                         active
                           ? 'bg-[#7FFFD4] text-black'
                           : 'bg-white/[0.04] text-zinc-300 hover:bg-white/[0.08]'
@@ -303,7 +303,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
         </section>
 
         {/* Card 3: Alerts & Cross-Device Instant Sync */}
-        <section className="rounded-2xl border border-white/[0.08] bg-[#0B0E14] p-5 space-y-4">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 space-y-3">
           <div>
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <BellRing className="w-4 h-4 text-[#7FFFD4]" />
@@ -333,7 +333,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
               type="button"
               aria-pressed={stealthAudioOnly}
               onClick={onToggleStealthAudioOnly}
-              className={`min-h-[42px] px-3.5 rounded-lg text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+              className={`min-h-[44px] px-3.5 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
                 stealthAudioOnly
                   ? 'bg-[#7FFFD4] text-black'
                   : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
@@ -348,11 +348,11 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
             <span className="font-semibold text-zinc-200">{QUIET_MODE_LABELS[quietMode].ar}</span>
           </div>
 
-          <div className="pt-2 border-t border-white/[0.07] flex flex-wrap gap-2">
+          <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap gap-2">
             <button
               type="button"
               onClick={onTriggerRing}
-              className="flex-1 min-h-[42px] px-3 rounded-xl border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 text-xs font-bold transition-colors cursor-pointer"
+              className="flex-1 min-h-[44px] px-3 rounded-xl border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4]/20 text-xs font-bold transition-colors cursor-pointer"
             >
               اختبار التنبيه المتزامن
             </button>
@@ -360,7 +360,7 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
               <button
                 type="button"
                 onClick={onDismissTwoWay}
-                className="flex-1 min-h-[42px] px-3 rounded-xl bg-[#4ADE80] text-black hover:bg-emerald-300 text-xs font-bold transition-colors cursor-pointer"
+                className="flex-1 min-h-[44px] px-3 rounded-xl bg-[#4ADE80] text-black hover:bg-emerald-300 text-xs font-bold transition-colors cursor-pointer"
               >
                 إيقاف على الجهازين الآن
               </button>

@@ -102,7 +102,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-white/[0.07] bg-[#070A0F]/92 pt-[env(safe-area-inset-top)]">
+      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]/90 backdrop-blur-md pt-[env(safe-area-inset-top)]">
         <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3 sm:px-6 h-14">
           {/* Zone 1: Brand Lockup */}
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 min-w-0">
@@ -142,7 +142,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                   type="button"
                   onClick={() => onSelectTab(item.id)}
                   aria-current={active ? 'page' : undefined}
-                  className={`relative px-3.5 py-2 rounded-lg whitespace-nowrap shrink-0 transition-colors cursor-pointer select-none ${
+                  className={`relative min-h-[40px] px-3.5 py-2 rounded-xl whitespace-nowrap shrink-0 transition-colors cursor-pointer select-none ${
                     active
                       ? 'text-[#7FFFD4] font-semibold'
                       : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]'
@@ -150,7 +150,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                 >
                   {active && (
                     <div
-                      className="absolute inset-0 rounded-lg bg-[#7FFFD4]/[0.09] border border-[#7FFFD4]/25 shadow-[0_0_12px_rgba(127,255,212,0.12)]"
+                      className="absolute inset-0 rounded-xl bg-[#7FFFD4]/[0.09] border border-[#7FFFD4]/25 shadow-[0_0_12px_rgba(127,255,212,0.12)]"
                     />
                   )}
                   <span className="relative z-10">{item.label}</span>
@@ -194,7 +194,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <button
               type="button"
               onClick={onToggleLanguage}
-              className="min-h-[40px] px-3 py-1.5 text-xs font-medium rounded-xl border border-white/[0.09] bg-white/[0.03] text-zinc-200 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-95"
+              className="min-h-[44px] sm:min-h-[40px] px-3 py-1.5 text-xs font-medium rounded-xl border border-[var(--border-subtle)] bg-white/[0.03] text-zinc-200 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 transition-all active:scale-95"
               title="عربي ↔ English"
             >
               <Globe className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
@@ -205,7 +205,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             <button
               type="button"
               onClick={onOpenCatchUp}
-              className="min-h-[40px] px-3.5 sm:px-4 py-1.5 text-xs font-bold rounded-xl bg-[#7FFFD4] text-black hover:bg-[#66eec2] transition-all active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
+              className="min-h-[44px] sm:min-h-[40px] px-3.5 sm:px-4 py-1.5 text-xs font-bold rounded-xl bg-[#7FFFD4] text-black hover:bg-[#66eec2] transition-all active:scale-95 whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span className="sm:hidden">{language === 'ar' ? 'تدارك' : 'Catch-Up'}</span>
               <span className="hidden sm:inline">{t(language, 'ctaCatchUp')}</span>
@@ -217,7 +217,7 @@ export const TopBar: React.FC<TopBarProps> = ({
       {/* Mobile Bottom Thumb-Zone Navigation */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-white/[0.08] bg-[#050505] px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)]/90 backdrop-blur-md px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
       >
         <div className="grid grid-cols-3 gap-1">
           {navItems.map((item) => {

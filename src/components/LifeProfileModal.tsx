@@ -492,19 +492,19 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-0 sm:p-4"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="الدستور الشخصي وذاكرة Gemini الدائمة"
     >
       <form
         onSubmit={handleSave}
-        className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-white/15 bg-[#0A0D12] p-5 sm:p-6 text-zinc-100 shadow-2xl space-y-5"
+        className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 sm:p-5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-5 text-zinc-100 shadow-2xl space-y-4"
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
+        <div className="flex items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
           <div>
-            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-[#7FFFD4]" />
               <span>الإعدادات والثوابت وذاكرة Gemini</span>
             </h2>
@@ -515,7 +515,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <button
             type="button"
             onClick={handleClose}
-            className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-white cursor-pointer"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
             aria-label="إغلاق"
           >
             <X className="w-5 h-5" />
@@ -523,7 +523,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </div>
 
         {/* 1. Scientific Hydration & Biometrics */}
-        <section className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-3">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Droplets className="w-4 h-4 text-[#7FFFD4]" />
@@ -626,7 +626,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 2. Fasting Days, Flexible Suhoor Lead & Night Sleep Target */}
-        <section className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-3">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Moon className="w-4 h-4 text-[#7FFFD4]" />
@@ -745,7 +745,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 3. Automatic Audio Silence Sanctuaries (Prayer & Sleep) */}
-        <section className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-3">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <VolumeX className="w-4 h-4 text-[#7FFFD4]" />
@@ -810,7 +810,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         )}
 
         {/* 4. Continuous Offline-Ready GPS Location */}
-        <section className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-3">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Compass className="w-4 h-4 text-[#7FFFD4]" />
@@ -879,7 +879,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 5. Permanent Gemini Memory Bank (Google Cloud Vault) */}
-        <section className="rounded-xl border border-[#7FFFD4]/25 bg-black/60 p-4 space-y-3 text-xs">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Brain className="w-4 h-4 text-[#7FFFD4]" />
@@ -941,7 +941,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 6. Schedule, Audio & Account Settings (Moved cleanly out of the Main Dashboard) */}
-        <section className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-4 text-xs">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <SlidersHorizontal className="w-4 h-4 text-[#7FFFD4]" />
@@ -1364,7 +1364,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         </section>
 
         {/* 7. Google Gemini Client-Side API Key & Model Settings */}
-        <section className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-3.5 text-xs">
+        <section className="rounded-2xl border border-[var(--border-subtle)] bg-black/40 p-4 space-y-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Key className="w-4 h-4 text-[#7FFFD4]" />
@@ -1451,13 +1451,13 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         <AndroidPermissionsCard />
 
         {/* Footer */}
-        <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+        <div className="pt-3 border-t border-[var(--border-subtle)] flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             {onCheckAppUpdates && (
               <button
                 type="button"
                 onClick={onCheckAppUpdates}
-                className="px-3 py-2 rounded-xl border border-white/10 text-xs text-zinc-400 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 cursor-pointer"
+                className="min-h-[44px] px-3 py-2 rounded-xl border border-[var(--border-subtle)] text-xs text-zinc-400 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 cursor-pointer"
               >
                 فحص التحديثات
               </button>
@@ -1470,13 +1470,13 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
             <button
               type="button"
               onClick={handleClose}
-              className="px-4 py-2 rounded-xl border border-white/15 text-xs text-zinc-300 hover:text-white cursor-pointer"
+              className="min-h-[44px] px-4 py-2 rounded-xl border border-[var(--border-subtle)] text-xs text-zinc-300 hover:text-white cursor-pointer"
             >
               إلغاء
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1.5 cursor-pointer"
+              className="min-h-[44px] px-5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1.5 cursor-pointer"
             >
               <Check className="w-4 h-4" />
               <span>حفظ الثوابت ومزامنتها</span>

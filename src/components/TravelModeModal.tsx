@@ -172,14 +172,14 @@ export const TravelModeModal: React.FC<TravelModeModalProps> = ({
   return (
     <div
       dir="rtl"
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-0 sm:p-4"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-md p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="وضع السفر"
     >
-      <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-white/15 bg-[#0A0D12] p-5 sm:p-6 text-zinc-100 shadow-2xl">
+      <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 sm:p-5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-5 text-zinc-100 shadow-2xl">
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
+        <div className="flex items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
           <div className="flex items-center gap-3">
             <div
               className={`w-10 h-10 rounded-xl flex items-center justify-center border ${
@@ -313,7 +313,7 @@ export const TravelModeModal: React.FC<TravelModeModalProps> = ({
                 key={id}
                 type="button"
                 onClick={() => toggleCategory(id)}
-                className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-white/10 bg-black/40 hover:border-amber-400/40 hover:bg-amber-400/[0.05] text-right transition-colors cursor-pointer"
+                className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-xl border border-[var(--border-subtle)] bg-black/40 hover:border-amber-400/40 hover:bg-amber-400/[0.05] text-right transition-colors cursor-pointer"
               >
                 <span className="flex items-center gap-2.5">
                   <Icon className="w-4 h-4 text-[#7FFFD4] shrink-0" />
@@ -331,7 +331,7 @@ export const TravelModeModal: React.FC<TravelModeModalProps> = ({
                 key={med.id}
                 type="button"
                 onClick={() => toggleMed(med.id)}
-                className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-white/10 bg-black/40 hover:border-amber-400/40 hover:bg-amber-400/[0.05] text-right transition-colors cursor-pointer"
+                className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-xl border border-[var(--border-subtle)] bg-black/40 hover:border-amber-400/40 hover:bg-amber-400/[0.05] text-right transition-colors cursor-pointer"
               >
                 <span className="flex items-center gap-2.5">
                   <Pill className="w-4 h-4 text-sky-300 shrink-0" />
@@ -381,7 +381,7 @@ export const TravelModeModal: React.FC<TravelModeModalProps> = ({
                     key={id}
                     type="button"
                     onClick={() => toggleCategory(id)}
-                    className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-amber-400/30 bg-amber-400/10 hover:bg-emerald-400/10 hover:border-emerald-400/40 text-right transition-colors cursor-pointer"
+                    className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-xl border border-amber-400/30 bg-amber-400/10 hover:bg-emerald-400/10 hover:border-emerald-400/40 text-right transition-colors cursor-pointer"
                   >
                     <span className="flex items-center gap-2.5">
                       <Icon className="w-4 h-4 text-amber-300 shrink-0" />
@@ -396,7 +396,7 @@ export const TravelModeModal: React.FC<TravelModeModalProps> = ({
                     key={med.id}
                     type="button"
                     onClick={() => toggleMed(med.id)}
-                    className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-amber-400/30 bg-amber-400/10 hover:bg-emerald-400/10 hover:border-emerald-400/40 text-right transition-colors cursor-pointer"
+                    className="w-full min-h-[44px] flex items-center justify-between gap-3 px-3 py-2 rounded-xl border border-amber-400/30 bg-amber-400/10 hover:bg-emerald-400/10 hover:border-emerald-400/40 text-right transition-colors cursor-pointer"
                   >
                     <span className="flex items-center gap-2.5">
                       <Pill className="w-4 h-4 text-amber-300 shrink-0" />
