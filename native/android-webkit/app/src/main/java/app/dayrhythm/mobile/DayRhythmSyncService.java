@@ -1792,6 +1792,7 @@ public class DayRhythmSyncService extends Service {
                 .setSmallIcon(smallIcon)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
+                .setGroup("dayrhythm_schedule_group")
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(pi);
 
@@ -1816,11 +1817,8 @@ public class DayRhythmSyncService extends Service {
                     ? schedClockLabel
                     : new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(schedTargetEpochMs));
             String countdownText = formatArabicCountdown(schedRemMs);
-            String leadSuffix = liveAlertsLeadMinutes > 0
-                    ? (" · 🔔 -" + liveAlertsLeadMinutes + " د")
-                    : "";
             String contentLine = sanitizeEmojis(
-                    (targetClock.isEmpty() ? countdownText : (targetClock + " · " + countdownText)) + leadSuffix,
+                    targetClock.isEmpty() ? countdownText : (targetClock + " · " + countdownText),
                     2
             );
 
@@ -1962,15 +1960,17 @@ public class DayRhythmSyncService extends Service {
                 .setSmallIcon(getSmallIconForKind(iconKind))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
+                .setGroup("dayrhythm_live_alert_group")
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(pi)
                 .setContentTitle(compactPill)
-                .setContentText(compactPill)
-                .setShowWhen(inLeadWindow)
+                .setContentText("")
+                .setSubText(null)
+                .setShowWhen(inLeadWindow && remainingMs > 0L)
                 .setColor(accentColor)
                 .setCategory(inLeadWindow ? Notification.CATEGORY_EVENT : Notification.CATEGORY_PROGRESS);
 
-        if (inLeadWindow) {
+        if (inLeadWindow && remainingMs > 0L) {
             boolean showSecChrono = remainingMs <= 60_000L;
             builder.setWhen(liveTargetEpochMs)
                     .setUsesChronometer(showSecChrono)
@@ -1979,6 +1979,9 @@ public class DayRhythmSyncService extends Service {
                 liveExtras.putBoolean("android.showChronometer", true);
                 liveExtras.putBoolean("android.chronometerCountdown", true);
             }
+        } else {
+            builder.setShowWhen(false)
+                    .setUsesChronometer(false);
         }
 
         applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, accentColor);
