@@ -282,6 +282,36 @@ public class DayRhythmSyncService extends Service {
         }
     }
 
+    private static String resolveScheduleEmojiPair(String rawEmoji, String title) {
+        String t = title != null ? title : "";
+        String lower = t.toLowerCase(Locale.ROOT);
+        if (t.contains("الفجر") || lower.contains("fajr")) return "🕌 🌅";
+        if (t.contains("الظهر") || lower.contains("dhuhr")) return "🕌 ☀️";
+        if (t.contains("العصر") || lower.contains("asr")) return "🕌 🌤️";
+        if (t.contains("المغرب") || lower.contains("maghrib")) return "🕌 🌇";
+        if (t.contains("العشاء") || lower.contains("isha")) return "🕌 🌙";
+        String deduped = sanitizeEmojis(rawEmoji, 2);
+        return deduped.isEmpty() ? "📅" : deduped;
+    }
+
+    private static String formatArabicCountdown(long remainingMs) {
+        if (remainingMs <= 0L) return "الآن";
+        if (remainingMs <= 60_000L) {
+            long secs = Math.max(1L, Math.min(60L, (remainingMs + 999L) / 1000L));
+            return "باقي " + secs + " ث";
+        }
+        long totalMins = (remainingMs + 59_999L) / 60_000L;
+        if (totalMins < 60L) {
+            return "باقي " + totalMins + " د";
+        }
+        long hrs = totalMins / 60L;
+        long remMins = totalMins % 60L;
+        if (remMins > 0L) {
+            return "باقي " + hrs + " س " + remMins + " د";
+        }
+        return "باقي " + hrs + " س";
+    }
+
     public static String formatChipText(String emoji, long remainingMs) {
         String safeEmoji = sanitizeEmojis(emoji, 1);
         if (safeEmoji.isEmpty()) safeEmoji = "📅";
@@ -807,8 +837,8 @@ public class DayRhythmSyncService extends Service {
                 String sRawTitle = nextSchedItem.optString("title", "موعد قادم");
                 String sKind = nextSchedItem.optString("kind", "event");
                 String sBody = nextSchedItem.optString("body", "");
-                schedEmoji = sanitizeEmojis(extractEmoji(sRawTitle, sKind), 1);
-                if (schedEmoji.isEmpty()) schedEmoji = "📅";
+                schedEmoji = resolveScheduleEmojiPair(sanitizeEmojis(sRawTitle, 2), sRawTitle);
+                if (schedEmoji.isEmpty()) schedEmoji = extractEmoji(sRawTitle, sKind);
                 schedTitle = sanitizeEmojis(cleanEmojiPrefix(sRawTitle), 2);
                 schedStatusLabel = sanitizeEmojis(getStatusLabelForKind(sKind, sBody), 2);
                 schedDescription = sanitizeEmojis(sBody != null ? sBody.trim() : "", 2);
@@ -1239,7 +1269,7 @@ public class DayRhythmSyncService extends Service {
             liveNextUpSummary = nextUp != null ? sanitizeEmojis(nextUp.trim(), 2) : "";
             liveHydrationSummary = "";
 
-            String sEmoji = sanitizeEmojis(intent.getStringExtra(EXTRA_SCHED_EMOJI), 1);
+            String sEmoji = sanitizeEmojis(intent.getStringExtra(EXTRA_SCHED_EMOJI), 2);
             schedEmoji = sEmoji.isEmpty() ? "📅" : sEmoji;
             String sTitle = intent.getStringExtra(EXTRA_SCHED_TITLE);
             schedTitle = sTitle != null ? sanitizeEmojis(sTitle.trim(), 2) : "";
@@ -1795,26 +1825,30 @@ public class DayRhythmSyncService extends Service {
             applyPlatformLiveAlertFlags(builder, liveExtras, false, "", accentColor);
         }
 
-        // Persistent Notification Body (Schedule ONLY: Calendar events, Prayers, Sunrise/Sunset/Sunlight)
+        // Persistent Notification Body (Upcoming Schedule ONLY)
         boolean hasUpcomingSchedule = schedTargetEpochMs > nowMs + 1000L;
         if (hasUpcomingSchedule && persistentCountdownEnabled) {
             long schedRemMs = schedTargetEpochMs - nowMs;
             String cleanSched = cleanDisplayTitle(schedTitle.isEmpty() ? schedStatusLabel : schedTitle);
             if (cleanSched.isEmpty()) cleanSched = schedTitle.isEmpty() ? schedStatusLabel : schedTitle;
-            String safeSchedEmoji = sanitizeEmojis(schedEmoji, 1);
+            String safeSchedEmoji = resolveScheduleEmojiPair(schedEmoji, cleanSched);
             String titleLine = sanitizeEmojis((safeSchedEmoji.isEmpty() ? "" : safeSchedEmoji + " ") + cleanSched, 2);
             String targetClock = !schedClockLabel.isEmpty()
                     ? schedClockLabel
                     : new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(schedTargetEpochMs));
+            String countdownText = formatArabicCountdown(schedRemMs);
             String leadSuffix = liveAlertsLeadMinutes > 0
-                    ? (" · قبلها بـ " + liveAlertsLeadMinutes + " د")
+                    ? (" · 🔔 -" + liveAlertsLeadMinutes + " د")
                     : "";
-            String cleanNote = extractCleanNote(schedDescription, cleanSched, targetClock);
-            String baseLine = (targetClock + leadSuffix).trim();
             String contentLine = sanitizeEmojis(
-                    cleanNote.isEmpty() ? baseLine : (baseLine.isEmpty() ? cleanNote : (baseLine + " · " + cleanNote)),
+                    (targetClock.isEmpty() ? countdownText : (targetClock + " · " + countdownText)) + leadSuffix,
                     2
             );
+
+            long progressWindowMs = Math.max(60 * 60_000L, getEffectiveLeadWindowMs());
+            long clampedRemMs = Math.max(0L, Math.min(progressWindowMs, schedRemMs));
+            int progressPct = (int) Math.round(((progressWindowMs - clampedRemMs) * 100.0) / progressWindowMs);
+            progressPct = Math.max(0, Math.min(100, progressPct));
 
             boolean showSecChrono = (inLeadWindow ? remainingMs : schedRemMs) <= 60_000L;
             if (inLeadWindow && remainingMs <= 60_000L) {
@@ -1828,16 +1862,10 @@ public class DayRhythmSyncService extends Service {
                     .setWhen(inLeadWindow ? liveTargetEpochMs : schedTargetEpochMs)
                     .setUsesChronometer(showSecChrono)
                     .setChronometerCountDown(showSecChrono)
+                    .setProgress(100, progressPct, false)
                     .setColor(accentColor)
                     .setCategory(Notification.CATEGORY_EVENT)
                     .addExtras(liveExtras);
-
-            if (!cleanNote.isEmpty() && contentLine.length() > 60) {
-                String bigBody = sanitizeEmojis((baseLine.isEmpty() ? cleanNote : (baseLine + "\n" + cleanNote)), 2);
-                builder.setStyle(new Notification.BigTextStyle()
-                        .setBigContentTitle(titleLine)
-                        .bigText(bigBody));
-            }
         } else if (chargePromote) {
             int chargeColor = lastBroadcastBatteryLevel >= lastBroadcastLimit ? 0xFF4ADE80 : accentColor;
             StringBuilder bigSb = new StringBuilder();

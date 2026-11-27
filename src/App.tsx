@@ -8956,27 +8956,82 @@ export default function App() {
       description = cleanCompactNote(cleanCalendarText(nextActiveBlock.description), cleanTitle, clockLabel);
     }
 
-    const calTrack = capsuleTimerState.calendarTrack;
-    const scheduleEmoji = sanitizeEmojis(calTrack?.emoji || nextActiveBlock?.emojiPair || '📅', 1) || '📅';
-    const scheduleTitle = sanitizeEmojis(calTrack?.title || '', 2);
-    const scheduleStatusLabel = sanitizeEmojis(calTrack?.statusLabel || 'لا مواعيد مجدولة متبقية', 2);
-    const scheduleClockLabel = formatCompactTimeRange(
-      calTrack?.clockLabel || '',
-      calTrack?.durationSeconds
-    );
-    const scheduleTargetEpochMs = calTrack?.targetEpochMs || 0;
-    const scheduleDescription =
-      nextActiveBlock?.description && !nextActiveBlock.deleted && !nextActiveBlock.completed
-        ? cleanCompactNote(cleanCalendarText(nextActiveBlock.description), scheduleTitle, scheduleClockLabel)
-        : '';
-    const nextCalItem = capsuleTimerState.upcomingQueue?.find(
-      (item) =>
-        item.title !== calTrack?.title &&
-        (item.statusLabel.startsWith('موعد ·') || item.statusLabel === 'جارٍ الآن' || item.statusLabel === 'طوال اليوم')
-    );
-    const scheduleNextUpSummary = nextCalItem
-      ? sanitizeEmojis(`${nextCalItem.emoji} ${nextCalItem.title} (${nextCalItem.clockLabel || nextCalItem.countdownText})`, 2)
+    const nowParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: activeTimeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(capsuleNowMs));
+    const nowHhRaw = Number(nowParts.find((p) => p.type === 'hour')?.value ?? '0');
+    const nowHh = nowHhRaw === 24 ? 0 : nowHhRaw;
+    const nowMm = Number(nowParts.find((p) => p.type === 'minute')?.value ?? '0');
+    const nowSs = Number(nowParts.find((p) => p.type === 'second')?.value ?? '0');
+    const nowSecOfDay = nowHh * 3600 + nowMm * 60 + nowSs;
+
+    let nextUpcomingSchedBlock: ScheduleBlock | null = null;
+    for (const block of liveBlocks) {
+      if (block.completed || block.deleted || block.isAllDay || acknowledgedBlockIdsRef.current.has(block.id)) continue;
+      if (block.id.startsWith('sunlight_')) {
+        const matchedSun = sunlightSessions.find((s) => `sunlight_${s.id}` === block.id);
+        if (matchedSun?.isCloudBlocked) continue;
+      }
+      if (block.startMin * 60 <= nowSecOfDay) continue;
+      if (!nextUpcomingSchedBlock || block.startMin < nextUpcomingSchedBlock.startMin) {
+        nextUpcomingSchedBlock = block;
+      }
+    }
+
+    const resolveScheduleEmojiPair = (rawEmoji: string, title: string): string => {
+      const lower = title.toLowerCase();
+      if (title.includes('الفجر') || lower.includes('fajr')) return '🕌 🌅';
+      if (title.includes('الظهر') || lower.includes('dhuhr')) return '🕌 ☀️';
+      if (title.includes('العصر') || lower.includes('asr')) return '🕌 🌤️';
+      if (title.includes('المغرب') || lower.includes('maghrib')) return '🕌 🌇';
+      if (title.includes('العشاء') || lower.includes('isha')) return '🕌 🌙';
+      return sanitizeEmojis(rawEmoji || '📅', 2) || '📅';
+    };
+
+    const upcomingSchedDisplay = nextUpcomingSchedBlock
+      ? resolveBlockDisplayInfo(nextUpcomingSchedBlock)
+      : null;
+    const upcomingSchedStartMin = nextUpcomingSchedBlock
+      ? (nextUpcomingSchedBlock.source === 'prayer'
+          ? nextUpcomingSchedBlock.startMin + lifeProfile.adhanLeadMinutes
+          : nextUpcomingSchedBlock.startMin)
+      : 0;
+    const upcomingSchedStartClock = nextUpcomingSchedBlock
+      ? formatMinutes12h(upcomingSchedStartMin, 'ar')
       : '';
+    const upcomingSchedDurationSec = nextUpcomingSchedBlock
+      ? ((nextUpcomingSchedBlock.durationMin ?? 0) === 0
+          ? 0
+          : Math.max(60, nextUpcomingSchedBlock.durationMin * 60))
+      : 0;
+    const upcomingSchedRemSec = nextUpcomingSchedBlock
+      ? Math.max(0, nextUpcomingSchedBlock.startMin * 60 - nowSecOfDay)
+      : 0;
+
+    const scheduleTitle = sanitizeEmojis(upcomingSchedDisplay?.title || '', 2);
+    const scheduleEmoji = nextUpcomingSchedBlock
+      ? resolveScheduleEmojiPair(
+          nextUpcomingSchedBlock.emojiPair || upcomingSchedDisplay?.emojiOnly || '📅',
+          scheduleTitle || nextUpcomingSchedBlock.categoryAr
+        )
+      : '📅';
+    const scheduleStatusLabel = nextUpcomingSchedBlock
+      ? sanitizeEmojis(`موعد · ${upcomingSchedStartClock}`, 2)
+      : 'لا مواعيد مجدولة متبقية';
+    const scheduleClockLabel = formatCompactTimeRange(
+      upcomingSchedStartClock,
+      upcomingSchedDurationSec
+    );
+    const scheduleTargetEpochMs =
+      upcomingSchedRemSec > 0
+        ? capsuleNowMs - (capsuleNowMs % 1000) + upcomingSchedRemSec * 1000
+        : 0;
+    const scheduleDescription = '';
+    const scheduleNextUpSummary = '';
 
     const dedupKey = [
       capsuleEmoji,
