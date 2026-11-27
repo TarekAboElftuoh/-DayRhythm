@@ -18,20 +18,51 @@ import type {
 } from '../types/dayrhythm';
 
 export const MEDS_STORAGE_KEY = 'dayrhythm_medications_v1';
+export const MEDS_UPDATED_AT_STORAGE_KEY = 'dayrhythm_medications_updated_at_v1';
+export const MEDS_DELETED_IDS_STORAGE_KEY = 'dayrhythm_deleted_medication_ids_v1';
 
-export function loadSavedMedications(): MedicationItem[] {
+export function loadDeletedMedicationIds(): string[] {
   try {
-    const raw = localStorage.getItem(MEDS_STORAGE_KEY);
+    const raw = localStorage.getItem(MEDS_DELETED_IDS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed.map((m) => sanitizeMedicationItem(m));
+        return parsed
+          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+          .slice(-100);
       }
     }
   } catch {
     // ignore storage errors
   }
-  return DEFAULT_MEDICATIONS;
+  return [];
+}
+
+export function loadMedicationsUpdatedAt(): number {
+  try {
+    const raw = Number(localStorage.getItem(MEDS_UPDATED_AT_STORAGE_KEY) || 0);
+    return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function loadSavedMedications(): MedicationItem[] {
+  const deletedSet = new Set(loadDeletedMedicationIds());
+  try {
+    const raw = localStorage.getItem(MEDS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((m) => sanitizeMedicationItem(m))
+          .filter((m) => !deletedSet.has(m.id));
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return DEFAULT_MEDICATIONS.filter((m) => !deletedSet.has(m.id));
 }
 
 export interface UseMedicationActionsOptions {
@@ -39,11 +70,16 @@ export interface UseMedicationActionsOptions {
   setMedications: Dispatch<SetStateAction<MedicationItem[]>>;
   activeTimeZone: string;
   showToast: (msg: string) => void;
-  pushToTasksVaultImmediately: (patch: { medications: MedicationItem[] }) => Promise<unknown> | void;
+  pushToTasksVaultImmediately: (patch: {
+    medications: MedicationItem[];
+    medicationsUpdatedAt?: number;
+    deletedMedicationIds?: string[];
+  }) => Promise<unknown> | void;
   pushFullCloudBackupImmediately: () => Promise<unknown> | void;
   getEffectiveUid: () => string;
   clientIdRef: MutableRefObject<string>;
   onMedicationConfirmedAlertCleanup: (medicationId: string, doseTime24?: string, fromRemote?: boolean) => void;
+  onDeleteLinkedCalendarEvent?: (calendarEventId: string) => Promise<void> | void;
   triggerHapticWaveform: (pattern: 'water_cup' | 'shake_undo') => void;
 }
 
@@ -61,19 +97,30 @@ export function useMedicationActions({
   getEffectiveUid,
   clientIdRef,
   onMedicationConfirmedAlertCleanup,
+  onDeleteLinkedCalendarEvent,
   triggerHapticWaveform,
 }: UseMedicationActionsOptions) {
   const lowStockProactiveNotifiedKeyRef = useRef<string>('');
 
   const persistAndSyncMedications = useCallback(
-    (next: MedicationItem[]) => {
-      void pushToTasksVaultImmediately({ medications: next });
-      void pushFullCloudBackupImmediately();
+    (next: MedicationItem[], newlyDeletedIds?: string[]) => {
+      const nowMs = Date.now();
+      const mergedDeletedIds = Array.from(
+        new Set([...loadDeletedMedicationIds(), ...(newlyDeletedIds ?? [])])
+      ).slice(-100);
       try {
         localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(next));
+        localStorage.setItem(MEDS_UPDATED_AT_STORAGE_KEY, String(nowMs));
+        localStorage.setItem(MEDS_DELETED_IDS_STORAGE_KEY, JSON.stringify(mergedDeletedIds));
       } catch {
         // ignore storage errors
       }
+      void pushToTasksVaultImmediately({
+        medications: next,
+        medicationsUpdatedAt: nowMs,
+        deletedMedicationIds: mergedDeletedIds,
+      });
+      void pushFullCloudBackupImmediately();
     },
     [pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
@@ -162,9 +209,9 @@ export function useMedicationActions({
         updated.takenDateKey === todayIso &&
         (allTimes.length <= 1 ||
           allTimes.every((t) => (updated.takenDosesToday ?? []).includes(t)));
-      const cutoff31Iso = getDateIsoInTimeZone(
+      const cutoff14Iso = getDateIsoInTimeZone(
         activeTimeZone,
-        new Date(Date.now() - 30 * 86_400_000)
+        new Date(Date.now() - 13 * 86_400_000)
       );
       const existingDates = Array.isArray(target.takenDates) ? target.takenDates : [];
       const nextTakenDates = (
@@ -172,9 +219,9 @@ export function useMedicationActions({
           ? Array.from(new Set([...existingDates, todayIso]))
           : existingDates.filter((d) => d !== todayIso)
       )
-        .filter((d) => d >= cutoff31Iso)
+        .filter((d) => d >= cutoff14Iso)
         .sort()
-        .slice(-31);
+        .slice(-14);
       updated = { ...updated, takenDates: nextTakenDates };
 
       let lowStockMsg = '';
@@ -237,9 +284,9 @@ export function useMedicationActions({
   const handleToggleMedicationDate = useCallback(
     (id: string, dateIso: string) => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
-      const cutoff31Iso = getDateIsoInTimeZone(
+      const cutoff14Iso = getDateIsoInTimeZone(
         activeTimeZone,
-        new Date(Date.now() - 30 * 86_400_000)
+        new Date(Date.now() - 13 * 86_400_000)
       );
 
       setMedications((prev) => {
@@ -254,9 +301,9 @@ export function useMedicationActions({
               ? existingDates.filter((d) => d !== dateIso)
               : Array.from(new Set([...existingDates, dateIso]))
           )
-            .filter((d) => d >= cutoff31Iso)
+            .filter((d) => d >= cutoff14Iso)
             .sort()
-            .slice(-31);
+            .slice(-14);
 
           const dosesPerDay = Math.max(1, allTimes.length);
           let nextRemaining = m.remainingDoses;
@@ -377,14 +424,18 @@ export function useMedicationActions({
 
   const handleDeleteMedication = useCallback(
     (id: string) => {
+      const existing = medications.find((m) => m.id === id);
+      if (existing?.calendarEventId) {
+        void onDeleteLinkedCalendarEvent?.(existing.calendarEventId);
+      }
       setMedications((prev) => {
         const next = prev.filter((m) => m.id !== id);
-        persistAndSyncMedications(next);
+        persistAndSyncMedications(next, [id]);
         return next;
       });
       showToast('تم حذف العلاج من القائمة اليومية');
     },
-    [persistAndSyncMedications, setMedications, showToast]
+    [medications, onDeleteLinkedCalendarEvent, persistAndSyncMedications, setMedications, showToast]
   );
 
   const handleExecuteMedicationActions = useCallback(
@@ -394,6 +445,8 @@ export function useMedicationActions({
     ): Promise<MedicationExecutionResult[]> => {
       const todayIso = getDateIsoInTimeZone(activeTimeZone);
       const results: MedicationExecutionResult[] = [];
+      const removedIds: string[] = [];
+      const calendarIdsToDelete: string[] = [];
 
       setMedications((prev) => {
         let next = [...prev];
@@ -423,6 +476,10 @@ export function useMedicationActions({
                 : undefined);
             if (target) {
               next = next.filter((m) => m.id !== target.id);
+              removedIds.push(target.id);
+              if (target.calendarEventId) {
+                calendarIdsToDelete.push(target.calendarEventId);
+              }
               results.push({ name: target.name, operation: 'remove', status: 'removed', id: target.id });
               showToast(`🗑️ تم حذف «${target.name}» من قائمة العلاجات والمكملات`);
             }
@@ -453,7 +510,7 @@ export function useMedicationActions({
                 takenDosesToday: allTimes,
                 takenDates: Array.from(new Set([...(target.takenDates ?? []), todayIso]))
                   .sort()
-                  .slice(-31),
+                  .slice(-14),
                 remainingDoses: nextRem,
               };
               next = next.map((m) => (m.id === target.id ? updated : m));
@@ -550,13 +607,17 @@ export function useMedicationActions({
             }
           }
         }
-        persistAndSyncMedications(next);
+        persistAndSyncMedications(next, removedIds.length > 0 ? removedIds : undefined);
         return next;
       });
 
+      for (const calId of calendarIdsToDelete) {
+        void onDeleteLinkedCalendarEvent?.(calId);
+      }
+
       return results;
     },
-    [activeTimeZone, persistAndSyncMedications, setMedications, showToast]
+    [activeTimeZone, onDeleteLinkedCalendarEvent, persistAndSyncMedications, setMedications, showToast]
   );
 
   return {

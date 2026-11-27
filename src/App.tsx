@@ -154,8 +154,12 @@ import {
   triggerFirestoreRecovery,
 } from './firebase';
 import {
+  loadDeletedMedicationIds,
+  loadMedicationsUpdatedAt,
   loadSavedMedications,
+  MEDS_DELETED_IDS_STORAGE_KEY,
   MEDS_STORAGE_KEY,
+  MEDS_UPDATED_AT_STORAGE_KEY,
   useMedicationActions,
 } from './hooks/useMedications';
 import {
@@ -538,6 +542,7 @@ export default function App() {
   const updateLifeProfileLocal = useCallback(
     (updater: Parameters<typeof setLifeProfile>[0]) => {
       localWriteLockUntilRef.current = Date.now() + 300;
+      const nowMs = Date.now();
       const prev = lifeProfileRef.current;
       const next = sanitizeLifeProfile(typeof updater === 'function' ? updater(prev) : updater);
       lifeProfileRef.current = next;
@@ -549,6 +554,7 @@ export default function App() {
           STORAGE_KEY,
           JSON.stringify({ ...current, lifeProfile: next })
         );
+        localStorage.setItem('dayrhythm_life_profile_updated_at_v1', String(nowMs));
       } catch {
         // ignore storage errors
       }
@@ -791,20 +797,38 @@ export default function App() {
 
   const [tombstones, setTombstones] = useState<CalendarTombstone[]>(INITIAL_TOMBSTONES);
 
-  const [batteryGuard, setBatteryGuard] = useState<BatteryGuardState>({
-    levelPct: 78,
-    cableConnected: true,
-    bypassChargingLimitPct: null,
-    eveningTimeSimMin: 20 * 60 + 45,
-    pcAlertActive: false,
-    autoSilencedByDisconnect: false,
-    bedtimeGuardTriggered: false,
+  const [batteryGuard, setBatteryGuard] = useState<BatteryGuardState>(() => {
+    let initialBypass: 80 | 90 | null = 90;
+    try {
+      const savedBypass = localStorage.getItem('dayrhythm_bypass_limit_v1');
+      if (savedBypass === 'off' || savedBypass === 'null') {
+        initialBypass = null;
+      } else if (savedBypass !== null) {
+        const parsed = Number(savedBypass);
+        if (Number.isFinite(parsed) && parsed >= 60 && parsed <= 100) {
+          initialBypass = parsed <= 80 ? 80 : 90;
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return {
+      levelPct: 78,
+      cableConnected: true,
+      bypassChargingLimitPct: initialBypass,
+      eveningTimeSimMin: 20 * 60 + 45,
+      pcAlertActive: false,
+      autoSilencedByDisconnect: false,
+      bedtimeGuardTriggered: false,
+    };
   });
 
   const [phoneChargeLimitPct, setPhoneChargeLimitPct] = useState<number>(() => {
     try {
       const saved = Number(localStorage.getItem('dayrhythm_phone_charge_limit'));
       if (Number.isFinite(saved) && saved >= 60 && saved <= 100) return Math.round(saved);
+      const savedBypass = Number(localStorage.getItem('dayrhythm_bypass_limit_v1'));
+      if (Number.isFinite(savedBypass) && savedBypass >= 60 && savedBypass <= 100) return Math.round(savedBypass);
     } catch {
       // ignore storage errors
     }
@@ -1261,6 +1285,18 @@ export default function App() {
       phoneChargeNotifiedCycleRef.current = false;
       setPhoneChargeAlertDismissed(false);
       updateAppSettings({ phoneChargeLimitPct: clamped });
+      setBatteryGuard((prev) => ({
+        ...prev,
+        bypassChargingLimitPct: prev.bypassChargingLimitPct === null ? null : clamped <= 80 ? 80 : 90,
+      }));
+      try {
+        const savedBypass = localStorage.getItem('dayrhythm_bypass_limit_v1');
+        if (savedBypass !== 'off' && savedBypass !== 'null') {
+          localStorage.setItem('dayrhythm_bypass_limit_v1', String(clamped));
+        }
+      } catch {
+        // ignore storage errors
+      }
       setPhoneBattery((prev) => {
         if (!prev) return prev;
         const updated: PhoneBatteryTelemetry = {
@@ -1581,24 +1617,30 @@ export default function App() {
 
       // Avoid showing TWO duplicate alerts on Windows EXE (native SecondaryMonitorToastForm handles PC alert cleanly!)
       if (!isNativeWin) {
-        setPersistentAlert({
-          id: alertId,
-          emoji: privacyBadge,
-          title: visibleTitle,
-          description: visibleDescription,
-          sourceLabel: visibleSource,
-          time12h: nowTime12,
-          category,
-          createdAtMs: Date.now(),
-          durationMs,
-          isContinuous: Boolean(playRes.isContinuous || isContinuous),
-          isHydration: category === 'water',
-          medicationId: options?.medicationId,
-          medicationDoseTime24: options?.medicationDoseTime24,
-          taskId: options?.taskId,
-          taskListId: options?.taskListId,
-          blockId: options?.blockId,
-        });
+        if (document.visibilityState === 'visible') {
+          showToast(
+            `${privacyBadge} ${visibleTitle}${visibleDescription ? ` — ${visibleDescription}` : ''}`
+          );
+        } else {
+          setPersistentAlert({
+            id: alertId,
+            emoji: privacyBadge,
+            title: visibleTitle,
+            description: visibleDescription,
+            sourceLabel: visibleSource,
+            time12h: nowTime12,
+            category,
+            createdAtMs: Date.now(),
+            durationMs,
+            isContinuous: Boolean(playRes.isContinuous || isContinuous),
+            isHydration: category === 'water',
+            medicationId: options?.medicationId,
+            medicationDoseTime24: options?.medicationDoseTime24,
+            taskId: options?.taskId,
+            taskListId: options?.taskListId,
+            blockId: options?.blockId,
+          });
+        }
       }
 
       // On Android APK: fire native OS alarm sound strictly on STREAM_ALARM + vibration + heads-up notification so OnePlus 12R rings loudly even if Media volume is muted
@@ -1767,11 +1809,13 @@ export default function App() {
 
   const handleSetQuietMode = useCallback(
     (mode: QuietModeType, durationMinutes: number) => {
-      localWriteLockUntilRef.current = Date.now() + 5000;
+      const nowMs = Date.now();
+      localWriteLockUntilRef.current = nowMs + 5000;
       quietModeRef.current = mode;
       setQuietMode(mode);
       try {
         localStorage.setItem('dayrhythm_quiet_mode_v1', mode);
+        localStorage.setItem('dayrhythm_quiet_mode_updated_at_v1', String(nowMs));
       } catch {}
       if (mode === 'normal') {
         setQuietRemainingSec(0);
@@ -2660,24 +2704,69 @@ export default function App() {
       try {
         const backup = await loadFromGoogleDriveAppData(token);
         if (backup) {
-          if (backup.lifeProfile) {
-            const cleanProfile = sanitizeLifeProfile(backup.lifeProfile);
-            setLifeProfile(cleanProfile);
+          const remoteUpdatedAt = typeof backup.updatedAtMs === 'number' ? backup.updatedAtMs : 0;
+          if (backup.lifeProfile && Date.now() >= localWriteLockUntilRef.current) {
+            let localProfileUpdatedAt = 0;
             try {
-              const raw = localStorage.getItem(STORAGE_KEY);
-              const parsed = raw ? JSON.parse(raw) : {};
-              localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+              localProfileUpdatedAt = Number(
+                localStorage.getItem('dayrhythm_life_profile_updated_at_v1') || 0
+              );
             } catch {
-              // ignore storage errors
+              localProfileUpdatedAt = 0;
+            }
+            if (remoteUpdatedAt >= localProfileUpdatedAt) {
+              const cleanProfile = sanitizeLifeProfile(backup.lifeProfile);
+              lifeProfileRef.current = cleanProfile;
+              setLifeProfile(cleanProfile);
+              try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                const parsed = raw ? JSON.parse(raw) : {};
+                localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+                localStorage.setItem('dayrhythm_life_profile_updated_at_v1', String(remoteUpdatedAt || Date.now()));
+              } catch {
+                // ignore storage errors
+              }
             }
           }
           if (Array.isArray(backup.medications)) {
-            const cleanMeds = backup.medications.map((m) => sanitizeMedicationItem(m));
-            setMedications(cleanMeds);
+            const bAny = backup as FullDayRhythmCloudBackup & {
+              medicationsUpdatedAt?: number;
+              deletedMedicationIds?: string[];
+            };
+            const remoteMedsUpdatedAt =
+              typeof bAny.medicationsUpdatedAt === 'number'
+                ? bAny.medicationsUpdatedAt
+                : remoteUpdatedAt;
+            const localMedsUpdatedAt = loadMedicationsUpdatedAt();
+            const mergedDeleted = Array.from(
+              new Set([
+                ...loadDeletedMedicationIds(),
+                ...(Array.isArray(bAny.deletedMedicationIds) ? bAny.deletedMedicationIds : []),
+              ])
+            ).slice(-100);
             try {
-              localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(cleanMeds));
+              localStorage.setItem(MEDS_DELETED_IDS_STORAGE_KEY, JSON.stringify(mergedDeleted));
             } catch {
               // ignore storage errors
+            }
+            const deletedSet = new Set(mergedDeleted);
+            if (remoteMedsUpdatedAt >= localMedsUpdatedAt) {
+              const cleanMeds = backup.medications
+                .map((m) => sanitizeMedicationItem(m))
+                .filter((m) => !deletedSet.has(m.id));
+              medicationsRef.current = cleanMeds;
+              setMedications(cleanMeds);
+              try {
+                localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(cleanMeds));
+                localStorage.setItem(
+                  MEDS_UPDATED_AT_STORAGE_KEY,
+                  String(remoteMedsUpdatedAt || Date.now())
+                );
+              } catch {
+                // ignore storage errors
+              }
+            } else if (mergedDeleted.length > 0) {
+              setMedications((prev) => prev.filter((m) => !deletedSet.has(m.id)));
             }
           }
           if (Array.isArray(backup.hydrationHistory) && backup.hydrationHistory.length === 7) {
@@ -2737,7 +2826,26 @@ export default function App() {
               // ignore storage errors
             }
           }
-          if (backup.quietMode) setQuietMode(backup.quietMode);
+          if (backup.quietMode && Date.now() >= localWriteLockUntilRef.current) {
+            let localQuietUpdatedAt = 0;
+            try {
+              localQuietUpdatedAt = Number(
+                localStorage.getItem('dayrhythm_quiet_mode_updated_at_v1') || 0
+              );
+            } catch {
+              localQuietUpdatedAt = 0;
+            }
+            if (remoteUpdatedAt >= localQuietUpdatedAt) {
+              quietModeRef.current = backup.quietMode;
+              setQuietMode(backup.quietMode);
+              try {
+                localStorage.setItem('dayrhythm_quiet_mode_v1', backup.quietMode);
+                localStorage.setItem('dayrhythm_quiet_mode_updated_at_v1', String(remoteUpdatedAt || Date.now()));
+              } catch {
+                // ignore storage errors
+              }
+            }
+          }
           if (typeof backup.adhanOverrideSilent === 'boolean') setAdhanOverrideSilent(backup.adhanOverrideSilent);
           if (Array.isArray(backup.chatMessages) && backup.chatMessages.length > 0) {
             setChatMessages(backup.chatMessages);
@@ -2777,6 +2885,10 @@ export default function App() {
         updatedAtMs: Date.now(),
         lifeProfile: overrides?.lifeProfile ?? lifeProfile,
         medications: overrides?.medications ?? medications,
+        ...( {
+          medicationsUpdatedAt: loadMedicationsUpdatedAt() || Date.now(),
+          deletedMedicationIds: loadDeletedMedicationIds(),
+        } as Record<string, unknown> ),
         hydrationHistory: overrides?.hydrationHistory ?? hydrationHistory,
         creativeActivities: overrides?.creativeActivities ?? creativeActivities,
         memories: overrides?.memories ?? memories,
@@ -3188,20 +3300,34 @@ export default function App() {
   }) => {
     // ── Instant Bidirectional Remote Alarm Dismissal (Phone ↔ PC) ──
     const remoteDismiss =
-      (remote as { lastDismissSignal?: { timestampMs: number; scope: string; action: string; clientId: string } })
+      (remote as { lastDismissSignal?: { opId?: string; timestampMs: number; scope: string; action: string; clientId: string } })
         .lastDismissSignal || remote.syncSignal;
     const remoteSenderId =
       (remoteDismiss as { clientId?: string; originClientId?: string })?.clientId ||
       (remoteDismiss as { originClientId?: string })?.originClientId;
     if (remoteDismiss && remoteSenderId !== clientIdRef.current) {
       const dismissTs = remoteDismiss.timestampMs || 0;
-      if (Date.now() - dismissTs < 180_000) {
+      const dismissOpId =
+        (remoteDismiss as { opId?: string }).opId ||
+        `remote_dism_${dismissTs}_${remoteSenderId || 'unknown'}`;
+      const activeAlertCreatedAt = persistentAlertRef.current?.createdAtMs ?? 0;
+      const isOlderThanActiveAlert = activeAlertCreatedAt > 0 && dismissTs < activeAlertCreatedAt;
+      if (
+        !isOlderThanActiveAlert &&
+        Date.now() - dismissTs < 180_000 &&
+        !seenSyncOpIdsRef.current.has(dismissOpId)
+      ) {
         if (
           remoteDismiss.scope === 'alarm_dismiss' ||
           remoteDismiss.action?.includes('dismiss') ||
           remoteDismiss.action?.includes('done') ||
           remoteDismiss.action?.includes('water')
         ) {
+          seenSyncOpIdsRef.current.add(dismissOpId);
+          if (seenSyncOpIdsRef.current.size > 150) {
+            const oldest = seenSyncOpIdsRef.current.values().next().value;
+            if (oldest) seenSyncOpIdsRef.current.delete(oldest);
+          }
           stopContinuousAlert();
           stopNativeAlerts();
           setActiveAudioAlert(null);
@@ -3234,6 +3360,15 @@ export default function App() {
         appSettingsRef.current = merged;
         setPhoneChargeLimitPct(merged.phoneChargeLimitPct);
         phoneChargeLimitRef.current = merged.phoneChargeLimitPct;
+        setBatteryGuard((prev) => ({
+          ...prev,
+          bypassChargingLimitPct:
+            prev.bypassChargingLimitPct === null
+              ? null
+              : merged.phoneChargeLimitPct <= 80
+                ? 80
+                : 90,
+        }));
         setSmartChargeAlertEnabled(merged.smartChargeAlertEnabled);
         setSmartChargeKeepUntilUnplugged(merged.smartChargeKeepUntilUnplugged);
         setWaterRemindersEnabled(merged.waterRemindersEnabled);
@@ -3243,6 +3378,10 @@ export default function App() {
         }
         try {
           localStorage.setItem('dayrhythm_phone_charge_limit', String(merged.phoneChargeLimitPct));
+          const savedBypass = localStorage.getItem('dayrhythm_bypass_limit_v1');
+          if (savedBypass !== 'off' && savedBypass !== 'null') {
+            localStorage.setItem('dayrhythm_bypass_limit_v1', String(merged.phoneChargeLimitPct));
+          }
           localStorage.setItem('dayrhythm_smart_charge_alert_enabled', String(merged.smartChargeAlertEnabled));
           localStorage.setItem(SMART_CHARGE_KEEP_KEY, String(merged.smartChargeKeepUntilUnplugged));
           localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(merged.waterRemindersEnabled));
@@ -3251,6 +3390,12 @@ export default function App() {
           }
         } catch {
           // ignore storage errors
+        }
+        try {
+          (window as Window & { DayRhythmNative?: { setChargeLimit?: (l: number, e: boolean) => void } })
+            .DayRhythmNative?.setChargeLimit?.(merged.phoneChargeLimitPct, merged.smartChargeAlertEnabled);
+        } catch {
+          // ignore bridge errors
         }
       }
     }
@@ -3263,6 +3408,10 @@ export default function App() {
       setQuietMode(remote.quietMode);
       try {
         localStorage.setItem('dayrhythm_quiet_mode_v1', remote.quietMode);
+        localStorage.setItem(
+          'dayrhythm_quiet_mode_updated_at_v1',
+          String((remote as { updatedAtMs?: number }).updatedAtMs || Date.now())
+        );
       } catch {
         // ignore
       }
@@ -3300,21 +3449,67 @@ export default function App() {
           const raw = localStorage.getItem(STORAGE_KEY);
           const parsed = raw ? JSON.parse(raw) : {};
           localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+          localStorage.setItem(
+            'dayrhythm_life_profile_updated_at_v1',
+            String((remote as { updatedAtMs?: number }).updatedAtMs || Date.now())
+          );
         } catch {
           // ignore
         }
       }
     }
     if (Array.isArray(remote.medications)) {
-      const cleanMeds = remote.medications.map((m) => sanitizeMedicationItem(m));
-      const sig = JSON.stringify(cleanMeds);
-      if (sig !== JSON.stringify(medicationsRef.current)) {
-        medicationsRef.current = cleanMeds;
-        setMedications(cleanMeds);
-        try {
-          localStorage.setItem(MEDS_STORAGE_KEY, sig);
-        } catch {
-          // ignore
+      const rMedsMeta = remote as {
+        medicationsUpdatedAt?: number;
+        deletedMedicationIds?: string[];
+        updatedAtMs?: number;
+      };
+      const remoteMedsUpdatedAt =
+        typeof rMedsMeta.medicationsUpdatedAt === 'number'
+          ? rMedsMeta.medicationsUpdatedAt
+          : typeof rMedsMeta.updatedAtMs === 'number'
+            ? rMedsMeta.updatedAtMs
+            : 0;
+      const localMedsUpdatedAt = loadMedicationsUpdatedAt();
+      const mergedDeleted = Array.from(
+        new Set([
+          ...loadDeletedMedicationIds(),
+          ...(Array.isArray(rMedsMeta.deletedMedicationIds) ? rMedsMeta.deletedMedicationIds : []),
+        ])
+      ).slice(-100);
+      try {
+        localStorage.setItem(MEDS_DELETED_IDS_STORAGE_KEY, JSON.stringify(mergedDeleted));
+      } catch {
+        // ignore
+      }
+      const deletedSet = new Set(mergedDeleted);
+      if (remoteMedsUpdatedAt === 0 || remoteMedsUpdatedAt >= localMedsUpdatedAt) {
+        const cleanMeds = remote.medications
+          .map((m) => sanitizeMedicationItem(m))
+          .filter((m) => !deletedSet.has(m.id));
+        const sig = JSON.stringify(cleanMeds);
+        if (sig !== JSON.stringify(medicationsRef.current)) {
+          medicationsRef.current = cleanMeds;
+          setMedications(cleanMeds);
+          try {
+            localStorage.setItem(MEDS_STORAGE_KEY, sig);
+            if (remoteMedsUpdatedAt > 0) {
+              localStorage.setItem(MEDS_UPDATED_AT_STORAGE_KEY, String(remoteMedsUpdatedAt));
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } else if (mergedDeleted.length > 0) {
+        const filtered = medicationsRef.current.filter((m) => !deletedSet.has(m.id));
+        if (filtered.length !== medicationsRef.current.length) {
+          medicationsRef.current = filtered;
+          setMedications(filtered);
+          try {
+            localStorage.setItem(MEDS_STORAGE_KEY, JSON.stringify(filtered));
+          } catch {
+            // ignore
+          }
         }
       }
     }
@@ -3750,6 +3945,10 @@ export default function App() {
           originClientId: clientIdRef.current,
           updatedAtMs: Date.now(),
         };
+        Object.assign(payload, {
+          medicationsUpdatedAt: loadMedicationsUpdatedAt() || Date.now(),
+          deletedMedicationIds: loadDeletedMedicationIds(),
+        });
       } else {
         // Full rhythm snapshot only when explicitly called without patch
         const todayEntry = hydrationHistory[hydrationHistory.length - 1];
@@ -3795,6 +3994,10 @@ export default function App() {
           }),
           updatedAtMs: Date.now(),
         };
+        Object.assign(payload, {
+          medicationsUpdatedAt: loadMedicationsUpdatedAt() || Date.now(),
+          deletedMedicationIds: loadDeletedMedicationIds(),
+        });
       }
 
       // 2. Protocol 1 & 2: Broadcast immediately over LAN (< 50ms) & Cross-Tab BroadcastChannel
@@ -4033,6 +4236,9 @@ export default function App() {
         frame.action === SPIRC_ACTION.UPSERT &&
         (entityKind === SPIRC_ENTITY.ALARM || entityId === 'alarm_trigger')
       ) {
+        const senderId =
+          (typeof payload.clientId === 'string' && payload.clientId) || frame.clientId;
+        if (senderId === clientIdRef.current) return;
         const startedMs = Number(payload.startedAtMs || frame.timestampMs || Date.now());
         if (Math.abs(Date.now() - startedMs) <= 300_000) {
           window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: payload }));
@@ -4275,7 +4481,7 @@ export default function App() {
             (signal as unknown as { originDeviceId?: string }).originDeviceId ||
             signal.originClientId ||
             signal.clientId;
-          if (origin === clientIdRef.current) {
+          if (origin === clientIdRef.current || signal.clientId === clientIdRef.current) {
             return;
           }
 
@@ -4855,18 +5061,20 @@ export default function App() {
   const handleToggleLowEnergyToday = useCallback(() => {
     const todayIso = getDateIsoInTimeZone(activeTimeZone);
     const nextActive = lifeProfile.lowEnergyDateKey !== todayIso;
-    updateLifeProfileLocal((prev) =>
+    const nextProfile = updateLifeProfileLocal((prev) =>
       sanitizeLifeProfile({
         ...prev,
         lowEnergyDateKey: nextActive ? todayIso : '',
       })
     );
+    void saveCloudUserSettingsImmediately({ lifeProfile: nextProfile });
+    void pushFullCloudBackupImmediately(undefined, { lifeProfile: nextProfile });
     showToast(
       nextActive
         ? '🌿 تم تفعيل وضع اليوم الهادئ — الصلاة والنوم محميان ويمكنك تنسيق أي تأجيل مع Gemini'
         : '✓ تم إنهاء وضع اليوم الهادئ وعاد الإيقاع العادي'
     );
-  }, [activeTimeZone, lifeProfile.lowEnergyDateKey, showToast]);
+  }, [activeTimeZone, lifeProfile.lowEnergyDateKey, pushFullCloudBackupImmediately, saveCloudUserSettingsImmediately, showToast, updateLifeProfileLocal]);
 
   const handleUpdateSoundRepeat = useCallback(
     (category: TaskSoundCategory, setting: SoundRepeatSetting) => {
@@ -6966,16 +7174,26 @@ export default function App() {
     showToast('🔋 تنبيه وقائي قبل النوم (08:45 م · 22%): اشحن الهاتف قبل 09:15 م');
   };
 
-  const handleToggleBypassCharging = (limit: 80 | 90 | null) => {
+  const handleToggleBypassCharging = (limit: number | null) => {
+    const clamped = limit === null ? null : Math.max(60, Math.min(100, Math.round(limit)));
+    const guardVal: 80 | 90 | null = clamped === null ? null : clamped <= 80 ? 80 : 90;
     setBatteryGuard((prev) => ({
       ...prev,
-      bypassChargingLimitPct: limit,
-      pcAlertActive: limit !== null ? false : prev.pcAlertActive,
+      bypassChargingLimitPct: guardVal,
+      pcAlertActive: guardVal !== null ? false : prev.pcAlertActive,
     }));
+    try {
+      localStorage.setItem('dayrhythm_bypass_limit_v1', clamped === null ? 'off' : String(clamped));
+    } catch {
+      // ignore storage errors
+    }
+    if (clamped !== null) {
+      updateAppSettings({ phoneChargeLimitPct: clamped });
+    }
     showToast(
-      limit === null
+      clamped === null
         ? 'تم الرجوع لوضع الشحن العادي'
-        : `🎮 تفعيل الشحن التجاوزي عند ${limit}% (منع الإنذارات الوهمية)`
+        : `🎮 تفعيل الشحن التجاوزي عند ${clamped}% (منع الإنذارات الوهمية)`
     );
   };
 
@@ -8081,6 +8299,18 @@ export default function App() {
           medicationId,
           doseTime24,
         });
+      }
+    },
+    onDeleteLinkedCalendarEvent: async (calendarEventId) => {
+      try {
+        const token = await getOrRefreshCalendarAccessToken();
+        if (!token || !calendarEventId) return;
+        await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(calendarEventId)}`,
+          { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+        );
+      } catch {
+        // non-blocking calendar cleanup
       }
     },
     triggerHapticWaveform,

@@ -442,7 +442,7 @@ export interface SyncedRhythmPayload {
   dailyCommitmentDoneToday: boolean;
   waterTargetDays: number;
   waterTargetDoneToday: boolean;
-  quietMode: QuietModeType;
+  quietMode?: QuietModeType;
   adhanOverrideSilent: boolean;
   surfaceTheme: SurfaceTheme;
   deviceSettings: OnePlusDeviceSettings;
@@ -452,6 +452,8 @@ export interface SyncedRhythmPayload {
   uiPrefs?: UiPrefs;
   appSettings?: AppSyncSettings;
   medications?: MedicationItem[];
+  medicationsUpdatedAt?: number;
+  deletedMedicationIds?: string[];
   creativeActivities?: CreativeActivityItem[];
   memories?: MemoryItem[];
   completedOverrides?: Record<string, boolean>;
@@ -1004,9 +1006,10 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
       ? Math.max(0, Math.round(payload.hydrationUpdatedAtMs))
       : undefined;
 
-  const safeQuiet: QuietModeType = VALID_QUIET_MODES.includes(payload.quietMode)
-    ? payload.quietMode
-    : 'normal';
+  const safeQuiet: QuietModeType | undefined =
+    payload.quietMode && VALID_QUIET_MODES.includes(payload.quietMode)
+      ? payload.quietMode
+      : undefined;
   const safeTheme: SurfaceTheme = VALID_THEMES.includes(payload.surfaceTheme)
     ? payload.surfaceTheme
     : 'amoled';
@@ -1015,6 +1018,16 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
   const cleanBattery = sanitizePhoneBattery(payload.phoneBattery);
   const cleanUiPrefs = sanitizeUiPrefs(payload.uiPrefs);
   const cleanAppSettings = sanitizeAppSyncSettings(payload.appSettings);
+  const safeMedicationsUpdatedAt =
+    typeof payload.medicationsUpdatedAt === 'number' && Number.isFinite(payload.medicationsUpdatedAt)
+      ? Math.max(0, Math.round(payload.medicationsUpdatedAt))
+      : undefined;
+  const safeDeletedMedicationIds = Array.isArray(payload.deletedMedicationIds)
+    ? payload.deletedMedicationIds
+        .slice(-100)
+        .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        .map((s) => sanitizeMedicationId(s))
+    : undefined;
 
   return {
     hydrationDateKey: safeDateKey,
@@ -1028,7 +1041,7 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
     dailyCommitmentDoneToday: Boolean(payload.dailyCommitmentDoneToday),
     waterTargetDays: clampInt(payload.waterTargetDays, 0, 10000, 0),
     waterTargetDoneToday: Boolean(payload.waterTargetDoneToday),
-    quietMode: safeQuiet,
+    ...(safeQuiet !== undefined ? { quietMode: safeQuiet } : {}),
     adhanOverrideSilent: Boolean(payload.adhanOverrideSilent),
     surfaceTheme: safeTheme,
     deviceSettings: sanitizeDeviceSettings(payload.deviceSettings),
@@ -1037,6 +1050,8 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
     ...(cleanBattery ? { phoneBattery: cleanBattery } : {}),
     ...(cleanUiPrefs ? { uiPrefs: cleanUiPrefs } : {}),
     ...(cleanAppSettings ? { appSettings: cleanAppSettings } : {}),
+    ...(safeMedicationsUpdatedAt !== undefined ? { medicationsUpdatedAt: safeMedicationsUpdatedAt } : {}),
+    ...(safeDeletedMedicationIds ? { deletedMedicationIds: safeDeletedMedicationIds } : {}),
   };
 }
 
@@ -1098,7 +1113,10 @@ export function subscribeUserRhythmState(
               dailyCommitmentDoneToday: Boolean(data.dailyCommitmentDoneToday),
               waterTargetDays: Number(data.waterTargetDays ?? 0),
               waterTargetDoneToday: Boolean(data.waterTargetDoneToday),
-              quietMode: (data.quietMode as QuietModeType) ?? 'normal',
+              ...(typeof data.quietMode === 'string' &&
+              VALID_QUIET_MODES.includes(data.quietMode as QuietModeType)
+                ? { quietMode: data.quietMode as QuietModeType }
+                : {}),
               adhanOverrideSilent:
                 typeof data.adhanOverrideSilent === 'boolean'
                   ? data.adhanOverrideSilent
@@ -1114,6 +1132,13 @@ export function subscribeUserRhythmState(
               phoneBattery: sanitizePhoneBattery(data.phoneBattery),
               uiPrefs: sanitizeUiPrefs(data.uiPrefs),
               appSettings: sanitizeAppSyncSettings(data.appSettings),
+              medicationsUpdatedAt:
+                typeof data.medicationsUpdatedAt === 'number'
+                  ? data.medicationsUpdatedAt
+                  : undefined,
+              deletedMedicationIds: Array.isArray(data.deletedMedicationIds)
+                ? (data.deletedMedicationIds as string[])
+                : undefined,
             })
           );
         },
@@ -1205,6 +1230,8 @@ const ALLOWED_USER_DOC_KEYS = new Set([
   'phoneBattery',
   'uiPrefs',
   'appSettings',
+  'medicationsUpdatedAt',
+  'deletedMedicationIds',
   'createdAt',
   'updatedAt',
 ]);

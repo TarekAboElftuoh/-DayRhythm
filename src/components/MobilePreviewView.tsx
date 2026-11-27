@@ -61,7 +61,7 @@ interface MobilePreviewViewProps {
   onSimulateCharge90: () => void;
   onSimulatePowerDisconnect: () => void;
   onSimulateBedtimeLowBattery: () => void;
-  onToggleBypassCharging: (limit: 80 | 90 | null) => void;
+  onToggleBypassCharging: (limit: number | null) => void;
   hasShakeUndoActive: boolean;
   onTriggerShakeUndo: () => void;
   alarmRinging: boolean;
@@ -520,25 +520,75 @@ export const MobilePreviewView: React.FC<MobilePreviewViewProps> = ({
             </button>
           )}
           {onUpdatePhoneChargeLimit && (
-            <div className="grid grid-cols-5 gap-1.5">
-              {[80, 85, 90, 95, 100].map((pct) => {
-                const active = phoneChargeLimitPct === pct;
-                return (
+            <div dir="rtl" className="rounded-xl border border-white/[0.08] bg-black/40 p-3.5 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-bold text-zinc-200">
+                  حد الشحن التجاوزي الذكي
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono-tabular text-xs font-extrabold px-2.5 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/15 text-[#7FFFD4]">
+                    {phoneChargeLimitPct}%
+                  </span>
                   <button
-                    key={pct}
                     type="button"
-                    aria-pressed={active}
-                    onClick={() => onUpdatePhoneChargeLimit(pct)}
-                    className={`min-h-[44px] px-2 rounded-xl border font-mono-tabular text-xs font-bold transition-colors cursor-pointer ${
-                      active
-                        ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                        : 'border-white/[0.08] bg-black/40 text-zinc-300 hover:border-white/20'
+                    onClick={() =>
+                      onToggleBypassCharging(
+                        batteryGuard.bypassChargingLimitPct === null ? phoneChargeLimitPct : null
+                      )
+                    }
+                    aria-pressed={batteryGuard.bypassChargingLimitPct !== null}
+                    className={`min-h-[32px] px-2.5 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
+                      batteryGuard.bypassChargingLimitPct !== null
+                        ? 'border-[#4ADE80]/50 bg-[#4ADE80]/15 text-[#4ADE80]'
+                        : 'border-white/10 bg-white/[0.04] text-zinc-400 hover:border-white/20'
                     }`}
                   >
-                    {pct}%
+                    {batteryGuard.bypassChargingLimitPct !== null ? 'تجاوزي نشط' : 'عادي'}
                   </button>
-                );
-              })}
+                </div>
+              </div>
+
+              <div className="relative flex items-center py-1">
+                <input
+                  type="range"
+                  min={80}
+                  max={100}
+                  step={5}
+                  dir="rtl"
+                  aria-label="حد الشحن التجاوزي"
+                  value={Math.max(80, Math.min(100, Math.round(phoneChargeLimitPct / 5) * 5))}
+                  onChange={(e) => {
+                    const nextPct = Number(e.target.value);
+                    onUpdatePhoneChargeLimit(nextPct);
+                    onToggleBypassCharging(nextPct);
+                  }}
+                  className="w-full h-2 rounded-full appearance-none cursor-pointer bg-white/15 accent-[#7FFFD4]"
+                />
+              </div>
+
+              <div className="grid grid-cols-5 gap-2">
+                {[80, 85, 90, 95, 100].map((pct) => {
+                  const active = phoneChargeLimitPct === pct;
+                  return (
+                    <button
+                      key={pct}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => {
+                        onUpdatePhoneChargeLimit(pct);
+                        onToggleBypassCharging(pct);
+                      }}
+                      className={`min-h-[44px] px-1.5 rounded-xl border font-mono-tabular text-xs font-bold transition-colors cursor-pointer ${
+                        active
+                          ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                          : 'border-white/[0.08] bg-black/50 text-zinc-300 hover:border-white/20'
+                      }`}
+                    >
+                      {pct}%
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>

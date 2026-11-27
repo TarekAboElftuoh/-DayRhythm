@@ -1275,43 +1275,79 @@ export async function apiStreamGeminiMapsClient(
 
   handlers.onStatus?.('جارٍ البحث الجغرافي المباشر حول موقعك...');
 
-  let places: GroundingPlace[] = [];
-  try {
-    const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&lat=${lat}&lon=${lng}&limit=6`;
-    const res = await fetch(photonUrl, { signal: handlers.signal });
-    if (res.ok) {
-      const data = (await res.json()) as {
-        features?: Array<{
-          geometry?: { coordinates?: [number, number] };
-          properties?: {
-            name?: string;
-            street?: string;
-            city?: string;
-            state?: string;
-            country?: string;
-            osm_value?: string;
-          };
-        }>;
-      };
-      if (Array.isArray(data.features)) {
-        places = data.features
-          .filter((f) => f.properties?.name)
-          .map((f) => {
-            const p = f.properties!;
-            const coords = f.geometry?.coordinates;
-            const placeLat = coords ? coords[1] : lat;
-            const placeLng = coords ? coords[0] : lng;
-            const address = [p.street, p.city, p.state].filter(Boolean).join('، ');
-            return {
-              title: p.name || query,
-              uri: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${p.name || ''} ${address}`.trim())}&center=${placeLat},${placeLng}`,
-              snippets: [address || 'مكان بالقرب من موقعك الجغرافي'].filter(Boolean),
-            };
-          });
+  let places: Array<GroundingPlace & { distanceKm: number }> = [];
+  const haversineKmClient = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  };
+
+  const queryNearbyBox = async (delta: number, maxDistKm: number) => {
+    const viewbox = `${(lng - delta).toFixed(4)},${(lat + delta).toFixed(4)},${(lng + delta).toFixed(4)},${(lat - delta).toFixed(4)}`;
+    const [photonRes, nomRes] = await Promise.allSettled([
+      fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&lat=${lat}&lon=${lng}&limit=10`, {
+        signal: handlers.signal,
+      }).then((r) => (r.ok ? r.json() : null)),
+      fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=10&viewbox=${viewbox}&bounded=1&accept-language=ar`,
+        { signal: handlers.signal }
+      ).then((r) => (r.ok ? r.json() : null)),
+    ]);
+
+    const raw: Array<{ title: string; lat: number; lng: number; address: string }> = [];
+    if (photonRes.status === 'fulfilled' && Array.isArray(photonRes.value?.features)) {
+      for (const f of photonRes.value.features as Array<{
+        geometry?: { coordinates?: [number, number] };
+        properties?: { name?: string; street?: string; city?: string; state?: string };
+      }>) {
+        const name = (f.properties?.name || '').trim();
+        const coords = f.geometry?.coordinates;
+        if (!name || !coords) continue;
+        const address = [f.properties?.street, f.properties?.city, f.properties?.state].filter(Boolean).join('، ');
+        raw.push({ title: name, lat: coords[1], lng: coords[0], address });
       }
     }
+    if (nomRes.status === 'fulfilled' && Array.isArray(nomRes.value)) {
+      for (const item of nomRes.value as Array<{ name?: string; display_name?: string; lat?: string; lon?: string }>) {
+        const pLat = Number(item.lat);
+        const pLng = Number(item.lon);
+        const title = (item.name || item.display_name?.split(',')[0] || '').trim();
+        if (!title || Number.isNaN(pLat) || Number.isNaN(pLng)) continue;
+        raw.push({ title, lat: pLat, lng: pLng, address: String(item.display_name ?? '').slice(0, 120) });
+      }
+    }
+
+    const dedup = new Map<string, GroundingPlace & { distanceKm: number }>();
+    for (const p of raw) {
+      const dist = haversineKmClient(lat, lng, p.lat, p.lng);
+      if (dist > maxDistKm) continue;
+      const key = p.title.toLowerCase().replace(/\s+/g, ' ');
+      const existing = dedup.get(key);
+      if (existing && existing.distanceKm <= dist) continue;
+      const distLabel = dist < 1 ? `${Math.round(dist * 1000)} متر` : `${dist.toFixed(1)} كم`;
+      const walkMin = Math.max(1, Math.round((dist * 1000) / 80));
+      dedup.set(key, {
+        title: p.title,
+        uri: `https://www.google.com/maps/search/?api=1&query=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`,
+        snippets: [`المسافة: ${distLabel} (~${walkMin} د مشياً)${p.address ? ` · ${p.address}` : ''}`],
+        distanceKm: dist,
+      });
+    }
+    return Array.from(dedup.values()).sort((a, b) => a.distanceKm - b.distanceKm).slice(0, 7);
+  };
+
+  try {
+    places = await queryNearbyBox(0.03, 3.0);
+    if (places.length === 0) {
+      places = await queryNearbyBox(0.10, 12.0);
+    }
   } catch {
-    // ignore photon failures and let Gemini synthesize
+    // ignore photon/nominatim failures and let Gemini synthesize
   }
 
   handlers.onStatus?.('جارٍ تلخيص الأماكن عبر Gemini...');
@@ -1327,7 +1363,7 @@ export async function apiStreamGeminiMapsClient(
 النتائج الجغرافية المكتشفة:
 ${placesContext}
 
-أجب باختصار مباشر وودود باللغة العربية، موضحاً أسماء الأماكن المقترحة وأقربها وأفضل نصيحة توقيت لزيارتها.`;
+أجب باختصار مباشر وودود باللغة العربية، مع إعطاء الأولوية القصوى للأماكن ضمن نطاق المشي (أقل من 1–2 كم أولاً) مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة وأفضل نصيحة توقيت لزيارتها. Prioritize strictly the closest places within walking distance (under 1–2 km first), sorted nearest-first with walking time and distance.`;
 
   return apiStreamGeminiChatClient(
     {

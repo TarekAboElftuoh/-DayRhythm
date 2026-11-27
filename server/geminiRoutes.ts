@@ -897,91 +897,101 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
     lng: number
   ): Promise<Array<{ title: string; uri: string; snippets: string[]; distanceKm: number }>> {
     const kw = extractPlaceSearchKeyword(query);
-    const delta = 0.14;
-    const viewbox = `${(lng - delta).toFixed(4)},${(lat + delta).toFixed(4)},${(lng + delta).toFixed(4)},${(lat - delta).toFixed(4)}`;
 
-    const [photonRes, nomArRes, nomEnRes] = await Promise.allSettled([
-      fetch(
-        `https://photon.komoot.io/api/?q=${encodeURIComponent(kw.ar)}&lat=${lat}&lon=${lng}&limit=10`,
-        {
-          headers: { 'User-Agent': 'DayRhythmApp/1.0' },
-          signal: AbortSignal.timeout(4500),
-        }
-      ).then((r) => (r.ok ? r.json() : null)),
-      fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(kw.ar)}&format=json&limit=8&viewbox=${viewbox}&bounded=1&accept-language=ar`,
-        {
-          headers: { 'User-Agent': 'DayRhythmApp/1.0' },
-          signal: AbortSignal.timeout(4500),
-        }
-      ).then((r) => (r.ok ? r.json() : null)),
-      fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(kw.en)}&format=json&limit=8&viewbox=${viewbox}&bounded=1&accept-language=ar`,
-        {
-          headers: { 'User-Agent': 'DayRhythmApp/1.0' },
-          signal: AbortSignal.timeout(4500),
-        }
-      ).then((r) => (r.ok ? r.json() : null)),
-    ]);
+    const queryDeltaBox = async (delta: number, maxDistKm: number) => {
+      const viewbox = `${(lng - delta).toFixed(4)},${(lat + delta).toFixed(4)},${(lng + delta).toFixed(4)},${(lat - delta).toFixed(4)}`;
 
-    const rawPlaces: Array<{ title: string; lat: number; lng: number; address: string }> = [];
+      const [photonRes, nomArRes, nomEnRes] = await Promise.allSettled([
+        fetch(
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(kw.ar)}&lat=${lat}&lon=${lng}&limit=12`,
+          {
+            headers: { 'User-Agent': 'DayRhythmApp/1.0' },
+            signal: AbortSignal.timeout(4500),
+          }
+        ).then((r) => (r.ok ? r.json() : null)),
+        fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(kw.ar)}&format=json&limit=10&viewbox=${viewbox}&bounded=1&accept-language=ar`,
+          {
+            headers: { 'User-Agent': 'DayRhythmApp/1.0' },
+            signal: AbortSignal.timeout(4500),
+          }
+        ).then((r) => (r.ok ? r.json() : null)),
+        fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(kw.en)}&format=json&limit=10&viewbox=${viewbox}&bounded=1&accept-language=ar`,
+          {
+            headers: { 'User-Agent': 'DayRhythmApp/1.0' },
+            signal: AbortSignal.timeout(4500),
+          }
+        ).then((r) => (r.ok ? r.json() : null)),
+      ]);
 
-    if (photonRes.status === 'fulfilled' && photonRes.value?.features) {
-      for (const feat of photonRes.value.features as Array<{
-        properties?: { name?: string; street?: string; city?: string; state?: string };
-        geometry?: { coordinates?: [number, number] };
-      }>) {
-        const coords = feat.geometry?.coordinates;
-        const name = (feat.properties?.name || '').trim();
-        if (!coords || !name) continue;
-        const [pLng, pLat] = coords;
-        const address = [feat.properties?.street, feat.properties?.city, feat.properties?.state]
-          .filter(Boolean)
-          .join('، ');
-        rawPlaces.push({ title: name, lat: pLat, lng: pLng, address });
-      }
-    }
+      const rawPlaces: Array<{ title: string; lat: number; lng: number; address: string }> = [];
 
-    for (const nomSettled of [nomArRes, nomEnRes]) {
-      if (nomSettled.status === 'fulfilled' && Array.isArray(nomSettled.value)) {
-        for (const item of nomSettled.value as Array<{
-          name?: string;
-          display_name?: string;
-          lat?: string;
-          lon?: string;
+      if (photonRes.status === 'fulfilled' && photonRes.value?.features) {
+        for (const feat of photonRes.value.features as Array<{
+          properties?: { name?: string; street?: string; city?: string; state?: string };
+          geometry?: { coordinates?: [number, number] };
         }>) {
-          const pLat = Number(item.lat);
-          const pLng = Number(item.lon);
-          const title = (item.name || item.display_name?.split(',')[0] || '').trim();
-          if (!title || Number.isNaN(pLat) || Number.isNaN(pLng)) continue;
-          rawPlaces.push({
-            title,
-            lat: pLat,
-            lng: pLng,
-            address: String(item.display_name ?? '').slice(0, 140),
-          });
+          const coords = feat.geometry?.coordinates;
+          const name = (feat.properties?.name || '').trim();
+          if (!coords || !name) continue;
+          const [pLng, pLat] = coords;
+          const address = [feat.properties?.street, feat.properties?.city, feat.properties?.state]
+            .filter(Boolean)
+            .join('، ');
+          rawPlaces.push({ title: name, lat: pLat, lng: pLng, address });
         }
       }
-    }
 
-    const dedup = new Map<string, { title: string; uri: string; snippets: string[]; distanceKm: number }>();
-    for (const p of rawPlaces) {
-      const dist = haversineKm(lat, lng, p.lat, p.lng);
-      if (dist > 35) continue;
-      const key = p.title.toLowerCase().replace(/\s+/g, ' ');
-      if (dedup.has(key)) continue;
-      const distLabel = dist < 1 ? `${Math.round(dist * 1000)} متر` : `${dist.toFixed(1)} كم`;
-      dedup.set(key, {
-        title: p.title,
-        uri: `https://www.google.com/maps/search/?api=1&query=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`,
-        snippets: [`المسافة التقريبية: ${distLabel}${p.address ? ` · ${p.address}` : ''}`],
-        distanceKm: dist,
-      });
-    }
+      for (const nomSettled of [nomArRes, nomEnRes]) {
+        if (nomSettled.status === 'fulfilled' && Array.isArray(nomSettled.value)) {
+          for (const item of nomSettled.value as Array<{
+            name?: string;
+            display_name?: string;
+            lat?: string;
+            lon?: string;
+          }>) {
+            const pLat = Number(item.lat);
+            const pLng = Number(item.lon);
+            const title = (item.name || item.display_name?.split(',')[0] || '').trim();
+            if (!title || Number.isNaN(pLat) || Number.isNaN(pLng)) continue;
+            rawPlaces.push({
+              title,
+              lat: pLat,
+              lng: pLng,
+              address: String(item.display_name ?? '').slice(0, 140),
+            });
+          }
+        }
+      }
 
-    const sorted = Array.from(dedup.values())
-      .sort((a, b) => a.distanceKm - b.distanceKm)
-      .slice(0, 7);
+      const dedup = new Map<string, { title: string; uri: string; snippets: string[]; distanceKm: number }>();
+      for (const p of rawPlaces) {
+        const dist = haversineKm(lat, lng, p.lat, p.lng);
+        if (dist > maxDistKm) continue;
+        const key = p.title.toLowerCase().replace(/\s+/g, ' ');
+        const existing = dedup.get(key);
+        if (existing && existing.distanceKm <= dist) continue;
+        const distLabel = dist < 1 ? `${Math.round(dist * 1000)} متر` : `${dist.toFixed(1)} كم`;
+        const walkMin = Math.max(1, Math.round((dist * 1000) / 80));
+        dedup.set(key, {
+          title: p.title,
+          uri: `https://www.google.com/maps/search/?api=1&query=${p.lat.toFixed(6)},${p.lng.toFixed(6)}`,
+          snippets: [`المسافة: ${distLabel} (~${walkMin} د مشياً)${p.address ? ` · ${p.address}` : ''}`],
+          distanceKm: dist,
+        });
+      }
+
+      return Array.from(dedup.values())
+        .sort((a, b) => a.distanceKm - b.distanceKm)
+        .slice(0, 7);
+    };
+
+    // Tight ~3km walking-radius box first; expand only if empty
+    let sorted = await queryDeltaBox(0.03, 3.0);
+    if (sorted.length === 0) {
+      sorted = await queryDeltaBox(0.10, 12.0);
+    }
 
     // Always include a direct Google Maps live search link at the user's exact coordinates
     sorted.push({
@@ -1195,7 +1205,7 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
           model: 'gemini-3.1-flash-lite',
           contents: query,
           config: {
-            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م).${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م). الأولوية القصوى حصرياً للأقرب مسافةً ضمن نطاق المشي (أقل من 1–2 كم أولاً)، مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة من موقع المستخدم الحالي (${latitude.toFixed(5)}, ${longitude.toFixed(5)}). Prioritize strictly the closest places within walking distance (under 1–2 km first), sorted nearest-first with walking time and distance.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
             tools: [{ googleMaps: {} }],
             toolConfig: {
               retrievalConfig: {
@@ -1367,7 +1377,7 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
           model: 'gemini-3.1-flash-lite',
           contents: query,
           config: {
-            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م).${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م). الأولوية القصوى حصرياً للأقرب مسافةً ضمن نطاق المشي (أقل من 1–2 كم أولاً)، مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة من موقع المستخدم الحالي (${latitude.toFixed(5)}, ${longitude.toFixed(5)}). Prioritize strictly the closest places within walking distance (under 1–2 km first), sorted nearest-first with walking time and distance.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
             tools: [{ googleMaps: {} }],
             toolConfig: {
               retrievalConfig: {
