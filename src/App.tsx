@@ -765,7 +765,17 @@ export default function App() {
       ? lifeProfile.oneTimeSilenceMinutes ?? 0
       : 0;
 
-  const activeSanctuary: ActiveSanctuaryState = useMemo(
+  const [sanctuaryOverrideUntilMs, setSanctuaryOverrideUntilMs] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('dayrhythm_sanctuary_override_until_v1');
+      const parsed = raw ? Number(raw) : 0;
+      return Number.isFinite(parsed) && parsed > Date.now() ? parsed : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  const rawActiveSanctuary: ActiveSanctuaryState = useMemo(
     () =>
       evaluateAudioSanctuary({
         nowMin: nowTickMin,
@@ -795,6 +805,39 @@ export default function App() {
       isFridayMode,
     ]
   );
+
+  const activeSanctuary: ActiveSanctuaryState = useMemo(() => {
+    if (
+      (rawActiveSanctuary.type === 'prayer' || rawActiveSanctuary.type === 'sleep') &&
+      sanctuaryOverrideUntilMs > Date.now()
+    ) {
+      return {
+        type: 'none',
+        labelAr: 'الوضع العادي',
+        muteAll: false,
+        vibrateOnly: false,
+      };
+    }
+    return rawActiveSanctuary;
+  }, [rawActiveSanctuary, sanctuaryOverrideUntilMs]);
+
+  const handleCancelActiveSanctuaryEarly = useCallback(() => {
+    const endsAtMin = rawActiveSanctuary.endsAtMin;
+    const deltaMin =
+      endsAtMin !== undefined
+        ? endsAtMin >= nowTickMin
+          ? endsAtMin - nowTickMin
+          : 1440 - nowTickMin + endsAtMin
+        : 60;
+    const untilMs = Date.now() + Math.max(1, deltaMin) * 60_000;
+    setSanctuaryOverrideUntilMs(untilMs);
+    try {
+      localStorage.setItem('dayrhythm_sanctuary_override_until_v1', String(untilMs));
+    } catch {
+      // ignore storage errors
+    }
+    lastScheduledAlarmsJsonRef.current = '';
+  }, [rawActiveSanctuary.endsAtMin, nowTickMin]);
 
   // Auto-revert one-time prayer silence override immediately after that single prayer finishes
   useEffect(() => {
@@ -10259,6 +10302,7 @@ ${lifeConstitution}
             onDetectGpsLocation={handleDetectGpsLocation}
             isDetectingGps={isDetectingGps}
             activeSanctuary={activeSanctuary}
+            onCancelActiveSanctuaryEarly={handleCancelActiveSanctuaryEarly}
             silentNotifications={silentNotifications}
             onClearSilentNotifications={handleClearSilentNotifications}
             activeAudioAlert={activeAudioAlert}

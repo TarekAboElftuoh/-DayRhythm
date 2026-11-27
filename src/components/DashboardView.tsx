@@ -245,6 +245,7 @@ interface DashboardViewProps {
   onDetectGpsLocation: () => Promise<void>;
   isDetectingGps: boolean;
   activeSanctuary: ActiveSanctuaryState;
+  onCancelActiveSanctuaryEarly?: () => void;
   silentNotifications: SilentNotificationItem[];
   onClearSilentNotifications: () => void;
   activeAudioAlert: {
@@ -397,6 +398,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onDetectGpsLocation,
   isDetectingGps,
   activeSanctuary,
+  onCancelActiveSanctuaryEarly,
   silentNotifications,
   onClearSilentNotifications,
   activeAudioAlert,
@@ -443,6 +445,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   const [showTrash, setShowTrash] = useState(false);
   const [showSilentInbox, setShowSilentInbox] = useState(false);
+  const [confirmCancelSanctuary, setConfirmCancelSanctuary] = useState(false);
   const [showGmailDrawer, setShowGmailDrawer] = useState(false);
   const [showTaskScheduleRow, setShowTaskScheduleRow] = useState(false);
   const [creatingTaskNow, setCreatingTaskNow] = useState(false);
@@ -1626,6 +1629,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             >
               إنهاء
             </button>
+          )}
+          {(activeSanctuary.type === 'prayer' || activeSanctuary.type === 'sleep') && (
+            <div dir="rtl" className="flex flex-wrap items-center gap-2">
+              {!confirmCancelSanctuary ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmCancelSanctuary(true)}
+                  className="px-3 py-1 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 border border-amber-400/40 text-amber-100 font-semibold text-[11px] cursor-pointer transition-colors"
+                >
+                  إنهاء الصمت مبكراً
+                </button>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-400/40 bg-black/40 px-2.5 py-1.5">
+                  <span className="text-[11px] text-amber-100">
+                    هل أنت متأكد أنك تريد إلغاء الصمت المؤقت الآن؟
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmCancelSanctuary(false);
+                      onCancelActiveSanctuaryEarly?.();
+                    }}
+                    className="px-2.5 py-1 rounded-md bg-amber-400 text-black font-bold text-[11px] cursor-pointer"
+                  >
+                    نعم، إلغاء الصمت
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmCancelSanctuary(false)}
+                    className="px-2.5 py-1 rounded-md bg-white/10 hover:bg-white/15 text-slate-200 text-[11px] cursor-pointer"
+                  >
+                    تراجع
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}
