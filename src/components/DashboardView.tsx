@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import {
   Droplets,
   Trash2,
@@ -644,7 +645,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const cardSurface =
     surfaceTheme === 'amoled'
       ? 'bg-[var(--bg-card)] border-[var(--border-subtle)]'
-      : 'bg-[var(--bg-card)] border-[var(--border-subtle)] shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]';
+      : 'bg-[var(--bg-card)] border-[var(--border-subtle)]';
 
   const activeBlocks = useMemo(
     () => blocks.filter((b) => !b.deleted),
@@ -947,6 +948,47 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     language,
   ]);
 
+  const heroProgressPct = useMemo(() => {
+    const nowSec = liveClockParts.nowSecOfDay;
+    if (!calendarConnected) {
+      if (!guestNextPrayer) return 0;
+      const obligatory = prayers.filter((p) => p.isObligatory);
+      const nextIdx = obligatory.findIndex((p) => p.id === guestNextPrayer.prayer.id);
+      const prevPrayer =
+        nextIdx > 0 ? obligatory[nextIdx - 1] : obligatory[obligatory.length - 1];
+      const startSec = prevPrayer
+        ? (prevPrayer.adhanMinutes > guestNextPrayer.prayer.adhanMinutes
+            ? prevPrayer.adhanMinutes - 1440
+            : prevPrayer.adhanMinutes) * 60
+        : 0;
+      const endSec = guestNextPrayer.targetSec;
+      const adjustedNow = nowSec < startSec ? nowSec + 1440 : nowSec;
+      const span = Math.max(60, endSec - startSec);
+      return Math.min(100, Math.max(4, Math.round(((adjustedNow - startSec) / span) * 100)));
+    }
+    if (!nextAlarmBlock) return 100;
+    if (isNextBlockHappeningNow) {
+      const startSec = nextAlarmBlock.startMin * 60;
+      const span = Math.max(60, nextAlarmBlock.durationMin * 60);
+      return Math.min(100, Math.max(2, Math.round(((nowSec - startSec) / span) * 100)));
+    }
+    const lastFinished = finishedTodayBlocks[finishedTodayBlocks.length - 1];
+    const windowStartSec = lastFinished
+      ? (lastFinished.startMin + Math.max(0, lastFinished.durationMin)) * 60
+      : 0;
+    const targetSec = nextAlarmBlock.startMin * 60;
+    const span = Math.max(60, targetSec - windowStartSec);
+    return Math.min(100, Math.max(4, Math.round(((nowSec - windowStartSec) / span) * 100)));
+  }, [
+    calendarConnected,
+    guestNextPrayer,
+    prayers,
+    nextAlarmBlock,
+    isNextBlockHappeningNow,
+    finishedTodayBlocks,
+    liveClockParts.nowSecOfDay,
+  ]);
+
   const scheduledHydrationSlots = dailyRhythmPlan.hydrationSlots;
   const scheduledTargetCups = scheduledHydrationSlots.length;
   const displayedCupsLogged = scheduledHydrationSlots.filter((_, idx) =>
@@ -1167,8 +1209,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   return (
-    <div className="mx-auto max-w-[1380px] px-3.5 sm:px-6 py-4 sm:py-6 space-y-5">
-      {/* 1. QUIET UNBOXED CONTEXT BAR — Date · Location · Weather · Inline Battery · Quick Controls */}
+    <div className="mx-auto max-w-[1380px] px-3.5 sm:px-6 py-4 sm:py-6 pb-24 md:pb-8 space-y-4 overflow-x-hidden">
+      {/* 1. QUIET UNBOXED CONTEXT BAR — Date · Location · Weather · Inline Battery · Quick Modes */}
       <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 pb-1">
         <div className="space-y-1 min-w-0">
           <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
@@ -1190,7 +1232,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <>
                 <span className="text-zinc-700" aria-hidden="true">·</span>
                 <span
-                  className="text-xs font-semibold text-amber-200 inline-flex items-center gap-1"
+                  className="text-xs font-semibold text-zinc-200 inline-flex items-center gap-1"
                   title="الأيام البيض"
                 >
                   <span className="leading-none">🌕</span>
@@ -1267,7 +1309,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowSilentInbox((v) => !v)}
-                  className="text-amber-300 hover:underline font-medium cursor-pointer"
+                  className="text-zinc-300 hover:text-[#7FFFD4] font-medium cursor-pointer transition-colors"
                 >
                   🔕 {silentNotifications.length} صامت
                 </button>
@@ -1276,114 +1318,170 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
 
-        {/* Compact Utility Controls */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            aria-pressed={lowEnergyActive}
-            onClick={onToggleLowEnergyToday}
-            className={`min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-              lowEnergyActive
-                ? 'border-emerald-400/45 bg-emerald-400/14 text-emerald-200'
-                : 'border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:border-white/15'
-            }`}
-            title="تخفيف اليوم عند انخفاض الطاقة"
+        {/* Unified Quick Modes Segmented Strip + Compact Utilities */}
+        <div className="flex flex-wrap items-center gap-2 max-w-full">
+          <div
+            role="group"
+            aria-label={language === 'ar' ? 'أوضاع اليوم' : 'Daily modes'}
+            className="inline-flex flex-wrap sm:flex-nowrap items-center gap-1 p-1 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] max-w-full"
           >
-            <Leaf className="w-3.5 h-3.5" />
-            <span>{lowEnergyActive ? '✓ يوم هادئ' : 'يوم هادئ'}</span>
-          </button>
-
-          <div className="relative">
-            <button
+            <motion.button
               type="button"
-              onClick={() => {
-                // Timed quiet mode is the single source of truth here (it's the one that actually
-                // auto-expires on its own); if it's already running — from this button, from
-                // Gemini, or from another device — one tap ends it early, no picker needed.
-                if (quietMode !== 'normal') {
-                  onSetQuietMode('normal', 0);
-                  setMeetingPickerOpen(false);
-                  return;
-                }
-                setMeetingPickerOpen((v) => !v);
-              }}
-              className={`min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-                quietMode !== 'normal'
-                  ? 'border-amber-400/50 bg-amber-400/15 text-amber-200'
-                  : 'border-white/[0.08] bg-white/[0.02] text-zinc-400 hover:text-zinc-200 hover:border-white/15'
+              whileTap={{ scale: 0.97 }}
+              aria-pressed={lowEnergyActive}
+              onClick={onToggleLowEnergyToday}
+              className={`relative min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
+                lowEnergyActive
+                  ? 'text-[#7FFFD4] font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-100'
               }`}
-              title="وضع الاجتماع وكتم الصوت مؤقتاً أو حتى الإلغاء"
+              title="تخفيف اليوم عند انخفاض الطاقة"
             >
-              <MicOff className="w-3.5 h-3.5" />
-              <span>{quietMode !== 'normal' ? 'إنهاء وضع الاجتماع' : 'وضع الاجتماع'}</span>
-            </button>
+              <AnimatePresence>
+                {lowEnergyActive && (
+                  <motion.span
+                    layoutId="mode-pill-calm"
+                    initial={{ opacity: 0, scale: 0.94 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.94 }}
+                    transition={{ type: 'spring', stiffness: 460, damping: 34 }}
+                    className="absolute inset-0 rounded-xl bg-[#7FFFD4]/10 border border-[#7FFFD4]/25"
+                  />
+                )}
+              </AnimatePresence>
+              <Leaf className="relative z-10 w-3.5 h-3.5 shrink-0" />
+              <span className="relative z-10">{lowEnergyActive ? '✓ يوم هادئ' : 'يوم هادئ'}</span>
+            </motion.button>
 
-            {meetingPickerOpen && (
-              <div className="absolute z-30 top-full mt-1.5 right-0 w-64 max-w-[calc(100vw-2rem)] rounded-xl border border-white/10 bg-[#0B0E14] p-3 shadow-2xl space-y-2.5">
-                <div className="text-[11px] text-zinc-400">اختر المدة والطريقة، وهتخلص لوحدها تلقائياً</div>
-                {(
-                  [
-                    { mode: 'mute_audio' as const, label: '🔇 ميوت تام + إشعار' },
-                    { mode: 'vibrate_only' as const, label: '📳 اهتزاز فقط + إشعار' },
-                  ]
-                ).map((row) => (
-                  <div key={row.mode} className="space-y-1">
-                    <div className="text-[11px] font-medium text-zinc-300">{row.label}</div>
-                    <div className="grid grid-cols-5 gap-1">
-                      {[15, 30, 60, 120, 0].map((mins) => (
-                        <button
-                          key={mins}
-                          type="button"
-                          onClick={() => {
-                            onSetQuietMode(row.mode, mins);
-                            setMeetingPickerOpen(false);
-                          }}
-                          className="min-h-[30px] rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-[11px] text-zinc-200 cursor-pointer"
-                        >
-                          {mins === 0 ? 'لحد ما ألغيه' : mins >= 60 ? `${mins / 60} س` : `${mins} د`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setMeetingPickerOpen(false)}
-                  className="w-full text-[11px] text-zinc-500 hover:text-zinc-300 cursor-pointer pt-1"
-                >
-                  إلغاء
-                </button>
-              </div>
-            )}
+            <div className="relative">
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.97 }}
+                aria-pressed={quietMode !== 'normal'}
+                onClick={() => {
+                  // Timed quiet mode is the single source of truth here (it's the one that actually
+                  // auto-expires on its own); if it's already running — from this button, from
+                  // Gemini, or from another device — one tap ends it early, no picker needed.
+                  if (quietMode !== 'normal') {
+                    onSetQuietMode('normal', 0);
+                    setMeetingPickerOpen(false);
+                    return;
+                  }
+                  setMeetingPickerOpen((v) => !v);
+                }}
+                className={`relative min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
+                  quietMode !== 'normal'
+                    ? 'text-[#7FFFD4] font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-100'
+                }`}
+                title="وضع الاجتماع وكتم الصوت مؤقتاً أو حتى الإلغاء"
+              >
+                <AnimatePresence>
+                  {quietMode !== 'normal' && (
+                    <motion.span
+                      layoutId="mode-pill-meeting"
+                      initial={{ opacity: 0, scale: 0.94 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.94 }}
+                      transition={{ type: 'spring', stiffness: 460, damping: 34 }}
+                      className="absolute inset-0 rounded-xl bg-[#7FFFD4]/10 border border-[#7FFFD4]/25"
+                    />
+                  )}
+                </AnimatePresence>
+                <MicOff className="relative z-10 w-3.5 h-3.5 shrink-0" />
+                <span className="relative z-10">
+                  {quietMode !== 'normal' ? 'إنهاء الاجتماع' : 'وضع الاجتماع'}
+                </span>
+              </motion.button>
+
+              <AnimatePresence>
+                {meetingPickerOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                    transition={{ duration: 0.16 }}
+                    className="absolute z-30 top-full mt-2 right-0 w-64 max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-3.5 space-y-2.5 shadow-xl"
+                  >
+                    <div className="text-[11px] text-zinc-400">اختر المدة والطريقة، وهتخلص لوحدها تلقائياً</div>
+                    {(
+                      [
+                        { mode: 'mute_audio' as const, label: '🔇 ميوت تام + إشعار' },
+                        { mode: 'vibrate_only' as const, label: '📳 اهتزاز فقط + إشعار' },
+                      ]
+                    ).map((row) => (
+                      <div key={row.mode} className="space-y-1">
+                        <div className="text-[11px] font-medium text-zinc-300">{row.label}</div>
+                        <div className="grid grid-cols-5 gap-1">
+                          {[15, 30, 60, 120, 0].map((mins) => (
+                            <button
+                              key={mins}
+                              type="button"
+                              onClick={() => {
+                                onSetQuietMode(row.mode, mins);
+                                setMeetingPickerOpen(false);
+                              }}
+                              className="min-h-[34px] rounded-lg bg-white/[0.04] hover:bg-white/[0.1] border border-[var(--border-subtle)] text-[11px] font-mono-tabular text-zinc-200 cursor-pointer transition-colors"
+                            >
+                              {mins === 0 ? 'مفتوح' : mins >= 60 ? `${mins / 60} س` : `${mins} د`}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setMeetingPickerOpen(false)}
+                      className="w-full min-h-[34px] text-[11px] text-zinc-500 hover:text-zinc-300 cursor-pointer pt-1"
+                    >
+                      إلغاء
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.97 }}
+              aria-pressed={travelState.active}
+              onClick={onOpenTravel}
+              className={`relative min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap select-none ${
+                travelState.active
+                  ? 'text-[#7FFFD4] font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-100'
+              }`}
+              title="وضع السفر وتأجيل التنبيهات مؤقتاً"
+            >
+              <AnimatePresence>
+                {travelState.active && (
+                  <motion.span
+                    layoutId="mode-pill-travel"
+                    initial={{ opacity: 0, scale: 0.94 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.94 }}
+                    transition={{ type: 'spring', stiffness: 460, damping: 34 }}
+                    className="absolute inset-0 rounded-xl bg-[#7FFFD4]/10 border border-[#7FFFD4]/25"
+                  />
+                )}
+              </AnimatePresence>
+              <Plane className="relative z-10 w-3.5 h-3.5 shrink-0" />
+              <span className="relative z-10">{travelState.active ? 'في السفر' : 'السفر'}</span>
+              {travelState.active &&
+                ((travelState.deferredCategories?.length ?? 0) +
+                  (travelState.deferredMedIds?.length ?? 0)) > 0 && (
+                  <span className="relative z-10 px-1.5 py-0.5 rounded-full bg-[#7FFFD4]/20 text-[10px] font-mono-tabular">
+                    {(travelState.deferredCategories?.length ?? 0) +
+                      (travelState.deferredMedIds?.length ?? 0)}
+                  </span>
+                )}
+            </motion.button>
           </div>
 
           <button
             type="button"
-            aria-pressed={travelState.active}
-            onClick={onOpenTravel}
-            className={`min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-              travelState.active
-                ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                : 'border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:border-white/15'
-            }`}
-            title="وضع السفر وتأجيل التنبيهات مؤقتاً"
-          >
-            <Plane className="w-3.5 h-3.5" />
-            <span>{travelState.active ? 'في السفر' : 'السفر'}</span>
-            {travelState.active &&
-              ((travelState.deferredCategories?.length ?? 0) +
-                (travelState.deferredMedIds?.length ?? 0)) > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full bg-[#7FFFD4]/20 text-[10px] font-mono-tabular">
-                  {(travelState.deferredCategories?.length ?? 0) +
-                    (travelState.deferredMedIds?.length ?? 0)}
-                </span>
-              )}
-          </button>
-
-          <button
-            type="button"
             onClick={onOpenLifeProfile}
-            className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] text-xs font-medium text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+            className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-xs font-medium text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
             title="الإعدادات والثوابت"
           >
             <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-400" />
@@ -1394,11 +1492,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <button
               type="button"
               onClick={() => onRefreshWorkspace()}
-              className="min-h-[34px] px-2.5 py-1.5 rounded-lg border border-white/[0.08] bg-white/[0.02] text-xs text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+              className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-xs text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
               title={calendarUserEmail}
             >
               <RefreshCw
-                className={`w-3.5 h-3.5 text-[#4ADE80] ${loadingCalendarEvents || loadingTasks ? 'animate-spin' : ''}`}
+                className={`w-3.5 h-3.5 text-[#7FFFD4] ${loadingCalendarEvents || loadingTasks ? 'animate-spin' : ''}`}
               />
               <span className="hidden sm:inline">تحديث</span>
             </button>
@@ -1409,7 +1507,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 onGoogleSignIn().catch(() => {});
               }}
               disabled={isLoggingIn}
-              className="min-h-[34px] flex items-center gap-2 rounded-lg border border-[#747775] bg-white px-3 py-1.5 text-xs font-semibold text-[#1F1F1F] hover:bg-zinc-100 transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap"
+              className="min-h-[44px] sm:min-h-[38px] flex items-center gap-2 rounded-xl border border-[#747775] bg-white px-3 py-1.5 text-xs font-semibold text-[#1F1F1F] hover:bg-zinc-100 transition-colors cursor-pointer disabled:opacity-60 whitespace-nowrap"
             >
               <svg className="w-3.5 h-3.5" viewBox="0 0 48 48" aria-hidden="true">
                 <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
@@ -1919,21 +2017,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       )}
 
-      {/* 3. FOCAL HERO COMMAND CENTER — Now / Next + Live Countdown + 5 Prayers */}
-      <section className={`rounded-2xl border p-4 sm:p-6 ${cardSurface}`}>
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 lg:gap-6 items-center">
-          {/* Primary Focus: Current / Next Event + Dominant Countdown */}
-          <div className="lg:col-span-6 flex flex-col justify-between gap-4 min-w-0">
+      {/* 3. FOCAL HERO COMMAND CENTER — Swiss-Watch Hero + Ultra-Thin Progress + 5 Prayers */}
+      <section className={`rounded-2xl border p-5 sm:p-6 space-y-5 ${cardSurface}`}>
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-5 md:gap-6 items-center">
+          {/* Primary Focus: Current / Next Event + Oversized Tabular Countdown */}
+          <div className="md:col-span-6 flex flex-col justify-between gap-4 min-w-0">
             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
               <div className="min-w-0 flex-1 space-y-1.5">
                 <div className="flex items-center gap-2 text-xs">
                   <span
-                    className={
-                      isNextBlockHappeningNow
-                        ? 'text-[#4ADE80] font-bold'
-                        : 'text-[#7FFFD4] font-semibold'
-                    }
-                  >
+                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      isNextBlockHappeningNow ? 'bg-[#7FFFD4] animate-pulse' : 'bg-[#7FFFD4]/80'
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span className="text-[#7FFFD4] font-semibold">
                     {isNextBlockHappeningNow
                       ? 'الآن'
                       : language === 'ar'
@@ -1953,7 +2051,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     {nextAlarmBlock?.emojiPair ?? guestNextPrayer?.prayer.emojiPair ?? '✅'}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <h2 className="text-base sm:text-xl font-bold text-white leading-snug break-words">
+                    <h2 className="text-lg sm:text-xl font-bold text-white leading-snug break-words">
                       {nextAlarmBlock
                         ? nextAlarmDisplay.title
                         : calendarConnected
@@ -1988,13 +2086,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              <div className="text-right sm:text-left shrink-0 flex flex-row sm:flex-col items-baseline sm:items-end justify-between sm:justify-center gap-2 pt-1 sm:pt-0 border-t border-white/[0.06] sm:border-t-0">
+              <div className="text-right sm:text-left shrink-0 flex flex-row sm:flex-col items-baseline sm:items-end justify-between sm:justify-center gap-2 pt-2 sm:pt-0 border-t border-[var(--border-subtle)] sm:border-t-0">
                 <div
-                  className={`font-digits text-3xl sm:text-4xl font-bold tracking-tight leading-none whitespace-nowrap ${
-                    isNextBlockHappeningNow
-                      ? 'text-[#4ADE80]'
-                      : 'text-[#7FFFD4]'
-                  }`}
+                  data-countdown=""
+                  className="font-digits text-4xl sm:text-5xl font-semibold tracking-tight leading-none whitespace-nowrap text-[#7FFFD4]"
                 >
                   <LiveSecClock
                     initialSec={countdownMeta.remainingSec}
@@ -2008,13 +2103,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             </div>
 
-            {/* Clean Action Row */}
+            {/* Ultra-Thin Swiss-Watch Progress Bar */}
+            <div
+              className="h-[2px] w-full rounded-full bg-white/[0.06] overflow-hidden"
+              role="progressbar"
+              aria-valuenow={heroProgressPct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <motion.div
+                className="h-full rounded-full bg-[#7FFFD4]"
+                initial={false}
+                animate={{ width: `${heroProgressPct}%` }}
+                transition={{ duration: 0.6, ease: 'easeOut' }}
+              />
+            </div>
+
+            {/* Single Primary Accent CTA + Quiet Secondary Controls */}
             <div className="flex flex-wrap items-center gap-2">
               {nextAlarmBlock && (
                 <button
                   type="button"
                   onClick={() => onToggleComplete(nextAlarmBlock.id)}
-                  className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[#4ADE80]/15 border border-[#4ADE80]/35 text-[#4ADE80] text-xs font-bold hover:bg-[#4ADE80]/25 transition-colors cursor-pointer whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[38px] px-4 py-1.5 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] transition-colors active:scale-[0.98] cursor-pointer whitespace-nowrap"
                 >
                   ✓ تم الإنجاز
                 </button>
@@ -2023,9 +2134,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenPomodoro}
-                className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-lg border border-white/[0.1] bg-white/[0.02] text-zinc-200 hover:border-white/25 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular transition-colors"
+                className="min-h-[44px] sm:min-h-[38px] px-3.5 py-1.5 rounded-xl border border-[var(--border-subtle)] bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer whitespace-nowrap font-mono-tabular transition-colors"
               >
-                <Timer className="w-3.5 h-3.5 text-[#7FFFD4]" />
+                <Timer className="w-3.5 h-3.5 text-zinc-400" />
                 <span>
                   {pomodoro.isRunning
                     ? `${Math.floor(pomodoro.remainingSeconds / 60)}:${String(pomodoro.remainingSeconds % 60).padStart(2, '0')}`
@@ -2036,7 +2147,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenAssistant}
-                className="min-h-[44px] sm:min-h-[38px] px-3 py-1.5 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.08] text-[#7FFFD4] hover:bg-[#7FFFD4]/15 text-xs font-semibold flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                className={`min-h-[44px] sm:min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors ${
+                  nextAlarmBlock
+                    ? 'border border-[var(--border-subtle)] bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:text-white font-medium'
+                    : 'bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2]'
+                }`}
               >
                 <MessageSquare className="w-3.5 h-3.5" />
                 <span>شات Gemini</span>
@@ -2044,8 +2159,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          {/* 5 Prayers Strip — Next Prayer Highlighted, Passed Prayers Muted */}
-          <div className="lg:col-span-6 lg:border-r lg:border-white/[0.08] lg:pr-6 min-w-0">
+          {/* 5 Prayers Strip — Clean Horizontal Grid with Subtle Active Highlight */}
+          <div className="md:col-span-6 md:border-r md:border-[var(--border-subtle)] md:pr-6 min-w-0">
             <div className="grid grid-cols-5 gap-1.5 sm:gap-2 text-center">
               {prayers
                 .filter((p) => p.isObligatory)
@@ -2058,20 +2173,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       key={p.id}
                       className={`rounded-xl border py-2.5 px-1 sm:px-2 min-w-0 transition-colors ${
                         isNextPrayer
-                          ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/[0.08]'
-                          : 'border-white/[0.06] bg-white/[0.02]'
-                      } ${isPassed ? 'opacity-45' : ''}`}
+                          ? 'border-[#7FFFD4]/40 bg-[#7FFFD4]/[0.07]'
+                          : 'border-[var(--border-subtle)] bg-white/[0.02]'
+                      } ${isPassed ? 'opacity-40' : ''}`}
                     >
                       <div className="text-xs sm:text-sm leading-none">{p.emojiPair.split(' ')[1]}</div>
                       <div
-                        className={`text-[11px] sm:text-[11px] mt-1.5 truncate ${
+                        className={`text-[11px] mt-1.5 truncate ${
                           isNextPrayer ? 'font-bold text-white' : 'font-medium text-zinc-400'
                         }`}
                       >
                         {language === 'ar' ? p.nameAr : p.nameEn}
                       </div>
                       <div
-                        className={`font-mono-tabular text-[10.5px] sm:text-xs font-bold mt-0.5 whitespace-nowrap ${
+                        className={`font-mono-tabular text-[10.5px] sm:text-xs font-semibold mt-0.5 whitespace-nowrap ${
                           showLivePrayer
                             ? isNextPrayer
                               ? 'text-[#7FFFD4]'
@@ -2101,8 +2216,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onToggleAdhanOverrideSilent}
-                className={`flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  adhanOverrideSilent ? 'text-[#4ADE80]' : 'text-zinc-500 hover:text-zinc-300'
+                className={`min-h-[36px] flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  adhanOverrideSilent ? 'text-[#7FFFD4]' : 'text-zinc-500 hover:text-zinc-300'
                 }`}
               >
                 <Volume2 className="w-3.5 h-3.5" />
@@ -2113,7 +2228,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onTestAdhanChime}
-                className="text-zinc-400 hover:text-[#7FFFD4] transition-colors cursor-pointer"
+                className="min-h-[36px] text-zinc-400 hover:text-[#7FFFD4] transition-colors cursor-pointer"
               >
                 تجربة الصوت
               </button>
@@ -2133,13 +2248,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         />
       )}
 
-      {/* Main Split Grid: Primary Calendar + Tasks FIRST in DOM (optimal on OnePlus 12R & Desktop RTL) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {/* Main Bento Grid (`md:`+): Balanced 7/5 Split with generous whitespace (gap-4) */}
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start">
         {/* Primary Column (7 cols): Schedule -> Tasks -> Creative -> Gmail */}
-        <div className="lg:col-span-7 space-y-5">
+        <div className="md:col-span-7 space-y-4 min-w-0">
           {/* 1. Today's Schedule (Timeline) */}
           <section className={`rounded-2xl border p-4 sm:p-5 ${cardSurface}`}>
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-white/[0.07]">
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-[var(--border-subtle)]">
               <h2 className="text-base font-bold text-white flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-[#7FFFD4]" />
                 <span>جدول اليوم</span>
@@ -2154,7 +2269,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <button
                   type="button"
                   onClick={onOpenCatchUp}
-                  className="min-h-[34px] px-2.5 py-1 rounded-lg border border-white/[0.09] text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
+                  className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-[var(--border-subtle)] text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
                   <Zap className="w-3.5 h-3.5 text-[#7FFFD4]" />
                   <span>زحزحة</span>
@@ -2163,7 +2278,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <button
                     type="button"
                     onClick={onUndoReflow}
-                    className="min-h-[34px] px-2.5 py-1 rounded-lg border border-amber-400/35 text-amber-300 text-xs font-medium hover:bg-amber-400/10 flex items-center gap-1 cursor-pointer"
+                    className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-amber-400/35 text-amber-300 text-xs font-medium hover:bg-amber-400/10 flex items-center gap-1 cursor-pointer"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                     <span>استعادة</span>
@@ -2173,7 +2288,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setShowTrash((v) => !v)}
-                    className="min-h-[34px] px-2.5 py-1 rounded-lg border border-white/[0.09] text-zinc-400 hover:text-white text-xs flex items-center gap-1 cursor-pointer"
+                    className="min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border border-[var(--border-subtle)] text-zinc-400 hover:text-white text-xs flex items-center gap-1 cursor-pointer"
                     title="المحذوفات"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -2188,7 +2303,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       setNewEvMinute('');
                       setNewEventModalOpen(true);
                     }}
-                    className="min-h-[34px] px-3 py-1 rounded-lg bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer whitespace-nowrap transition-colors"
+                    className="min-h-[44px] sm:min-h-[34px] px-3.5 sm:px-3 py-1 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center gap-1 cursor-pointer whitespace-nowrap transition-colors"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>حدث</span>
@@ -2198,7 +2313,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
 
             {/* Clean Segmented Filter */}
-            <div className="mt-3 flex items-center p-1 rounded-xl bg-white/[0.03] border border-white/[0.07] overflow-x-auto max-w-full w-fit">
+            <div className="mt-3 flex items-center p-1 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] overflow-x-auto max-w-full w-fit">
               {(
                 [
                   { id: 'today', label: 'اليوم', count: remainingTodayBlocks.length },
@@ -2206,21 +2321,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   { id: 'special', label: 'المميزة', count: nonRoutineUpcomingEvents.length },
                   { id: 'done', label: 'المنتهي', count: finishedTodayBlocks.length },
                 ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setTimelineFilter(tab.id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-                    timelineFilter === tab.id
-                      ? 'bg-white/12 text-white font-semibold'
-                      : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  <span>{tab.label}</span>
-                  <span className="font-mono-tabular text-[11px] opacity-65">{tab.count}</span>
-                </button>
-              ))}
+              ).map((tab) => {
+                const active = timelineFilter === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setTimelineFilter(tab.id)}
+                    className={`relative min-h-[40px] sm:min-h-[32px] px-3 py-1.5 rounded-lg text-xs cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1.5 select-none ${
+                      active ? 'text-[#7FFFD4] font-semibold' : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {active && (
+                      <motion.span
+                        layoutId="schedule-filter-pill"
+                        transition={{ type: 'spring', stiffness: 460, damping: 35 }}
+                        className="absolute inset-0 rounded-lg bg-[#7FFFD4]/10 border border-[#7FFFD4]/20"
+                      />
+                    )}
+                    <span className="relative z-10">{tab.label}</span>
+                    <span className="relative z-10 font-mono-tabular text-[11px] opacity-75">
+                      {tab.count}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             {/* Clean Trash Drawer */}
@@ -3099,19 +3224,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </section>
           )}
 
-          {/* 4. Smart Gmail Digest (Quiet 1-Line Collapsible Strip) */}
-          <section className={`rounded-2xl border px-4 py-3.5 ${cardSurface}`}>
+          {/* 4. Smart Gmail Digest (Quiet Collapsible Progressive-Disclosure Strip) */}
+          <section className={`rounded-2xl border px-4 py-3 ${cardSurface}`}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
+                aria-expanded={showGmailDrawer || Boolean(gmailError)}
                 onClick={() => setShowGmailDrawer((v) => !v)}
-                className="flex items-center gap-2 text-right cursor-pointer min-w-0"
+                className="min-h-[44px] sm:min-h-[34px] flex items-center gap-2 text-right cursor-pointer min-w-0 flex-1"
               >
                 <Mail className="w-4 h-4 text-[#7FFFD4] shrink-0" />
                 <span className="text-xs font-bold text-white">مواعيد Gmail</span>
                 {gmailDigest.length > 0 && (
-                  <span className="text-xs text-[#7FFFD4] font-mono-tabular font-semibold">
-                    · {gmailDigest.length}
+                  <span className="px-1.5 py-0.5 rounded-md bg-[#7FFFD4]/10 border border-[#7FFFD4]/20 text-[11px] text-[#7FFFD4] font-mono-tabular font-semibold">
+                    {gmailDigest.length}
                   </span>
                 )}
                 {gmailLastSyncedIso && calendarConnected && !gmailNeedsReauth && (
@@ -3119,10 +3245,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     · {formatIsoTo12h(gmailLastSyncedIso, language, { includeDate: false, timeZone: activeTimeZone })}
                   </span>
                 )}
-                {showGmailDrawer || gmailDigest.length > 0 ? (
-                  <ChevronUp className="w-3.5 h-3.5 text-zinc-500" />
+                {showGmailDrawer || Boolean(gmailError) ? (
+                  <ChevronUp className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                 ) : (
-                  <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
+                  <ChevronDown className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                 )}
               </button>
 
@@ -3134,7 +3260,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     setShowGmailDrawer(true);
                     void onFetchGmailDigest();
                   }}
-                  className="min-h-[30px] px-2.5 py-1 rounded-lg border border-white/[0.09] text-xs text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-xl border border-[var(--border-subtle)] text-xs text-zinc-300 hover:border-white/20 hover:text-white flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap transition-colors"
                 >
                   <RefreshCw className={`w-3 h-3 ${loadingGmail ? 'animate-spin' : ''}`} />
                   <span>{loadingGmail ? 'جارٍ الفحص...' : 'فحص'}</span>
@@ -3146,82 +3272,92 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   onClick={() => {
                     onGoogleSignIn().catch(() => {});
                   }}
-                  className="min-h-[30px] px-2.5 py-1 rounded-lg border border-amber-400/35 bg-amber-400/10 text-xs font-medium text-amber-200 hover:bg-amber-400/20 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  className="min-h-[44px] sm:min-h-[32px] px-3 py-1 rounded-xl border border-[var(--border-subtle)] bg-white/[0.04] text-xs font-medium text-zinc-200 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] cursor-pointer disabled:opacity-50 whitespace-nowrap transition-colors"
                 >
                   {calendarConnected ? 'تفعيل Gmail' : 'تسجيل الدخول'}
                 </button>
               )}
             </div>
 
-            {(showGmailDrawer || gmailDigest.length > 0 || Boolean(gmailError)) && (
-              <div className="mt-3 pt-3 border-t border-white/[0.07] space-y-2.5">
-                {gmailError && (
-                  <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
-                    <span>{gmailError}</span>
-                    {gmailNextRetryInSec > 0 && (
-                      <span className="font-mono-tabular text-[11px] text-amber-300">
-                        {gmailNextRetryInSec} ث
-                      </span>
+            <AnimatePresence initial={false}>
+              {(showGmailDrawer || Boolean(gmailError)) && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2, ease: 'easeOut' }}
+                  className="overflow-hidden"
+                >
+                  <div className="mt-3 pt-3 border-t border-[var(--border-subtle)] space-y-2.5">
+                    {gmailError && (
+                      <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
+                        <span>{gmailError}</span>
+                        {gmailNextRetryInSec > 0 && (
+                          <span className="font-mono-tabular text-[11px] text-amber-300">
+                            {gmailNextRetryInSec} ث
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {gmailDigest.length === 0 ? (
+                      <div className="text-xs text-zinc-500">
+                        {gmailScannedCount > 0
+                          ? `تم فحص ${gmailScannedCount} رسالة — لا توجد مواعيد جديدة.`
+                          : 'لا توجد مواعيد مستخرجة حالياً.'}
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-[var(--border-subtle)]">
+                        {gmailDigest.map((item) => {
+                          const alreadyAdded = Boolean(addedGmailIds[item.id]);
+                          return (
+                            <div
+                              key={item.id}
+                              className="py-2.5 flex flex-wrap items-start justify-between gap-3 text-xs"
+                            >
+                              <div className="space-y-1 min-w-0 flex-1">
+                                <div className="font-semibold text-white">{item.titleAr}</div>
+                                <div className="text-[11px] text-zinc-400 leading-relaxed">
+                                  {item.summaryAr}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500 font-mono-tabular">
+                                  {item.dateIso && <span>{item.dateIso}</span>}
+                                  {item.startTime24 && (
+                                    <span className="text-[#7FFFD4]">
+                                      · {formatTime24To12h(item.startTime24, language)}
+                                    </span>
+                                  )}
+                                  {item.sender && <span className="truncate max-w-[200px]">· {item.sender}</span>}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={alreadyAdded}
+                                onClick={() => setPendingGmailEventConfirm(item)}
+                                className={`min-h-[44px] sm:min-h-[34px] px-3.5 py-1.5 rounded-xl text-[11px] font-bold shrink-0 cursor-pointer transition-colors ${
+                                  alreadyAdded
+                                    ? 'border border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80] cursor-default'
+                                    : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
+                                }`}
+                              >
+                                {alreadyAdded ? 'أُضيف ✓' : 'إضافة للتقويم'}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
-                )}
-
-                {gmailDigest.length === 0 ? (
-                  <div className="text-xs text-zinc-500">
-                    {gmailScannedCount > 0
-                      ? `تم فحص ${gmailScannedCount} رسالة — لا توجد مواعيد جديدة.`
-                      : 'لا توجد مواعيد مستخرجة حالياً.'}
-                  </div>
-                ) : (
-                  <div className="divide-y divide-white/[0.06]">
-                    {gmailDigest.map((item) => {
-                      const alreadyAdded = Boolean(addedGmailIds[item.id]);
-                      return (
-                        <div
-                          key={item.id}
-                          className="py-2.5 flex flex-wrap items-start justify-between gap-3 text-xs"
-                        >
-                          <div className="space-y-1 min-w-0 flex-1">
-                            <div className="font-semibold text-white">{item.titleAr}</div>
-                            <div className="text-[11px] text-zinc-400 leading-relaxed">
-                              {item.summaryAr}
-                            </div>
-                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500 font-mono-tabular">
-                              {item.dateIso && <span>{item.dateIso}</span>}
-                              {item.startTime24 && (
-                                <span className="text-[#7FFFD4]">
-                                  · {formatTime24To12h(item.startTime24, language)}
-                                </span>
-                              )}
-                              {item.sender && <span className="truncate max-w-[200px]">· {item.sender}</span>}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            disabled={alreadyAdded}
-                            onClick={() => setPendingGmailEventConfirm(item)}
-                            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold shrink-0 cursor-pointer transition-colors ${
-                              alreadyAdded
-                                ? 'border border-[#4ADE80]/35 bg-[#4ADE80]/10 text-[#4ADE80] cursor-default'
-                                : 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
-                            }`}
-                          >
-                            {alreadyAdded ? 'أُضيف ✓' : 'إضافة للتقويم'}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </section>
         </div>
 
         {/* Support Column (5 cols): High-Frequency Daily Care FIRST — Water -> Medications -> Sleep -> Streaks */}
-        <div className="lg:col-span-5 space-y-5">
+        <div className="md:col-span-5 space-y-4 min-w-0">
           {/* 1. Hydration Card (Promoted to #1 in Support Column — highest tap frequency) */}
-          <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
+          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>
             <div className="flex items-baseline justify-between gap-2">
               <h2 className="text-base font-bold text-white flex items-center gap-2">
                 <Droplets className="w-4 h-4 text-[#7FFFD4]" />
@@ -3262,10 +3398,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     type="button"
                     onClick={() => onToggleWaterSlot(idx)}
                     title={`كوب ${idx + 1} · ${formatMinutes12h(slotPlan.timeMinutes, language)}`}
-                    className={`min-w-[36px] min-h-[40px] sm:min-w-0 sm:flex-1 sm:h-8 rounded-lg sm:rounded-md font-mono-tabular text-xs sm:text-[11px] font-bold flex items-center justify-center transition-all active:scale-90 cursor-pointer select-none ${
+                    className={`min-w-[44px] min-h-[44px] sm:min-w-0 sm:flex-1 sm:h-9 sm:min-h-[36px] rounded-xl sm:rounded-lg font-mono-tabular text-xs sm:text-[11px] font-bold flex items-center justify-center transition-all active:scale-95 cursor-pointer select-none ${
                       filled
-                        ? 'bg-[#7FFFD4] text-black shadow-[0_0_8px_rgba(127,255,212,0.3)] hover:bg-[#66eec2]'
-                        : 'bg-white/[0.06] text-zinc-400 hover:bg-white/[0.14] hover:text-white'
+                        ? 'bg-[#7FFFD4] text-black hover:bg-[#66eec2]'
+                        : 'bg-white/[0.04] border border-[var(--border-subtle)] text-zinc-400 hover:bg-white/[0.1] hover:text-white'
                     }`}
                   >
                     {idx + 1}
@@ -3903,9 +4039,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             type="button"
                             onClick={() => onToggleMedication(med.id)}
                             aria-pressed={takenToday}
-                            className={`min-h-[42px] sm:min-h-0 px-3 sm:px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 transition-all active:scale-95 cursor-pointer select-none ${
+                            className={`min-h-[44px] sm:min-h-[34px] px-3 sm:px-2.5 py-1 rounded-xl border text-[11px] font-bold flex items-center gap-1 transition-all active:scale-95 cursor-pointer select-none ${
                               takenToday
-                                ? 'border-[#4ADE80] bg-[#4ADE80] text-black shadow-[0_0_8px_rgba(74,222,128,0.25)]'
+                                ? 'border-[#4ADE80] bg-[#4ADE80] text-black'
                                 : 'border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:bg-[#7FFFD4] hover:text-black'
                             }`}
                           >
@@ -4186,7 +4322,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </section>
 
           {/* 3. Sleep & Suhoor Rhythm (Checked morning/night — positioned cleanly below Water & Meds) */}
-          <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
+          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-bold text-white flex items-center gap-2">
                 <Moon className="w-4 h-4 text-[#7FFFD4]" />
@@ -4195,7 +4331,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <button
                 type="button"
                 onClick={onOpenLifeProfile}
-                className="text-xs text-zinc-400 hover:text-[#7FFFD4] cursor-pointer transition-colors"
+                className="min-h-[44px] sm:min-h-[32px] px-2 text-xs text-zinc-400 hover:text-[#7FFFD4] cursor-pointer transition-colors"
               >
                 الثوابت
               </button>
@@ -4206,7 +4342,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 className={`rounded-xl border p-2.5 ${
                   dailyRhythmPlan.nightlyRecoveryMin > 0
                     ? 'border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.06]'
-                    : 'border-white/[0.07] bg-white/[0.02]'
+                    : 'border-[var(--border-subtle)] bg-white/[0.02]'
                 }`}
               >
                 <div className="text-[11px] text-zinc-400">النوم</div>
@@ -4227,8 +4363,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div
                 className={`rounded-xl border p-2.5 ${
                   dailyRhythmPlan.suhoorStartMin !== null
-                    ? 'border-amber-400/35 bg-amber-400/[0.06]'
-                    : 'border-white/[0.07] bg-white/[0.02]'
+                    ? 'border-[#7FFFD4]/35 bg-[#7FFFD4]/[0.06]'
+                    : 'border-[var(--border-subtle)] bg-white/[0.02]'
                 }`}
               >
                 <div className="text-[11px] text-zinc-400">
@@ -4236,7 +4372,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
                 <div
                   className={`font-mono-tabular text-xs font-bold mt-0.5 ${
-                    dailyRhythmPlan.suhoorStartMin !== null ? 'text-amber-300' : 'text-[#7FFFD4]'
+                    dailyRhythmPlan.suhoorStartMin !== null ? 'text-[#7FFFD4]' : 'text-white'
                   }`}
                 >
                   {formatMinutes12h(dailyRhythmPlan.wakeMin, language)}
@@ -4248,7 +4384,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
 
-              <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] p-2.5">
+              <div className="rounded-xl border border-[var(--border-subtle)] bg-white/[0.02] p-2.5">
                 {dailyRhythmPlan.qailulahStartMin !== null ? (
                   <>
                     <div className="text-[11px] text-zinc-400">القيلولة</div>

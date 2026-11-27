@@ -3,14 +3,15 @@
 
 @layer base {
   :root {
-    --font-ar: "Cairo", "Readex Pro", system-ui, sans-serif;
-    --font-en: "Plus Jakarta Sans", system-ui, sans-serif;
+    --font-ar: "IBM Plex Sans Arabic", "Cairo", system-ui, sans-serif;
+    --font-en: "IBM Plex Sans Arabic", "Plus Jakarta Sans", system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-    /* AMOLED theme (default) */
-    --bg-surface: #000000;
-    --bg-card: #07080a;
-    --border-subtle: rgba(255, 255, 255, 0.1);
+    /* AMOLED theme (default): #000000 canvas -> #0B0B0D surface -> #141417 elevated card */
+    --bg-canvas: #000000;
+    --bg-surface: #0b0b0d;
+    --bg-card: #141417;
+    --border-subtle: rgba(255, 255, 255, 0.06);
     --text-primary: #f4f4f5;
     --text-muted: #a1a1aa;
     --accent-primary: #7fffd4;
@@ -21,9 +22,10 @@
 
   .app-root:not(.bg-black) {
     /* Dark (Obsidian) theme */
-    --bg-surface: #070a0f;
-    --bg-card: #0e131b;
-    --border-subtle: rgba(255, 255, 255, 0.1);
+    --bg-canvas: #08090c;
+    --bg-surface: #0e1015;
+    --bg-card: #151820;
+    --border-subtle: rgba(255, 255, 255, 0.07);
     --text-primary: #f4f4f5;
     --text-muted: #a1a1aa;
     --accent-primary: #7fffd4;
@@ -41,8 +43,8 @@
 
   body {
     font-family: var(--font-ar);
-    background-color: #000000;
-    color: #f4f4f5;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
     overflow-x: clip;
     max-width: 100%;
     min-height: 100dvh;
@@ -98,19 +100,24 @@
 time,
 [data-clock],
 [data-countdown],
-[data-metric] {
+[data-metric],
+.font-digits {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
 }
 
 .font-mono-tabular {
-  font-family: var(--font-ar);
+  font-family: var(--font-mono), var(--font-ar);
+}
+
+[data-clock],
+[data-countdown],
+[data-metric],
+.font-digits {
+  font-family: var(--font-mono);
 }
 
 .font-digits {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1;
   direction: ltr;
   unicode-bidi: isolate;
 }
@@ -156,9 +163,10 @@ time,
    ─────────────────────────────────────────────────────────────────────────── */
 html.theme-sun {
   color-scheme: light;
-  --bg-surface: #eef1f4;
+  --bg-canvas: #f4f5f7;
+  --bg-surface: #ffffff;
   --bg-card: #ffffff;
-  --border-subtle: rgba(0, 0, 0, 0.1);
+  --border-subtle: rgba(15, 23, 42, 0.08);
   --text-primary: #0b0d10;
   --text-muted: #52525b;
   --accent-primary: #0a7a61;
@@ -202,8 +210,8 @@ html.theme-sun {
 
 html.theme-sun body,
 html.theme-sun .app-root {
-  background-color: #eef1f4;
-  color: #0b0d10;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
 }
 
 /* Dark card surfaces (any bg-[#0…]/bg-[#1…] arbitrary colour) → white cards on the light page */

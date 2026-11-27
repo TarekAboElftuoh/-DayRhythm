@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
 import {
   Globe,
   LayoutDashboard,
@@ -102,10 +103,10 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <>
-      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]/90 backdrop-blur-md pt-[env(safe-area-inset-top)]">
-        <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-2 sm:gap-6 px-3 sm:px-6 h-14">
+      <header className="sticky top-0 z-40 border-b border-[var(--border-subtle)] bg-[var(--bg-surface)]/85 backdrop-blur-xl pt-[env(safe-area-inset-top)]">
+        <div className="mx-auto flex max-w-[1380px] items-center justify-between gap-3 sm:gap-6 px-4 sm:px-6 h-[60px]">
           {/* Zone 1: Brand Lockup */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 min-w-0">
+          <div className="flex items-center gap-2 shrink-0 min-w-0">
             <button
               type="button"
               onClick={() => onSelectTab('dashboard')}
@@ -116,7 +117,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                   src={brandLogoSrc}
                   alt="شعار إيقاع اليوم"
                   referrerPolicy="no-referrer"
-                  className="w-7 h-7 rounded-lg object-cover ring-1 ring-white/15 shrink-0"
+                  className="w-7 h-7 rounded-lg object-cover ring-1 ring-white/10 shrink-0"
                 />
               )}
               <span className="sm:hidden">
@@ -125,7 +126,7 @@ export const TopBar: React.FC<TopBarProps> = ({
               <span className="hidden sm:inline">{t(language, 'brand')}</span>
             </button>
             <span
-              className="hidden sm:inline-block text-[10px] font-mono tracking-wider text-zinc-500/70 select-none px-1.5 py-0.5 rounded bg-white/[0.03] border border-white/[0.06]"
+              className="hidden sm:inline-block font-digits text-[10px] tracking-wider text-zinc-500/80 select-none px-1.5 py-0.5 rounded-md bg-white/[0.03] border border-[var(--border-subtle)]"
               title={`إصدار التطبيق ${APP_VERSION}`}
             >
               {APP_VERSION}
@@ -133,7 +134,10 @@ export const TopBar: React.FC<TopBarProps> = ({
           </div>
 
           {/* Zone 2: Clean Single-Line Navigation (Desktop) with Motion Layout Pill */}
-          <nav className="hidden md:flex items-center gap-1 text-[13px] font-medium" aria-label="Desktop navigation">
+          <nav
+            className="hidden md:flex items-center gap-1 p-1 rounded-2xl border border-[var(--border-subtle)] bg-white/[0.02] text-[13px] font-medium"
+            aria-label="Desktop navigation"
+          >
             {navItems.map((item) => {
               const active = activeTab === item.id;
               return (
@@ -142,15 +146,17 @@ export const TopBar: React.FC<TopBarProps> = ({
                   type="button"
                   onClick={() => onSelectTab(item.id)}
                   aria-current={active ? 'page' : undefined}
-                  className={`relative min-h-[40px] px-3.5 py-2 rounded-xl whitespace-nowrap shrink-0 transition-colors cursor-pointer select-none ${
+                  className={`relative min-h-[38px] px-4 py-1.5 rounded-xl whitespace-nowrap shrink-0 transition-colors cursor-pointer select-none ${
                     active
                       ? 'text-[#7FFFD4] font-semibold'
-                      : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]'
+                      : 'text-zinc-400 hover:text-zinc-100'
                   }`}
                 >
                   {active && (
-                    <div
-                      className="absolute inset-0 rounded-xl bg-[#7FFFD4]/[0.09] border border-[#7FFFD4]/25 shadow-[0_0_12px_rgba(127,255,212,0.12)]"
+                    <motion.div
+                      layoutId="topbar-desktop-active-pill"
+                      transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                      className="absolute inset-0 rounded-xl bg-[#7FFFD4]/[0.1] border border-[#7FFFD4]/20"
                     />
                   )}
                   <span className="relative z-10">{item.label}</span>
@@ -217,7 +223,7 @@ export const TopBar: React.FC<TopBarProps> = ({
       {/* Mobile Bottom Thumb-Zone Navigation */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)]/90 backdrop-blur-md px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-[var(--border-subtle)] bg-[var(--bg-surface)]/90 backdrop-blur-xl px-3 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
       >
         <div className="grid grid-cols-3 gap-1">
           {navItems.map((item) => {
@@ -229,13 +235,15 @@ export const TopBar: React.FC<TopBarProps> = ({
                 type="button"
                 onClick={() => onSelectTab(item.id)}
                 aria-current={active ? 'page' : undefined}
-                className={`relative min-h-[48px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer select-none ${
+                className={`relative min-h-[48px] px-2 py-1 rounded-xl flex flex-col items-center justify-center gap-1 transition-colors active:scale-[0.97] cursor-pointer select-none ${
                   active ? 'text-[#7FFFD4] font-bold' : 'text-zinc-500 hover:text-zinc-200'
                 }`}
               >
                 {active && (
-                  <div
-                    className="absolute inset-0 rounded-xl bg-[#7FFFD4]/12 border border-[#7FFFD4]/20"
+                  <motion.div
+                    layoutId="topbar-mobile-active-pill"
+                    transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                    className="absolute inset-0 rounded-xl bg-[#7FFFD4]/[0.1] border border-[#7FFFD4]/20"
                   />
                 )}
                 <Icon className="relative z-10 w-[19px] h-[19px] shrink-0" />
