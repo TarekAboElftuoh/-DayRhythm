@@ -165,7 +165,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             String doseTime
     ) {
         cancelAutoSnooze();
-        if (context == null || "charge".equals(kind)) return;
+        if (context == null || "charge".equals(kind) || "water".equals(kind)) return;
         final Context app = context.getApplicationContext();
         autoSnoozeRunnable = () -> {
             autoSnoozeRunnable = null;
@@ -550,16 +550,18 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                         snoozeMinutes
                 );
             }
-            scheduleUnattendedAutoSnooze(
-                    context,
-                    notifId,
-                    "live_" + notifId,
-                    kind != null ? kind : "general",
-                    title != null ? title : "تنبيه إيقاع اليوم",
-                    body != null ? body : "",
-                    "",
-                    ""
-            );
+            if (!"water".equals(kind)) {
+                scheduleUnattendedAutoSnooze(
+                        context,
+                        notifId,
+                        "live_" + notifId,
+                        kind != null ? kind : "general",
+                        title != null ? title : "تنبيه إيقاع اليوم",
+                        body != null ? body : "",
+                        "",
+                        ""
+                );
+            }
             CloudSignalClient.watchForRemoteDismiss(context, System.currentTimeMillis());
         } catch (Exception ignored) {
         }
@@ -659,8 +661,10 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                     launchAlarmCard(context, notifId, alarmId, kind, title, body, medId, doseTime, snoozeMin);
                 }
 
-                // If user does not acknowledge within 1 minute, automatically switch to 5-min snooze loop
-                scheduleUnattendedAutoSnooze(context, notifId, alarmId, kind, title, body, medId, doseTime);
+                // If user does not acknowledge within 1 minute, automatically switch to 5-min snooze loop (skip water)
+                if (!"water".equals(kind)) {
+                    scheduleUnattendedAutoSnooze(context, notifId, alarmId, kind, title, body, medId, doseTime);
+                }
 
                 // Spotify Connect: Ultra-low latency LAN broadcast + cloud trigger (<5ms local)
                 CloudSignalClient.sendAlarmTrigger(context, title, body, kind, snoozeMin);
@@ -759,8 +763,18 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         long nowMs = System.currentTimeMillis();
         boolean anyAlarmChanged = false;
 
+        String alarmsArrayStr = jsonArrayStr;
         try {
-            JSONArray arr = new JSONArray(jsonArrayStr);
+            String trimmed = jsonArrayStr.trim();
+            JSONArray arr;
+            if (trimmed.startsWith("{")) {
+                JSONObject wrapper = new JSONObject(trimmed);
+                arr = wrapper.optJSONArray("alarms");
+                if (arr == null) arr = new JSONArray();
+                alarmsArrayStr = arr.toString();
+            } else {
+                arr = new JSONArray(trimmed);
+            }
             int maxItems = Math.min(arr.length(), 60);
             for (int i = 0; i < maxItems; i++) {
                 JSONObject item = arr.optJSONObject(i);
@@ -824,11 +838,38 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
             }
         }
 
+        // Explicitly cancel any stale water_* PendingIntents (e.g., slots 10..20 when switching to fasting mode)
+        try {
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US);
+            sdf.setTimeZone(java.util.TimeZone.getTimeZone("Africa/Cairo"));
+            String todayIso = sdf.format(new java.util.Date(nowMs));
+            for (int cup = 1; cup <= 20; cup++) {
+                String waterId = "water_" + todayIso + "_" + cup;
+                int wReqCode = 5000 + Math.abs(waterId.hashCode() % 40000);
+                if (!nextMap.containsKey(wReqCode)) {
+                    Intent cancelWater = new Intent(context, ReminderAlarmReceiver.class);
+                    cancelWater.setAction(ACTION_FIRE_ALARM);
+                    PendingIntent wPi = PendingIntent.getBroadcast(
+                            context,
+                            wReqCode,
+                            cancelWater,
+                            PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE
+                    );
+                    if (wPi != null) {
+                        am.cancel(wPi);
+                        wPi.cancel();
+                        anyAlarmChanged = true;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+
         prefs.edit()
                 .putString("last_batch_raw", jsonArrayStr)
                 .putString("scheduled_sigs_map", nextMapObj.toString())
                 .putString(KEY_SCHEDULED_IDS, newIds.toString())
-                .putString(KEY_CACHED_SCHEDULE, jsonArrayStr)
+                .putString(KEY_CACHED_SCHEDULE, alarmsArrayStr)
                 .apply();
         if (anyAlarmChanged || prevMap.isEmpty()) {
             DayRhythmSyncService.onScheduleUpdated(context);

@@ -8852,7 +8852,41 @@ export default function App() {
     };
   }, [capsuleNowMs, capsuleTimerState.targetEpochMs]);
 
-    const lastPushedLiveStatusRef = useRef<string>('');
+  const sanitizeEmojis = (text: string, maxCount: number): string => {
+    if (!text) return '';
+    const emojiRe = /\p{Extended_Pictographic}(?:\uFE0F|\u200D\p{Extended_Pictographic}|[\u{1F3FB}-\u{1F3FF}])*/gu;
+    const groupOf = (norm: string): string => {
+      if (norm === '☀' || norm === '🌞') return 'sun';
+      if (norm === '🌅' || norm === '🌄') return 'sunrise';
+      if (norm === '🌇' || norm === '🌆') return 'sunset';
+      if (norm === '🕌' || norm === '🕋' || norm === '📿') return 'prayer';
+      if (norm === '💧' || norm === '💦' || norm === '🥤') return 'water';
+      if (norm === '💊' || norm === '💉') return 'med';
+      if (norm === '📅' || norm === '📆' || norm === '🗓') return 'cal';
+      if (norm === '☑' || norm === '✅' || norm === '✔') return 'check';
+      if (norm === '⚡' || norm === '🔋') return 'charge';
+      return norm;
+    };
+    const seen = new Set<string>();
+    let lastGroup = '';
+    let kept = 0;
+    const cleaned = text.replace(emojiRe, (match) => {
+      if (maxCount <= 0 || kept >= maxCount) return '';
+      const norm = match.replace(/\uFE0F/g, '');
+      const grp = groupOf(norm);
+      if (seen.has(norm) || (lastGroup !== '' && grp === lastGroup)) return '';
+      seen.add(norm);
+      lastGroup = grp;
+      kept += 1;
+      return match;
+    });
+    return cleaned
+      .replace(/[^\S\r\n]{2,}/g, ' ')
+      .replace(/[^\S\r\n]*\n[^\S\r\n]*/g, '\n')
+      .trim();
+  };
+
+  const lastPushedLiveStatusRef = useRef<string>('');
   useEffect(() => {
     const androidBridge = (
       window as Window & {
@@ -8868,10 +8902,7 @@ export default function App() {
     const secondQueueItem = capsuleTimerState.upcomingQueue?.[1];
     const clockLabel = firstQueueItem?.clockLabel || '';
     const nextUpSummary = secondQueueItem
-      ? `${secondQueueItem.emoji} ${secondQueueItem.title} (${secondQueueItem.clockLabel || secondQueueItem.countdownText})`
-      : '';
-    const hydrationProgress = hydrationToday
-      ? `💧 ${hydrationToday.cupsLogged}/${targetCups} كوب (${hydrationToday.cupsLogged * dailyRhythmPlan.cupSizeMl} مل)`
+      ? sanitizeEmojis(`${secondQueueItem.emoji} ${secondQueueItem.title} (${secondQueueItem.clockLabel || secondQueueItem.countdownText})`, 2)
       : '';
 
     let description = '';
@@ -8880,15 +8911,38 @@ export default function App() {
       description = `الكوب ${nextCupNum} من ${targetCups} · ${dailyRhythmPlan.cupSizeMl} مل`;
     } else if (capsuleTimerState.sourceKind === 'medication') {
       const matchedMed = medications.find((m) => capsuleTimerState.title.includes(m.name));
-      if (matchedMed?.doseNote) description = matchedMed.doseNote;
+      if (matchedMed?.doseNote) description = sanitizeEmojis(matchedMed.doseNote, 2);
     } else if (capsuleTimerState.sourceKind === 'calendar' && nextActiveBlock?.description) {
-      description = cleanCalendarText(nextActiveBlock.description).slice(0, 140);
+      description = sanitizeEmojis(cleanCalendarText(nextActiveBlock.description).slice(0, 140), 2);
     }
 
+    const calTrack = capsuleTimerState.calendarTrack;
+    const scheduleEmoji = sanitizeEmojis(calTrack?.emoji || nextActiveBlock?.emojiPair || '📅', 1) || '📅';
+    const scheduleTitle = sanitizeEmojis(calTrack?.title || '', 2);
+    const scheduleStatusLabel = sanitizeEmojis(calTrack?.statusLabel || 'لا مواعيد مجدولة متبقية', 2);
+    const scheduleClockLabel = calTrack?.clockLabel || '';
+    const scheduleTargetEpochMs = calTrack?.targetEpochMs || 0;
+    const scheduleDescription =
+      nextActiveBlock?.description && !nextActiveBlock.deleted && !nextActiveBlock.completed
+        ? sanitizeEmojis(cleanCalendarText(nextActiveBlock.description).slice(0, 140), 2)
+        : '';
+    const nextCalItem = capsuleTimerState.upcomingQueue?.find(
+      (item) =>
+        item.title !== calTrack?.title &&
+        (item.statusLabel.startsWith('موعد ·') || item.statusLabel === 'جارٍ الآن' || item.statusLabel === 'طوال اليوم')
+    );
+    const scheduleNextUpSummary = nextCalItem
+      ? sanitizeEmojis(`${nextCalItem.emoji} ${nextCalItem.title} (${nextCalItem.clockLabel || nextCalItem.countdownText})`, 2)
+      : '';
+
+    const capsuleEmoji = sanitizeEmojis(capsuleTimerState.emoji, 1) || '📅';
+    const cleanTitle = sanitizeEmojis(capsuleTimerState.title, 2);
+    const cleanStatusLabel = sanitizeEmojis(capsuleTimerState.statusLabel, 2);
+
     const dedupKey = [
-      capsuleTimerState.emoji,
-      capsuleTimerState.title,
-      capsuleTimerState.statusLabel,
+      capsuleEmoji,
+      cleanTitle,
+      cleanStatusLabel,
       capsuleTimerState.sourceKind,
       capsuleTimerState.targetEpochMs || 0,
       deviceSettings.liveAlertsEnabled,
@@ -8898,8 +8952,14 @@ export default function App() {
       deviceSettings.persistentCountdownNotif ?? true,
       clockLabel,
       nextUpSummary,
-      hydrationProgress,
       description,
+      scheduleEmoji,
+      scheduleTitle,
+      scheduleStatusLabel,
+      scheduleClockLabel,
+      scheduleTargetEpochMs,
+      scheduleDescription,
+      scheduleNextUpSummary,
     ].join('|');
     if (lastPushedLiveStatusRef.current === dedupKey) return;
     lastPushedLiveStatusRef.current = dedupKey;
@@ -8907,10 +8967,10 @@ export default function App() {
       if (androidBridge.updateLiveStatus) {
         androidBridge.updateLiveStatus(
           JSON.stringify({
-            emoji: capsuleTimerState.emoji,
-            title: capsuleTimerState.title,
+            emoji: capsuleEmoji,
+            title: cleanTitle,
             countdown: capsuleTimerState.countdownText,
-            statusLabel: capsuleTimerState.statusLabel,
+            statusLabel: cleanStatusLabel,
             kind: capsuleTimerState.sourceKind,
             targetEpochMs: capsuleTimerState.targetEpochMs || 0,
             liveAlertsEnabled: deviceSettings.liveAlertsEnabled,
@@ -8921,15 +8981,22 @@ export default function App() {
             description,
             clockLabel,
             nextUpSummary,
-            hydrationProgress,
+            hydrationProgress: '',
+            scheduleEmoji,
+            scheduleTitle,
+            scheduleStatusLabel,
+            scheduleDescription,
+            scheduleClockLabel,
+            scheduleTargetEpochMs,
+            scheduleNextUpSummary,
           })
         );
       } else if (androidBridge.updateCapsule) {
         androidBridge.updateCapsule(
-          capsuleTimerState.emoji,
-          capsuleTimerState.title,
+          capsuleEmoji,
+          cleanTitle,
           capsuleTimerState.countdownText,
-          capsuleTimerState.statusLabel
+          cleanStatusLabel
         );
       }
     } catch {
@@ -8942,6 +9009,7 @@ export default function App() {
     capsuleTimerState.sourceKind,
     capsuleTimerState.targetEpochMs,
     capsuleTimerState.countdownText,
+    capsuleTimerState.calendarTrack,
     capsuleTimerState.upcomingQueue,
     deviceSettings.liveAlertsEnabled,
     deviceSettings.liveAlertsLeadMinutes,
@@ -8953,6 +9021,9 @@ export default function App() {
     dailyRhythmPlan.cupSizeMl,
     medications,
     nextActiveBlock?.description,
+    nextActiveBlock?.emojiPair,
+    nextActiveBlock?.deleted,
+    nextActiveBlock?.completed,
   ]);
 
   const lastScheduledAlarmsJsonRef = useRef<string>('');
@@ -9187,12 +9258,22 @@ export default function App() {
 
       alarms.sort((a, b) => a.triggerAtMs - b.triggerAtMs);
 
-      const alarmsJson = JSON.stringify(alarms.slice(0, 60));
+      const slicedAlarms = alarms.slice(0, 60).map((alarm) => ({
+        ...alarm,
+        title: sanitizeEmojis(alarm.title, 2),
+        body: sanitizeEmojis(alarm.body, 2),
+      }));
+      const alarmsJson = JSON.stringify(slicedAlarms);
+      const nativeBatchPayload = JSON.stringify({
+        isFastingToday: Boolean(dailyRhythmPlan.isFastingToday),
+        activeTargetCups: targetCups,
+        alarms: slicedAlarms,
+      });
 
-      if (androidBridge?.scheduleExactAlarms && alarmsJson !== lastScheduledAlarmsJsonRef.current) {
-        lastScheduledAlarmsJsonRef.current = alarmsJson;
+      if (androidBridge?.scheduleExactAlarms && nativeBatchPayload !== lastScheduledAlarmsJsonRef.current) {
+        lastScheduledAlarmsJsonRef.current = nativeBatchPayload;
         try {
-          androidBridge.scheduleExactAlarms(alarmsJson);
+          androidBridge.scheduleExactAlarms(nativeBatchPayload);
         } catch {
           // ignore Android bridge errors
         }
@@ -9213,6 +9294,8 @@ export default function App() {
     dailyRhythmPlan.wakeMin,
     dailyRhythmPlan.cupSizeMl,
     dailyRhythmPlan.hydrationSlots,
+    dailyRhythmPlan.isFastingToday,
+    targetCups,
     quietMode,
     firebaseUser?.isAnonymous,
     firebaseUser?.uid,

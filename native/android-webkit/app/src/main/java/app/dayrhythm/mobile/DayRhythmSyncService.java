@@ -81,6 +81,13 @@ public class DayRhythmSyncService extends Service {
     public static final String EXTRA_LIVE_CLOCK_LABEL = "live_clock_label";
     public static final String EXTRA_LIVE_NEXT_UP = "live_next_up";
     public static final String EXTRA_LIVE_HYDRATION = "live_hydration";
+    public static final String EXTRA_SCHED_EMOJI = "sched_emoji";
+    public static final String EXTRA_SCHED_TITLE = "sched_title";
+    public static final String EXTRA_SCHED_STATUS_LABEL = "sched_status_label";
+    public static final String EXTRA_SCHED_DESC = "sched_description";
+    public static final String EXTRA_SCHED_CLOCK_LABEL = "sched_clock_label";
+    public static final String EXTRA_SCHED_TARGET_MS = "sched_target_ms";
+    public static final String EXTRA_SCHED_NEXT_UP = "sched_next_up";
 
     private static final String DEFAULT_SPIRC_BROKER_WSS = "wss://dayrhythm-spirc-broker.tarek13us.workers.dev";
     private static final String PREFS_LIVE = "dayrhythm_live_state_prefs";
@@ -121,6 +128,13 @@ public class DayRhythmSyncService extends Service {
     private String liveClockLabel = "";
     private String liveNextUpSummary = "";
     private String liveHydrationSummary = "";
+    private String schedEmoji = "📅";
+    private String schedTitle = "";
+    private String schedStatusLabel = "لا مواعيد مجدولة متبقية";
+    private String schedDescription = "";
+    private String schedClockLabel = "";
+    private long schedTargetEpochMs = 0L;
+    private String schedNextUpSummary = "";
     private boolean liveIslandCurrentlyShown = false;
     private String syncSubtitle = "مزامنة لحظية نشطة 24/7";
     private String lastNotifStateKey = "";
@@ -152,8 +166,125 @@ public class DayRhythmSyncService extends Service {
         }
     }
 
+    private static boolean isEmojiBaseCodePoint(int cp) {
+        int type = Character.getType(cp);
+        return (cp >= 0x1F300 && cp <= 0x1FAFF)
+                || (cp >= 0x2600 && cp <= 0x27BF)
+                || (cp >= 0x2300 && cp <= 0x23FF)
+                || (cp >= 0x1F1E6 && cp <= 0x1F1FF)
+                || type == Character.OTHER_SYMBOL;
+    }
+
+    private static String emojiGroup(String norm) {
+        if ("☀".equals(norm) || "🌞".equals(norm)) return "sun";
+        if ("🌅".equals(norm) || "🌄".equals(norm)) return "sunrise";
+        if ("🌇".equals(norm) || "🌆".equals(norm)) return "sunset";
+        if ("🕌".equals(norm) || "🕋".equals(norm) || "📿".equals(norm)) return "prayer";
+        if ("💧".equals(norm) || "💦".equals(norm) || "🥤".equals(norm)) return "water";
+        if ("💊".equals(norm) || "💉".equals(norm)) return "med";
+        if ("📅".equals(norm) || "📆".equals(norm) || "🗓".equals(norm)) return "cal";
+        if ("☑".equals(norm) || "✅".equals(norm) || "✔".equals(norm)) return "check";
+        if ("⚡".equals(norm) || "🔋".equals(norm)) return "charge";
+        return norm;
+    }
+
+    public static String sanitizeEmojis(String text, int maxCount) {
+        if (text == null || text.isEmpty()) return "";
+        StringBuilder out = new StringBuilder(text.length());
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        String lastGroup = "";
+        int kept = 0;
+        int i = 0;
+        int len = text.length();
+        while (i < len) {
+            int cp = text.codePointAt(i);
+            int cc = Character.charCount(cp);
+            if (isEmojiBaseCodePoint(cp)) {
+                int start = i;
+                i += cc;
+                while (i < len) {
+                    int nextCp = text.codePointAt(i);
+                    if (nextCp == 0xFE0F || nextCp == 0xFE0E || (nextCp >= 0x1F3FB && nextCp <= 0x1F3FF) || nextCp == 0x20E3) {
+                        i += Character.charCount(nextCp);
+                    } else if (nextCp == 0x200D) {
+                        i += Character.charCount(nextCp);
+                        if (i < len) {
+                            int joined = text.codePointAt(i);
+                            i += Character.charCount(joined);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                String cluster = text.substring(start, i);
+                if (maxCount > 0 && kept < maxCount) {
+                    String norm = cluster.replace("\uFE0F", "");
+                    String grp = emojiGroup(norm);
+                    if (!seen.contains(norm) && (lastGroup.isEmpty() || !grp.equals(lastGroup))) {
+                        seen.add(norm);
+                        lastGroup = grp;
+                        kept++;
+                        out.append(cluster);
+                    }
+                }
+            } else {
+                out.append(text, i, i + cc);
+                i += cc;
+            }
+        }
+        return out.toString()
+                .replaceAll("[^\\S\\r\\n]{2,}", " ")
+                .replaceAll("[^\\S\\r\\n]*\\n[^\\S\\r\\n]*", "\n")
+                .trim();
+    }
+
+    private static int resolveEmojiAccentColor(String emoji) {
+        String single = sanitizeEmojis(emoji, 1).replace("\uFE0F", "");
+        switch (single) {
+            case "💧":
+            case "💦":
+            case "🥤":
+                return 0xFF38BDF8;
+            case "☀":
+            case "🌅":
+            case "🌄":
+            case "🌞":
+                return 0xFFF59E0B;
+            case "🌇":
+            case "🌆":
+                return 0xFFF97316;
+            case "🕌":
+            case "📿":
+            case "🕋":
+            case "🌙":
+            case "🤲":
+                return 0xFF10B981;
+            case "🏃":
+            case "💪":
+            case "🏋":
+            case "🚶":
+                return 0xFF22C55E;
+            case "💊":
+            case "🩺":
+            case "💉":
+                return 0xFFEC4899;
+            case "📅":
+            case "📆":
+            case "🗓":
+            case "☑":
+            case "✅":
+                return 0xFF6366F1;
+            case "⚡":
+            case "🔋":
+                return 0xFF4ADE80;
+            default:
+                return 0xFF38BDF8;
+        }
+    }
+
     public static String formatChipText(String emoji, long remainingMs) {
-        String safeEmoji = (emoji != null && !emoji.trim().isEmpty()) ? emoji.trim() : "📅";
+        String safeEmoji = sanitizeEmojis(emoji, 1);
+        if (safeEmoji.isEmpty()) safeEmoji = "📅";
         String label;
         if (remainingMs <= 0L) {
             label = "0ث";
@@ -172,7 +303,7 @@ public class DayRhythmSyncService extends Service {
                 label = hrs + "س";
             }
         }
-        return safeEmoji + " " + label;
+        return "\u200F" + safeEmoji + " " + label;
     }
 
     private long getEffectiveLeadWindowMs() {
@@ -196,7 +327,6 @@ public class DayRhythmSyncService extends Service {
         public void run() {
             if (isDestroyed) return;
             refreshPersistentNotification();
-            cancelLiveAlertCapsule();
 
             if (liveTargetEpochMs > 0L) {
                 long now = System.currentTimeMillis();
@@ -352,6 +482,56 @@ public class DayRhythmSyncService extends Service {
             String nextUpSummary,
             String hydrationSummary
     ) {
+        pushLiveStatus(
+                context,
+                emoji,
+                title,
+                statusLabel,
+                kind,
+                targetEpochMs,
+                liveAlertsEnabled,
+                leadMinutes,
+                liveAlertsAlwaysOn,
+                liveAlertsShowCharging,
+                persistentNotifEnabled,
+                description,
+                clockLabel,
+                nextUpSummary,
+                hydrationSummary,
+                "",
+                "",
+                "",
+                "",
+                "",
+                0L,
+                ""
+        );
+    }
+
+    public static void pushLiveStatus(
+            Context context,
+            String emoji,
+            String title,
+            String statusLabel,
+            String kind,
+            long targetEpochMs,
+            boolean liveAlertsEnabled,
+            int leadMinutes,
+            boolean liveAlertsAlwaysOn,
+            boolean liveAlertsShowCharging,
+            boolean persistentNotifEnabled,
+            String description,
+            String clockLabel,
+            String nextUpSummary,
+            String hydrationSummary,
+            String scheduleEmoji,
+            String scheduleTitle,
+            String scheduleStatusLabel,
+            String scheduleDescription,
+            String scheduleClockLabel,
+            long scheduleTargetEpochMs,
+            String scheduleNextUpSummary
+    ) {
         if (context == null) return;
         Intent intent = new Intent(context, DayRhythmSyncService.class);
         intent.setAction(ACTION_UPDATE_LIVE_STATUS);
@@ -369,6 +549,13 @@ public class DayRhythmSyncService extends Service {
         intent.putExtra(EXTRA_LIVE_CLOCK_LABEL, clockLabel != null ? clockLabel : "");
         intent.putExtra(EXTRA_LIVE_NEXT_UP, nextUpSummary != null ? nextUpSummary : "");
         intent.putExtra(EXTRA_LIVE_HYDRATION, hydrationSummary != null ? hydrationSummary : "");
+        intent.putExtra(EXTRA_SCHED_EMOJI, scheduleEmoji != null ? scheduleEmoji : "");
+        intent.putExtra(EXTRA_SCHED_TITLE, scheduleTitle != null ? scheduleTitle : "");
+        intent.putExtra(EXTRA_SCHED_STATUS_LABEL, scheduleStatusLabel != null ? scheduleStatusLabel : "");
+        intent.putExtra(EXTRA_SCHED_DESC, scheduleDescription != null ? scheduleDescription : "");
+        intent.putExtra(EXTRA_SCHED_CLOCK_LABEL, scheduleClockLabel != null ? scheduleClockLabel : "");
+        intent.putExtra(EXTRA_SCHED_TARGET_MS, scheduleTargetEpochMs);
+        intent.putExtra(EXTRA_SCHED_NEXT_UP, scheduleNextUpSummary != null ? scheduleNextUpSummary : "");
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent);
@@ -574,6 +761,10 @@ public class DayRhythmSyncService extends Service {
         return "المهمة القادمة";
     }
 
+    private static boolean isScheduleKind(String kind) {
+        return "prayer".equals(kind) || "event".equals(kind) || "calendar".equals(kind);
+    }
+
     public synchronized boolean advanceToNextScheduledEvent() {
         try {
             SharedPreferences prefs = getSharedPreferences(ReminderAlarmReceiver.PREFS_ALARMS, MODE_PRIVATE);
@@ -584,6 +775,8 @@ public class DayRhythmSyncService extends Service {
             long nowMs = System.currentTimeMillis();
             JSONObject nextItem = null;
             JSONObject afterItem = null;
+            JSONObject nextSchedItem = null;
+            JSONObject afterSchedItem = null;
 
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject item = arr.optJSONObject(i);
@@ -592,11 +785,47 @@ public class DayRhythmSyncService extends Service {
                 if (triggerAtMs > nowMs + 1000L) {
                     if (nextItem == null) {
                         nextItem = item;
-                    } else {
+                    } else if (afterItem == null) {
                         afterItem = item;
-                        break;
+                    }
+                    String k = item.optString("kind", "general");
+                    if (isScheduleKind(k)) {
+                        if (nextSchedItem == null) {
+                            nextSchedItem = item;
+                        } else if (afterSchedItem == null) {
+                            afterSchedItem = item;
+                        }
                     }
                 }
+            }
+
+            if (nextSchedItem != null) {
+                schedTargetEpochMs = nextSchedItem.optLong("triggerAtMs", 0L);
+                String sRawTitle = nextSchedItem.optString("title", "موعد قادم");
+                String sKind = nextSchedItem.optString("kind", "event");
+                String sBody = nextSchedItem.optString("body", "");
+                schedEmoji = sanitizeEmojis(extractEmoji(sRawTitle, sKind), 1);
+                if (schedEmoji.isEmpty()) schedEmoji = "📅";
+                schedTitle = sanitizeEmojis(cleanEmojiPrefix(sRawTitle), 2);
+                schedStatusLabel = sanitizeEmojis(getStatusLabelForKind(sKind, sBody), 2);
+                schedDescription = sanitizeEmojis(sBody != null ? sBody.trim() : "", 2);
+                schedClockLabel = new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(schedTargetEpochMs));
+                if (afterSchedItem != null) {
+                    long st2 = afterSchedItem.optLong("triggerAtMs", 0L);
+                    String stitle2 = afterSchedItem.optString("title", "").trim();
+                    String sclock2 = st2 > 0L ? new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(st2)) : "";
+                    schedNextUpSummary = sanitizeEmojis(!stitle2.isEmpty() ? (stitle2 + (sclock2.isEmpty() ? "" : " (" + sclock2 + ")")) : "", 2);
+                } else {
+                    schedNextUpSummary = "";
+                }
+            } else {
+                schedTargetEpochMs = 0L;
+                schedEmoji = "📅";
+                schedTitle = "";
+                schedStatusLabel = "لا مواعيد مجدولة متبقية";
+                schedDescription = "";
+                schedClockLabel = "";
+                schedNextUpSummary = "";
             }
 
             if (nextItem != null) {
@@ -606,16 +835,17 @@ public class DayRhythmSyncService extends Service {
                 String body = nextItem.optString("body", "");
 
                 liveKind = kind;
-                liveEmoji = extractEmoji(rawTitle, kind);
-                liveTitle = cleanEmojiPrefix(rawTitle);
-                liveStatusLabel = getStatusLabelForKind(kind, body);
-                liveDescription = body != null ? body.trim() : "";
+                liveEmoji = sanitizeEmojis(extractEmoji(rawTitle, kind), 1);
+                if (liveEmoji.isEmpty()) liveEmoji = "📅";
+                liveTitle = sanitizeEmojis(cleanEmojiPrefix(rawTitle), 2);
+                liveStatusLabel = sanitizeEmojis(getStatusLabelForKind(kind, body), 2);
+                liveDescription = sanitizeEmojis(body != null ? body.trim() : "", 2);
                 liveClockLabel = new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(liveTargetEpochMs));
                 if (afterItem != null) {
                     long t2 = afterItem.optLong("triggerAtMs", 0L);
                     String title2 = afterItem.optString("title", "").trim();
                     String clock2 = t2 > 0L ? new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(t2)) : "";
-                    liveNextUpSummary = !title2.isEmpty() ? (title2 + (clock2.isEmpty() ? "" : " (" + clock2 + ")")) : "";
+                    liveNextUpSummary = sanitizeEmojis(!title2.isEmpty() ? (title2 + (clock2.isEmpty() ? "" : " (" + clock2 + ")")) : "", 2);
                 } else {
                     liveNextUpSummary = "";
                 }
@@ -643,6 +873,8 @@ public class DayRhythmSyncService extends Service {
     }
 
     private void startForegroundCompat(Notification notif) {
+        lastNotifStateKey = computeNotifStateKey();
+        lastNotifPostMs = System.currentTimeMillis();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIF_KEEPALIVE_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         } else {
@@ -667,6 +899,13 @@ public class DayRhythmSyncService extends Service {
             liveClockLabel = sp.getString(EXTRA_LIVE_CLOCK_LABEL, "");
             liveNextUpSummary = sp.getString(EXTRA_LIVE_NEXT_UP, "");
             liveHydrationSummary = sp.getString(EXTRA_LIVE_HYDRATION, "");
+            schedEmoji = sp.getString(EXTRA_SCHED_EMOJI, "📅");
+            schedTitle = sp.getString(EXTRA_SCHED_TITLE, "");
+            schedStatusLabel = sp.getString(EXTRA_SCHED_STATUS_LABEL, "لا مواعيد مجدولة متبقية");
+            schedDescription = sp.getString(EXTRA_SCHED_DESC, "");
+            schedClockLabel = sp.getString(EXTRA_SCHED_CLOCK_LABEL, "");
+            schedTargetEpochMs = sp.getLong(EXTRA_SCHED_TARGET_MS, 0L);
+            schedNextUpSummary = sp.getString(EXTRA_SCHED_NEXT_UP, "");
         } catch (Exception ignored) {
         }
     }
@@ -688,6 +927,13 @@ public class DayRhythmSyncService extends Service {
                     .putString(EXTRA_LIVE_CLOCK_LABEL, liveClockLabel)
                     .putString(EXTRA_LIVE_NEXT_UP, liveNextUpSummary)
                     .putString(EXTRA_LIVE_HYDRATION, liveHydrationSummary)
+                    .putString(EXTRA_SCHED_EMOJI, schedEmoji)
+                    .putString(EXTRA_SCHED_TITLE, schedTitle)
+                    .putString(EXTRA_SCHED_STATUS_LABEL, schedStatusLabel)
+                    .putString(EXTRA_SCHED_DESC, schedDescription)
+                    .putString(EXTRA_SCHED_CLOCK_LABEL, schedClockLabel)
+                    .putLong(EXTRA_SCHED_TARGET_MS, schedTargetEpochMs)
+                    .putString(EXTRA_SCHED_NEXT_UP, schedNextUpSummary)
                     .apply();
         } catch (Exception ignored) {
         }
@@ -702,6 +948,7 @@ public class DayRhythmSyncService extends Service {
             advanceToNextScheduledEvent();
         }
         createNotificationChannels();
+        cancelLiveAlertCapsule();
         UpdateCheckWorker.schedulePeriodicCheck(this);
 
         wsClient = new OkHttpClient.Builder()
@@ -963,12 +1210,14 @@ public class DayRhythmSyncService extends Service {
         }
 
         if (intent != null && ACTION_UPDATE_LIVE_STATUS.equals(intent.getAction())) {
-            liveEmoji = intent.getStringExtra(EXTRA_LIVE_EMOJI);
-            if (liveEmoji == null || liveEmoji.trim().isEmpty()) liveEmoji = "📅";
-            liveTitle = intent.getStringExtra(EXTRA_LIVE_TITLE);
-            if (liveTitle == null) liveTitle = "";
-            liveStatusLabel = intent.getStringExtra(EXTRA_LIVE_STATUS_LABEL);
-            if (liveStatusLabel == null || liveStatusLabel.trim().isEmpty()) liveStatusLabel = "المهمة القادمة";
+            liveEmoji = sanitizeEmojis(intent.getStringExtra(EXTRA_LIVE_EMOJI), 1);
+            if (liveEmoji.isEmpty()) liveEmoji = "📅";
+            String rawLiveTitle = intent.getStringExtra(EXTRA_LIVE_TITLE);
+            liveTitle = rawLiveTitle != null ? sanitizeEmojis(rawLiveTitle, 2) : "";
+            String rawLiveStatus = intent.getStringExtra(EXTRA_LIVE_STATUS_LABEL);
+            liveStatusLabel = (rawLiveStatus != null && !rawLiveStatus.trim().isEmpty())
+                    ? sanitizeEmojis(rawLiveStatus, 2)
+                    : "المهمة القادمة";
             String incomingKind = intent.getStringExtra(EXTRA_LIVE_KIND);
             if (incomingKind != null && !incomingKind.trim().isEmpty()) {
                 liveKind = incomingKind.trim();
@@ -980,13 +1229,28 @@ public class DayRhythmSyncService extends Service {
             liveAlertsShowCharging = intent.getBooleanExtra(EXTRA_LIVE_SHOW_CHARGING, true);
             persistentCountdownEnabled = intent.getBooleanExtra(EXTRA_PERSISTENT_NOTIF_ENABLED, true);
             String desc = intent.getStringExtra(EXTRA_LIVE_DESC);
-            liveDescription = desc != null ? desc.trim() : "";
+            liveDescription = desc != null ? sanitizeEmojis(desc.trim(), 2) : "";
             String clock = intent.getStringExtra(EXTRA_LIVE_CLOCK_LABEL);
             liveClockLabel = clock != null ? clock.trim() : "";
             String nextUp = intent.getStringExtra(EXTRA_LIVE_NEXT_UP);
-            liveNextUpSummary = nextUp != null ? nextUp.trim() : "";
-            String hyd = intent.getStringExtra(EXTRA_LIVE_HYDRATION);
-            liveHydrationSummary = hyd != null ? hyd.trim() : "";
+            liveNextUpSummary = nextUp != null ? sanitizeEmojis(nextUp.trim(), 2) : "";
+            liveHydrationSummary = "";
+
+            String sEmoji = sanitizeEmojis(intent.getStringExtra(EXTRA_SCHED_EMOJI), 1);
+            schedEmoji = sEmoji.isEmpty() ? "📅" : sEmoji;
+            String sTitle = intent.getStringExtra(EXTRA_SCHED_TITLE);
+            schedTitle = sTitle != null ? sanitizeEmojis(sTitle.trim(), 2) : "";
+            String sStatus = intent.getStringExtra(EXTRA_SCHED_STATUS_LABEL);
+            schedStatusLabel = (sStatus != null && !sStatus.trim().isEmpty())
+                    ? sanitizeEmojis(sStatus.trim(), 2)
+                    : "لا مواعيد مجدولة متبقية";
+            String sDesc = intent.getStringExtra(EXTRA_SCHED_DESC);
+            schedDescription = sDesc != null ? sanitizeEmojis(sDesc.trim(), 2) : "";
+            String sClock = intent.getStringExtra(EXTRA_SCHED_CLOCK_LABEL);
+            schedClockLabel = sClock != null ? sClock.trim() : "";
+            schedTargetEpochMs = intent.getLongExtra(EXTRA_SCHED_TARGET_MS, 0L);
+            String sNextUp = intent.getStringExtra(EXTRA_SCHED_NEXT_UP);
+            schedNextUpSummary = sNextUp != null ? sanitizeEmojis(sNextUp.trim(), 2) : "";
 
             if (liveTargetEpochMs <= System.currentTimeMillis() + 1000L && !"none".equals(liveKind) && !"done".equals(liveKind)) {
                 advanceToNextScheduledEvent();
@@ -1361,10 +1625,18 @@ public class DayRhythmSyncService extends Service {
                     ? ((remainingMs + 999L) / 1000L)
                     : (1000L + ((remainingMs + 59_999L) / 60_000L));
         }
-        return bucketSec + "|" + liveEmoji + "|" + liveTitle + "|" + liveStatusLabel + "|" + liveKind
+        long schedRemainingMs = schedTargetEpochMs - nowMs;
+        long schedBucketSec = (schedTargetEpochMs > nowMs + 1000L)
+                ? ((schedRemainingMs <= 60_000L)
+                ? ((schedRemainingMs + 999L) / 1000L)
+                : (1000L + ((schedRemainingMs + 59_999L) / 60_000L)))
+                : 0L;
+        return bucketSec + "|" + schedBucketSec + "|" + liveEmoji + "|" + liveTitle + "|" + liveStatusLabel + "|" + liveKind
                 + "|" + liveTargetEpochMs + "|" + liveAlertsEnabled + "|" + liveAlertsLeadMinutes
                 + "|" + liveAlertsAlwaysOn + "|" + liveAlertsShowCharging + "|" + liveDescription
-                + "|" + liveClockLabel + "|" + liveNextUpSummary + "|" + liveHydrationSummary
+                + "|" + liveClockLabel + "|" + liveNextUpSummary
+                + "|" + schedEmoji + "|" + schedTitle + "|" + schedStatusLabel + "|" + schedDescription
+                + "|" + schedClockLabel + "|" + schedTargetEpochMs + "|" + schedNextUpSummary
                 + "|" + persistentCountdownEnabled + "|" + lastBroadcastCharging + "|" + lastBroadcastBatteryLevel
                 + "|" + lastBroadcastLimit + "|" + lastBroadcastEtaMinutes + "|" + syncSubtitle;
     }
@@ -1409,31 +1681,30 @@ public class DayRhythmSyncService extends Service {
             Bundle extras,
             boolean shouldPromote,
             String shortPillText,
-            String liveTitleText
+            int accentColor
     ) {
         if (shouldPromote) {
-            String safeChip = (shortPillText != null && shortPillText.length() > 7)
-                    ? shortPillText.substring(0, 7).trim()
-                    : shortPillText;
+            String safeChip = shortPillText != null ? shortPillText.trim() : "";
             extras.putBoolean("android.requestPromotedOngoing", true);
             extras.putBoolean("android.promotedOngoing", true);
             extras.putBoolean("oplus.live_alert.enable", true);
             extras.putBoolean("oplus.livealert.enable", true);
             extras.putInt("oplus.live_alert_state", 1);
-            if (safeChip != null && !safeChip.isEmpty()) {
+            extras.putInt("oplus.live_alert.color", accentColor);
+            extras.putInt("oplus.live_alert.bg_color", accentColor);
+            extras.putInt("oplus.live_alert.accent_color", accentColor);
+            if (!safeChip.isEmpty()) {
                 extras.putString("android.shortCriticalText", safeChip);
                 extras.putCharSequence("android.shortCriticalText", safeChip);
                 extras.putString("oplus.live_alert.text", safeChip);
-            }
-            if (liveTitleText != null && !liveTitleText.isEmpty()) {
-                extras.putString("oplus.live_alert.title", liveTitleText);
+                extras.putString("oplus.live_alert.title", safeChip);
             }
             try {
                 Method mReq = Notification.Builder.class.getMethod("setRequestPromotedOngoing", boolean.class);
                 mReq.invoke(nb, true);
             } catch (Throwable ignored) {
             }
-            if (safeChip != null && !safeChip.isEmpty()) {
+            if (!safeChip.isEmpty()) {
                 try {
                     Method mShort = Notification.Builder.class.getMethod("setShortCriticalText", CharSequence.class);
                     mShort.invoke(nb, safeChip);
@@ -1477,7 +1748,6 @@ public class DayRhythmSyncService extends Service {
         );
         boolean isChargingNow = lastBroadcastCharging && lastBroadcastBatteryLevel >= 0;
         boolean chargePromote = liveAlertsEnabled && liveAlertsShowCharging && isChargingNow;
-        boolean shouldPromote = inLeadWindow || chargePromote;
 
         int smallIcon = getSmallIconForKind(
                 (!inLeadWindow && chargePromote) ? "charge" : liveKind
@@ -1501,42 +1771,58 @@ public class DayRhythmSyncService extends Service {
             chargeTag = "⚡ " + lastBroadcastBatteryLevel + "% · " + etaStr;
         }
 
-        String rawTitle = liveTitle.isEmpty() ? liveStatusLabel : liveTitle;
-        String cleanTitle = cleanDisplayTitle(rawTitle);
-        String finalCleanTitle = cleanTitle.isEmpty() ? rawTitle : cleanTitle;
-        String displayTitle = (liveEmoji.isEmpty() ? "" : liveEmoji + " ") + finalCleanTitle;
-        String targetClock = !liveClockLabel.isEmpty()
-                ? liveClockLabel
-                : (hasUpcoming ? new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(liveTargetEpochMs)) : "");
+        String capsuleEmoji = sanitizeEmojis(liveEmoji, 1);
+        if (capsuleEmoji.isEmpty()) capsuleEmoji = "📅";
+        int accentColor = resolveEmojiAccentColor(capsuleEmoji);
 
-        if (hasUpcoming && (inLeadWindow || !chargePromote) && (liveAlertsEnabled || persistentCountdownEnabled)) {
-            String compactPill = formatChipText(liveEmoji, remainingMs);
-            String remDetailed = formatRemainingDetailedAr(remainingMs);
-            int accentColor = (remainingMs <= 60_000L) ? 0xFFFF6B6B : (remainingMs <= 300_000L ? 0xFFFFB020 : 0xFF7FFFD4);
+        if (hasUpcoming && inLeadWindow) {
+            String compactPill = formatChipText(capsuleEmoji, remainingMs);
+            applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, accentColor);
+        } else if (chargePromote) {
+            String chargeEmoji = lastBroadcastBatteryLevel >= lastBroadcastLimit ? "🔋" : "⚡";
+            int chargeColor = resolveEmojiAccentColor(chargeEmoji);
+            String compactPill = "\u200F" + chargeEmoji + " " + lastBroadcastBatteryLevel + "%";
+            applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, chargeColor);
+            if (!hasUpcoming) accentColor = chargeColor;
+        } else {
+            applyPlatformLiveAlertFlags(builder, liveExtras, false, "", accentColor);
+        }
 
-            applyPlatformLiveAlertFlags(builder, liveExtras, inLeadWindow, compactPill, finalCleanTitle);
+        // Persistent Notification Body (Schedule ONLY: Calendar events, Prayers, Sunrise/Sunset/Sunlight)
+        boolean hasUpcomingSchedule = schedTargetEpochMs > nowMs + 1000L;
+        if (hasUpcomingSchedule && persistentCountdownEnabled) {
+            long schedRemMs = schedTargetEpochMs - nowMs;
+            String schedRemDetailed = formatRemainingDetailedAr(schedRemMs);
+            String cleanSched = cleanDisplayTitle(schedTitle.isEmpty() ? schedStatusLabel : schedTitle);
+            if (cleanSched.isEmpty()) cleanSched = schedTitle.isEmpty() ? schedStatusLabel : schedTitle;
+            String safeSchedEmoji = sanitizeEmojis(schedEmoji, 1);
+            String displaySchedTitle = sanitizeEmojis((safeSchedEmoji.isEmpty() ? "" : safeSchedEmoji + " ") + cleanSched, 2);
+            String targetClock = !schedClockLabel.isEmpty()
+                    ? schedClockLabel
+                    : new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(schedTargetEpochMs));
 
-            String titleLine = targetClock.isEmpty() ? displayTitle : (displayTitle + " · " + targetClock);
-            String compactSummaryLine = "⏳ متبقي " + remDetailed
-                    + (!chargeTag.isEmpty() ? (" · " + chargeTag) : (!liveHydrationSummary.isEmpty() ? (" · " + liveHydrationSummary) : ""));
-            String summaryPill = !targetClock.isEmpty() ? targetClock : liveStatusLabel;
+            String titleLine = sanitizeEmojis(targetClock.isEmpty() ? displaySchedTitle : (displaySchedTitle + " · " + targetClock), 2);
+            String safeDesc = sanitizeEmojis(schedDescription, 2);
+            String compactSummaryLine = sanitizeEmojis(
+                    "⏳ متبقي " + schedRemDetailed + (!safeDesc.isEmpty() ? (" · " + safeDesc) : ""),
+                    2
+            );
+            String summaryPill = !targetClock.isEmpty() ? targetClock : sanitizeEmojis(schedStatusLabel, 2);
 
-            // Priority-ordered concise notification lines:
-            // 1) Actionable detail / classification, 2) Next upcoming item, 3) Hydration & charge status
             StringBuilder bigSb = new StringBuilder();
-            bigSb.append(!liveDescription.isEmpty() ? liveDescription : liveStatusLabel);
-            if (!liveNextUpSummary.isEmpty()) {
-                bigSb.append("\n⏭ ").append(liveNextUpSummary);
+            bigSb.append(!safeDesc.isEmpty() ? safeDesc : sanitizeEmojis(schedStatusLabel, 2));
+            bigSb.append("\n");
+            if (!targetClock.isEmpty()) {
+                bigSb.append("🕒 ").append(targetClock).append(" · ");
             }
-            if (!liveHydrationSummary.isEmpty() || !chargeTag.isEmpty()) {
-                bigSb.append("\n");
-                if (!liveHydrationSummary.isEmpty()) bigSb.append(liveHydrationSummary);
-                if (!liveHydrationSummary.isEmpty() && !chargeTag.isEmpty()) bigSb.append(" · ");
-                if (!chargeTag.isEmpty()) bigSb.append(chargeTag);
+            bigSb.append("⏳ متبقي ").append(schedRemDetailed);
+            if (!schedNextUpSummary.isEmpty()) {
+                bigSb.append("\n⏭ ").append(sanitizeEmojis(schedNextUpSummary, 2));
             }
+            String bigBody = sanitizeEmojis(bigSb.toString(), 2);
 
-            boolean showSecChrono = remainingMs <= 60_000L;
-            if (inLeadWindow && showSecChrono) {
+            boolean showSecChrono = (inLeadWindow ? remainingMs : schedRemMs) <= 60_000L;
+            if (inLeadWindow && remainingMs <= 60_000L) {
                 liveExtras.putBoolean("android.showChronometer", true);
                 liveExtras.putBoolean("android.chronometerCountdown", true);
             }
@@ -1545,7 +1831,7 @@ public class DayRhythmSyncService extends Service {
                     .setContentText(compactSummaryLine)
                     .setSubText(summaryPill)
                     .setShowWhen(true)
-                    .setWhen(liveTargetEpochMs)
+                    .setWhen(inLeadWindow ? liveTargetEpochMs : schedTargetEpochMs)
                     .setUsesChronometer(showSecChrono)
                     .setChronometerCountDown(showSecChrono)
                     .setColor(accentColor)
@@ -1553,13 +1839,10 @@ public class DayRhythmSyncService extends Service {
                     .setStyle(new Notification.BigTextStyle()
                             .setBigContentTitle(titleLine)
                             .setSummaryText(summaryPill)
-                            .bigText(bigSb.toString()))
+                            .bigText(bigBody))
                     .addExtras(liveExtras);
         } else if (chargePromote) {
-            String compactPill = (lastBroadcastBatteryLevel >= lastBroadcastLimit ? "🔋 " : "⚡ ") + lastBroadcastBatteryLevel + "%";
-            int chargeColor = lastBroadcastBatteryLevel >= lastBroadcastLimit ? 0xFF4ADE80 : 0xFF7FFFD4;
-            applyPlatformLiveAlertFlags(builder, liveExtras, true, compactPill, "شحن الهاتف " + lastBroadcastBatteryLevel + "%");
-
+            int chargeColor = lastBroadcastBatteryLevel >= lastBroadcastLimit ? 0xFF4ADE80 : accentColor;
             StringBuilder bigSb = new StringBuilder();
             if (lastBroadcastBatteryLevel >= lastBroadcastLimit) {
                 bigSb.append("🔋 وصل للحد (").append(lastBroadcastLimit).append("%) — افصل الشاحن");
@@ -1568,31 +1851,19 @@ public class DayRhythmSyncService extends Service {
             } else {
                 bigSb.append("⚡ الشحن ").append(lastBroadcastBatteryLevel).append("% / ").append(lastBroadcastLimit).append("%");
             }
-            if (hasUpcoming) {
-                bigSb.append("\n⏭ ").append(displayTitle);
-                if (!targetClock.isEmpty()) bigSb.append(" · ").append(targetClock);
-            }
-            if (!liveHydrationSummary.isEmpty()) {
-                bigSb.append("\n").append(liveHydrationSummary);
-            }
+            String safeChargeTitle = sanitizeEmojis(chargeTag, 2);
+            String shortSub = "حد الشحن " + lastBroadcastLimit + "%";
 
-            String shortSub = hasUpcoming
-                    ? (displayTitle + " · " + formatRemainingDetailedAr(remainingMs))
-                    : (!liveHydrationSummary.isEmpty() ? liveHydrationSummary : "حد الشحن " + lastBroadcastLimit + "%");
-            boolean showSecChrono = hasUpcoming && remainingMs <= 60_000L;
-
-            builder.setContentTitle(chargeTag)
+            builder.setContentTitle(safeChargeTitle)
                     .setContentText(shortSub)
                     .setSubText(lastBroadcastBatteryLevel + "%")
-                    .setShowWhen(hasUpcoming)
-                    .setWhen(hasUpcoming ? liveTargetEpochMs : nowMs)
-                    .setUsesChronometer(showSecChrono)
-                    .setChronometerCountDown(showSecChrono)
+                    .setShowWhen(false)
+                    .setUsesChronometer(false)
                     .setColor(chargeColor)
                     .setCategory(Notification.CATEGORY_PROGRESS)
                     .setStyle(new Notification.BigTextStyle()
-                            .setBigContentTitle(chargeTag)
-                            .bigText(bigSb.toString()))
+                            .setBigContentTitle(safeChargeTitle)
+                            .bigText(sanitizeEmojis(bigSb.toString(), 2)))
                     .addExtras(liveExtras);
 
             if (lastBroadcastBatteryLevel >= lastBroadcastLimit) {
@@ -1612,16 +1883,14 @@ public class DayRhythmSyncService extends Service {
                 ).build());
             }
         } else {
-            applyPlatformLiveAlertFlags(builder, liveExtras, false, "", "");
-            String summaryLine = !liveHydrationSummary.isEmpty()
-                    ? liveHydrationSummary
-                    : (!chargeTag.isEmpty() ? chargeTag : "الجدول جاهز للتنبيه التلقائي");
+            String idleTitle = sanitizeEmojis("📅 جدول اليوم", 2);
+            String idleBody = "لا مواعيد مجدولة متبقية";
 
-            builder.setContentTitle("إيقاع اليوم")
-                    .setContentText(summaryLine)
+            builder.setContentTitle(idleTitle)
+                    .setContentText(idleBody)
                     .setShowWhen(false)
                     .setUsesChronometer(false)
-                    .setColor(0xFF7FFFD4)
+                    .setColor(accentColor)
                     .setCategory(Notification.CATEGORY_STATUS)
                     .addExtras(liveExtras);
         }

@@ -752,6 +752,13 @@ public class MainActivity extends Activity {
                         String clockLabel = obj.optString("clockLabel", "");
                         String nextUpSummary = obj.optString("nextUpSummary", "");
                         String hydrationProgress = obj.optString("hydrationProgress", "");
+                        String scheduleEmoji = obj.optString("scheduleEmoji", "");
+                        String scheduleTitle = obj.optString("scheduleTitle", "");
+                        String scheduleStatusLabel = obj.optString("scheduleStatusLabel", "");
+                        String scheduleDescription = obj.optString("scheduleDescription", "");
+                        String scheduleClockLabel = obj.optString("scheduleClockLabel", "");
+                        long scheduleTargetEpochMs = obj.optLong("scheduleTargetEpochMs", 0L);
+                        String scheduleNextUpSummary = obj.optString("scheduleNextUpSummary", "");
                         DayRhythmSyncService.pushLiveStatus(
                                 MainActivity.this,
                                 emoji,
@@ -767,7 +774,14 @@ public class MainActivity extends Activity {
                                 description,
                                 clockLabel,
                                 nextUpSummary,
-                                hydrationProgress
+                                hydrationProgress,
+                                scheduleEmoji,
+                                scheduleTitle,
+                                scheduleStatusLabel,
+                                scheduleDescription,
+                                scheduleClockLabel,
+                                scheduleTargetEpochMs,
+                                scheduleNextUpSummary
                         );
                     } catch (Exception ignored) {
                     }
