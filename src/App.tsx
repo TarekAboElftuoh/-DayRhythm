@@ -1641,7 +1641,7 @@ export default function App() {
 
       // Avoid showing TWO duplicate alerts on Windows EXE (native SecondaryMonitorToastForm handles PC alert cleanly!)
       if (!isNativeWin) {
-        if (document.visibilityState === 'visible') {
+        if (Boolean(androidNative) && document.visibilityState === 'visible') {
           showToast(
             `${privacyBadge} ${visibleTitle}${visibleDescription ? ` — ${visibleDescription}` : ''}`
           );

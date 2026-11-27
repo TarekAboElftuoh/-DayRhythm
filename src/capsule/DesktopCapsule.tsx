@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { formatCountdown, pickActiveCountdownItem } from '../hooks/useCountdown';
+import { pickActiveCountdownItem } from '../hooks/useCountdown';
 
 /**
  * The Windows desktop capsule, drawn with the app's own design system (same card surface,
@@ -84,7 +84,20 @@ function post(msg: Record<string, unknown>) {
   }
 }
 
-/** Smooth clock from targetEpochMs: >60s → X دقيقة | <=60s → MM:SS down to 00:00 (never "الآن"). */
+function formatNumericCountdown(remainingMs: number): string {
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return '00:00';
+  const totalSec = Math.ceil(remainingMs / 1000);
+  if (totalSec <= 0) return '00:00';
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/** Smooth clock from targetEpochMs: <H:MM:SS> when >= 1h, otherwise <MM:SS> down to 00:00. */
 function liveClock(targetEpochMs: number, fallback: string, baseUrgent: boolean, nowMs: number) {
   if (!targetEpochMs || targetEpochMs <= 0) {
     const cleanFallback = !fallback || fallback === 'الآن' ? '00:00' : fallback;
@@ -92,7 +105,7 @@ function liveClock(targetEpochMs: number, fallback: string, baseUrgent: boolean,
   }
   const remMs = Math.max(0, targetEpochMs - nowMs);
   return {
-    text: formatCountdown(remMs),
+    text: formatNumericCountdown(remMs),
     urgent: remMs <= 60_000,
   };
 }
