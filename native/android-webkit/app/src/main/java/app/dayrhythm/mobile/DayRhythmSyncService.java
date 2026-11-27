@@ -54,7 +54,7 @@ import okio.ByteString;
  */
 public class DayRhythmSyncService extends Service {
     public static final String CHANNEL_KEEPALIVE = "dayrhythm_keepalive_v2";
-    public static final String CHANNEL_LIVE_ALERTS = "dayrhythm_live_alerts_v2";
+    public static final String CHANNEL_LIVE_ALERTS = "dayrhythm_live_alerts_v3";
     public static final String ACTION_WS_SYNC_MESSAGE = "app.dayrhythm.mobile.WS_SYNC_MESSAGE";
     public static final String ACTION_UPDATE_AVAILABLE = "app.dayrhythm.mobile.UPDATE_AVAILABLE";
     public static final String ACTION_NETWORK_RECOVERED = "app.dayrhythm.mobile.NETWORK_RECOVERED";
@@ -319,7 +319,10 @@ public class DayRhythmSyncService extends Service {
 
     private String cleanDisplayTitle(String title) {
         if (title == null) return "";
-        return LEAD_TAG_PATTERN.matcher(title).replaceAll("").trim();
+        String cleaned = LEAD_TAG_PATTERN.matcher(title).replaceAll("");
+        cleaned = cleaned.replaceAll("أذان\\s*-?\\d+\\s*(?:دقيقة|دقائق|د)\\s*·\\s*", "");
+        cleaned = cleaned.replaceAll("متبقي\\s+\\d+\\s*(?:دقيقة|دقائق|د)\\b[^·\\n]*", "");
+        return cleaned.trim();
     }
 
     private final Runnable liveCountdownTickRunnable = new Runnable() {
@@ -1224,7 +1227,7 @@ public class DayRhythmSyncService extends Service {
             }
             liveTargetEpochMs = intent.getLongExtra(EXTRA_LIVE_TARGET_MS, 0L);
             liveAlertsEnabled = intent.getBooleanExtra(EXTRA_LIVE_ALERTS_ENABLED, true);
-            liveAlertsLeadMinutes = Math.max(1, Math.min(60, intent.getIntExtra(EXTRA_LIVE_LEAD_MINUTES, 10)));
+            liveAlertsLeadMinutes = Math.max(0, Math.min(60, intent.getIntExtra(EXTRA_LIVE_LEAD_MINUTES, 10)));
             liveAlertsAlwaysOn = intent.getBooleanExtra(EXTRA_LIVE_ALWAYS_ON, false);
             liveAlertsShowCharging = intent.getBooleanExtra(EXTRA_LIVE_SHOW_CHARGING, true);
             persistentCountdownEnabled = intent.getBooleanExtra(EXTRA_PERSISTENT_NOTIF_ENABLED, true);
@@ -1593,6 +1596,7 @@ public class DayRhythmSyncService extends Service {
 
             try {
                 nm.deleteNotificationChannel("dayrhythm_live_alerts_v1");
+                nm.deleteNotificationChannel("dayrhythm_live_alerts_v2");
                 nm.deleteNotificationChannel(CHANNEL_KEEPALIVE);
                 nm.cancel(NOTIF_LIVE_ALERT_ID);
             } catch (Exception ignored) {
@@ -1601,7 +1605,7 @@ public class DayRhythmSyncService extends Service {
             NotificationChannel liveAlerts = new NotificationChannel(
                     CHANNEL_LIVE_ALERTS,
                     "العد التنازلي للمهمة القادمة (Live Alert)",
-                    NotificationManager.IMPORTANCE_HIGH
+                    NotificationManager.IMPORTANCE_DEFAULT
             );
             liveAlerts.setDescription("يعرض اسم المهمة القادمة والعد التنازلي التفاعلي بجوار ثقب الكاميرا (OnePlus 12R)");
             liveAlerts.setShowBadge(false);
@@ -1658,22 +1662,25 @@ public class DayRhythmSyncService extends Service {
         }
     }
 
-    private static String formatRemainingDetailedAr(long remainingMs) {
-        if (remainingMs <= 0L) return "0 ثانية";
-        long totalSec = (remainingMs + 999L) / 1000L;
-        if (totalSec <= 60L) {
-            return totalSec + " ثانية";
+    private static String extractCleanNote(String rawDesc, String eventTitle, String clockText) {
+        if (rawDesc == null || rawDesc.trim().isEmpty()) return "";
+        String note = rawDesc.replaceAll("\\s+", " ").trim();
+        note = note.replaceAll("متبقي\\s+\\d+\\s*(?:دقيقة|دقائق|د)\\b[^·\\n]*", "").trim();
+        if (eventTitle != null && !eventTitle.trim().isEmpty()) {
+            note = note.replace(eventTitle.trim(), "").trim();
         }
-        long mins = (remainingMs + 59_999L) / 60_000L;
-        if (mins < 60L) {
-            return mins + " دقيقة";
+        if (clockText != null && !clockText.trim().isEmpty()) {
+            note = note.replace(clockText.trim(), "").trim();
         }
-        long hrs = mins / 60L;
-        long remM = mins % 60L;
-        if (remM > 0L) {
-            return hrs + " س و " + remM + " د";
+        note = note.replaceAll("\\d{1,2}:\\d{2}\\s*[صم]?", "").trim();
+        note = note.replaceAll("^[\\s·\\-:—–|()]+|[\\s·\\-:—–|()]+$", "").trim();
+        if (note.isEmpty() || (eventTitle != null && note.equalsIgnoreCase(eventTitle.trim()))) {
+            return "";
         }
-        return hrs + " ساعة";
+        if (note.length() > 80) {
+            note = note.substring(0, 77).trim() + "…";
+        }
+        return sanitizeEmojis(note, 2);
     }
 
     private static void applyPlatformLiveAlertFlags(
@@ -1761,6 +1768,9 @@ public class DayRhythmSyncService extends Service {
                 .setOnlyAlertOnce(true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setContentIntent(pi);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setSilent(true);
+        }
 
         Bundle liveExtras = new Bundle();
         String chargeTag = "";
@@ -1792,34 +1802,22 @@ public class DayRhythmSyncService extends Service {
         boolean hasUpcomingSchedule = schedTargetEpochMs > nowMs + 1000L;
         if (hasUpcomingSchedule && persistentCountdownEnabled) {
             long schedRemMs = schedTargetEpochMs - nowMs;
-            String schedRemDetailed = formatRemainingDetailedAr(schedRemMs);
             String cleanSched = cleanDisplayTitle(schedTitle.isEmpty() ? schedStatusLabel : schedTitle);
             if (cleanSched.isEmpty()) cleanSched = schedTitle.isEmpty() ? schedStatusLabel : schedTitle;
             String safeSchedEmoji = sanitizeEmojis(schedEmoji, 1);
-            String displaySchedTitle = sanitizeEmojis((safeSchedEmoji.isEmpty() ? "" : safeSchedEmoji + " ") + cleanSched, 2);
+            String titleLine = sanitizeEmojis((safeSchedEmoji.isEmpty() ? "" : safeSchedEmoji + " ") + cleanSched, 2);
             String targetClock = !schedClockLabel.isEmpty()
                     ? schedClockLabel
                     : new SimpleDateFormat("hh:mm a", new Locale("ar")).format(new Date(schedTargetEpochMs));
-
-            String titleLine = sanitizeEmojis(targetClock.isEmpty() ? displaySchedTitle : (displaySchedTitle + " · " + targetClock), 2);
-            String safeDesc = sanitizeEmojis(schedDescription, 2);
-            String compactSummaryLine = sanitizeEmojis(
-                    "⏳ متبقي " + schedRemDetailed + (!safeDesc.isEmpty() ? (" · " + safeDesc) : ""),
+            String leadSuffix = liveAlertsLeadMinutes > 0
+                    ? (" · قبلها بـ " + liveAlertsLeadMinutes + " د")
+                    : "";
+            String cleanNote = extractCleanNote(schedDescription, cleanSched, targetClock);
+            String baseLine = (targetClock + leadSuffix).trim();
+            String contentLine = sanitizeEmojis(
+                    cleanNote.isEmpty() ? baseLine : (baseLine.isEmpty() ? cleanNote : (baseLine + " · " + cleanNote)),
                     2
             );
-            String summaryPill = !targetClock.isEmpty() ? targetClock : sanitizeEmojis(schedStatusLabel, 2);
-
-            StringBuilder bigSb = new StringBuilder();
-            bigSb.append(!safeDesc.isEmpty() ? safeDesc : sanitizeEmojis(schedStatusLabel, 2));
-            bigSb.append("\n");
-            if (!targetClock.isEmpty()) {
-                bigSb.append("🕒 ").append(targetClock).append(" · ");
-            }
-            bigSb.append("⏳ متبقي ").append(schedRemDetailed);
-            if (!schedNextUpSummary.isEmpty()) {
-                bigSb.append("\n⏭ ").append(sanitizeEmojis(schedNextUpSummary, 2));
-            }
-            String bigBody = sanitizeEmojis(bigSb.toString(), 2);
 
             boolean showSecChrono = (inLeadWindow ? remainingMs : schedRemMs) <= 60_000L;
             if (inLeadWindow && remainingMs <= 60_000L) {
@@ -1828,19 +1826,21 @@ public class DayRhythmSyncService extends Service {
             }
 
             builder.setContentTitle(titleLine)
-                    .setContentText(compactSummaryLine)
-                    .setSubText(summaryPill)
+                    .setContentText(contentLine)
                     .setShowWhen(true)
                     .setWhen(inLeadWindow ? liveTargetEpochMs : schedTargetEpochMs)
                     .setUsesChronometer(showSecChrono)
                     .setChronometerCountDown(showSecChrono)
                     .setColor(accentColor)
                     .setCategory(Notification.CATEGORY_EVENT)
-                    .setStyle(new Notification.BigTextStyle()
-                            .setBigContentTitle(titleLine)
-                            .setSummaryText(summaryPill)
-                            .bigText(bigBody))
                     .addExtras(liveExtras);
+
+            if (!cleanNote.isEmpty() && contentLine.length() > 60) {
+                String bigBody = sanitizeEmojis((baseLine.isEmpty() ? cleanNote : (baseLine + "\n" + cleanNote)), 2);
+                builder.setStyle(new Notification.BigTextStyle()
+                        .setBigContentTitle(titleLine)
+                        .bigText(bigBody));
+            }
         } else if (chargePromote) {
             int chargeColor = lastBroadcastBatteryLevel >= lastBroadcastLimit ? 0xFF4ADE80 : accentColor;
             StringBuilder bigSb = new StringBuilder();

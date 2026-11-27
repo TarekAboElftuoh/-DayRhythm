@@ -8886,6 +8886,39 @@ export default function App() {
       .trim();
   };
 
+  const formatCompactTimeRange = (startClock: string, durationSeconds?: number): string => {
+    const trimmed = startClock.trim();
+    if (!trimmed || !durationSeconds || durationSeconds <= 0) return trimmed;
+    const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*([صم])$/);
+    if (!match) return trimmed;
+    const h12 = Number(match[1]);
+    const mins = Number(match[2]);
+    const startPeriod = match[3];
+    const h24 = startPeriod === 'م' ? (h12 === 12 ? 12 : h12 + 12) : (h12 === 12 ? 0 : h12);
+    const endClock = formatMinutes12h(h24 * 60 + mins + Math.round(durationSeconds / 60), 'ar');
+    const endMatch = endClock.match(/^(\d{1,2}):(\d{2})\s*([صم])$/);
+    if (endMatch && endMatch[3] === startPeriod) {
+      return `${match[1]}:${match[2]} ← ${endMatch[1]}:${endMatch[2]} ${endMatch[3]}`;
+    }
+    return `${trimmed} ← ${endClock}`;
+  };
+
+  const cleanCompactNote = (rawDesc: string, eventTitle: string, clockText: string): string => {
+    let cleaned = rawDesc
+      .replace(/متبقي\s+\d+\s*(?:دقيقة|دقائق|د)\b[^·\n]*/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (eventTitle) {
+      cleaned = cleaned.split(eventTitle).join('').trim();
+    }
+    if (clockText) {
+      cleaned = cleaned.split(clockText).join('').trim();
+    }
+    cleaned = cleaned.replace(/^[\s·\-:—–|]+|[\s·\-:—–|]+$/g, '').trim();
+    if (!cleaned || cleaned === eventTitle) return '';
+    return sanitizeEmojis(cleaned.slice(0, 100), 2);
+  };
+
   const lastPushedLiveStatusRef = useRef<string>('');
   useEffect(() => {
     const androidBridge = (
@@ -8900,10 +8933,17 @@ export default function App() {
 
     const firstQueueItem = capsuleTimerState.upcomingQueue?.[0];
     const secondQueueItem = capsuleTimerState.upcomingQueue?.[1];
-    const clockLabel = firstQueueItem?.clockLabel || '';
+    const clockLabel = formatCompactTimeRange(
+      firstQueueItem?.clockLabel || '',
+      firstQueueItem?.durationSeconds
+    );
     const nextUpSummary = secondQueueItem
       ? sanitizeEmojis(`${secondQueueItem.emoji} ${secondQueueItem.title} (${secondQueueItem.clockLabel || secondQueueItem.countdownText})`, 2)
       : '';
+
+    const capsuleEmoji = sanitizeEmojis(capsuleTimerState.emoji, 1) || '📅';
+    const cleanTitle = sanitizeEmojis(capsuleTimerState.title, 2);
+    const cleanStatusLabel = sanitizeEmojis(capsuleTimerState.statusLabel, 2);
 
     let description = '';
     if (capsuleTimerState.sourceKind === 'water' && hydrationToday) {
@@ -8911,20 +8951,23 @@ export default function App() {
       description = `الكوب ${nextCupNum} من ${targetCups} · ${dailyRhythmPlan.cupSizeMl} مل`;
     } else if (capsuleTimerState.sourceKind === 'medication') {
       const matchedMed = medications.find((m) => capsuleTimerState.title.includes(m.name));
-      if (matchedMed?.doseNote) description = sanitizeEmojis(matchedMed.doseNote, 2);
+      if (matchedMed?.doseNote) description = cleanCompactNote(matchedMed.doseNote, cleanTitle, clockLabel);
     } else if (capsuleTimerState.sourceKind === 'calendar' && nextActiveBlock?.description) {
-      description = sanitizeEmojis(cleanCalendarText(nextActiveBlock.description).slice(0, 140), 2);
+      description = cleanCompactNote(cleanCalendarText(nextActiveBlock.description), cleanTitle, clockLabel);
     }
 
     const calTrack = capsuleTimerState.calendarTrack;
     const scheduleEmoji = sanitizeEmojis(calTrack?.emoji || nextActiveBlock?.emojiPair || '📅', 1) || '📅';
     const scheduleTitle = sanitizeEmojis(calTrack?.title || '', 2);
     const scheduleStatusLabel = sanitizeEmojis(calTrack?.statusLabel || 'لا مواعيد مجدولة متبقية', 2);
-    const scheduleClockLabel = calTrack?.clockLabel || '';
+    const scheduleClockLabel = formatCompactTimeRange(
+      calTrack?.clockLabel || '',
+      calTrack?.durationSeconds
+    );
     const scheduleTargetEpochMs = calTrack?.targetEpochMs || 0;
     const scheduleDescription =
       nextActiveBlock?.description && !nextActiveBlock.deleted && !nextActiveBlock.completed
-        ? sanitizeEmojis(cleanCalendarText(nextActiveBlock.description).slice(0, 140), 2)
+        ? cleanCompactNote(cleanCalendarText(nextActiveBlock.description), scheduleTitle, scheduleClockLabel)
         : '';
     const nextCalItem = capsuleTimerState.upcomingQueue?.find(
       (item) =>
@@ -8934,10 +8977,6 @@ export default function App() {
     const scheduleNextUpSummary = nextCalItem
       ? sanitizeEmojis(`${nextCalItem.emoji} ${nextCalItem.title} (${nextCalItem.clockLabel || nextCalItem.countdownText})`, 2)
       : '';
-
-    const capsuleEmoji = sanitizeEmojis(capsuleTimerState.emoji, 1) || '📅';
-    const cleanTitle = sanitizeEmojis(capsuleTimerState.title, 2);
-    const cleanStatusLabel = sanitizeEmojis(capsuleTimerState.statusLabel, 2);
 
     const dedupKey = [
       capsuleEmoji,
