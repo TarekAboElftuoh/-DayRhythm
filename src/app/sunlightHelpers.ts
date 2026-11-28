@@ -79,7 +79,7 @@ export function computeSunlightSessionsWithCloud(
       hourlyList.find((h) => h.hour === targetHour) ??
       hourlyList.find((h) => Math.abs(h.hour - targetHour) <= 1) ??
       null;
-    const isCloudBlocked = matchedHourly ? matchedHourly.cloudCover >= 75 : false;
+    const isCloudBlocked = matchedHourly ? matchedHourly.cloudCover >= 60 : false;
     const cloudNoteAr = isCloudBlocked
       ? nowTickMin >= startMinutes && nowTickMin < endMinutes
         ? '☁️ غيوم كثيفة — لا توجد أشعة الآن'

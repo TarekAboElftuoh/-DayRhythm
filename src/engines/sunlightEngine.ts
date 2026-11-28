@@ -174,7 +174,7 @@ export function computeDailySunlightSessions(
 
     const endMinutes = def.startMinutes + durationMinutes;
     const alertMinutes = Math.max(0, def.startMinutes - leadMinutes);
-    const isCloudBlocked = hourPoint ? cloudCover >= 75 : weatherOvercast;
+    const isCloudBlocked = hourPoint ? cloudCover >= 60 : false;
     const cloudNoteAr = isCloudBlocked ? '☁️ غيوم كثيفة — لا توجد أشعة الآن' : null;
     const canSnooze = nowMinutes + 5 + durationMinutes <= def.windowEndMinutes;
 

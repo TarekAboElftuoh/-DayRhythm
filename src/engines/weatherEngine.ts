@@ -59,8 +59,11 @@ export function loadCachedWeather(): WeatherHydrationInfo | null {
     const raw = localStorage.getItem(WEATHER_CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CachedWeatherRecord;
-    if (parsed?.data && typeof parsed.data.maxTempC === 'number') {
-      return parsed.data;
+    if (parsed?.data && typeof parsed.data.maxTempC === 'number' && parsed.data.fetchedAtIso) {
+      const ageMs = Date.now() - new Date(parsed.data.fetchedAtIso).getTime();
+      if (ageMs >= 0 && ageMs < CACHE_TTL_MS) {
+        return parsed.data;
+      }
     }
   } catch {
     // ignore storage errors
