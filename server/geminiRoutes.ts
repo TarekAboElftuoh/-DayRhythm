@@ -931,7 +931,7 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
     const tagFilter = resolveOverpassTagFilter(query);
     if (!tagFilter) return [];
 
-    const radii = [300, 700, 1500];
+    const radii = [350, 500, 1000, 1500];
     for (const radiusMeters of radii) {
       const ql = `[out:json][timeout:4];(nwr${tagFilter}(around:${radiusMeters},${lat.toFixed(6)},${lng.toFixed(6)}););out center tags 15;`;
       try {
@@ -1096,8 +1096,11 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
         .slice(0, 7);
     };
 
-    // Tight ~1.5km walking-radius box first; expand only if empty
-    let sorted = await queryDeltaBox(0.015, 1500);
+    // Tight 500m walking-radius box first, then 1.5km; expand only if empty
+    let sorted = await queryDeltaBox(0.005, 500);
+    if (sorted.length === 0) {
+      sorted = await queryDeltaBox(0.015, 1500);
+    }
     if (sorted.length === 0) {
       sorted = await queryDeltaBox(0.05, 5000);
     }
@@ -1306,7 +1309,7 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
           model: 'gemini-3.1-flash-lite',
           contents: query,
           config: {
-            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م). الأولوية القصوى حصرياً للأقرب مسافةً ضمن نطاق المشي (أقل من 1–2 كم أولاً)، مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة من موقع المستخدم الحالي (${latitude.toFixed(5)}, ${longitude.toFixed(5)}). Prioritize strictly the closest places within walking distance (under 1–2 km first), sorted nearest-first with walking time and distance.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م). الأولوية القصوى حصرياً للأقرب مسافةً ضمن نطاق المشي (300–500 متر أولاً، وضع المشي walking mode، rankPreference: 'DISTANCE') ولا تفضّل المساجد الأكبر أو الأشهر إذا كانت أبعد مسافةً — مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة من موقع المستخدم الحالي (${latitude.toFixed(5)}, ${longitude.toFixed(5)}). Strictly prioritize walking distance (rankPreference: 'DISTANCE', 300m–500m initial radius, walking mode) and pick the closest walkable mosque rather than larger/farther ones.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
             tools: [{ googleMaps: {} }],
             toolConfig: {
               retrievalConfig: {
@@ -1478,7 +1481,7 @@ export function registerGeminiRoutes(app: Express): GeminiChatBridge {
           model: 'gemini-3.1-flash-lite',
           contents: query,
           config: {
-            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م). الأولوية القصوى حصرياً للأقرب مسافةً ضمن نطاق المشي (أقل من 1–2 كم أولاً)، مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة من موقع المستخدم الحالي (${latitude.toFixed(5)}, ${longitude.toFixed(5)}). Prioritize strictly the closest places within walking distance (under 1–2 km first), sorted nearest-first with walking time and distance.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
+            systemInstruction: `أجب بالعربية بوضوح واختصار واذكر أقرب الأماكن والمساجد والخدمات بدقة بناءً على خرائط جوجل، بنظام 12 ساعة (ص/م). الأولوية القصوى حصرياً للأقرب مسافةً ضمن نطاق المشي (300–500 متر أولاً، وضع المشي walking mode، rankPreference: 'DISTANCE') ولا تفضّل المساجد الأكبر أو الأشهر إذا كانت أبعد مسافةً — مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة من موقع المستخدم الحالي (${latitude.toFixed(5)}, ${longitude.toFixed(5)}). Strictly prioritize walking distance (rankPreference: 'DISTANCE', 300m–500m initial radius, walking mode) and pick the closest walkable mosque rather than larger/farther ones.${constitutionBrief ? `\n${constitutionBrief.slice(0, 500)}` : ''}${memLines}`,
             tools: [{ googleMaps: {} }],
             toolConfig: {
               retrievalConfig: {

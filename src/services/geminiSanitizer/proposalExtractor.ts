@@ -46,24 +46,31 @@ export function extractPendingProposalFromFunctionCalls(
 ): PendingProposal | undefined {
   if (!fnCalls || fnCalls.length === 0) return undefined;
 
-  const calCall = fnCalls.find((f) => f.name === 'propose_calendar_actions');
-  const taskCall = fnCalls.find((f) => f.name === 'propose_task_actions');
-  const medCall = fnCalls.find((f) => f.name === 'propose_medication_actions');
-  const creativeCall = fnCalls.find((f) => f.name === 'propose_creative_actions');
-  const habitCall = fnCalls.find((f) => f.name === 'propose_habit_actions');
+  const calCalls = fnCalls.filter((f) => f.name === 'propose_calendar_actions');
+  const taskCalls = fnCalls.filter((f) => f.name === 'propose_task_actions');
+  const medCalls = fnCalls.filter((f) => f.name === 'propose_medication_actions');
+  const creativeCalls = fnCalls.filter((f) => f.name === 'propose_creative_actions');
+  const habitCalls = fnCalls.filter((f) => f.name === 'propose_habit_actions');
   const profileCall = fnCalls.find((f) => f.name === 'propose_profile_updates');
-  const memoryCall = fnCalls.find((f) => f.name === 'propose_memory_actions');
+  const memoryCalls = fnCalls.filter((f) => f.name === 'propose_memory_actions');
   const settingsCall = fnCalls.find((f) => f.name === 'propose_app_settings');
   const unifiedSettingsCall = fnCalls.find((f) => f.name === 'update_app_settings');
 
+  const calCall = calCalls[0];
+  const taskCall = taskCalls[0];
+  const medCall = medCalls[0];
+  const creativeCall = creativeCalls[0];
+  const habitCall = habitCalls[0];
+  const memoryCall = memoryCalls[0];
+
   if (
-    !calCall &&
-    !taskCall &&
-    !medCall &&
-    !creativeCall &&
-    !habitCall &&
+    calCalls.length === 0 &&
+    taskCalls.length === 0 &&
+    medCalls.length === 0 &&
+    creativeCalls.length === 0 &&
+    habitCalls.length === 0 &&
     !profileCall &&
-    !memoryCall &&
+    memoryCalls.length === 0 &&
     !settingsCall &&
     !unifiedSettingsCall
   ) {
@@ -71,15 +78,7 @@ export function extractPendingProposalFromFunctionCalls(
   }
 
   const isFromFallback = Boolean(
-    calCall?.fromTextFallback ||
-    taskCall?.fromTextFallback ||
-    medCall?.fromTextFallback ||
-    creativeCall?.fromTextFallback ||
-    habitCall?.fromTextFallback ||
-    profileCall?.fromTextFallback ||
-    memoryCall?.fromTextFallback ||
-    settingsCall?.fromTextFallback ||
-    unifiedSettingsCall?.fromTextFallback
+    fnCalls.some((f) => f.fromTextFallback)
   );
 
   const calArgs = (calCall?.args ?? {}) as {
@@ -161,20 +160,29 @@ export function extractPendingProposalFromFunctionCalls(
     }
   }
 
-  const actions = Array.isArray(calArgs.actions) ? calArgs.actions : [];
-  const taskActions = Array.isArray(taskArgs.taskActions) ? taskArgs.taskActions : [];
-  const medicationActions = Array.isArray(medArgs.medicationActions)
-    ? medArgs.medicationActions
-    : [];
-  const creativeActions = Array.isArray(creativeArgs.creativeActions)
-    ? creativeArgs.creativeActions
-    : [];
-  const habitActions = Array.isArray(habitArgs.habitActions)
-    ? habitArgs.habitActions
-    : [];
-  const memoryActions = Array.isArray(memoryArgs.memoryActions)
-    ? memoryArgs.memoryActions
-    : [];
+  const fallbackDateIso = options?.guardContext?.todayIso ?? getCairoTodayIso();
+  const actions = calCalls
+    .flatMap((c) => (Array.isArray(c.args?.actions) ? (c.args.actions as CalendarActionProposal[]) : []))
+    .map((act) =>
+      act.operation === 'create' && !act.dateIso && typeof act.startInMinutes !== 'number'
+        ? { ...act, dateIso: fallbackDateIso }
+        : act
+    );
+  const taskActions = taskCalls.flatMap((c) =>
+    Array.isArray(c.args?.taskActions) ? (c.args.taskActions as TaskActionProposal[]) : []
+  );
+  const medicationActions = medCalls.flatMap((c) =>
+    Array.isArray(c.args?.medicationActions) ? (c.args.medicationActions as MedicationActionProposal[]) : []
+  );
+  const creativeActions = creativeCalls.flatMap((c) =>
+    Array.isArray(c.args?.creativeActions) ? (c.args.creativeActions as CreativeActivityActionProposal[]) : []
+  );
+  const habitActions = habitCalls.flatMap((c) =>
+    Array.isArray(c.args?.habitActions) ? (c.args.habitActions as HabitActionProposal[]) : []
+  );
+  const memoryActions = memoryCalls.flatMap((c) =>
+    Array.isArray(c.args?.memoryActions) ? (c.args.memoryActions as MemoryActionProposal[]) : []
+  );
 
   const summary =
     calArgs.summaryAr ||

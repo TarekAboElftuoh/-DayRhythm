@@ -36,14 +36,23 @@ export function finalizeChatStreamResult(params: {
     }
   }
 
+  const falseAddClaim =
+    !pendingProposal &&
+    !guardRefusalNote &&
+    /(?:تم(?:ت)?\s+(?:إضافة|جدولة|إنشاء)|أضفت|جدولت|added|scheduled|created)\b[\s\S]{0,80}\b(?:حدث|أحداث|موعد|مواعيد|events?)\b/i.test(
+      sanitized.cleanText
+    );
+
   const finalText =
     guardRefusalNote && !pendingProposal
       ? guardRefusalNote
       : guardRefusalNote
         ? `${sanitized.cleanText ? `${sanitized.cleanText}\n\n` : ''}${guardRefusalNote}`
-        : sanitized.cleanText ||
-          pendingProposal?.summaryAr ||
-          'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
+        : falseAddClaim
+          ? '⚠️ لم يتم تنفيذ أي إضافة في التقويم لأن الأداة لم تُستدعَ — أعد المحاولة بصيغة أوضح (مثل: أضف 5 أحداث عشوائية اليوم).'
+          : sanitized.cleanText ||
+            pendingProposal?.summaryAr ||
+            'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
 
   handlers.onDone({
     text: finalText,

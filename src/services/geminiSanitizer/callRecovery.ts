@@ -1,81 +1,44 @@
 import { GEMINI_TOOL_KEYS, extractCallsBalanced } from './callParser';
 import type { GeminiFunctionCall } from './callParser';
 
+const ARRAY_TOOL_KEY: Record<string, string> = {
+  propose_calendar_actions: 'actions',
+  propose_medication_actions: 'medicationActions',
+  propose_task_actions: 'taskActions',
+  propose_creative_actions: 'creativeActions',
+  propose_habit_actions: 'habitActions',
+  propose_memory_actions: 'memoryActions',
+};
+
 export function tryRecoverTool(
   recoveredFnCalls: GeminiFunctionCall[],
   toolName: string,
   argsObj: Record<string, unknown> | unknown[],
   fromTextFallback = true
 ) {
-  if (recoveredFnCalls.some((f) => f.name === toolName)) return;
+  const existing = recoveredFnCalls.find((f) => f.name === toolName);
+  const arrayKey = ARRAY_TOOL_KEY[toolName];
 
-  if (toolName === 'propose_calendar_actions') {
-    const rawActions = (argsObj as Record<string, unknown>)?.actions ?? argsObj;
-    const actions = Array.isArray(rawActions) ? rawActions : [];
+  if (arrayKey) {
+    const rawItems = (argsObj as Record<string, unknown>)?.[arrayKey] ?? argsObj;
+    const items = Array.isArray(rawItems) ? rawItems : [];
+    const summaryAr = ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined;
+    if (existing?.args) {
+      const prev = Array.isArray(existing.args[arrayKey]) ? (existing.args[arrayKey] as unknown[]) : [];
+      existing.args[arrayKey] = [...prev, ...items];
+      if (!existing.args.summaryAr && summaryAr) existing.args.summaryAr = summaryAr;
+      return;
+    }
     recoveredFnCalls.push({
       name: toolName,
-      args: {
-        actions,
-        summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
-      },
+      args: { [arrayKey]: items, summaryAr },
       fromTextFallback,
     });
-  } else if (toolName === 'propose_medication_actions') {
-    const rawMeds = (argsObj as Record<string, unknown>)?.medicationActions ?? argsObj;
-    const medicationActions = Array.isArray(rawMeds) ? rawMeds : [];
-    recoveredFnCalls.push({
-      name: toolName,
-      args: {
-        medicationActions,
-        summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
-      },
-      fromTextFallback,
-    });
-  } else if (toolName === 'propose_task_actions') {
-    const rawTasks = (argsObj as Record<string, unknown>)?.taskActions ?? argsObj;
-    const taskActions = Array.isArray(rawTasks) ? rawTasks : [];
-    recoveredFnCalls.push({
-      name: toolName,
-      args: {
-        taskActions,
-        summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
-      },
-      fromTextFallback,
-    });
-  } else if (toolName === 'propose_creative_actions') {
-    const rawCreative = (argsObj as Record<string, unknown>)?.creativeActions ?? argsObj;
-    const creativeActions = Array.isArray(rawCreative) ? rawCreative : [];
-    recoveredFnCalls.push({
-      name: toolName,
-      args: {
-        creativeActions,
-        summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
-      },
-      fromTextFallback,
-    });
-  } else if (toolName === 'propose_habit_actions') {
-    const rawHabits = (argsObj as Record<string, unknown>)?.habitActions ?? argsObj;
-    const habitActions = Array.isArray(rawHabits) ? rawHabits : [];
-    recoveredFnCalls.push({
-      name: toolName,
-      args: {
-        habitActions,
-        summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
-      },
-      fromTextFallback,
-    });
-  } else if (toolName === 'propose_memory_actions') {
-    const rawMem = (argsObj as Record<string, unknown>)?.memoryActions ?? argsObj;
-    const memoryActions = Array.isArray(rawMem) ? rawMem : [];
-    recoveredFnCalls.push({
-      name: toolName,
-      args: {
-        memoryActions,
-        summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
-      },
-      fromTextFallback,
-    });
-  } else if (typeof argsObj === 'object' && argsObj !== null && !Array.isArray(argsObj)) {
+    return;
+  }
+
+  if (existing) return;
+  if (typeof argsObj === 'object' && argsObj !== null && !Array.isArray(argsObj)) {
     recoveredFnCalls.push({
       name: toolName,
       args: argsObj as Record<string, unknown>,

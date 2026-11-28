@@ -11,7 +11,8 @@ export const GEMINI_CORE_TOOLS = [
             },
             actions: {
               type: 'ARRAY',
-              description: 'قائمة العمليات المقترحة للتنفيذ عبر Google Calendar API.',
+              description:
+                'قائمة جميع العمليات المقترحة للتنفيذ دفعة واحدة عبر Google Calendar API (عند طلب إضافة أو تعديل عدة أحداث، أدرج كل الأحداث في هذه المصفوفة في استدعاء واحد).',
               items: {
                 type: 'OBJECT',
                 properties: {

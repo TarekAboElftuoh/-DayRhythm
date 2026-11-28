@@ -94,7 +94,7 @@ export async function apiStreamGeminiMapsClient(
                 ? '["shop"="supermarket"]'
                 : '["amenity"="fuel"]';
 
-    for (const radiusMeters of [300, 700, 1500]) {
+    for (const radiusMeters of [350, 500, 1000, 1500]) {
       const ql = `[out:json][timeout:4];(nwr${tagFilter}(around:${radiusMeters},${lat.toFixed(6)},${lng.toFixed(6)}););out center tags 15;`;
       try {
         const res = await fetch('https://overpass-api.de/api/interpreter', {
@@ -199,6 +199,9 @@ export async function apiStreamGeminiMapsClient(
   try {
     places = await queryOverpassClient();
     if (places.length === 0) {
+      places = await queryNearbyBox(0.005, 500);
+    }
+    if (places.length === 0) {
       places = await queryNearbyBox(0.015, 1500);
     }
     if (places.length === 0) {
@@ -218,10 +221,10 @@ export async function apiStreamGeminiMapsClient(
   const prompt = `أنت دليل الأماكن والخرائط في تطبيق «إيقاع اليوم».
 المستخدم يبحث عن: "${query}"
 موقعه الحالي: خط عرض ${lat} وخط طول ${lng}.
-النتائج الجغرافية المكتشفة:
+النتائج الجغرافية المكتشفة (مرتبة بـ rankPreference: 'DISTANCE' ووضع المشي walking mode من نطاق 300–500 متر):
 ${placesContext}
 
-أجب باختصار مباشر وودود باللغة العربية، مع إعطاء الأولوية القصوى للأماكن ضمن نطاق المشي (أقل من 1–2 كم أولاً) مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة وأفضل نصيحة توقيت لزيارتها. Prioritize strictly the closest places within walking distance (under 1–2 km first), sorted nearest-first with walking time and distance.`;
+أجب باختصار مباشر وودود باللغة العربية. اختر أقرب مسجد/مكان قابل للمشي (300–500 متر أولاً) ولا تفضّل المساجد الأكبر أو الأشهر إذا كانت أبعد مسافةً — رتّب من الأقرب فالأقرب بالمتر ومدة المشي بالدقائق. Strictly prioritize walking distance (rankPreference: 'DISTANCE', walking mode, 300m–500m first) and pick the closest walkable mosque rather than larger/farther ones.`;
 
   return apiStreamGeminiChatClient(
     {
