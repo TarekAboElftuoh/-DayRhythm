@@ -1,16 +1,13 @@
 import React, { useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { AlertTriangle, Magnet } from 'lucide-react';
+import { AlertTriangle, LayoutGrid, List } from 'lucide-react';
 import { formatMinutes12h, formatMinutes24h } from '../engines/prayerEngine';
 import {
-  buildGhostSlotsForItem,
   mapMinutesToHabitAnchor,
-  type DayTimelineGhostSlot,
   type DayTimelinePlacedItem,
-  type SnapToFreeWindowResult,
 } from '../engines/lifeRhythmEngine';
 import {
-  SPRING_SNAPPY,
+  isBackgroundLockedBlock,
+  isBackgroundTimelineItem,
   type DayTimelineViewProps,
   type PendingMoveConfirmation,
   type PlacementTarget,
@@ -21,7 +18,6 @@ import { UnplacedTray } from './timeline/UnplacedTray';
 import { TimeGrid } from './timeline/TimeGrid';
 import { TimelineNodes } from './timeline/TimelineNodes';
 import { TimelineSheets } from './timeline/TimelineSheets';
-import { useTimelinePointerDrag } from './timeline/useTimelinePointerDrag';
 
 export type { DayTimelineViewProps };
 
@@ -29,46 +25,35 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = (props) => {
   const {
     model, prayers, plan, profile, todayIso, language, nowMinutes,
     isSyncingAutoPlace = false, onToggleBlockComplete, onToggleHabitToday, onCompleteTask,
-    onDeleteEventBlock, onTriggerAlert, onConfirmAutoPlace, onCommitHabitMove, onCommitItemMove, onMoveToUnplaced,
+    onConfirmAutoPlace, onCommitHabitMove, onCommitItemMove,
   } = props;
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
+  const [showBackgroundEvents, setShowBackgroundEvents] = useState(false);
   const [confirmSheetOpen, setConfirmSheetOpen] = useState(false);
   const [placementTarget, setPlacementTarget] = useState<PlacementTarget | null>(null);
   const [pendingMove, setPendingMove] = useState<PendingMoveConfirmation | null>(null);
   const [editingItem, setEditingItem] = useState<DayTimelinePlacedItem | null>(null);
   const [isApplyingMove, setIsApplyingMove] = useState(false);
-  const [dragState, setDragState] = useState<{
-    target: PlacementTarget;
-    snapped: SnapToFreeWindowResult | null;
-  } | null>(null);
-  const [swipePreview, setSwipePreview] = useState<{ id: string; dx: number } | null>(null);
 
-  const {
-    timelineRef, gestureRef, handleSelectGhostSlot, handleCardPointerDown, handleCardPointerMove, finishPointerGesture,
-  } = useTimelinePointerDrag({
-    model, prayers, plan, profile, placementTarget, setPlacementTarget,
-    dragState, setDragState, setSwipePreview, setPendingMove, onMoveToUnplaced,
-  });
-
-  const activeGhostOwner = dragState?.target ?? placementTarget;
-
-  const ghostSlots = useMemo<DayTimelineGhostSlot[]>(() => {
-    if (!activeGhostOwner) return [];
-    return buildGhostSlotsForItem({
-      durationMin: activeGhostOwner.durationMin, freeWindows: model.freeWindows,
-      prayers, plan, profile, excludeRange: activeGhostOwner.currentRange,
-    });
-  }, [activeGhostOwner, model.freeWindows, prayers, plan, profile]);
+  const backgroundCount = useMemo(
+    () =>
+      model.lockedBlocks.filter(isBackgroundLockedBlock).length +
+      model.placedBlocks.filter(isBackgroundTimelineItem).length,
+    [model.lockedBlocks, model.placedBlocks]
+  );
 
   const nodes = useMemo<TimelineRenderNode[]>(() => {
     const merged: TimelineRenderNode[] = [
-      ...model.lockedBlocks.map((b) => ({ kind: 'locked' as const, sortMin: b.startMin, data: b })),
-      ...model.placedBlocks.map((p) => ({ kind: 'placed' as const, sortMin: p.startMin, data: p })),
-      ...ghostSlots.map((g) => ({ kind: 'ghost' as const, sortMin: g.startMin, data: g })),
+      ...model.lockedBlocks
+        .filter((b) => showBackgroundEvents || !isBackgroundLockedBlock(b))
+        .map((b) => ({ kind: 'locked' as const, sortMin: b.startMin, data: b })),
+      ...model.placedBlocks
+        .filter((p) => showBackgroundEvents || !isBackgroundTimelineItem(p))
+        .map((p) => ({ kind: 'placed' as const, sortMin: p.startMin, data: p })),
     ];
     merged.sort((a, b) => a.sortMin - b.sortMin);
     return merged;
-  }, [model.lockedBlocks, model.placedBlocks, ghostSlots]);
+  }, [model.lockedBlocks, model.placedBlocks, showBackgroundEvents]);
 
   const placeableItems = useMemo(
     () => model.unplacedBlocks.filter((item) => item.suggestedSlot !== null),
@@ -144,7 +129,24 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = (props) => {
             <span className="font-mono-tabular font-semibold text-white">{formatMinutes12h(model.bedtimeMin, language)}</span>
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {viewMode === 'list' && (
+            <button
+              type="button"
+              aria-pressed={showBackgroundEvents}
+              onClick={() => setShowBackgroundEvents((prev) => !prev)}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+                showBackgroundEvents
+                  ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4]'
+                  : 'border-white/15 bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <span>{language === 'ar' ? 'إظهار المهام الخلفية' : 'Background items'}</span>
+              {backgroundCount > 0 && (
+                <span className="font-mono-tabular opacity-80">· {backgroundCount}</span>
+              )}
+            </button>
+          )}
           {model.unplacedBlocks.length > 0 && (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-[11px] font-semibold text-amber-300">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
@@ -152,69 +154,46 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = (props) => {
               <span className="font-mono-tabular">· {model.unplacedBlocks.length}</span>
             </span>
           )}
-          <div className="inline-flex rounded-lg border border-white/10 bg-[#000000] p-0.5 text-[11px]">
-            {(['grid', 'list'] as const).map((mode) => (
-              <button
-                key={mode} type="button" onClick={() => setViewMode(mode)}
-                className={`rounded-md px-2.5 py-1 font-medium transition-colors cursor-pointer ${
-                  viewMode === mode ? 'bg-[#7FFFD4]/15 text-[#7FFFD4]' : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {mode === 'grid' ? (language === 'ar' ? 'الشبكة' : 'Grid') : (language === 'ar' ? 'القائمة' : 'List')}
-              </button>
-            ))}
-          </div>
+          <button
+            type="button"
+            onClick={() => setViewMode((m) => (m === 'list' ? 'grid' : 'list'))}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 px-2.5 py-1 text-[11px] font-semibold text-[#7FFFD4] hover:bg-[#7FFFD4]/20 transition-colors cursor-pointer"
+          >
+            {viewMode === 'list' ? (
+              <>
+                <LayoutGrid className="w-3.5 h-3.5 shrink-0" />
+                <span>{language === 'ar' ? 'تعديل بالشبكة' : 'Edit in Grid'}</span>
+              </>
+            ) : (
+              <>
+                <List className="w-3.5 h-3.5 shrink-0" />
+                <span>{language === 'ar' ? 'عرض القائمة' : 'Today List'}</span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 
-      <AnimatePresence initial={false}>
-        {(placementTarget || dragState) && (
-          <motion.div
-            initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={SPRING_SNAPPY}
-            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-active)] bg-[rgba(127,255,212,0.10)] px-3.5 py-2 text-xs"
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Magnet className="w-4 h-4 text-[#7FFFD4] shrink-0" />
-              {dragState?.snapped?.snapped ? (
-                <span className="text-zinc-100 font-medium truncate">
-                  يتجاذب «{dragState.target.title}» إلى{' '}
-                  <span className="font-mono-tabular font-bold text-[#7FFFD4]">
-                    {formatMinutes12h(dragState.snapped.startMin, language)} – {formatMinutes12h(dragState.snapped.endMin, language)}
-                  </span>
-                </span>
-              ) : (
-                <span className="text-zinc-100 font-medium truncate">اختر نافذة فراغ مضيئة لـ «{activeGhostOwner?.title}»</span>
-              )}
-            </div>
-            {placementTarget && (
-              <button type="button" onClick={() => setPlacementTarget(null)} className="min-h-[44px] sm:min-h-[34px] px-3 rounded-lg border border-white/15 text-zinc-200 hover:text-white text-xs font-medium cursor-pointer shrink-0">
-                إلغاء
-              </button>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      <UnplacedTray
-        unplacedBlocks={model.unplacedBlocks} placeableCount={placeableItems.length}
-        placementTarget={placementTarget} language={language} isSyncingAutoPlace={isSyncingAutoPlace}
-        onSelectTarget={setPlacementTarget} onOpenAutoPlaceSheet={() => setConfirmSheetOpen(true)}
-      />
+      {viewMode === 'grid' && (
+        <UnplacedTray
+          unplacedBlocks={model.unplacedBlocks} placeableCount={placeableItems.length}
+          placementTarget={placementTarget} language={language} isSyncingAutoPlace={isSyncingAutoPlace}
+          onSelectTarget={setPlacementTarget} onOpenAutoPlaceSheet={() => setConfirmSheetOpen(true)}
+        />
+      )}
 
       {viewMode === 'grid' ? (
         <TimeGrid
           model={model} language={language} nowMinutes={nowMinutes}
+          showBackgroundEvents={showBackgroundEvents}
+          onToggleBackgroundEvents={() => setShowBackgroundEvents((prev) => !prev)}
           onSelectActiveItem={setEditingItem}
           onCommitDragOrResize={(item, next) => handleCommitBlockChange(item, { ...next, scope: 'today' })}
         />
       ) : (
         <TimelineNodes
-          timelineRef={timelineRef} nodes={nodes} language={language} nowMinutes={nowMinutes}
-          placementTarget={placementTarget} dragState={dragState} swipePreview={swipePreview} gestureRef={gestureRef}
-          onSelectGhostSlot={handleSelectGhostSlot} onCardPointerDown={handleCardPointerDown}
-          onCardPointerMove={handleCardPointerMove} onFinishPointerGesture={finishPointerGesture}
-          onSelectPlacementTarget={setPlacementTarget} onToggleMovable={handleToggleMovable}
-          onTriggerAlert={onTriggerAlert} onDeleteEventBlock={onDeleteEventBlock}
+          nodes={nodes} language={language} nowMinutes={nowMinutes}
+          onToggleMovable={handleToggleMovable}
         />
       )}
 

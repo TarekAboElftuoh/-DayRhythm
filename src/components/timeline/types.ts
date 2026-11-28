@@ -188,7 +188,7 @@ export function toOccupiedScheduleBlocks(
   excludeId: string
 ): ScheduleBlock[] {
   return placed
-    .filter((p) => p.id !== excludeId)
+    .filter((p) => p.id !== excludeId && !isBackgroundTimelineItem(p))
     .map((p) => ({
       id: p.id,
       title: p.title,
@@ -210,12 +210,27 @@ export function toOccupiedScheduleBlocks(
     }));
 }
 
-const BG_ID_PREFIXES = ['sunlight_', 'water_', 'hydration_', 'med_', 'medication_', 'vitamin_', 'reminder_', 'system_'];
-const BG_TITLE_RE = /(كوب\s*ماء|شرب\s*(ال)?ماء|تذكير\s*المياه|ترطيب|hydration|water\s*cup|دواء|جرعة|فيتامين|مكمل|علاج|medication|vitamin|supplement|أشعة\s*الشمس|جلسة\s*شمس|sunlight|\buv\b|تذكير\s*النظام|system\s*reminder)/i;
+export interface BackgroundGridItem {
+  id: string;
+  title: string;
+  emoji: string;
+  startMin: number;
+  endMin: number;
+  durationMin: number;
+  subtitleAr?: string;
+}
+
+const BG_ID_PREFIXES = ['sunlight_', 'sunrise_', 'water_', 'hydration_', 'med_', 'medication_', 'vitamin_', 'reminder_', 'system_'];
+const BG_TITLE_RE = /(كوب\s*ماء|شرب\s*(ال)?ماء|تذكير\s*المياه|ترطيب|hydration|water\s*cup|دواء|جرعة|فيتامين|مكمل|علاج|medication|vitamin|supplement|أشعة\s*الشمس|جلسة\s*شمس|شروق|الشروق|sunrise|sunlight|\buv\b|تذكير\s*النظام|system\s*reminder)/i;
 
 export function isBackgroundTimelineItem(item: DayTimelinePlacedItem): boolean {
   const sid = item.sourceId || item.scheduleBlockId || '';
   if (BG_ID_PREFIXES.some((p) => sid.startsWith(p))) return true;
   if (item.emoji === '💧' || item.emoji === '🥤' || item.emoji === '💊') return true;
   return BG_TITLE_RE.test(item.title || '');
+}
+
+export function isBackgroundLockedBlock(blk: DayTimelineLockedBlock): boolean {
+  if (BG_ID_PREFIXES.some((p) => blk.id.startsWith(p))) return true;
+  return BG_TITLE_RE.test(blk.titleAr || '');
 }

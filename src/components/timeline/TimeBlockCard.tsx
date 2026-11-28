@@ -7,11 +7,20 @@ import {
   type DayTimelineLockedBlock,
   type DayTimelinePlacedItem,
 } from '../../engines/lifeRhythmEngine';
+import type { BackgroundGridItem } from './types';
 
 type TimeBlockCardProps =
   | {
       variant: 'locked';
       block: DayTimelineLockedBlock;
+      topPx: number;
+      heightPx: number;
+      language: AppLanguage;
+      isNow: boolean;
+    }
+  | {
+      variant: 'background';
+      item: BackgroundGridItem;
       topPx: number;
       heightPx: number;
       language: AppLanguage;
@@ -87,6 +96,36 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
             )}
           </div>
         )}
+      </div>
+    );
+  }
+
+  if (props.variant === 'background') {
+    const { item } = props;
+    const rangeText = `${formatMinutes12h(item.startMin, language)} – ${formatMinutes12h(item.endMin, language)}`;
+
+    return (
+      <div
+        style={{ top: `${topPx}px`, height: `${heightPx}px` }}
+        aria-label={`${item.title} (${rangeText})`}
+        className={`pointer-events-none select-none absolute inset-x-1 z-10 flex flex-col justify-center rounded-xl border border-dashed bg-white/[0.02] px-2.5 overflow-hidden opacity-65 ${
+          isNow ? 'border-[#7FFFD4]/30' : 'border-white/10'
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Lock className="h-2.5 w-2.5 shrink-0 text-zinc-500" aria-hidden="true" />
+            <span className="text-[11px] leading-none shrink-0" aria-hidden="true">
+              {item.emoji}
+            </span>
+            <span className="truncate text-[10px] font-medium text-zinc-400">
+              {item.title}
+            </span>
+          </div>
+          <span className="shrink-0 font-mono-tabular text-[9px] text-zinc-500">
+            {formatMinutes12h(item.startMin, language)}
+          </span>
+        </div>
       </div>
     );
   }
