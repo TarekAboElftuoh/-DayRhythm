@@ -973,6 +973,40 @@ export function sanitizeDynamicHabit(raw: Partial<DynamicHabit>): DynamicHabit {
     }
   }
   completedDates.sort();
+  let cleanDailyOverrides: DynamicHabit['dailyOverrides'];
+  if (raw.dailyOverrides && typeof raw.dailyOverrides === 'object' && !Array.isArray(raw.dailyOverrides)) {
+    const entries = Object.entries(raw.dailyOverrides)
+      .filter(([dateKey, ov]) => /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(dateKey) && ov && typeof ov === 'object')
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-14);
+    const out: NonNullable<DynamicHabit['dailyOverrides']> = {};
+    for (const [dateKey, ov] of entries) {
+      const startMin =
+        typeof ov.startMin === 'number' && Number.isFinite(ov.startMin) && ov.startMin >= 0 && ov.startMin < 1440
+          ? Math.round(ov.startMin)
+          : undefined;
+      const ovDur =
+        typeof ov.durationMin === 'number' && Number.isFinite(ov.durationMin)
+          ? clampInt(ov.durationMin, 5, 240, durationMin)
+          : undefined;
+      const unplaced = ov.unplaced === true ? true : undefined;
+      const updatedAtMs =
+        typeof ov.updatedAtMs === 'number' && Number.isFinite(ov.updatedAtMs)
+          ? Math.round(ov.updatedAtMs)
+          : undefined;
+      if (startMin !== undefined || unplaced) {
+        out[dateKey] = {
+          ...(startMin !== undefined ? { startMin } : {}),
+          ...(ovDur !== undefined ? { durationMin: ovDur } : {}),
+          ...(unplaced ? { unplaced: true } : {}),
+          ...(updatedAtMs !== undefined ? { updatedAtMs } : {}),
+        };
+      }
+    }
+    if (Object.keys(out).length > 0) {
+      cleanDailyOverrides = out;
+    }
+  }
   return {
     id,
     title,
@@ -982,6 +1016,7 @@ export function sanitizeDynamicHabit(raw: Partial<DynamicHabit>): DynamicHabit {
     ...(daysOfWeek && daysOfWeek.length > 0 ? { daysOfWeek } : {}),
     ...(raw.skipOnFasting ? { skipOnFasting: true } : {}),
     completedDates: completedDates.slice(-60),
+    ...(cleanDailyOverrides ? { dailyOverrides: cleanDailyOverrides } : {}),
   };
 }
 

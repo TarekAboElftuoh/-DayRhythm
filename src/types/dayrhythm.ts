@@ -278,6 +278,13 @@ export type DynamicHabitAnchor =
   | 'after-isha'
   | 'any-free-slot';
 
+export interface DynamicHabitDailyOverride {
+  startMin?: number;
+  durationMin?: number;
+  unplaced?: boolean;
+  updatedAtMs?: number;
+}
+
 export interface DynamicHabit {
   id: string;
   title: string;
@@ -287,6 +294,8 @@ export interface DynamicHabit {
   daysOfWeek?: number[];
   skipOnFasting?: boolean;
   completedDates: string[];
+  /** Date-keyed (YYYY-MM-DD) today-only overrides; preserves permanent dynamic anchor */
+  dailyOverrides?: Record<string, DynamicHabitDailyOverride>;
 }
 
 export interface ResolvedHabitPlacement {

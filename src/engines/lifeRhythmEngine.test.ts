@@ -14,6 +14,8 @@ import {
   findFreeTimeSlotsForToday,
   resolveHabitsForDay,
   buildDayTimelineModel,
+  snapToValidFreeWindow,
+  buildGhostSlotsForItem,
   DEFAULT_LIFE_PROFILE,
 } from './lifeRhythmEngine';
 import { DynamicHabit, MedicationItem, PrayerTimeItem, ScheduleBlock } from '../types/dayrhythm';
@@ -1107,5 +1109,143 @@ describe('Phase 3: Dynamic DayRhythm Habits (resolveHabitsForDay)', () => {
     expect(placedIds).not.toContain('blk_sleep_hit');
     expect(placedIds).not.toContain('blk_prayer_hit');
     expect(placedIds).not.toContain('h_post_fajr_blocked');
+  });
+
+  it('applies today-only dailyOverrides only on target date while keeping tomorrow dynamic anchor intact', async () => {
+    const { sanitizeDynamicHabit } = await import('../firebase');
+    const todayIso = '2026-11-29';
+    const tomorrowIso = '2026-11-30';
+
+    const todayPlan = computeDailyRhythmPlan(DEFAULT_LIFE_PROFILE, winterPrayers, {
+      todayWeekday: 0,
+      tomorrowWeekday: 1,
+      todayIso,
+      tomorrowIso,
+      fastingOverride: 'normal',
+    });
+    const tomorrowPlan = computeDailyRhythmPlan(DEFAULT_LIFE_PROFILE, winterPrayers, {
+      todayWeekday: 1,
+      tomorrowWeekday: 2,
+      todayIso: tomorrowIso,
+      tomorrowIso: '2026-12-01',
+      fastingOverride: 'normal',
+    });
+
+    // Habit anchored permanently to 'duha' (~07:18), overridden today only to 15:30 (930m)
+    const rawHabit: DynamicHabit = {
+      id: 'h_override_test',
+      title: 'قراءة تقنية',
+      status: 'active',
+      anchor: 'duha',
+      durationMin: 30,
+      completedDates: [],
+      dailyOverrides: {
+        [todayIso]: { startMin: 15 * 60 + 30, durationMin: 30, updatedAtMs: 1700000000000 },
+      },
+    };
+
+    const sanitized = sanitizeDynamicHabit(rawHabit);
+    expect(sanitized.dailyOverrides?.[todayIso]?.startMin).toBe(15 * 60 + 30);
+
+    const todayTimeline = buildDayTimelineModel({
+      prayers: winterPrayers,
+      plan: todayPlan,
+      profile: DEFAULT_LIFE_PROFILE,
+      habits: [sanitized],
+      todayIso,
+      weekday: 0,
+    });
+    const placedToday = todayTimeline.placedBlocks.find((b) => b.habitId === 'h_override_test');
+    expect(placedToday?.startMin).toBe(15 * 60 + 30);
+    expect(placedToday?.isTodayOverride).toBe(true);
+
+    // Tomorrow has no override -> dynamically uses permanent 'duha' anchor again
+    const tomorrowTimeline = buildDayTimelineModel({
+      prayers: winterPrayers,
+      plan: tomorrowPlan,
+      profile: DEFAULT_LIFE_PROFILE,
+      habits: [sanitized],
+      todayIso: tomorrowIso,
+      weekday: 1,
+    });
+    const placedTomorrow = tomorrowTimeline.placedBlocks.find(
+      (b) => b.habitId === 'h_override_test'
+    );
+    expect(placedTomorrow?.startMin).toBeLessThan(12 * 60);
+    expect(placedTomorrow?.isTodayOverride).toBeUndefined();
+
+    const resolvedTomorrow = resolveHabitsForDay({
+      habits: [sanitized],
+      prayers: winterPrayers,
+      plan: tomorrowPlan,
+      profile: DEFAULT_LIFE_PROFILE,
+      todayIso: tomorrowIso,
+      weekday: 1,
+    });
+    expect(resolvedTomorrow[0].slot?.startMin).toBeLessThan(12 * 60);
+  });
+
+  it('magnetic snap strictly rejects locked prayer and sleep intervals and snaps to nearest valid freeWindow', () => {
+    const plan = computeDailyRhythmPlan(DEFAULT_LIFE_PROFILE, winterPrayers, {
+      todayWeekday: 0,
+      tomorrowWeekday: 1,
+      todayIso: '2026-11-29',
+      tomorrowIso: '2026-11-30',
+      fastingOverride: 'normal',
+    });
+    const freeWindows = computeFreeWindows({
+      prayers: winterPrayers,
+      plan,
+      profile: DEFAULT_LIFE_PROFILE,
+      todayIso: '2026-11-29',
+    });
+
+    // Target Dhuhr prayer window (12:05) -> must jump over Dhuhr (11:55..12:20) into valid freeWindow
+    const dhuhrTarget = 12 * 60 + 5;
+    const snapFromPrayer = snapToValidFreeWindow({
+      targetStartMin: dhuhrTarget,
+      durationMin: 30,
+      freeWindows,
+      prayers: winterPrayers,
+      plan,
+      profile: DEFAULT_LIFE_PROFILE,
+    });
+    expect(snapFromPrayer.snapped).toBe(true);
+    expect(snapFromPrayer.jumpedOverLocked).toBe(true);
+    // Must not overlap Dhuhr [11:55..12:20]
+    expect(snapFromPrayer.startMin < 12 * 60 + 20 && snapFromPrayer.endMin > 12 * 60 - 5).toBe(
+      false
+    );
+
+    // Target deep inside night sleep (02:00 AM) -> must reject sleep and snap to earliest valid freeWindow after wake
+    const snapFromSleep = snapToValidFreeWindow({
+      targetStartMin: 2 * 60,
+      durationMin: 30,
+      freeWindows,
+      prayers: winterPrayers,
+      plan,
+      profile: DEFAULT_LIFE_PROFILE,
+    });
+    expect(snapFromSleep.snapped).toBe(true);
+    expect(snapFromSleep.jumpedOverLocked).toBe(true);
+    expect(snapFromSleep.startMin).toBeGreaterThanOrEqual(plan.wakeMin);
+    expect(snapFromSleep.endMin).toBeLessThanOrEqual(plan.bedtimeMin);
+
+    // Ghost slots never overlap locked prayers or sleep
+    const ghosts = buildGhostSlotsForItem({
+      durationMin: 30,
+      freeWindows,
+      prayers: winterPrayers,
+      plan,
+      profile: DEFAULT_LIFE_PROFILE,
+    });
+    expect(ghosts.length).toBeGreaterThan(0);
+    for (const g of ghosts) {
+      expect(g.startMin).toBeGreaterThanOrEqual(plan.wakeMin);
+      expect(g.endMin).toBeLessThanOrEqual(plan.bedtimeMin);
+      for (const p of winterPrayers.filter((pr) => pr.isObligatory)) {
+        expect(g.startMin < p.adhanMinutes + 20 && g.endMin > p.adhanMinutes - 5).toBe(false);
+      }
+    }
   });
 });

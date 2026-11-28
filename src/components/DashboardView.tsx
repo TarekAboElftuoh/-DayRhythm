@@ -70,6 +70,7 @@ import {
   DailyRhythmPlan,
   DynamicHabit,
   DynamicHabitAnchor,
+  DynamicHabitDailyOverride,
   DynamicHabitStatus,
   FreeTimeSlot,
   GmailDigestItem,
@@ -395,6 +396,7 @@ interface DashboardViewProps {
       durationMin: number;
       daysOfWeek?: number[];
       skipOnFasting?: boolean;
+      dailyOverrides?: Record<string, DynamicHabitDailyOverride>;
     }
   ) => void;
   onToggleHabitToday?: (habitId: string) => void;
@@ -546,6 +548,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   const [showTrash, setShowTrash] = useState(false);
   const [autoPlacedBlockStarts, setAutoPlacedBlockStarts] = useState<Record<string, number>>({});
+  const [unplacedLocalBlockIds, setUnplacedLocalBlockIds] = useState<Record<string, boolean>>({});
   const [isSyncingAutoPlace, setIsSyncingAutoPlace] = useState(false);
   const [showSilentInbox, setShowSilentInbox] = useState(false);
   const [confirmCancelSanctuary, setConfirmCancelSanctuary] = useState(false);
@@ -1008,12 +1011,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const effectiveBlocksForTimeline = useMemo(
     () =>
-      blocks.map((b) =>
-        typeof autoPlacedBlockStarts[b.id] === 'number'
+      blocks.map((b) => {
+        if (unplacedLocalBlockIds[b.id]) {
+          // Force into unplaced tray cleanly by placing synthetic collision at bedtime while keeping title
+          return { ...b, startMin: dailyRhythmPlan.bedtimeMin };
+        }
+        return typeof autoPlacedBlockStarts[b.id] === 'number'
           ? { ...b, startMin: autoPlacedBlockStarts[b.id] }
-          : b
-      ),
-    [blocks, autoPlacedBlockStarts]
+          : b;
+      }),
+    [blocks, autoPlacedBlockStarts, unplacedLocalBlockIds, dailyRhythmPlan.bedtimeMin]
   );
 
   const dayTimelineModel = useMemo(
@@ -1095,6 +1102,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       if (Object.keys(localBlockMoves).length > 0) {
         setAutoPlacedBlockStarts((prev) => ({ ...prev, ...localBlockMoves }));
+        setUnplacedLocalBlockIds((prev) => {
+          const next = { ...prev };
+          for (const k of Object.keys(localBlockMoves)) delete next[k];
+          return next;
+        });
       }
       if (calendarUpdates.length > 0) {
         await onExecuteCalendarActions(calendarUpdates);
@@ -1104,6 +1116,144 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       }
     } finally {
       setIsSyncingAutoPlace(false);
+    }
+  };
+
+  const handleCommitHabitMove = async (
+    habit: DynamicHabit,
+    scope: 'today' | 'permanent',
+    slot: { startMin: number; durationMin: number; suggestedAnchor: DynamicHabitAnchor }
+  ) => {
+    if (!onUpdateHabit) return;
+    if (scope === 'today') {
+      const nextOverrides: Record<string, DynamicHabitDailyOverride> = {
+        ...(habit.dailyOverrides ?? {}),
+        [todayCairoIso]: {
+          startMin: slot.startMin,
+          durationMin: slot.durationMin,
+          unplaced: false,
+          updatedAtMs: Date.now(),
+        },
+      };
+      onUpdateHabit(habit.id, {
+        title: habit.title,
+        status: habit.status,
+        anchor: habit.anchor,
+        durationMin: habit.durationMin,
+        daysOfWeek: habit.daysOfWeek,
+        skipOnFasting: habit.skipOnFasting,
+        dailyOverrides: nextOverrides,
+      });
+      return;
+    }
+
+    const nextOverrides = { ...(habit.dailyOverrides ?? {}) };
+    delete nextOverrides[todayCairoIso];
+    onUpdateHabit(habit.id, {
+      title: habit.title,
+      status: habit.status,
+      anchor: slot.suggestedAnchor,
+      durationMin: habit.durationMin,
+      daysOfWeek: habit.daysOfWeek,
+      skipOnFasting: habit.skipOnFasting,
+      dailyOverrides: nextOverrides,
+    });
+  };
+
+  const handleCommitTimelineItemMove = async (
+    item: {
+      kind: 'task' | 'event';
+      title: string;
+      durationMin: number;
+      googleTask?: GoogleTaskItem;
+      scheduleBlock?: ScheduleBlock;
+    },
+    slot: { startMin: number; time24: string }
+  ) => {
+    setIsSyncingAutoPlace(true);
+    try {
+      if (item.kind === 'task' && item.googleTask) {
+        const cleanedNotes = (item.googleTask.notes ?? '')
+          .replace(/(?:⏰|@)\s*\d{1,2}:\d{2}/g, '')
+          .trim();
+        const nextNotes = `${cleanedNotes ? `${cleanedNotes}\n` : ''}⏰ ${slot.time24}`;
+        await onExecuteTaskActions([
+          {
+            operation: 'update',
+            taskId: item.googleTask.id,
+            taskListId: item.googleTask.taskListId,
+            title: item.googleTask.title,
+            notes: nextNotes,
+            dueDateIso: todayCairoIso,
+          },
+        ]);
+      } else if (item.kind === 'event' && item.scheduleBlock) {
+        if (item.scheduleBlock.googleEventId && calendarConnected) {
+          await onExecuteCalendarActions([
+            {
+              operation: 'update',
+              eventId: item.scheduleBlock.googleEventId,
+              calendarId: item.scheduleBlock.googleCalendarId,
+              title: item.title,
+              dateIso: todayCairoIso,
+              startTime24: slot.time24,
+              durationMinutes: item.durationMin,
+            },
+          ]);
+        } else {
+          const blkId = item.scheduleBlock.id;
+          setUnplacedLocalBlockIds((prev) => {
+            if (!prev[blkId]) return prev;
+            const next = { ...prev };
+            delete next[blkId];
+            return next;
+          });
+          setAutoPlacedBlockStarts((prev) => ({ ...prev, [blkId]: slot.startMin }));
+        }
+      }
+    } finally {
+      setIsSyncingAutoPlace(false);
+    }
+  };
+
+  const handleMoveTimelineItemToUnplaced = async (item: DayTimelinePlacedItem) => {
+    if (item.kind === 'habit' && item.habit && onUpdateHabit) {
+      const nextOverrides: Record<string, DynamicHabitDailyOverride> = {
+        ...(item.habit.dailyOverrides ?? {}),
+        [todayCairoIso]: {
+          unplaced: true,
+          updatedAtMs: Date.now(),
+        },
+      };
+      onUpdateHabit(item.habit.id, {
+        title: item.habit.title,
+        status: item.habit.status,
+        anchor: item.habit.anchor,
+        durationMin: item.habit.durationMin,
+        daysOfWeek: item.habit.daysOfWeek,
+        skipOnFasting: item.habit.skipOnFasting,
+        dailyOverrides: nextOverrides,
+      });
+      return;
+    }
+    if (item.kind === 'task' && item.googleTask) {
+      const cleanedNotes = (item.googleTask.notes ?? '')
+        .replace(/(?:⏰|@)\s*\d{1,2}:\d{2}/g, '')
+        .trim();
+      await onExecuteTaskActions([
+        {
+          operation: 'update',
+          taskId: item.googleTask.id,
+          taskListId: item.googleTask.taskListId,
+          title: item.googleTask.title,
+          notes: cleanedNotes,
+          dueDateIso: todayCairoIso,
+        },
+      ]);
+      return;
+    }
+    if (item.kind === 'event' && item.scheduleBlock) {
+      setUnplacedLocalBlockIds((prev) => ({ ...prev, [item.scheduleBlock!.id]: true }));
     }
   };
 
@@ -3015,11 +3165,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               /* Structured + Things 3 Vertical 24h Day Timeline */
               <DayTimelineView
                 model={dayTimelineModel}
+                prayers={prayers}
+                plan={dailyRhythmPlan}
+                profile={lifeProfile}
+                todayIso={todayCairoIso}
                 language={language}
                 nowMinutes={nowMinutes}
                 isSyncingAutoPlace={isSyncingAutoPlace}
                 onToggleBlockComplete={onToggleComplete}
                 onToggleHabitToday={onToggleHabitToday}
+                onCommitHabitMove={handleCommitHabitMove}
+                onCommitItemMove={handleCommitTimelineItemMove}
+                onMoveToUnplaced={handleMoveTimelineItemToUnplaced}
                 onCompleteTask={(item: DayTimelinePlacedItem) => {
                   if (!item.googleTaskId) return;
                   setPendingTaskConfirmation({

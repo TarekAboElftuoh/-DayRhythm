@@ -26,6 +26,7 @@ import {
   DualStreaks,
   DynamicHabit,
   DynamicHabitAnchor,
+  DynamicHabitDailyOverride,
   DynamicHabitStatus,
   FreeWindow,
   GmailDigestItem,
@@ -9534,7 +9535,7 @@ export default function App() {
       setHabits((prev) => {
         const next = updater(prev);
         void pushToTasksVaultImmediately({ habits: next });
-        void pushFullCloudBackupImmediately();
+        void pushFullCloudBackupImmediately(undefined, { habits: next });
         try {
           localStorage.setItem(HABITS_STORAGE_KEY, JSON.stringify(next));
         } catch {
@@ -9585,6 +9586,7 @@ export default function App() {
         durationMin: number;
         daysOfWeek?: number[];
         skipOnFasting?: boolean;
+        dailyOverrides?: Record<string, DynamicHabitDailyOverride>;
       }
     ) => {
       persistHabitsNext((prev) =>
@@ -9598,6 +9600,8 @@ export default function App() {
                 durationMin: patch.durationMin,
                 daysOfWeek: patch.daysOfWeek,
                 skipOnFasting: patch.skipOnFasting,
+                dailyOverrides:
+                  patch.dailyOverrides !== undefined ? patch.dailyOverrides : h.dailyOverrides,
               })
             : h
         )
