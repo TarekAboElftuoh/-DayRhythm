@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
-import { AlertTriangle, Magnet } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { formatMinutes12h } from '../engines/prayerEngine';
 import {
   buildGhostSlotsForItem,
@@ -9,12 +8,14 @@ import {
   type SnapToFreeWindowResult,
 } from '../engines/lifeRhythmEngine';
 import {
-  SPRING_SNAPPY,
+  toPlacementTargetFromPlaced,
   type DayTimelineViewProps,
   type PendingMoveConfirmation,
   type PlacementTarget,
   type TimelineRenderNode,
 } from './timeline/types';
+import { DragHintBar } from './timeline/DragHintBar';
+import { TimeGrid } from './timeline/TimeGrid';
 import { UnplacedTray } from './timeline/UnplacedTray';
 import { TimelineNodes } from './timeline/TimelineNodes';
 import { TimelineSheets } from './timeline/TimelineSheets';
@@ -40,6 +41,7 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
   onCommitItemMove,
   onMoveToUnplaced,
 }) => {
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [confirmSheetOpen, setConfirmSheetOpen] = useState(false);
   const [placementTarget, setPlacementTarget] = useState<PlacementTarget | null>(null);
   const [pendingMove, setPendingMove] = useState<PendingMoveConfirmation | null>(null);
@@ -54,6 +56,7 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
     timelineRef,
     gestureRef,
     handleSelectGhostSlot,
+    handleQuickPlaceAt,
     handleCardPointerDown,
     handleCardPointerMove,
     finishPointerGesture,
@@ -153,33 +156,13 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
         )}
       </div>
 
-      <AnimatePresence initial={false}>
-        {(placementTarget || dragState) && (
-          <motion.div
-            initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={SPRING_SNAPPY}
-            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-active)] bg-[rgba(127,255,212,0.10)] px-3.5 py-2 text-xs"
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <Magnet className="w-4 h-4 text-[#7FFFD4] shrink-0" />
-              {dragState?.snapped?.snapped ? (
-                <span className="text-zinc-100 font-medium truncate">
-                  يتجاذب «{dragState.target.title}» إلى{' '}
-                  <span className="font-mono-tabular font-bold text-[#7FFFD4]">
-                    {formatMinutes12h(dragState.snapped.startMin, language)} – {formatMinutes12h(dragState.snapped.endMin, language)}
-                  </span>
-                </span>
-              ) : (
-                <span className="text-zinc-100 font-medium truncate">اختر نافذة فراغ مضيئة لـ «{activeGhostOwner?.title}»</span>
-              )}
-            </div>
-            {placementTarget && (
-              <button type="button" onClick={() => setPlacementTarget(null)} className="min-h-[44px] sm:min-h-[34px] px-3 rounded-lg border border-white/15 text-zinc-200 hover:text-white text-xs font-medium cursor-pointer shrink-0">
-                إلغاء
-              </button>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <DragHintBar
+        placementTarget={placementTarget}
+        activeGhostOwner={activeGhostOwner}
+        snapped={dragState?.snapped ?? null}
+        language={language}
+        onClear={() => setPlacementTarget(null)}
+      />
 
       <UnplacedTray
         unplacedBlocks={model.unplacedBlocks}
@@ -191,6 +174,40 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
         onOpenAutoPlaceSheet={() => setConfirmSheetOpen(true)}
       />
 
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-zinc-500">ترتيب اليوم</span>
+        <div className="inline-flex rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-0.5">
+          {(['grid', 'list'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setViewMode(mode)}
+              aria-pressed={viewMode === mode}
+              className={`min-h-[32px] px-3 rounded-md text-[11px] font-semibold cursor-pointer transition-colors ${
+                viewMode === mode ? 'bg-[#7FFFD4] text-black' : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {mode === 'grid' ? 'شبكة' : 'قائمة'}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {viewMode === 'grid' ? (
+        <TimeGrid
+          model={model}
+          language={language}
+          nowMinutes={nowMinutes}
+          canPlace={Boolean(placementTarget) || placeableItems.length > 0}
+          selectedId={placementTarget?.id ?? null}
+          onPlaceInGap={handleQuickPlaceAt}
+          onSelectBlock={(id) => {
+            const item = model.placedBlocks.find((p) => p.id === id);
+            if (!item) return;
+            setPlacementTarget((prev) => (prev?.id === item.id ? null : toPlacementTargetFromPlaced(item)));
+          }}
+        />
+      ) : (
       <TimelineNodes
         timelineRef={timelineRef}
         nodes={nodes}
@@ -209,6 +226,7 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
         onTriggerAlert={onTriggerAlert}
         onDeleteEventBlock={onDeleteEventBlock}
       />
+      )}
 
       <TimelineSheets
         language={language}

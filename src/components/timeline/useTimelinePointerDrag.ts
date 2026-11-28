@@ -16,9 +16,11 @@ import {
 } from '../../engines/lifeRhythmEngine';
 import {
   toPlacementTargetFromPlaced,
+  toPlacementTargetFromUnplaced,
   type PendingMoveConfirmation,
   type PlacementTarget,
 } from './types';
+import { resolveGapPlacement, resolveGapTarget } from './quickPlace';
 
 export interface UseTimelinePointerDragParams {
   model: DayTimelineModel;
@@ -116,6 +118,15 @@ export function useTimelinePointerDrag(p: UseTimelinePointerDragParams) {
       },
       'tap'
     );
+  };
+
+  /** Free-gap tap: place the selected item (or the next unplaced one) into that gap. */
+  const handleQuickPlaceAt = (startMin: number) => {
+    const picked = resolveGapTarget(placementTarget, model.unplacedBlocks);
+    if (!picked) return;
+    const target = 'currentRange' in picked ? picked : toPlacementTargetFromUnplaced(picked);
+    const slot = resolveGapPlacement({ target, startMin, freeWindows: model.freeWindows, prayers, plan, profile });
+    if (slot) openMoveConfirmation(target, slot, 'tap');
   };
 
   const beginDragNow = (item: DayTimelinePlacedItem, pointerId: number, clientY: number, el: HTMLElement) => {
@@ -223,6 +234,7 @@ export function useTimelinePointerDrag(p: UseTimelinePointerDragParams) {
     timelineRef,
     gestureRef,
     handleSelectGhostSlot,
+    handleQuickPlaceAt,
     handleCardPointerDown,
     handleCardPointerMove,
     finishPointerGesture,
