@@ -13,12 +13,20 @@ import {
   SettingsSnapshotContext,
   TaskActionProposal,
 } from '../types/dayrhythm';
-import { formatMinutes12h } from '../engines/prayerEngine';
-import { DYNAMIC_HABIT_ANCHOR_LABELS, formatDurationAr } from '../engines/lifeRhythmEngine';
+import { formatMinutes12h, calculateEgyptianPrayerTimes } from '../engines/prayerEngine';
+import {
+  DYNAMIC_HABIT_ANCHOR_LABELS,
+  computeDailyRhythmPlan,
+  formatDurationAr,
+} from '../engines/lifeRhythmEngine';
 import { formatSettingsSchemaForGemini } from '../utils/settingsPatchValidator';
 import {
   type GeminiFunctionCall,
+  type GeminiScheduleGuardContext,
+  type GeminiScheduleGuardResult,
+  type GeminiScheduleGuardViolation,
   extractPendingProposalFromFunctionCalls,
+  validateGeminiScheduleProposal,
   sanitizeGeminiOutputText,
   cleanDisplayMessageText,
 } from './geminiSanitizer';
@@ -389,11 +397,15 @@ export const DAYRHYTHM_SYSTEM_INSTRUCTION = `
      * لو أخبرك «نمت على نفسي وصحيت دلوقتي — اليوم هيمشي إزاي؟»: اقرأ الوقت الحالي وأحداث التقويم المتبقية، وأعد ترتيب باقي اليوم بذكاء مع حماية الصلوات المتبقية ونوم الليلة.
    - الأولوية #3 (الالتزامات الثابتة عند تفعيلها): مواعيد الشغل الرسمي بمجرد أن يبلغك بها المستخدم.
    - الأولوية #4 (المرونة الذكية وتوسّع العادات): تنظيم الشغل والمهام في الوقت الفاضي بين الصلوات والشروق والغروب، توزيع أكواب الماء (المحسوبة بالمعادلة والمعدّلة حسب حرارة الطقس)، العلاجات، المشي، وأي عادات مستقبلية يضيفها المستخدم عبر propose_creative_actions أو propose_memory_actions.
-3. الفحص الاستباقي للتعارض والمناقشة الذكية قبل الحجز في Google Calendar:
-   - قاعدة الجدولة الصارمة من freeWindows: عندما يطلب المستخدم جدولة مهمة مؤجلة، أو إيجاد وقت لنشاط، أو إعادة ترتيب يومه، اختر دائماً من نوافذ الفراغ المتاحة اليوم (freeWindows) فقط بما يكفي للمدة المطلوبة، ويُمنع منعاً باتاً التداخل مع الصلوات الخمس (ومناطق أمانها)، أو النوم الليلي، أو القيلولة التعويضية / تعويض ما بعد الفجر، أو نافذة السحور في أيام الصيام، أو أحداث Google Calendar القائمة. واحترم وضع النوم الموسمي النشط (long-night / medium-night / short-night).
-   - قبل اقتراح حجز أي حدث جديد أو ميعاد علاج/مكمل، افحص تلقائياً: (أ) أوقات الصلوات الخمس + فترة الصمت، (ب) نافذة النوم الليلي والسحور والقيلولة، (ج) ساعات الصيام (الفجر–المغرب في أيام الصيام)، (د) أحداث Google Calendar المسجلة فعلياً.
-   - إذا وجدت أي تعارض مع النوم أو الصلاة أو الصيام أو حدث آخر، حذّر المستخدم بلطف ووضوح واشرح سبب التعارض واقترح عليه أنسب وقت فاضي متوافق مع شروطه للنقاش قبل التنفيذ.
-   - بمجرد أن يتفق معك المستخدم على ميعاد مناسب، اقترح العملية فوراً عبر الأدوات (propose_calendar_actions وغيرها) ليضغط «تأكيد التنفيذ» فيُحجز الموعد مباشرة في Google Calendar.
+3. الفحص الاستباقي للتعارض والحماية الصارمة وقواعد الطاقة الحيوية (Hard Guard & Circadian Logic):
+   - الحماية الصارمة المطلقة (Hard Guard): يُمنع منعاً باتاً جدولة أو نقل أي مهمة أو عادة أو تمرين داخل أوقات الصلوات الخمس (ومناطق أمانها)، أو النوم الليلي الموسمي، أو السحور في أيام الصيام، أو القيلولة/الراحة التعويضية. إذا طلب المستخدم وقتاً يتداخل مع النوم أو الصلاة أو السحور أو القيلولة، ارفض بأدب واختصار («ده وقت نومك/صلاتك المحمي») واقترح أنسب بديل منطقي من freeWindows — ولا تستدعِ أداة التأكيد لأي وقت محمي.
+   - قاعدة freeWindows: اختر دائماً من نوافذ الفراغ المتاحة اليوم (freeWindows) فقط بما يكفي للمدة المطلوبة، واحترم وضع النوم الموسمي النشط (long-night / medium-night / short-night).
+   - منطق الطاقة والإيقاع اليومي (Circadian & Energy Logic):
+     * مهام التركيز العميق (DevOps، برمجة، مذاكرة، عمل ثقيل) ← تُوجَّه لذروة الصباح (بعد الفجر والضحى)، ويُمنع وضعها داخل نطاق التهدئة قبل النوم (Wind-Down Zone: آخر 45–60 دقيقة قبل موعد النوم).
+     * التمارين والرياضة ← لا تُجدول مباشرة بعد الوجبات ولا خلال ساعتين قبل النوم؛ وفي أيام الصيام يُفضَّل التمرين الخفيف قبل المغرب بساعة تقريباً.
+     * فاصل التركيز (Focus Buffer) ← التزم بفاصل راحة 10–15 دقيقة بين كل جلستي عمل عميق متتاليتين.
+     * منحنى طاقة الصيام ← آخر ساعتين قبل المغرب مخصّصتان للمهام الخفيفة فقط، وتُدفع المهام الثقيلة للصباح.
+   - بوابة التأكيد النظيفة: لا تستدعِ أدوات التنفيذ لعرض كارت التأكيد إلا إذا تحققت جميع القيود العلمية والصحية والحماية الصارمة؛ وإذا خالفت، اشرح السبب في سطر واحد مختصر واعرض البديل المنطقي للموافقة أولاً.
    - التعديل والحذف على كل الأيام القادمة (Recurring Events): إذا طلب المستخدم تطبيق تعديل أو حذف لحدث متكرر على كل الأيام القادمة (مثل "امسح الفطور لكل الأيام الجاية" أو "غيّر ميعاد الجيم يومياً للأيام القادمة")، استخدم applyToAllDays: true في propose_calendar_actions ليتم تعديل أو حذف السلسلة المتكررة بالكامل في Google Calendar وليس فقط يوم واحد. وعند إضافة حدث متكرر جديد استخدم recurrenceRule: 'DAILY' أو 'WEEKLY' مع byDays.
 4. مستشار علمي عام وذكي لكل العلاجات والمكملات مع الحجز التلقائي في التقويم:
    - ينطبق هذا الأسلوب على أي دواء أو فيتامين أو مكمل يذكره المستخدم (مثل فيتامين د، ماغنيسيوم، أوميجا 3، زنك، حديد، كرياتين، أو أي علاج شخصي يضيفه في حسابه).
@@ -1014,11 +1026,57 @@ export function buildChatSystemInstruction(
           )
           .join('\n')
       : '';
+
+  let protectedWindowsLines = '';
+  if (payload.settingsSnapshot?.lifeProfile) {
+    const lp = payload.settingsSnapshot.lifeProfile;
+    const tz = lp.currentTimeZone || 'Africa/Cairo';
+    const prayersToday = calculateEgyptianPrayerTimes(
+      {
+        id: 'active',
+        nameAr: lp.currentCityName,
+        nameEn: lp.currentCityName,
+        lat: lp.currentLat,
+        lng: lp.currentLng,
+        tzOffsetHours: 2,
+        timeZone: tz,
+      },
+      new Date(),
+      lp.adhanLeadMinutes
+    );
+    const wdParsed = new Date(`${todayCairo}T12:00:00Z`).getUTCDay();
+    const todayWeekday = Number.isNaN(wdParsed) ? new Date().getDay() : wdParsed;
+    const planToday = computeDailyRhythmPlan(lp, prayersToday, {
+      todayWeekday,
+      tomorrowWeekday: (todayWeekday + 1) % 7,
+      todayIso: todayCairo,
+      timeZone: tz,
+    });
+    const windDownStart =
+      planToday.seasonalSleep?.windDownStartMin ?? Math.max(planToday.wakeMin, planToday.bedtimeMin - 55);
+    const protectedParts = [
+      `- النوم الليلي المحمي: ${formatMinutes12h(planToday.bedtimeMin, 'ar')} – ${formatMinutes12h(planToday.wakeMin, 'ar')}`,
+      `- نطاق التهدئة (Wind-Down Zone — ممنوع العمل العميق والرياضة): ${formatMinutes12h(windDownStart, 'ar')} – ${formatMinutes12h(planToday.bedtimeMin, 'ar')}`,
+    ];
+    if (planToday.suhoorStartMin !== null) {
+      const fajrMin = prayersToday.find((p) => p.id === 'fajr')?.adhanMinutes ?? planToday.wakeMin;
+      protectedParts.push(
+        `- السحور المحمي: ${formatMinutes12h(planToday.suhoorStartMin, 'ar')} – ${formatMinutes12h(fajrMin, 'ar')}`
+      );
+    }
+    if (planToday.qailulahStartMin !== null && planToday.qailulahDurationMin > 0) {
+      protectedParts.push(
+        `- القيلولة التعويضية المحمية: ${formatMinutes12h(planToday.qailulahStartMin, 'ar')} – ${formatMinutes12h(planToday.qailulahStartMin + planToday.qailulahDurationMin, 'ar')}`
+      );
+    }
+    protectedWindowsLines = `\nالأوقات المحمية (ممنوع الجدولة فيها قطعياً):\n${protectedParts.join('\n')}`;
+  }
+
   const seasonalAndFreeWindowsBlock =
-    seasonalModeTag || freeWindowsLines
+    seasonalModeTag || freeWindowsLines || protectedWindowsLines
       ? `\n\n=== نوافذ الفراغ اليوم ووضع النوم الموسمي ===${
           seasonalModeTag ? `\nوضع النوم الموسمي النشط: ${seasonalModeTag}` : ''
-        }${
+        }${protectedWindowsLines}${
           freeWindowsLines
             ? `\nfreeWindows (نوافذ الفراغ المتاحة بين الاستيقاظ والنوم — خالية من الصلوات والنوم والسحور والقيلولة وأحداث التقويم):\n${freeWindowsLines}`
             : ''
@@ -1063,9 +1121,15 @@ export function normalizeGeminiHistory(
   }));
 }
 
-export type { GeminiFunctionCall } from './geminiSanitizer';
+export type {
+  GeminiFunctionCall,
+  GeminiScheduleGuardContext,
+  GeminiScheduleGuardResult,
+  GeminiScheduleGuardViolation,
+} from './geminiSanitizer';
 export {
   extractPendingProposalFromFunctionCalls,
+  validateGeminiScheduleProposal,
   sanitizeGeminiOutputText,
   cleanDisplayMessageText,
 } from './geminiSanitizer';
@@ -1417,13 +1481,33 @@ export async function apiStreamGeminiChatClient(
   }
 
   const sanitized = sanitizeGeminiOutputText(fullText, collectedFnCalls);
-  const pendingProposal = extractPendingProposalFromFunctionCalls(sanitized.recoveredFnCalls, {
+  const rawProposal = extractPendingProposalFromFunctionCalls(sanitized.recoveredFnCalls, {
     settingsSnapshot: payload.settingsSnapshot,
+    skipScheduleGuard: true,
   });
+
+  let pendingProposal = rawProposal;
+  let guardRefusalNote: string | null = null;
+
+  if (rawProposal && payload.settingsSnapshot?.lifeProfile) {
+    const guardResult = validateGeminiScheduleProposal(rawProposal, {
+      lifeProfile: payload.settingsSnapshot.lifeProfile,
+      freeWindows: payload.freeWindows ?? payload.settingsSnapshot.freeWindows,
+    });
+    pendingProposal = guardResult.filteredProposal;
+    if (!guardResult.allowed && guardResult.refusalMessageAr) {
+      guardRefusalNote = guardResult.refusalMessageAr;
+    }
+  }
+
   const finalText =
-    sanitized.cleanText ||
-    pendingProposal?.summaryAr ||
-    'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
+    guardRefusalNote && !pendingProposal
+      ? guardRefusalNote
+      : guardRefusalNote
+        ? `${sanitized.cleanText ? `${sanitized.cleanText}\n\n` : ''}${guardRefusalNote}`
+        : sanitized.cleanText ||
+          pendingProposal?.summaryAr ||
+          'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
 
   handlers.onDone({
     text: finalText,

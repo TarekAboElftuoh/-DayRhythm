@@ -9,6 +9,7 @@ import {
   FreeWindow,
   GeoLocation,
   GoogleCalendarEventItem,
+  GoogleTaskItem,
   HydrationScheduleSlot,
   LifeProfile,
   MedicationFastingPolicy,
@@ -2182,4 +2183,877 @@ export function buildSleepAlarmEntries(params: {
   }
 
   return alarms;
+}
+
+export type ScientificEnergyCategory = 'deep_focus' | 'exercise' | 'light';
+
+export function classifyScientificTaskEnergy(title: string): ScientificEnergyCategory {
+  const normalized = (title || '').trim();
+  if (
+    /(\bdevops\b|\bcode\b|\bcoding\b|\bfocus\b|\bdeep\b|\bstudy\b|برمجة|كود|تطوير|مذاكرة|مراجعة|مشروع|عمل عميق|تركيز|تحليل|كتابة|تصميم|سيرفر|خادم)/i.test(
+      normalized
+    )
+  ) {
+    return 'deep_focus';
+  }
+  if (
+    /(\bgym\b|\bworkout\b|\bexercise\b|\brun\b|\bwalk\b|جيم|تمرين|رياضة|مشي|جري|تمدد|كارديو)/i.test(
+      normalized
+    )
+  ) {
+    return 'exercise';
+  }
+  return 'light';
+}
+
+export type DayTimelineLockedKind =
+  | 'prayer'
+  | 'suhoor'
+  | 'sleep'
+  | 'nap'
+  | 'post_fajr_sleep';
+
+export interface DayTimelineLockedBlock {
+  id: string;
+  kind: DayTimelineLockedKind;
+  titleAr: string;
+  emoji: string;
+  startMin: number;
+  endMin: number;
+  durationMin: number;
+  isLocked: true;
+  subtitleAr?: string;
+}
+
+export interface DayTimelinePlacedItem {
+  id: string;
+  kind: 'habit' | 'task' | 'event';
+  sourceId: string;
+  title: string;
+  emoji: string;
+  startMin: number;
+  endMin: number;
+  durationMin: number;
+  completed: boolean;
+  energyCategory: ScientificEnergyCategory;
+  subtitleAr?: string;
+  googleEventId?: string;
+  googleCalendarId?: string;
+  googleHtmlLink?: string;
+  googleTaskId?: string;
+  googleTaskListId?: string;
+  habitId?: string;
+  scheduleBlockId?: string;
+  anchor?: DynamicHabitAnchor;
+}
+
+export type DayTimelineConflictKind =
+  | 'sleep'
+  | 'prayer'
+  | 'suhoor'
+  | 'nap'
+  | 'anchor_unavailable'
+  | 'calendar';
+
+export interface DayTimelineSuggestedSlot {
+  startMin: number;
+  endMin: number;
+  time24: string;
+  windowLabel: string;
+  suggestedAnchor?: DynamicHabitAnchor;
+  scientificNoteAr: string;
+}
+
+export interface DayTimelineUnplacedItem {
+  id: string;
+  kind: 'habit' | 'task' | 'event';
+  sourceId: string;
+  title: string;
+  emoji: string;
+  durationMin: number;
+  requestedStartMin: number | null;
+  conflictKind: DayTimelineConflictKind;
+  conflictReasonAr: string;
+  suggestedSlot: DayTimelineSuggestedSlot | null;
+  googleEventId?: string;
+  googleCalendarId?: string;
+  googleTaskId?: string;
+  googleTaskListId?: string;
+  habit?: DynamicHabit;
+  scheduleBlock?: ScheduleBlock;
+  googleTask?: GoogleTaskItem;
+}
+
+export interface DayTimelineModel {
+  wakeMin: number;
+  bedtimeMin: number;
+  windDownStartMin: number;
+  lockedBlocks: DayTimelineLockedBlock[];
+  placedBlocks: DayTimelinePlacedItem[];
+  unplacedBlocks: DayTimelineUnplacedItem[];
+  freeWindows: FreeWindow[];
+}
+
+export interface BuildDayTimelineInput {
+  prayers: PrayerTimeItem[];
+  plan: DailyRhythmPlan;
+  profile: LifeProfile;
+  habits?: DynamicHabit[];
+  blocks?: ScheduleBlock[];
+  googleTasks?: GoogleTaskItem[];
+  calendarEvents?: GoogleCalendarEventItem[];
+  todayIso: string;
+  weekday?: number;
+  timeZone?: string;
+}
+
+interface LockedInterval {
+  kind: DayTimelineConflictKind;
+  startMin: number;
+  endMin: number;
+  reasonAr: string;
+}
+
+function buildLockedIntervalsAndBlocks(
+  prayers: PrayerTimeItem[],
+  plan: DailyRhythmPlan,
+  profile: LifeProfile
+): { lockedBlocks: DayTimelineLockedBlock[]; collisionIntervals: LockedInterval[] } {
+  const lockedBlocks: DayTimelineLockedBlock[] = [];
+  const collisionIntervals: LockedInterval[] = [];
+
+  const bed = wrap1440(plan.bedtimeMin);
+  const wake = wrap1440(plan.wakeMin);
+  const sleepLabel = `(${formatMinutes12h(bed, 'ar')} – ${formatMinutes12h(wake, 'ar')})`;
+
+  if (bed > wake) {
+    if (wake > 0) {
+      collisionIntervals.push({
+        kind: 'sleep',
+        startMin: 0,
+        endMin: wake,
+        reasonAr: `يتعارض مع النوم الليلي ${sleepLabel}`,
+      });
+    }
+    collisionIntervals.push({
+      kind: 'sleep',
+      startMin: bed,
+      endMin: 1440,
+      reasonAr: `يتعارض مع النوم الليلي ${sleepLabel}`,
+    });
+  } else if (wake > bed) {
+    collisionIntervals.push({
+      kind: 'sleep',
+      startMin: bed,
+      endMin: wake,
+      reasonAr: `يتعارض مع النوم الليلي ${sleepLabel}`,
+    });
+  }
+
+  lockedBlocks.push({
+    id: 'locked_seasonal_sleep',
+    kind: 'sleep',
+    titleAr: 'النوم الليلي الموسمي',
+    emoji: '🛏️',
+    startMin: plan.bedtimeMin,
+    endMin: plan.bedtimeMin + Math.max(60, plan.coreNightSleepMin),
+    durationMin: Math.max(60, plan.coreNightSleepMin),
+    isLocked: true,
+    subtitleAr: plan.seasonalSleep?.phaseLabelAr ?? 'نوم محمي',
+  });
+
+  const fajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
+  if (plan.isFastingToday || plan.suhoorStartMin !== null) {
+    const suhoorLead =
+      profile.suhoorLeadMinutes ?? SEASONAL_SLEEP_CONSTANTS.FASTING_WAKE_BEFORE_FAJR_MIN;
+    const suhoorStart =
+      plan.suhoorStartMin !== null ? plan.suhoorStartMin : Math.max(0, fajrMin - suhoorLead);
+    if (fajrMin > suhoorStart) {
+      collisionIntervals.push({
+        kind: 'suhoor',
+        startMin: suhoorStart,
+        endMin: fajrMin,
+        reasonAr: `يتعارض مع وقت السحور (${formatMinutes12h(suhoorStart, 'ar')} – ${formatMinutes12h(fajrMin, 'ar')})`,
+      });
+      lockedBlocks.push({
+        id: 'locked_suhoor',
+        kind: 'suhoor',
+        titleAr: 'السحور',
+        emoji: '🍽️',
+        startMin: suhoorStart,
+        endMin: fajrMin,
+        durationMin: fajrMin - suhoorStart,
+        isLocked: true,
+        subtitleAr: 'وجبة الصيام المحمية',
+      });
+    }
+  }
+
+  const preBuffer = Math.max(5, profile.adhanLeadMinutes ?? 0);
+  for (const p of prayers) {
+    if (!p.isObligatory) continue;
+    const silenceLen = p.id === 'fajr' ? profile.fajrSilenceMinutes : profile.prayerSilenceMinutes;
+    const postBuffer = Math.max(20, silenceLen ?? 20);
+    const pStart = Math.max(0, p.adhanMinutes - preBuffer);
+    const pEnd = Math.min(1440, p.adhanMinutes + postBuffer);
+    collisionIntervals.push({
+      kind: 'prayer',
+      startMin: pStart,
+      endMin: pEnd,
+      reasonAr: `يتعارض مع صلاة ${p.nameAr} (${formatMinutes12h(p.adhanMinutes, 'ar')} – ${formatMinutes12h(pEnd, 'ar')})`,
+    });
+    lockedBlocks.push({
+      id: `locked_prayer_${p.id}`,
+      kind: 'prayer',
+      titleAr: `صلاة ${p.nameAr}`,
+      emoji: p.emojiPair || '🕌',
+      startMin: pStart,
+      endMin: pEnd,
+      durationMin: pEnd - pStart,
+      isLocked: true,
+      subtitleAr: `الأذان ${formatMinutes12h(p.adhanMinutes, 'ar')}`,
+    });
+  }
+
+  if (
+    typeof plan.postFajrStartMin === 'number' &&
+    typeof plan.postFajrDurationMin === 'number' &&
+    plan.postFajrDurationMin > 0
+  ) {
+    const pfStart = plan.postFajrStartMin;
+    const pfEnd = pfStart + plan.postFajrDurationMin;
+    collisionIntervals.push({
+      kind: 'nap',
+      startMin: pfStart,
+      endMin: pfEnd,
+      reasonAr: `يتعارض مع راحة ما بعد الفجر (${formatMinutes12h(pfStart, 'ar')} – ${formatMinutes12h(pfEnd, 'ar')})`,
+    });
+    lockedBlocks.push({
+      id: 'locked_post_fajr_sleep',
+      kind: 'post_fajr_sleep',
+      titleAr: 'راحة تعويضية بعد الفجر',
+      emoji: '🛌',
+      startMin: pfStart,
+      endMin: pfEnd,
+      durationMin: plan.postFajrDurationMin,
+      isLocked: true,
+      subtitleAr: 'نوم موسمي محمي',
+    });
+  }
+
+  if (plan.qailulahStartMin !== null && plan.qailulahDurationMin > 0) {
+    const qStart = plan.qailulahStartMin;
+    const qEnd = qStart + plan.qailulahDurationMin;
+    collisionIntervals.push({
+      kind: 'nap',
+      startMin: qStart,
+      endMin: qEnd,
+      reasonAr: `يتعارض مع القيلولة التعويضية (${formatMinutes12h(qStart, 'ar')} – ${formatMinutes12h(qEnd, 'ar')})`,
+    });
+    lockedBlocks.push({
+      id: 'locked_qailulah_nap',
+      kind: 'nap',
+      titleAr: 'القيلولة التعويضية',
+      emoji: '😴',
+      startMin: qStart,
+      endMin: qEnd,
+      durationMin: plan.qailulahDurationMin,
+      isLocked: true,
+      subtitleAr: 'استراحة محمية',
+    });
+  }
+
+  lockedBlocks.sort((a, b) => a.startMin - b.startMin);
+  return { lockedBlocks, collisionIntervals };
+}
+
+function findLockedCollision(
+  startMin: number,
+  endMin: number,
+  intervals: LockedInterval[]
+): LockedInterval | null {
+  const safeEnd = Math.max(startMin + 1, endMin);
+  for (const iv of intervals) {
+    if (startMin < iv.endMin && safeEnd > iv.startMin) {
+      return iv;
+    }
+  }
+  return null;
+}
+
+function mapMinutesToHabitAnchor(
+  startMin: number,
+  prayers: PrayerTimeItem[],
+  plan: DailyRhythmPlan
+): DynamicHabitAnchor {
+  const sunrise = prayers.find((p) => p.id === 'sunrise')?.adhanMinutes ?? plan.sunriseMin;
+  const dhuhr = prayers.find((p) => p.id === 'dhuhr')?.adhanMinutes ?? 12 * 60;
+  const asr = prayers.find((p) => p.id === 'asr')?.adhanMinutes ?? 15 * 60 + 15;
+  const maghrib = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? plan.maghribMin;
+  const isha = prayers.find((p) => p.id === 'isha')?.adhanMinutes ?? 19 * 60 + 30;
+
+  if (startMin < sunrise) return 'after-fajr';
+  if (startMin < sunrise + 75) return 'sunrise-light';
+  if (startMin < dhuhr) return 'duha';
+  if (startMin < asr) return 'after-dhuhr';
+  if (startMin < Math.max(asr + 30, maghrib - 75)) return 'after-asr';
+  if (startMin < maghrib) return 'pre-maghrib';
+  if (startMin < isha) return 'after-maghrib';
+  return 'after-isha';
+}
+
+function parseTaskMinutesForTimeline(
+  task: GoogleTaskItem,
+  todayIso: string,
+  timeZone = 'Africa/Cairo'
+): { startMin: number; hasExplicitTime: boolean } | null {
+  if (task.status === 'completed') return null;
+  if (task.due) {
+    const dueDateOnly = task.due.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dueDateOnly) && dueDateOnly !== todayIso) {
+      return null;
+    }
+    const timePartMatch = task.due.match(/T(\d{2}):(\d{2})/);
+    if (timePartMatch && !(timePartMatch[1] === '00' && timePartMatch[2] === '00')) {
+      const parsed = parseIsoToTimeZoneInfo(task.due, timeZone);
+      if (parsed && parsed.dateIso === todayIso) {
+        return { startMin: parsed.minutesSinceMidnight, hasExplicitTime: true };
+      }
+    }
+  }
+  const combined = `${task.notes || ''} ${task.title || ''}`;
+  const tagged24 = combined.match(/(?:⏰|@|\[)\s*(\d{1,2}):(\d{2})\s*\]?/);
+  if (tagged24) {
+    const h = Number(tagged24[1]);
+    const m = Number(tagged24[2]);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return { startMin: h * 60 + m, hasExplicitTime: true };
+    }
+  }
+  const time12Match = combined.match(/(\d{1,2}):(\d{2})\s*(ص|صباحاً|صباحا|م|مساءً|مساءا|مساء|am|pm)\b/i);
+  if (time12Match) {
+    let h = Number(time12Match[1]);
+    const m = Number(time12Match[2]);
+    const marker = time12Match[3].toLowerCase();
+    const isPm = marker.startsWith('م') || marker === 'pm';
+    if (h >= 1 && h <= 12 && m >= 0 && m <= 59) {
+      if (isPm && h !== 12) h += 12;
+      if (!isPm && h === 12) h = 0;
+      return { startMin: h * 60 + m, hasExplicitTime: true };
+    }
+  }
+  const plain24 = combined.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (plain24) {
+    return { startMin: Number(plain24[1]) * 60 + Number(plain24[2]), hasExplicitTime: true };
+  }
+  if (task.due && task.due.slice(0, 10) === todayIso) {
+    return { startMin: -1, hasExplicitTime: false };
+  }
+  return null;
+}
+
+function claimFreeInterval(
+  remaining: FreeWindow[],
+  winIdx: number,
+  startMin: number,
+  durationMin: number,
+  prayers: PrayerTimeItem[],
+  plan: DailyRhythmPlan,
+  focusBufferMin = 0
+): void {
+  const win = remaining[winIdx];
+  const endMin = startMin + durationMin;
+  const beforeEnd = Math.max(win.startMin, startMin - focusBufferMin);
+  const afterStart = Math.min(win.endMin, endMin + focusBufferMin);
+  const replacements: FreeWindow[] = [];
+  if (beforeEnd - win.startMin >= 10) {
+    replacements.push({
+      startMin: win.startMin,
+      endMin: beforeEnd,
+      durationMin: beforeEnd - win.startMin,
+      label: win.label,
+    });
+  }
+  if (win.endMin - afterStart >= 10) {
+    replacements.push({
+      startMin: afterStart,
+      endMin: win.endMin,
+      durationMin: win.endMin - afterStart,
+      label: getFreeWindowPeriodLabelAr(afterStart, prayers, plan),
+    });
+  }
+  remaining.splice(winIdx, 1, ...replacements);
+}
+
+/**
+ * Picks the highest-scoring scientific free window for a task/habit without overlapping
+ * locked blocks, respecting:
+ * - Deep focus: morning / post-Fajr / Duha peak, never in Wind-Down Zone (45-60m before bedtime),
+ *   avoiding last 2h before Maghrib on fasting days, and enforcing 15m focus buffer.
+ * - Exercise: never within 2h of bedtime; on fasting days prefers ~1h before Maghrib.
+ */
+export function pickScientificFreeSlot(params: {
+  title: string;
+  durationMin: number;
+  remainingWindows: FreeWindow[];
+  prayers: PrayerTimeItem[];
+  plan: DailyRhythmPlan;
+  deepWorkRanges?: Array<[number, number]>;
+  claim?: boolean;
+}): DayTimelineSuggestedSlot | null {
+  const { title, remainingWindows, prayers, plan, deepWorkRanges = [], claim = false } = params;
+  const dur = clamp(Math.round(params.durationMin || 30), 10, 240);
+  const energy = classifyScientificTaskEnergy(title);
+  const sunrise = prayers.find((p) => p.id === 'sunrise')?.adhanMinutes ?? plan.sunriseMin;
+  const dhuhr = prayers.find((p) => p.id === 'dhuhr')?.adhanMinutes ?? 12 * 60;
+  const maghrib = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? plan.maghribMin;
+  const bedtime = plan.bedtimeMin > plan.wakeMin ? plan.bedtimeMin : 1440;
+  const windDownStart = plan.seasonalSleep?.windDownStartMin ?? Math.max(plan.wakeMin, bedtime - 55);
+  const exerciseCutoff = Math.max(plan.wakeMin, bedtime - 120);
+  const fastingDipStart = maghrib - 120;
+  const focusBuffer = energy === 'deep_focus' ? 15 : 0;
+
+  let bestScore = -Infinity;
+  let bestWinIdx = -1;
+  let bestStart = 0;
+  let bestNote = 'ضمن نوافذ الفراغ المتاحة بعيداً عن الأوقات المحمية';
+
+  const hasDeepBufferConflict = (s: number, e: number): boolean => {
+    if (energy !== 'deep_focus') return false;
+    return deepWorkRanges.some(([ds, de]) => s < de + 15 && e + 15 > ds);
+  };
+
+  for (let i = 0; i < remainingWindows.length; i++) {
+    const win = remainingWindows[i];
+    if (win.endMin - win.startMin < dur) continue;
+
+    // Candidate starts inside this window: window start, after-deep-buffer start, and pre-Maghrib exercise start
+    const candidateStarts = new Set<number>([win.startMin]);
+    if (energy === 'deep_focus') {
+      for (const [, de] of deepWorkRanges) {
+        if (de + 15 >= win.startMin && de + 15 + dur <= win.endMin) {
+          candidateStarts.add(de + 15);
+        }
+      }
+    }
+    if (energy === 'exercise' && plan.isFastingToday) {
+      const preMaghribTarget = Math.max(win.startMin, maghrib - 60 - Math.round(dur / 2));
+      if (preMaghribTarget + dur <= win.endMin) {
+        candidateStarts.add(preMaghribTarget);
+      }
+    }
+
+    for (const candStart of candidateStarts) {
+      const candEnd = candStart + dur;
+      if (candStart < win.startMin || candEnd > win.endMin) continue;
+
+      if (energy === 'deep_focus' && candEnd > windDownStart) continue;
+      if (energy === 'exercise' && candEnd > exerciseCutoff) continue;
+      if (hasDeepBufferConflict(candStart, candEnd)) continue;
+
+      let score = 100 - candStart / 30; // slight preference for earlier clean slots
+      let note = 'أفضل نافذة فراغ متوافقة مع الإيقاع الحيوي';
+
+      if (energy === 'deep_focus') {
+        if (candStart >= sunrise && candEnd <= dhuhr) {
+          score += 60;
+          note = 'ذروة التركيز الصباحية (بعد الشروق والضحى)';
+        } else if (candStart >= plan.wakeMin && candEnd <= sunrise) {
+          score += 45;
+          note = 'هدوء ما بعد الفجر للعمل العميق';
+        }
+        if (plan.isFastingToday && candStart < maghrib && candEnd > fastingDipStart) {
+          score -= 80;
+        }
+      } else if (energy === 'exercise') {
+        if (plan.isFastingToday && candStart >= maghrib - 75 && candEnd <= maghrib) {
+          score += 70;
+          note = 'تمرين خفيف قبل المغرب بساعة (~حرق مثالي في الصيام)';
+        } else if (candEnd <= exerciseCutoff) {
+          score += 30;
+          note = 'موعد آمن للتمرين (قبل النوم بأكثر من ساعتين)';
+        }
+      } else {
+        if (candEnd > windDownStart) {
+          score -= 25;
+        }
+        if (plan.isFastingToday && candStart >= fastingDipStart && candEnd <= maghrib) {
+          score += 25;
+          note = 'مهمة خفيفة مناسبة لمنحنى طاقة ما قبل المغرب';
+        }
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestWinIdx = i;
+        bestStart = candStart;
+        bestNote = note;
+      }
+    }
+  }
+
+  if (bestWinIdx === -1) return null;
+
+  if (claim) {
+    claimFreeInterval(remainingWindows, bestWinIdx, bestStart, dur, prayers, plan, focusBuffer);
+    if (energy === 'deep_focus') {
+      deepWorkRanges.push([bestStart, bestStart + dur]);
+    }
+  }
+
+  return {
+    startMin: bestStart,
+    endMin: bestStart + dur,
+    time24: formatMinutes24h(bestStart),
+    windowLabel: getFreeWindowPeriodLabelAr(bestStart, prayers, plan),
+    suggestedAnchor: mapMinutesToHabitAnchor(bestStart, prayers, plan),
+    scientificNoteAr: bestNote,
+  };
+}
+
+/**
+ * Builds the 24h vertical day timeline (Wake -> Bedtime) with:
+ * - Locked immutable blocks (5 prayers, Suhoor on fasting days, Seasonal Sleep, active Recovery Naps)
+ * - Placed movable habits/tasks/events inside valid non-locked slots
+ * - `unplacedBlocks` ("تحتاج توظيف") for ANY item colliding with a locked block or unable to fit its anchor
+ */
+export function buildDayTimelineModel(input: BuildDayTimelineInput): DayTimelineModel {
+  const {
+    prayers,
+    plan,
+    profile,
+    habits = [],
+    blocks = [],
+    googleTasks = [],
+    calendarEvents = [],
+    todayIso,
+    timeZone,
+  } = input;
+  const weekday = input.weekday ?? resolveWeekdayFromIso(todayIso);
+  const { lockedBlocks, collisionIntervals } = buildLockedIntervalsAndBlocks(prayers, plan, profile);
+
+  const bedtime = plan.bedtimeMin > plan.wakeMin ? plan.bedtimeMin : 1440;
+  const windDownStartMin =
+    plan.seasonalSleep?.windDownStartMin ?? Math.max(plan.wakeMin, bedtime - 55);
+
+  const placedBlocks: DayTimelinePlacedItem[] = [];
+  const unplacedBlocks: DayTimelineUnplacedItem[] = [];
+  const validFixedBlocks: ScheduleBlock[] = [];
+  const deepWorkRanges: Array<[number, number]> = [];
+
+  // 1. Evaluate movable ScheduleBlocks (never force colliding items onto locked time)
+  for (const blk of blocks) {
+    if (blk.deleted || blk.isAllDay || blk.source === 'prayer' || blk.isAnchor) continue;
+    const dur = Math.max(10, Math.round(blk.durationMin || 30));
+    const collision = findLockedCollision(blk.startMin, blk.startMin + dur, collisionIntervals);
+    if (collision) {
+      unplacedBlocks.push({
+        id: `unplaced_blk_${blk.id}`,
+        kind: 'event',
+        sourceId: blk.id,
+        title: blk.categoryAr,
+        emoji: blk.emojiPair || '📅',
+        durationMin: dur,
+        requestedStartMin: blk.startMin,
+        conflictKind: collision.kind,
+        conflictReasonAr: collision.reasonAr,
+        suggestedSlot: null,
+        googleEventId: blk.googleEventId,
+        googleCalendarId: blk.googleCalendarId,
+        scheduleBlock: blk,
+      });
+      continue;
+    }
+    validFixedBlocks.push(blk);
+    const energy = classifyScientificTaskEnergy(blk.categoryAr);
+    if (energy === 'deep_focus') {
+      deepWorkRanges.push([blk.startMin, blk.startMin + dur]);
+    }
+    placedBlocks.push({
+      id: `placed_blk_${blk.id}`,
+      kind: 'event',
+      sourceId: blk.id,
+      title: blk.categoryAr,
+      emoji: blk.emojiPair || '📅',
+      startMin: blk.startMin,
+      endMin: blk.startMin + dur,
+      durationMin: dur,
+      completed: blk.completed,
+      energyCategory: energy,
+      subtitleAr: blk.calendarTitle,
+      googleEventId: blk.googleEventId,
+      googleCalendarId: blk.googleCalendarId,
+      googleHtmlLink: blk.googleHtmlLink,
+      scheduleBlockId: blk.id,
+    });
+  }
+
+  // 2. Compute clean freeWindows excluding locked blocks & valid fixed events
+  const freeWindows = computeFreeWindows({
+    prayers,
+    plan,
+    profile,
+    occupiedBlocks: validFixedBlocks,
+    calendarEvents,
+    todayIso,
+    timeZone,
+    minGapMinutes: 15,
+  });
+  const remaining: FreeWindow[] = freeWindows.map((w) => ({ ...w }));
+
+  // 3. Evaluate today's Google Tasks
+  const placedTitlesNorm = new Set(
+    placedBlocks.map((p) => `${p.title.trim().toLowerCase()}|${p.startMin}`)
+  );
+  for (const tk of googleTasks) {
+    if (tk.status === 'completed' || tk.title === 'sync_state' || tk.taskListTitle === '[DayRhythm Sync Vault]') {
+      continue;
+    }
+    const parsed = parseTaskMinutesForTimeline(tk, todayIso, timeZone ?? profile.currentTimeZone);
+    if (!parsed) continue;
+    const dur = 30;
+    if (!parsed.hasExplicitTime) {
+      unplacedBlocks.push({
+        id: `unplaced_task_${tk.id}`,
+        kind: 'task',
+        sourceId: tk.id,
+        title: tk.title,
+        emoji: '☑️',
+        durationMin: dur,
+        requestedStartMin: null,
+        conflictKind: 'anchor_unavailable',
+        conflictReasonAr: 'مهمة اليوم بدون وقت محدد',
+        suggestedSlot: null,
+        googleTaskId: tk.id,
+        googleTaskListId: tk.taskListId,
+        googleTask: tk,
+      });
+      continue;
+    }
+    if (placedTitlesNorm.has(`${tk.title.trim().toLowerCase()}|${parsed.startMin}`)) continue;
+    const collision = findLockedCollision(parsed.startMin, parsed.startMin + dur, collisionIntervals);
+    if (collision) {
+      unplacedBlocks.push({
+        id: `unplaced_task_${tk.id}`,
+        kind: 'task',
+        sourceId: tk.id,
+        title: tk.title,
+        emoji: '☑️',
+        durationMin: dur,
+        requestedStartMin: parsed.startMin,
+        conflictKind: collision.kind,
+        conflictReasonAr: collision.reasonAr,
+        suggestedSlot: null,
+        googleTaskId: tk.id,
+        googleTaskListId: tk.taskListId,
+        googleTask: tk,
+      });
+      continue;
+    }
+
+    // Reserve from remaining free windows if falling inside one
+    for (let w = 0; w < remaining.length; w++) {
+      if (parsed.startMin < remaining[w].endMin && parsed.startMin + dur > remaining[w].startMin) {
+        const ovS = Math.max(remaining[w].startMin, parsed.startMin);
+        const ovE = Math.min(remaining[w].endMin, parsed.startMin + dur);
+        if (ovE > ovS) {
+          claimFreeInterval(remaining, w, ovS, ovE - ovS, prayers, plan);
+        }
+        break;
+      }
+    }
+    const energy = classifyScientificTaskEnergy(tk.title);
+    if (energy === 'deep_focus') {
+      deepWorkRanges.push([parsed.startMin, parsed.startMin + dur]);
+    }
+    placedBlocks.push({
+      id: `placed_task_${tk.id}`,
+      kind: 'task',
+      sourceId: tk.id,
+      title: tk.title,
+      emoji: '☑️',
+      startMin: parsed.startMin,
+      endMin: parsed.startMin + dur,
+      durationMin: dur,
+      completed: false,
+      energyCategory: energy,
+      googleTaskId: tk.id,
+      googleTaskListId: tk.taskListId,
+    });
+  }
+
+  // 4. Evaluate active Dynamic Habits (strictly honoring anchor without forcing onto locked/fallback time)
+  const activeHabits = habits.filter((h) => h.status === 'active');
+  const dueHabits = activeHabits
+    .filter((habit) => {
+      const scheduledToday =
+        !habit.daysOfWeek ||
+        habit.daysOfWeek.length === 0 ||
+        (weekday !== null && habit.daysOfWeek.includes(weekday));
+      if (!scheduledToday) return false;
+      if (habit.skipOnFasting && plan.isFastingToday) return false;
+      return true;
+    })
+    .sort((a, b) => (a.anchor === 'any-free-slot' ? 1 : 0) - (b.anchor === 'any-free-slot' ? 1 : 0));
+
+  for (const habit of dueHabits) {
+    const dur = clamp(Math.round(habit.durationMin || 30), 5, 240);
+    const completedToday = Boolean(todayIso && habit.completedDates.includes(todayIso));
+    const anchorMeta = DYNAMIC_HABIT_ANCHOR_LABELS[habit.anchor];
+    const energy = classifyScientificTaskEnergy(habit.title);
+
+    if (habit.anchor === 'any-free-slot') {
+      const picked = pickScientificFreeSlot({
+        title: habit.title,
+        durationMin: dur,
+        remainingWindows: remaining,
+        prayers,
+        plan,
+        deepWorkRanges,
+        claim: true,
+      });
+      if (picked) {
+        placedBlocks.push({
+          id: `placed_habit_${habit.id}`,
+          kind: 'habit',
+          sourceId: habit.id,
+          title: habit.title,
+          emoji: anchorMeta.emoji,
+          startMin: picked.startMin,
+          endMin: picked.endMin,
+          durationMin: dur,
+          completed: completedToday,
+          energyCategory: energy,
+          subtitleAr: anchorMeta.labelAr,
+          habitId: habit.id,
+          anchor: habit.anchor,
+        });
+      } else {
+        unplacedBlocks.push({
+          id: `unplaced_habit_${habit.id}`,
+          kind: 'habit',
+          sourceId: habit.id,
+          title: habit.title,
+          emoji: anchorMeta.emoji,
+          durationMin: dur,
+          requestedStartMin: null,
+          conflictKind: 'anchor_unavailable',
+          conflictReasonAr: 'لا توجد نافذة فراغ كافية اليوم',
+          suggestedSlot: null,
+          habit,
+        });
+      }
+      continue;
+    }
+
+    const pref = getHabitAnchorWindow(habit.anchor, prayers, plan, profile);
+    let placedStart: number | null = null;
+    let placedWinIdx = -1;
+
+    if (pref && pref.end > pref.start) {
+      if (pref.preferEnd) {
+        for (let w = remaining.length - 1; w >= 0; w--) {
+          const ovS = Math.max(remaining[w].startMin, pref.start);
+          const ovE = Math.min(remaining[w].endMin, pref.end);
+          if (ovE - ovS >= dur) {
+            placedWinIdx = w;
+            placedStart = ovE - dur;
+            break;
+          }
+        }
+      } else {
+        for (let w = 0; w < remaining.length; w++) {
+          const ovS = Math.max(remaining[w].startMin, pref.start);
+          const ovE = Math.min(remaining[w].endMin, pref.end);
+          if (ovE - ovS >= dur) {
+            placedWinIdx = w;
+            placedStart = ovS;
+            break;
+          }
+        }
+      }
+    }
+
+    if (placedStart !== null && placedWinIdx !== -1) {
+      const collision = findLockedCollision(placedStart, placedStart + dur, collisionIntervals);
+      if (!collision) {
+        claimFreeInterval(
+          remaining,
+          placedWinIdx,
+          placedStart,
+          dur,
+          prayers,
+          plan,
+          energy === 'deep_focus' ? 15 : 0
+        );
+        if (energy === 'deep_focus') {
+          deepWorkRanges.push([placedStart, placedStart + dur]);
+        }
+        placedBlocks.push({
+          id: `placed_habit_${habit.id}`,
+          kind: 'habit',
+          sourceId: habit.id,
+          title: habit.title,
+          emoji: anchorMeta.emoji,
+          startMin: placedStart,
+          endMin: placedStart + dur,
+          durationMin: dur,
+          completed: completedToday,
+          energyCategory: energy,
+          subtitleAr: anchorMeta.labelAr,
+          habitId: habit.id,
+          anchor: habit.anchor,
+        });
+        continue;
+      }
+    }
+
+    // Cannot fit anchor cleanly or collides with locked block -> route to unplacedBlocks
+    const anchorCollision = pref
+      ? findLockedCollision(pref.start, Math.max(pref.start + dur, pref.end), collisionIntervals)
+      : null;
+
+    unplacedBlocks.push({
+      id: `unplaced_habit_${habit.id}`,
+      kind: 'habit',
+      sourceId: habit.id,
+      title: habit.title,
+      emoji: anchorMeta.emoji,
+      durationMin: dur,
+      requestedStartMin: pref ? pref.start : null,
+      conflictKind: anchorCollision ? anchorCollision.kind : 'anchor_unavailable',
+      conflictReasonAr: anchorCollision
+        ? anchorCollision.reasonAr
+        : `المرتكز «${anchorMeta.labelAr}» ممتلئ أو لا يتسع للمدة`,
+      suggestedSlot: null,
+      habit,
+    });
+  }
+
+  // 5. Assign sequential non-overlapping scientific suggestions for all unplacedBlocks
+  const suggestionPool: FreeWindow[] = remaining.map((w) => ({ ...w }));
+  const suggestionDeepRanges: Array<[number, number]> = deepWorkRanges.map(([s, e]) => [s, e]);
+  for (const item of unplacedBlocks) {
+    item.suggestedSlot = pickScientificFreeSlot({
+      title: item.title,
+      durationMin: item.durationMin,
+      remainingWindows: suggestionPool,
+      prayers,
+      plan,
+      deepWorkRanges: suggestionDeepRanges,
+      claim: true,
+    });
+  }
+
+  placedBlocks.sort((a, b) => a.startMin - b.startMin);
+
+  return {
+    wakeMin: plan.wakeMin,
+    bedtimeMin: plan.bedtimeMin,
+    windDownStartMin,
+    lockedBlocks,
+    placedBlocks,
+    unplacedBlocks,
+    freeWindows,
+  };
 }

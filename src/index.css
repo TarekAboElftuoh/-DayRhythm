@@ -7,11 +7,15 @@
     --font-en: "IBM Plex Sans Arabic", "Plus Jakarta Sans", system-ui, sans-serif;
     --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-    /* AMOLED theme (default): #000000 canvas -> #0B0B0D surface -> #141417 elevated card */
+    /* AMOLED theme (default): #000000 canvas -> #040908 surface -> #060E0C Obsidian-Aquamarine card */
     --bg-canvas: #000000;
-    --bg-surface: #0b0b0d;
-    --bg-card: #141417;
-    --border-subtle: rgba(255, 255, 255, 0.06);
+    --bg-surface: #040908;
+    --bg-card: #060e0c;
+    --bg-card-elevated: #091512;
+    --bg-locked: rgba(6, 14, 12, 0.52);
+    --border-subtle: rgba(127, 255, 212, 0.12);
+    --border-active: rgba(127, 255, 212, 0.28);
+    --border-locked: rgba(127, 255, 212, 0.08);
     --text-primary: #f4f4f5;
     --text-muted: #a1a1aa;
     --accent-primary: #7fffd4;
@@ -20,12 +24,20 @@
     --status-danger: #fb7185;
   }
 
+  .app-root {
+    transition: background-color 220ms cubic-bezier(0.22, 1, 0.36, 1), color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
   .app-root:not(.bg-black) {
     /* Dark (Obsidian) theme */
     --bg-canvas: #08090c;
     --bg-surface: #0e1015;
     --bg-card: #151820;
+    --bg-card-elevated: #1a1f2a;
+    --bg-locked: rgba(14, 16, 21, 0.72);
     --border-subtle: rgba(255, 255, 255, 0.07);
+    --border-active: rgba(127, 255, 212, 0.24);
+    --border-locked: rgba(255, 255, 255, 0.06);
     --text-primary: #f4f4f5;
     --text-muted: #a1a1aa;
     --accent-primary: #7fffd4;
@@ -160,9 +172,11 @@ time,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .app-root,
   .animate-alarm-shake,
   .animate-alarm-pulse {
     animation: none !important;
+    transition: none !important;
   }
 }
 
@@ -178,7 +192,11 @@ html.theme-sun {
   --bg-canvas: #f4f5f7;
   --bg-surface: #ffffff;
   --bg-card: #ffffff;
+  --bg-card-elevated: #f8fafc;
+  --bg-locked: #f1f5f9;
   --border-subtle: rgba(15, 23, 42, 0.08);
+  --border-active: rgba(10, 122, 97, 0.28);
+  --border-locked: rgba(15, 23, 42, 0.07);
   --text-primary: #0b0d10;
   --text-muted: #52525b;
   --accent-primary: #0a7a61;

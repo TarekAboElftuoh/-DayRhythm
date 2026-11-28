@@ -13,6 +13,7 @@ import {
   computeFreeWindows,
   findFreeTimeSlotsForToday,
   resolveHabitsForDay,
+  buildDayTimelineModel,
   DEFAULT_LIFE_PROFILE,
 } from './lifeRhythmEngine';
 import { DynamicHabit, MedicationItem, PrayerTimeItem, ScheduleBlock } from '../types/dayrhythm';
@@ -993,5 +994,118 @@ describe('Phase 3: Dynamic DayRhythm Habits (resolveHabitsForDay)', () => {
 
     expect(afterActivate).toHaveLength(2);
     expect(afterActivate.some((r) => r.habit.id === 'h_planned' && r.slot !== null)).toBe(true);
+  });
+
+  it('routes items colliding with sleep, prayers, Suhoor, nap, or blocked anchors to unplacedBlocks without overlapping locked time', () => {
+    const ramadanPlan = computeDailyRhythmPlan(DEFAULT_LIFE_PROFILE, summerPrayers, {
+      todayWeekday: 5,
+      tomorrowWeekday: 6,
+      todayIso: '2026-02-20',
+      tomorrowIso: '2026-02-21',
+      timeZone: 'Africa/Cairo',
+    });
+
+    const collidingBlocks: ScheduleBlock[] = [
+      {
+        id: 'blk_sleep_hit',
+        emojiPair: '💻',
+        categoryAr: 'مراجعة DevOps متأخرة',
+        startMin: 1 * 60 + 30, // 01:30 AM inside night sleep
+        durationMin: 45,
+        minDurationMin: 30,
+        isAnchor: false,
+        travelGroup: 'B_WORK',
+        canShiftEvening: false,
+        completed: false,
+        deleted: false,
+        source: 'offline',
+      },
+      {
+        id: 'blk_prayer_hit',
+        emojiPair: '📞',
+        categoryAr: 'مكالمة عمل',
+        startMin: 12 * 60 + 58, // hits Dhuhr (12:55)
+        durationMin: 30,
+        minDurationMin: 15,
+        isAnchor: false,
+        travelGroup: 'B_WORK',
+        canShiftEvening: true,
+        completed: false,
+        deleted: false,
+        source: 'offline',
+      },
+      {
+        id: 'blk_valid',
+        emojiPair: '📚',
+        categoryAr: 'مذاكرة برمجة',
+        startMin: 8 * 60 + 30,
+        durationMin: 60,
+        minDurationMin: 30,
+        isAnchor: false,
+        travelGroup: 'B_WORK',
+        canShiftEvening: false,
+        completed: false,
+        deleted: false,
+        source: 'offline',
+      },
+    ];
+
+    const habits: DynamicHabit[] = [
+      {
+        id: 'h_post_fajr_blocked',
+        title: 'قراءة بعد الفجر',
+        status: 'active',
+        anchor: 'after-fajr', // blocked by post-Fajr sleep in short_night -> must route to unplacedBlocks
+        durationMin: 25,
+        completedDates: [],
+      },
+      {
+        id: 'h_duha_ok',
+        title: 'ورد الضحى',
+        status: 'active',
+        anchor: 'duha',
+        durationMin: 20,
+        completedDates: [],
+      },
+    ];
+
+    const timeline = buildDayTimelineModel({
+      prayers: summerPrayers,
+      plan: ramadanPlan,
+      profile: DEFAULT_LIFE_PROFILE,
+      habits,
+      blocks: collidingBlocks,
+      todayIso: '2026-02-20',
+      weekday: 5,
+      timeZone: 'Africa/Cairo',
+    });
+
+    // Locked blocks include prayers, Suhoor, Seasonal Sleep, post-Fajr sleep, and Qailulah nap
+    expect(timeline.lockedBlocks.every((b) => b.isLocked)).toBe(true);
+    expect(timeline.lockedBlocks.some((b) => b.kind === 'sleep')).toBe(true);
+    expect(timeline.lockedBlocks.some((b) => b.kind === 'suhoor')).toBe(true);
+    expect(timeline.lockedBlocks.filter((b) => b.kind === 'prayer')).toHaveLength(5);
+
+    // Colliding blocks and blocked-anchor habit must go to unplacedBlocks, never placedBlocks
+    const unplacedSourceIds = timeline.unplacedBlocks.map((u) => u.sourceId);
+    expect(unplacedSourceIds).toContain('blk_sleep_hit');
+    expect(unplacedSourceIds).toContain('blk_prayer_hit');
+    expect(unplacedSourceIds).toContain('h_post_fajr_blocked');
+
+    const sleepItem = timeline.unplacedBlocks.find((u) => u.sourceId === 'blk_sleep_hit')!;
+    expect(sleepItem.conflictKind).toBe('sleep');
+    expect(sleepItem.suggestedSlot).not.toBeNull();
+    // Deep focus suggestion must stay outside Wind-Down Zone
+    expect(sleepItem.suggestedSlot!.endMin).toBeLessThanOrEqual(timeline.windDownStartMin);
+
+    const prayerItem = timeline.unplacedBlocks.find((u) => u.sourceId === 'blk_prayer_hit')!;
+    expect(prayerItem.conflictKind).toBe('prayer');
+
+    const placedIds = timeline.placedBlocks.map((p) => p.sourceId);
+    expect(placedIds).toContain('blk_valid');
+    expect(placedIds).toContain('h_duha_ok');
+    expect(placedIds).not.toContain('blk_sleep_hit');
+    expect(placedIds).not.toContain('blk_prayer_hit');
+    expect(placedIds).not.toContain('h_post_fajr_blocked');
   });
 });

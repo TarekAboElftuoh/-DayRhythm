@@ -44,6 +44,7 @@ import {
 import { WeeklyReportCard } from './WeeklyReportCard';
 import { SunlightCard } from './SunlightCard';
 import { ErrorBoundary } from './ErrorBoundary';
+import { DayTimelineView } from './DayTimelineView';
 import type { ComputedSunlightSession } from '../engines/sunlightEngine';
 // Charts (recharts) are only shown when expanded, so load them on demand to keep app start-up light.
 const HydrationWeeklyChart = lazy(() =>
@@ -114,10 +115,13 @@ import {
 import {
   ARABIC_WEEKDAYS,
   DYNAMIC_HABIT_ANCHOR_LABELS,
+  buildDayTimelineModel,
   checkSmartScheduleConflict,
   computeMedicationDaysLeft,
   formatDurationAr,
   resolveMedicationDosesForDay,
+  type DayTimelinePlacedItem,
+  type DayTimelineUnplacedItem,
 } from '../engines/lifeRhythmEngine';
 
 const MED_FASTING_POLICY_OPTIONS: ReadonlyArray<{
@@ -541,6 +545,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onToggleHabitStatus,
 }) => {
   const [showTrash, setShowTrash] = useState(false);
+  const [autoPlacedBlockStarts, setAutoPlacedBlockStarts] = useState<Record<string, number>>({});
+  const [isSyncingAutoPlace, setIsSyncingAutoPlace] = useState(false);
   const [showSilentInbox, setShowSilentInbox] = useState(false);
   const [confirmCancelSanctuary, setConfirmCancelSanctuary] = useState(false);
   const [showGmailDrawer, setShowGmailDrawer] = useState(false);
@@ -780,8 +786,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   const cardSurface =
     surfaceTheme === 'amoled'
-      ? 'bg-[var(--bg-card)] border-[var(--border-subtle)]'
-      : 'bg-[var(--bg-card)] border-[var(--border-subtle)]';
+      ? 'bg-[var(--bg-card)] border-[var(--border-subtle)] transition-colors duration-200 focus-within:border-[var(--border-active)]'
+      : 'bg-[var(--bg-card)] border-[var(--border-subtle)] transition-colors duration-200 focus-within:border-[var(--border-active)]';
 
   const activeBlocks = useMemo(
     () => blocks.filter((b) => !b.deleted),
@@ -999,6 +1005,107 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     }
     return remainingTodayBlocks;
   }, [finishedTodayBlocks, remainingTodayBlocks, timelineFilter]);
+
+  const effectiveBlocksForTimeline = useMemo(
+    () =>
+      blocks.map((b) =>
+        typeof autoPlacedBlockStarts[b.id] === 'number'
+          ? { ...b, startMin: autoPlacedBlockStarts[b.id] }
+          : b
+      ),
+    [blocks, autoPlacedBlockStarts]
+  );
+
+  const dayTimelineModel = useMemo(
+    () =>
+      buildDayTimelineModel({
+        prayers,
+        plan: dailyRhythmPlan,
+        profile: lifeProfile,
+        habits,
+        blocks: effectiveBlocksForTimeline,
+        googleTasks,
+        calendarEvents,
+        todayIso: todayCairoIso,
+        weekday: last7CairoDays[last7CairoDays.length - 1]?.weekdayNum,
+        timeZone: activeTimeZone,
+      }),
+    [
+      prayers,
+      dailyRhythmPlan,
+      lifeProfile,
+      habits,
+      effectiveBlocksForTimeline,
+      googleTasks,
+      calendarEvents,
+      todayCairoIso,
+      last7CairoDays,
+      activeTimeZone,
+    ]
+  );
+
+  const handleConfirmAutoPlace = async (items: DayTimelineUnplacedItem[]) => {
+    if (items.length === 0) return;
+    setIsSyncingAutoPlace(true);
+    try {
+      const calendarUpdates: CalendarActionProposal[] = [];
+      const taskUpdates: TaskActionProposal[] = [];
+      const localBlockMoves: Record<string, number> = {};
+
+      for (const item of items) {
+        if (!item.suggestedSlot) continue;
+        if (item.kind === 'habit' && item.habit && onUpdateHabit) {
+          onUpdateHabit(item.habit.id, {
+            title: item.habit.title,
+            status: item.habit.status,
+            anchor: item.suggestedSlot.suggestedAnchor ?? 'any-free-slot',
+            durationMin: item.habit.durationMin,
+            daysOfWeek: item.habit.daysOfWeek,
+            skipOnFasting: item.habit.skipOnFasting,
+          });
+        } else if (item.kind === 'task' && item.googleTask) {
+          const cleanedNotes = (item.googleTask.notes ?? '')
+            .replace(/(?:⏰|@)\s*\d{1,2}:\d{2}/g, '')
+            .trim();
+          const nextNotes = `${cleanedNotes ? `${cleanedNotes}\n` : ''}⏰ ${item.suggestedSlot.time24}`;
+          taskUpdates.push({
+            operation: 'update',
+            taskId: item.googleTask.id,
+            taskListId: item.googleTask.taskListId,
+            title: item.googleTask.title,
+            notes: nextNotes,
+            dueDateIso: todayCairoIso,
+          });
+        } else if (item.kind === 'event' && item.scheduleBlock) {
+          if (item.scheduleBlock.googleEventId && calendarConnected) {
+            calendarUpdates.push({
+              operation: 'update',
+              eventId: item.scheduleBlock.googleEventId,
+              calendarId: item.scheduleBlock.googleCalendarId,
+              title: item.title,
+              dateIso: todayCairoIso,
+              startTime24: item.suggestedSlot.time24,
+              durationMinutes: item.durationMin,
+            });
+          } else {
+            localBlockMoves[item.scheduleBlock.id] = item.suggestedSlot.startMin;
+          }
+        }
+      }
+
+      if (Object.keys(localBlockMoves).length > 0) {
+        setAutoPlacedBlockStarts((prev) => ({ ...prev, ...localBlockMoves }));
+      }
+      if (calendarUpdates.length > 0) {
+        await onExecuteCalendarActions(calendarUpdates);
+      }
+      if (taskUpdates.length > 0) {
+        await onExecuteTaskActions(taskUpdates);
+      }
+    } finally {
+      setIsSyncingAutoPlace(false);
+    }
+  };
 
   // Always pick the currently-active or next remaining task today (never loop back to passed 3 AM events!)
   const nextAlarmBlock = useMemo(() => {
@@ -1725,7 +1832,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {phoneBattery?.charging &&
         phoneBattery.levelPct < phoneBattery.chargeLimitPct &&
         Date.now() - phoneBattery.updatedAtMs < 3 * 60_000 && (
-        <div className="flex items-center justify-between gap-4 rounded-xl border border-[#7FFFD4]/25 bg-[#0A0F16]/90 px-4 py-2.5 text-xs">
+        <div className="flex items-center justify-between gap-4 rounded-xl border border-[var(--border-active)] bg-[var(--bg-card)] px-4 py-2.5 text-xs">
           <div className="flex items-center gap-3 min-w-0">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#7FFFD4]/30 bg-[#7FFFD4]/10 text-[#7FFFD4] shrink-0">
               <BatteryCharging className="w-4 h-4" />
@@ -1966,7 +2073,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       )}
 
       {showSilentInbox && silentNotifications.length > 0 && (
-        <div className="rounded-xl border border-white/10 bg-[#090C11] p-3.5 space-y-2 text-xs">
+        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-3.5 space-y-2 text-xs">
           <div className="flex items-center justify-between">
             <span className="font-semibold text-white">
               الإشعارات الصامتة ({silentNotifications.length})
@@ -2643,7 +2750,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="mt-3 flex items-center p-1 rounded-xl bg-[var(--bg-surface)] border border-[var(--border-subtle)] overflow-x-auto max-w-full w-fit">
               {(
                 [
-                  { id: 'today', label: 'اليوم', count: remainingTodayBlocks.length },
+                  { id: 'today', label: 'اليوم', count: dayTimelineModel.placedBlocks.length },
                   { id: 'tomorrow', label: 'غداً', count: tomorrowEvents.length },
                   { id: 'special', label: 'المميزة', count: nonRoutineUpcomingEvents.length },
                   { id: 'done', label: 'المنتهي', count: finishedTodayBlocks.length },
@@ -2670,6 +2777,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     <span className="relative z-10 font-mono-tabular text-[11px] opacity-75">
                       {tab.count}
                     </span>
+                    {tab.id === 'today' && dayTimelineModel.unplacedBlocks.length > 0 && (
+                      <span
+                        aria-label={`${dayTimelineModel.unplacedBlocks.length} عناصر تحتاج توظيف`}
+                        className="relative z-10 px-1.5 py-0.2 rounded-full bg-amber-400/20 text-amber-300 text-[10px] font-mono-tabular font-bold"
+                      >
+                        {dayTimelineModel.unplacedBlocks.length}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -2896,14 +3011,52 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                 )}
               </div>
+            ) : timelineFilter === 'today' ? (
+              /* Structured + Things 3 Vertical 24h Day Timeline */
+              <DayTimelineView
+                model={dayTimelineModel}
+                language={language}
+                nowMinutes={nowMinutes}
+                isSyncingAutoPlace={isSyncingAutoPlace}
+                onToggleBlockComplete={onToggleComplete}
+                onToggleHabitToday={onToggleHabitToday}
+                onCompleteTask={(item: DayTimelinePlacedItem) => {
+                  if (!item.googleTaskId) return;
+                  setPendingTaskConfirmation({
+                    operation: item.completed ? 'reopen' : 'complete',
+                    taskId: item.googleTaskId,
+                    taskListId: item.googleTaskListId,
+                    title: item.title,
+                  });
+                }}
+                onTriggerAlert={(title, emoji) => {
+                  const cat = classifyTaskSound(title, emoji, false);
+                  onTriggerTaskAlert(emoji, cat);
+                }}
+                onDeleteEventBlock={(item: DayTimelinePlacedItem) => {
+                  if (item.googleEventId) {
+                    const blk = blocks.find((b) => b.id === item.scheduleBlockId);
+                    setConfirmDeleteGoogleEv({
+                      id: item.googleEventId,
+                      calendarId: item.googleCalendarId,
+                      calendarTitle: blk?.calendarTitle,
+                      summary: item.title,
+                      start: blk?.startIso ?? '',
+                      end: blk?.endIso ?? '',
+                      description: blk?.description ?? '',
+                    });
+                  } else if (item.scheduleBlockId) {
+                    onDeleteBlock(item.scheduleBlockId);
+                  }
+                }}
+                onConfirmAutoPlace={handleConfirmAutoPlace}
+              />
             ) : (
-              /* Chronological Remaining / Done Today List */
+              /* Chronological Done Today List */
               <div className="divide-y divide-white/[0.06] mt-3">
                 {filteredBlocks.length === 0 ? (
                   <div className="py-8 text-center text-xs text-zinc-500">
-                    {timelineFilter === 'today'
-                      ? 'أنجزت مهام اليوم المتبقية ✓'
-                      : 'لا توجد عناصر منتهية بعد.'}
+                    لا توجد عناصر منتهية بعد.
                   </div>
                 ) : (
                   filteredBlocks.map((block) => {
@@ -5820,7 +5973,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* Explicit Confirmation Modal: Mutate Google Task */}
       {pendingTaskConfirmation && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
-          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[var(--border-active)] bg-[var(--bg-card)] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4]">
               تأكيد تعديل مهمة في Google Tasks
             </h3>
@@ -5868,7 +6021,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* Explicit Confirmation Modal: Add Gmail-Extracted Event to Google Calendar */}
       {pendingGmailEventConfirm && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
-          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[var(--border-active)] bg-[var(--bg-card)] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4] flex items-center gap-2">
               <Mail className="w-4 h-4" />
               <span>تأكيد إضافة موعد من Gmail إلى Google Calendar</span>
@@ -5910,7 +6063,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       {/* Explicit Confirmation Modal: Schedule Creative Activity in Free Slot on Google Calendar */}
       {pendingCreativeCalendarConfirm && pendingCreativeCalendarConfirm.suggestedSlot && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-2 sm:p-4">
-          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/40 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[var(--border-active)] bg-[var(--bg-card)] p-4 sm:p-5 space-y-4 shadow-2xl">
             <h3 className="text-sm font-bold text-[#7FFFD4] flex items-center gap-2">
               <Palette className="w-4 h-4" />
               <span>تأكيد تثبيت النشاط الإبداعي في Google Calendar</span>
@@ -6111,7 +6264,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           aria-modal="true"
           aria-label={editingHabitId ? 'تعديل العادة' : 'إضافة عادة ديناميكية'}
         >
-          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/30 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[var(--border-active)] bg-[var(--bg-card)] p-4 sm:p-5 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between gap-2">
               <h3 className="text-sm font-bold text-[#7FFFD4] flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4" />
