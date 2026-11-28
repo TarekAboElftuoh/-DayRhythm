@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { useAppScheduleDerived } from './useAppScheduleDerived';
 import { useCalendarTaskExecutors } from './useCalendarTaskExecutors';
 import { useGpsLocationSync } from './useGpsLocationSync';
@@ -163,6 +164,8 @@ export function useAppScheduleAndWorkspaceActions(b: AppBaseState, p0: AppSyncWo
     showToast,
   });
 
+  const executeCalendarRef = useRef<((actions: import('../types/dayrhythm').CalendarActionProposal[]) => Promise<unknown>) | null>(null);
+
   const {
     handleToggleFridayMode,
     handleToggleBiweeklyPcCleanup,
@@ -214,6 +217,10 @@ export function useAppScheduleAndWorkspaceActions(b: AppBaseState, p0: AppSyncWo
     setLastDeletedBlock,
     setShakeUndoSecondsLeft,
     setTombstones,
+    acknowledgedBlockIdsRef: b.acknowledgedBlockIdsRef,
+    onDeleteLinkedCalendarEvent: (eventId, calendarId, title) => {
+      void executeCalendarRef.current?.([{ operation: 'delete', eventId, calendarId: calendarId || 'primary', title: title || 'حدث' }]);
+    },
     rebuildOfflineSchedule,
     pushToTasksVaultImmediately,
     pushToTasksVaultRef,
@@ -249,6 +256,7 @@ export function useAppScheduleAndWorkspaceActions(b: AppBaseState, p0: AppSyncWo
       appendChangelog,
       showToast,
     });
+  executeCalendarRef.current = executeCalendarActionsNow;
 
 
   return {

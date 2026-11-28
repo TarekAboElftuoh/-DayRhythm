@@ -41,7 +41,7 @@ export function useAlarmSchedulerEffect(p: UseAlarmSchedulerEffectParams): void 
         p.lastSyncedCloudAlarmsJsonRef.current = alarmsJson;
         void syncScheduledAlarmsToCloud(p.firebaseUser.uid, alarmsJson, p.clientIdRef.current);
       }
-    }, 800);
+    }, 50);
 
     return () => window.clearTimeout(timerId);
     // eslint-disable-next-line react-hooks/exhaustive-deps

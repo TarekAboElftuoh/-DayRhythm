@@ -6,6 +6,35 @@ import { stopContinuousAlert } from '../engines/audioEngine';
 import { triggerHapticWaveform } from '../engines/hapticsEngine';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
 
+const snoozeTargetMap = new Map<number, { blockId?: string; taskId?: string }>();
+
+/** Cancels any pending JS snooze timers matching a deleted or completed block/task. */
+export function cancelSnoozeTimersForTarget(
+  target: { blockId?: string; taskId?: string },
+  snoozeTimersRef?: React.MutableRefObject<number[]>
+): void {
+  for (const [timerId, meta] of snoozeTargetMap.entries()) {
+    const matchesBlock = Boolean(target.blockId && meta.blockId === target.blockId);
+    const matchesTask = Boolean(target.taskId && meta.taskId === target.taskId);
+    if (!matchesBlock && !matchesTask) continue;
+    window.clearTimeout(timerId);
+    snoozeTargetMap.delete(timerId);
+    if (snoozeTimersRef) {
+      snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);
+    }
+  }
+}
+
+/** Cancels JS snooze timers and stops active audio/native alerts for a deleted or completed item. */
+export function cancelTargetAlarms(
+  target: { blockId?: string; taskId?: string },
+  snoozeTimersRef?: React.MutableRefObject<number[]>
+): void {
+  cancelSnoozeTimersForTarget(target, snoozeTimersRef);
+  stopContinuousAlert();
+  stopNativeAlerts();
+}
+
 export function useAlertSnoozeHandler(p: {
   lifeProfile: LifeProfile;
   setActiveAudioAlert: React.Dispatch<React.SetStateAction<{ id: string; title: string; category: TaskSoundCategory; isContinuous?: boolean } | null>>;
@@ -58,6 +87,7 @@ export function useAlertSnoozeHandler(p: {
       setAlarmRinging(false);
       if (!options?.localOnly) emitCrossDeviceSync('alarm_dismiss', 'snooze', undefined, { alertId: alertItem.id });
       const timerId = window.setTimeout(() => {
+        snoozeTargetMap.delete(timerId);
         snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);
         triggerTaskAlert(alertItem.emoji || alertItem.title, alertItem.category, {
           privacyEmoji: alertItem.emoji,
@@ -73,6 +103,7 @@ export function useAlertSnoozeHandler(p: {
           blockId: alertItem.blockId,
         });
       }, safeMin * 60_000);
+      snoozeTargetMap.set(timerId, { blockId: alertItem.blockId, taskId: alertItem.taskId });
       snoozeTimersRef.current.push(timerId);
       if (!options?.localOnly) {
         triggerHapticWaveform('water_cup');
@@ -95,7 +126,10 @@ export function useAlertSnoozeHandler(p: {
 
   useEffect(() => {
     return () => {
-      snoozeTimersRef.current.forEach((id) => window.clearTimeout(id));
+      snoozeTimersRef.current.forEach((id) => {
+        snoozeTargetMap.delete(id);
+        window.clearTimeout(id);
+      });
       snoozeTimersRef.current = [];
     };
   }, [snoozeTimersRef]);

@@ -2,33 +2,17 @@ import { useCallback } from 'react';
 import type React from 'react';
 import type { User } from 'firebase/auth';
 import type {
-  CalendarActionProposal,
-  CalendarExecutionResult,
-  DeletedWorkspaceSnapshot,
-  GoogleCalendarEventItem,
-  GoogleTaskItem,
-  GoogleTaskList,
-  ScheduleBlock,
-  SharedChangelogEntry,
-  TaskActionProposal,
-  TaskExecutionResult,
+  CalendarActionProposal, CalendarExecutionResult, DeletedWorkspaceSnapshot, GoogleCalendarEventItem,
+  GoogleTaskItem, GoogleTaskList, ScheduleBlock, SharedChangelogEntry, TaskActionProposal, TaskExecutionResult,
 } from '../types/dayrhythm';
 import type { EmitCrossDeviceSync } from '../types/appTypes';
 import { getCalendarAccessToken } from '../services/googleCalendarAuth';
 import { apiFetchJson } from '../services/apiClient';
-import {
-  computeEventRangeInTimeZone,
-  getDateIsoInTimeZone,
-  parseIsoToTimeZoneInfo,
-} from '../engines/prayerEngine';
-import {
-  extractEmojiPair,
-  resolveCalendarActionTargets,
-  resolveTaskActionTargets,
-} from '../utils/appHelpers';
+import { computeEventRangeInTimeZone, getDateIsoInTimeZone, parseIsoToTimeZoneInfo } from '../engines/prayerEngine';
+import { extractEmojiPair, resolveCalendarActionTargets, resolveTaskActionTargets } from '../utils/appHelpers';
 import { executeCalendarDirect, executeTasksDirect } from './googleWorkspaceDirect';
-
 import { applyOfflineActionsToBlocks } from './applyOfflineActionsHelper';
+import { cancelTargetAlarms } from './useAlertSnoozeHandler';
 
 export interface UseCalendarTaskExecutorsParams {
   activeTimeZone: string;
@@ -99,7 +83,16 @@ export function useCalendarTaskExecutors(p: UseCalendarTaskExecutorsParams) {
           deletedAtMs: Date.now(),
         };
         const deleteIds = new Set(actions.filter((a) => a.operation === 'delete' && a.eventId).map((a) => a.eventId!));
-        if (deleteIds.size > 0) p.setCalendarEvents((prev) => prev.filter((ev) => !deleteIds.has(ev.id)));
+        if (deleteIds.size > 0) {
+          p.setCalendarEvents((prev) => prev.filter((ev) => !deleteIds.has(ev.id)));
+          p.setReflowedBlocksOverride((prev) => (prev ? prev.filter((b) => !b.googleEventId || !deleteIds.has(b.googleEventId)) : prev));
+          actions.filter((a) => a.operation === 'delete' && a.eventId).forEach((a) => {
+            const bId = `gcal_${a.calendarId || 'primary'}_${a.eventId}`;
+            p.acknowledgedBlockIdsRef.current.add(bId);
+            cancelTargetAlarms({ blockId: bId });
+            p.emitCrossDeviceSync('alarm_dismiss', 'event_deleted', undefined, { blockId: bId, alertId: bId });
+          });
+        }
       }
 
       if (token) {
@@ -221,6 +214,9 @@ export function useCalendarTaskExecutors(p: UseCalendarTaskExecutorsParams) {
         const deleteIds = new Set(taskActions.filter((a) => a.operation === 'delete' && a.taskId).map((a) => a.taskId!));
         if (deleteIds.size > 0) p.setGoogleTasks((prev) => prev.filter((tk) => !deleteIds.has(tk.id)));
       }
+      taskActions.forEach((a) => {
+        if ((a.operation === 'delete' || a.operation === 'complete') && a.taskId) cancelTargetAlarms({ taskId: a.taskId });
+      });
 
       let results: TaskExecutionResult[] = [];
       try {

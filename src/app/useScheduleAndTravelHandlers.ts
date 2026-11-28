@@ -1,16 +1,8 @@
 import { useCallback, useEffect } from 'react';
 import type React from 'react';
 import type {
-  CalendarTombstone,
-  CreativeActivityItem,
-  DayMode,
-  MemoryCategory,
-  MemoryItem,
-  PeriodicRitualStatus,
-  ScheduleBlock,
-  SharedChangelogEntry,
-  TaskSoundCategory,
-  TravelState,
+  CalendarTombstone, CreativeActivityItem, DayMode, MemoryCategory, MemoryItem,
+  PeriodicRitualStatus, ScheduleBlock, SharedChangelogEntry, TaskSoundCategory, TravelState,
 } from '../types/dayrhythm';
 import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
 import type { EmitCrossDeviceSync, TasksVaultPayload } from '../types/appTypes';
@@ -19,12 +11,9 @@ import { stopContinuousAlert } from '../engines/audioEngine';
 import { triggerHapticWaveform } from '../engines/hapticsEngine';
 import { getDateIsoInTimeZone } from '../engines/prayerEngine';
 import { cleanCalendarText } from '../services/apiClient';
-import {
-  CREATIVE_STORAGE_KEY,
-  normalizeSkipPatternKey,
-  SKIP_PATTERN_STORAGE_KEY,
-} from '../utils/appHelpers';
+import { CREATIVE_STORAGE_KEY, normalizeSkipPatternKey, SKIP_PATTERN_STORAGE_KEY } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
+import { cancelTargetAlarms } from './useAlertSnoozeHandler';
 
 export interface UseScheduleAndTravelHandlersParams {
   activeTimeZone: string;
@@ -61,6 +50,8 @@ export interface UseScheduleAndTravelHandlersParams {
   setLastDeletedBlock: React.Dispatch<React.SetStateAction<ScheduleBlock | null>>;
   setShakeUndoSecondsLeft: React.Dispatch<React.SetStateAction<number>>;
   setTombstones: React.Dispatch<React.SetStateAction<CalendarTombstone[]>>;
+  acknowledgedBlockIdsRef: React.MutableRefObject<Set<string>>;
+  onDeleteLinkedCalendarEvent?: (eventId: string, calendarId?: string, title?: string) => void;
   rebuildOfflineSchedule: (mode: DayMode, travel: TravelState, friday: boolean, biweeklyPc: boolean) => void;
   pushToTasksVaultImmediately: (patch?: Partial<TasksVaultPayload>) => Promise<void>;
   pushToTasksVaultRef: React.MutableRefObject<(patch?: Partial<TasksVaultPayload>) => Promise<void>>;
@@ -212,12 +203,16 @@ export function useScheduleAndTravelHandlers(p: UseScheduleAndTravelHandlersPara
       }
       stopContinuousAlert();
       stopNativeAlerts();
+      cancelTargetAlarms({ blockId: id });
       p.setActiveAudioAlert(null);
       p.setPersistentAlert(null);
       p.setAlarmRinging(false);
       p.emitCrossDeviceSync('alarm_dismiss', 'block_completed', undefined, { blockId: id, alertId: id });
       p.setCompletedOverrides((prev) => {
-        const next = { ...prev, [id]: !prev[id] };
+        const nextDone = !prev[id];
+        if (nextDone) p.acknowledgedBlockIdsRef.current.add(id);
+        else p.acknowledgedBlockIdsRef.current.delete(id);
+        const next = { ...prev, [id]: nextDone };
         void p.pushToTasksVaultImmediately({ completedOverrides: next });
         return next;
       });
@@ -229,6 +224,16 @@ export function useScheduleAndTravelHandlers(p: UseScheduleAndTravelHandlersPara
   const handleDeleteBlock = (id: string) => {
     const target = p.liveBlocks.find((b) => b.id === id) ?? null;
     p.setOfflineBlocks((prev) => prev.map((b) => (b.id === id ? { ...b, deleted: true } : b)));
+    p.setReflowedBlocksOverride((prev) => (prev ? prev.filter((b) => b.id !== id) : prev));
+    p.acknowledgedBlockIdsRef.current.add(id);
+    cancelTargetAlarms({ blockId: id });
+    p.setActiveAudioAlert(null);
+    p.setPersistentAlert(null);
+    p.setAlarmRinging(false);
+    p.emitCrossDeviceSync('alarm_dismiss', 'block_deleted', undefined, { blockId: id, alertId: id });
+    if (target?.googleEventId) {
+      p.onDeleteLinkedCalendarEvent?.(target.googleEventId, target.googleCalendarId, target.categoryAr);
+    }
     if (target) {
       p.setLastDeletedBlock(target);
       p.setShakeUndoSecondsLeft(8);

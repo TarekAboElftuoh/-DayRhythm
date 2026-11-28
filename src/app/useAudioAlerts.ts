@@ -26,7 +26,7 @@ import { handleSanctuaryAlert } from './handleSanctuaryAlert';
 import { ACTIVE_UID_STORAGE_KEY, extractEmojiPair } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
 
-import { useAlertSnoozeHandler } from './useAlertSnoozeHandler';
+import { cancelSnoozeTimersForTarget, useAlertSnoozeHandler } from './useAlertSnoozeHandler';
 
 export interface UseAudioAlertsParams {
   activeAudioAlert: { id: string; title: string; category: TaskSoundCategory; isContinuous?: boolean } | null;
@@ -93,6 +93,9 @@ export function useAudioAlerts({
       if (effectiveUid) void saveDismissedKeyToCloud(effectiveUid, occurrenceKey);
     }
 
+    if (dismissedBlockId || persistentAlert?.taskId) {
+      cancelSnoozeTimersForTarget({ blockId: dismissedBlockId, taskId: persistentAlert?.taskId }, snoozeTimersRef);
+    }
     if (dismissedBlockId) {
       acknowledgedBlockIdsRef.current.add(dismissedBlockId);
       setCompletedOverrides((prev) => ({ ...prev, [dismissedBlockId]: true }));
