@@ -155,7 +155,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                   {active && (
                     <motion.div
                       layoutId="topbar-desktop-active-pill"
-                      transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                      transition={{ type: 'spring', stiffness: 520, damping: 36 }}
                       className="absolute inset-0 rounded-xl bg-[#7FFFD4]/[0.1] border border-[#7FFFD4]/20"
                     />
                   )}
@@ -242,7 +242,7 @@ export const TopBar: React.FC<TopBarProps> = ({
                 {active && (
                   <motion.div
                     layoutId="topbar-mobile-active-pill"
-                    transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                    transition={{ type: 'spring', stiffness: 520, damping: 36 }}
                     className="absolute inset-0 rounded-xl bg-[#7FFFD4]/[0.1] border border-[#7FFFD4]/20"
                   />
                 )}

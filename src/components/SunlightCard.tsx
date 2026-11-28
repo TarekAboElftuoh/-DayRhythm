@@ -141,7 +141,11 @@ export const SunlightCard: React.FC<SunlightCardProps> = ({
       {currentSession.isCloudBlocked ? (
         <div className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400">
           <Cloud className="w-3.5 h-3.5 text-zinc-400 shrink-0" aria-hidden="true" />
-          <span>☁️ غيوم كثيفة — لا توجد أشعة الآن</span>
+          <span>
+            {isActive
+              ? '☁️ غيوم كثيفة — لا توجد أشعة الآن'
+              : '☁️ توقع غيوم كثيفة في وقت الجلسة'}
+          </span>
         </div>
       ) : (
         currentSession.canSnooze && (

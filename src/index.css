@@ -60,6 +60,12 @@
     }
   }
 
+  @media (min-width: 1024px) {
+    html {
+      font-size: 17.5px;
+    }
+  }
+
   *:focus-visible {
     outline: 2px solid rgba(127, 255, 212, 0.65);
     outline-offset: 2px;

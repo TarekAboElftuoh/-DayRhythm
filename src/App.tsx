@@ -5,6 +5,7 @@
 
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
+import { AnimatePresence, motion } from 'framer-motion';
 import type { User } from 'firebase/auth';
 import {
   ActiveSanctuaryState,
@@ -1211,6 +1212,7 @@ export default function App() {
     );
     const activeOffsets =
       sunlightSnooze.dateKey === todayCairoIso ? sunlightSnooze.offsets : null;
+    const hourlyList = Array.isArray(weatherInfo?.hourly) ? weatherInfo.hourly : [];
     return base.map((s) => {
       const snoozeMin = activeOffsets ? activeOffsets[s.id] ?? 0 : 0;
       const startMinutes = s.startMinutes + snoozeMin;
@@ -1219,12 +1221,28 @@ export default function App() {
       const canSnooze =
         Math.max(nowTickMin, startMinutes) + 5 + s.durationMinutes <=
         s.windowEndMinutes;
+
+      const targetHour = Math.max(0, Math.min(23, Math.floor(startMinutes / 60)));
+      const matchedHourly =
+        hourlyList.find((h) => h.hour === targetHour) ??
+        hourlyList.find((h) => Math.abs(h.hour - targetHour) <= 1) ??
+        null;
+      const isCloudBlocked = matchedHourly ? matchedHourly.cloudCover >= 75 : false;
+      const cloudNoteAr = isCloudBlocked
+        ? nowTickMin >= startMinutes && nowTickMin < endMinutes
+          ? '☁️ غيوم كثيفة — لا توجد أشعة الآن'
+          : '☁️ توقع غيوم كثيفة في وقت الجلسة'
+        : null;
+
       return {
         ...s,
         startMinutes,
         endMinutes,
         alertMinutes,
         canSnooze,
+        isCloudBlocked,
+        cloudNoteAr,
+        cloudCover: matchedHourly?.cloudCover ?? s.cloudCover,
       };
     });
   }, [prayers, weatherInfo, sunlightSettings, nowTickMin, sunlightSnooze, todayCairoIso]);
@@ -10449,7 +10467,15 @@ ${lifeConstitution}
           </div>
         )}
 
+        <AnimatePresence mode="wait" initial={false}>
         {activeTab === 'dashboard' && (
+          <motion.div
+            key="tab-dashboard"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+          >
           <DashboardView
             language={language}
             isFridayMode={isFridayMode}
@@ -10485,6 +10511,7 @@ ${lifeConstitution}
             onToggleMedicationDate={handleToggleMedicationDate}
             onRefillMedication={handleRefillMedication}
             onAddMedication={handleAddMedication}
+            onUpdateMedication={(proposal) => void handleExecuteMedicationActions([proposal])}
             onDeleteMedication={handleDeleteMedication}
             streaks={streaks}
             onToggleDailyCommitmentStreak={handleToggleDailyCommitmentStreak}
@@ -10590,9 +10617,17 @@ ${lifeConstitution}
             onSnoozeSunlight={handleSnoozeSunlight}
             onSunlightSessionEnd={handleSunlightSessionEnd}
           />
+          </motion.div>
         )}
 
         {activeTab === 'mobile' && (
+          <motion.div
+            key="tab-mobile"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+          >
           <Suspense fallback={null}><MobilePreviewView
             language={language}
             activeTimeZone={activeTimeZone}
@@ -10637,9 +10672,17 @@ ${lifeConstitution}
             onToggleSmartChargeAlertEnabled={handleToggleSmartChargeAlertEnabled}
             firestoreSynced={firestoreSynced || googleDriveSynced}
           /></Suspense>
+          </motion.div>
         )}
 
         {activeTab === 'overlay' && (
+          <motion.div
+            key="tab-overlay"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+          >
           <Suspense fallback={null}><OverlaySimulatorView
             blocks={liveBlocks}
             batteryGuard={batteryGuard}
@@ -10669,10 +10712,19 @@ ${lifeConstitution}
             activeLocation={activeLocation}
             firestoreSynced={firestoreSynced || googleDriveSynced}
           /></Suspense>
+          </motion.div>
         )}
+        </AnimatePresence>
 
         {/* Lazy-load GeminiAssistantView on first visit, then keep persistently mounted */}
-        {hasOpenedAssistantRef.current && (<div className={activeTab === 'assistant' ? '' : 'hidden'}><Suspense fallback={null}><GeminiAssistantView
+        {hasOpenedAssistantRef.current && (
+          <motion.div
+            initial={false}
+            animate={{ opacity: activeTab === 'assistant' ? 1 : 0 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+            className={activeTab === 'assistant' ? '' : 'hidden'}
+          >
+            <Suspense fallback={null}><GeminiAssistantView
             isActive={activeTab === 'assistant'}
             language={language}
             activeLocation={activeLocation}
@@ -10712,7 +10764,7 @@ ${lifeConstitution}
             onUpdateMemory={handleUpdateMemory}
             onDeleteMemory={handleDeleteMemory}
             onSaveCloudApiUrl={handleSaveCloudApiUrl}
-          /></Suspense></div>)}
+          /></Suspense></motion.div>)}
       </main>
 
       <AppModals

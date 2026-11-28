@@ -68,7 +68,6 @@ import {
 import { TASK_SOUND_META } from '../engines/audioEngine';
 import { QUIET_MODE_LABELS } from '../engines/i18n';
 import {
-  PRESET_LOCATIONS,
   formatMinutes12h,
   getTimeZoneUtcOffsetHours,
   getWeekdayInTimeZone,
@@ -539,7 +538,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Droplets className="w-4 h-4 text-[#7FFFD4]" />
-              <span>1. القياسات ومعادلة الماء العلمية</span>
+              <span>القياسات ومعادلة الماء العلمية</span>
             </h3>
             <span className="font-mono-tabular text-xs text-[#7FFFD4]">
               العادي: {previewPlan.normalTargetCups} كوب ({previewPlan.normalTargetMl} مل) · الصيام: {previewPlan.fastingTargetCups} كوب ({previewPlan.fastingMinTargetMl} مل)
@@ -642,7 +641,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Moon className="w-4 h-4 text-[#7FFFD4]" />
-              <span>2. الصيام، السحور، وهدف النوم الليلي</span>
+              <span>الصيام، السحور، وهدف النوم الليلي</span>
             </h3>
             <span className="font-mono-tabular text-[11px] text-zinc-400">
               الليلة: {formatMinutes12h(previewPlan.bedtimeMin)} ← {formatMinutes12h(previewPlan.wakeMin)} ({formatDurationAr(previewPlan.totalSleepMin)})
@@ -761,7 +760,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <VolumeX className="w-4 h-4 text-[#7FFFD4]" />
-              <span>3. الحماية التلقائية للصوت (الصلاة والنوم)</span>
+              <span>الحماية التلقائية للصوت (الصلاة والنوم)</span>
             </h3>
             <span className="text-[11px] text-zinc-400">
               يُحفظ كل إشعار صامتاً لتطّلع عليه لاحقاً
@@ -880,7 +879,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Compass className="w-4 h-4 text-[#7FFFD4]" />
-              <span>4. الموقع التلقائي بالـ GPS والحساب الأوفلاين</span>
+              <span>الموقع التلقائي بالـ GPS والحساب الأوفلاين</span>
             </h3>
             <button
               type="button"
@@ -889,7 +888,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               className="px-3 py-1.5 rounded-lg bg-[#7FFFD4]/15 border border-[#7FFFD4]/40 text-[#7FFFD4] text-xs font-semibold hover:bg-[#7FFFD4]/25 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               <MapPin className="w-3.5 h-3.5" />
-              <span>{isDetectingGps ? 'جارٍ الكشف...' : 'تحقّق من موقعي الآن'}</span>
+              <span>{isDetectingGps ? 'جارٍ الكشف...' : 'تحديث الموقع الآن'}</span>
             </button>
           </div>
 
@@ -898,37 +897,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
               الموقع الحالي: <strong className="text-white">{draft.currentCityName}</strong>
             </span>
             <span className="font-mono-tabular text-[11px] text-zinc-400">
-              {draft.currentTimeZone} (UTC{getTimeZoneUtcOffsetHours(draft.currentTimeZone) >= 0 ? '+' : ''}
-              {getTimeZoneUtcOffsetHours(draft.currentTimeZone)}) · حساب فلكي أوفلاين 100%
+              {draft.currentLat.toFixed(4)}, {draft.currentLng.toFixed(4)} · {draft.currentTimeZone} (UTC{getTimeZoneUtcOffsetHours(draft.currentTimeZone) >= 0 ? '+' : ''}
+              {getTimeZoneUtcOffsetHours(draft.currentTimeZone)})
             </span>
-          </div>
-
-          <div className="flex flex-wrap gap-1.5">
-            {PRESET_LOCATIONS.map((loc) => {
-              const selected = draft.currentCityName === loc.nameAr;
-              return (
-                <button
-                  key={loc.id}
-                  type="button"
-                  onClick={() =>
-                    updateDraft((p) => ({
-                      ...p,
-                      currentCityName: loc.nameAr,
-                      currentTimeZone: loc.timeZone ?? 'Africa/Cairo',
-                      currentLat: loc.lat,
-                      currentLng: loc.lng,
-                    }))
-                  }
-                  className={`px-2.5 py-1.5 rounded-lg border text-[11px] cursor-pointer ${
-                    selected
-                      ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-semibold'
-                      : 'border-white/10 text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  {loc.nameAr.split('·')[0].trim()}
-                </button>
-              );
-            })}
           </div>
 
           <label className="flex items-center justify-between gap-3 pt-2 border-t border-white/10 text-xs cursor-pointer">
@@ -949,7 +920,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Brain className="w-4 h-4 text-[#7FFFD4]" />
-              <span>5. ذاكرة Gemini الدائمة ({memories.length} قواعد محفوظة)</span>
+              <span>ذاكرة Gemini الدائمة ({memories.length} قواعد محفوظة)</span>
             </h3>
             <span className="text-[11px] text-zinc-400">
               يقرؤها Gemini في كل محادثة ويضيف إليها ما تعلّمه له
@@ -1011,7 +982,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <SlidersHorizontal className="w-4 h-4 text-[#7FFFD4]" />
-              <span>6. إعدادات الجدول والأصوات والحساب</span>
+              <span>إعدادات الجدول والأصوات والحساب</span>
             </h3>
             {calendarConnected && onGoogleSignOut && (
               <button
@@ -1434,7 +1405,7 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
               <Key className="w-4 h-4 text-[#7FFFD4]" />
-              <span>7. مفتاح Google Gemini API (محادثة العميل المباشرة)</span>
+              <span>مفتاح Google Gemini API (محادثة العميل المباشرة)</span>
             </h3>
             {testResult && (
               <span className={`font-mono-tabular text-xs font-semibold ${testResult.ok ? 'text-emerald-400' : 'text-rose-400'}`}>

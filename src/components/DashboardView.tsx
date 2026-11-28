@@ -39,6 +39,7 @@ import {
   BarChart3,
   Pill,
   Plane,
+  Pencil,
 } from 'lucide-react';
 import { WeeklyReportCard } from './WeeklyReportCard';
 import { SunlightCard } from './SunlightCard';
@@ -73,6 +74,7 @@ import {
   GoogleTaskList,
   HydrationDayLog,
   LifeProfile,
+  MedicationActionProposal,
   MedicationItem,
   PeriodicRitualStatus,
   PersistedChatMessage,
@@ -183,6 +185,7 @@ interface DashboardViewProps {
     totalDoses?: number;
     refillAlertDays?: number;
   }) => void;
+  onUpdateMedication?: (input: MedicationActionProposal) => void;
   onDeleteMedication: (id: string) => void;
   streaks: DualStreaks;
   onToggleDailyCommitmentStreak: () => void;
@@ -346,6 +349,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onToggleMedicationDate,
   onRefillMedication,
   onAddMedication,
+  onUpdateMedication,
   onDeleteMedication,
   pomodoro,
   onOpenPomodoro,
@@ -491,6 +495,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Quick Add Flexible Medication / Supplement inline form (supports multi-dose, weekdays, course end, refill count & lead days)
   const [showAddMedForm, setShowAddMedForm] = useState(false);
+  const [showMedAdvanced, setShowMedAdvanced] = useState(false);
+  const [editingMedId, setEditingMedId] = useState<string | null>(null);
+  const [editMedName, setEditMedName] = useState('');
+  const [editMedHour12, setEditMedHour12] = useState<number>(8);
+  const [editMedMinute, setEditMedMinute] = useState<string>('00');
+  const [editMedPeriod, setEditMedPeriod] = useState<'AM' | 'PM'>('AM');
+  const [editMedTimes24, setEditMedTimes24] = useState<string[]>([]);
+  const [editMedDaysOfWeek, setEditMedDaysOfWeek] = useState<number[]>([]);
+  const [editMedNote, setEditMedNote] = useState('');
+  const [editMedCourseEnd, setEditMedCourseEnd] = useState('');
+  const [editMedRemainingDoses, setEditMedRemainingDoses] = useState('');
+  const [editMedRefillAlertDays, setEditMedRefillAlertDays] = useState<number>(3);
   const [newMedName, setNewMedName] = useState('');
   const [newMedHour12, setNewMedHour12] = useState<number>(8);
   const [newMedMinute, setNewMedMinute] = useState<string>('');
@@ -3737,19 +3753,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() =>
-                    onOpenAssistantWithPrompt(
-                      'عاوز أضيف علاج أو مكمل غذائي جديد — شوف جدولي في التقويم وأيامي وابحث علمياً عن أنسب ميعاد بدون تضارب قبل ما نثبته'
-                    )
-                  }
-                  className="text-xs text-zinc-400 hover:text-[#7FFFD4] cursor-pointer transition-colors"
-                  title="استشارة علمية عبر Gemini"
-                >
-                  استشارة Gemini
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowAddMedForm((v) => !v)}
+                  onClick={() => {
+                    setShowAddMedForm((v) => !v);
+                    setShowMedAdvanced(false);
+                  }}
                   className="min-h-[32px] px-2.5 py-1 rounded-lg border border-white/[0.1] bg-white/[0.02] text-xs font-medium text-zinc-200 hover:border-[#7FFFD4]/45 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -3811,67 +3818,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   setNewMedCourseEnd('');
                   setNewMedRemainingDoses('');
                   setNewMedRefillAlertDays(3);
+                  setShowMedAdvanced(false);
                   setShowAddMedForm(false);
                 }}
                 className="rounded-xl border border-white/[0.1] bg-black/55 p-3 space-y-2.5 text-xs"
               >
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <input
-                    type="text"
-                    value={newMedName}
-                    onChange={(e) => setNewMedName(e.target.value)}
-                    placeholder="اسم العلاج أو المكمل"
-                    className="rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
-                  />
-                  <input
-                    type="text"
-                    value={newMedNote}
-                    onChange={(e) => setNewMedNote(e.target.value)}
-                    placeholder="ملاحظة (مثال: مع وجبة)"
-                    className="rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <label className="flex items-center justify-between gap-2 rounded-lg border border-white/12 bg-black px-2.5 py-1 text-[11px] text-zinc-400">
-                    <span>نهاية الكورس:</span>
-                    <input
-                      type="date"
-                      value={newMedCourseEnd}
-                      onChange={(e) => setNewMedCourseEnd(e.target.value)}
-                      className="bg-black text-zinc-200 focus:outline-none font-mono-tabular"
-                    />
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={500}
-                    value={newMedRemainingDoses}
-                    onChange={(e) => setNewMedRemainingDoses(e.target.value)}
-                    placeholder="عدد الجرعات بالعبوة (اختياري)"
-                    className="rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4] font-mono-tabular"
-                  />
-                </div>
-
-                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
-                  <span>تنبيه قبل النفاد:</span>
-                  <div className="flex items-center gap-1">
-                    {[2, 3, 5, 7].map((days) => (
-                      <button
-                        key={days}
-                        type="button"
-                        onClick={() => setNewMedRefillAlertDays(days)}
-                        className={`px-2 py-0.5 rounded-lg border text-[11px] cursor-pointer ${
-                          newMedRefillAlertDays === days
-                            ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
-                            : 'border-white/10 text-zinc-400 hover:text-white'
-                        }`}
-                      >
-                        {days} ي
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                <input
+                  type="text"
+                  value={newMedName}
+                  onChange={(e) => setNewMedName(e.target.value)}
+                  placeholder="اسم العلاج أو المكمل"
+                  className="w-full rounded-lg border border-white/12 bg-black px-2.5 py-2 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+                />
 
                 <div className="space-y-1.5">
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -4001,56 +3959,118 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
                 )}
 
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[11px] text-zinc-400">
-                    <span>الأيام (فارغ = يومياً):</span>
-                    {newMedDaysOfWeek.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setNewMedDaysOfWeek([])}
-                        className="text-[#7FFFD4] hover:underline cursor-pointer"
-                      >
-                        كل يوم
-                      </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMedAdvanced((v) => !v)}
+                  aria-expanded={showMedAdvanced}
+                  className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <span>خيارات إضافية {showMedAdvanced ? '▴' : '▾'}</span>
+                </button>
+
+                {showMedAdvanced && (
+                  <div className="space-y-2.5 pt-1 border-t border-white/[0.06]">
+                    <input
+                      type="text"
+                      value={newMedNote}
+                      onChange={(e) => setNewMedNote(e.target.value)}
+                      placeholder="ملاحظة (مثال: مع وجبة)"
+                      className="w-full rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4]"
+                    />
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <label className="flex items-center justify-between gap-2 rounded-lg border border-white/12 bg-black px-2.5 py-1 text-[11px] text-zinc-400">
+                        <span>نهاية الكورس:</span>
+                        <input
+                          type="date"
+                          value={newMedCourseEnd}
+                          onChange={(e) => setNewMedCourseEnd(e.target.value)}
+                          className="bg-black text-zinc-200 focus:outline-none font-mono-tabular"
+                        />
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={500}
+                        value={newMedRemainingDoses}
+                        onChange={(e) => setNewMedRemainingDoses(e.target.value)}
+                        placeholder="عدد الجرعات بالعبوة (اختياري)"
+                        className="rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4] font-mono-tabular"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400">
+                      <span>تنبيه قبل النفاد:</span>
+                      <div className="flex items-center gap-1">
+                        {[2, 3, 5, 7].map((days) => (
+                          <button
+                            key={days}
+                            type="button"
+                            onClick={() => setNewMedRefillAlertDays(days)}
+                            className={`px-2 py-0.5 rounded-lg border text-[11px] cursor-pointer ${
+                              newMedRefillAlertDays === days
+                                ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                : 'border-white/10 text-zinc-400 hover:text-white'
+                            }`}
+                          >
+                            {days} ي
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                        <span>الأيام (فارغ = يومياً):</span>
+                        {newMedDaysOfWeek.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setNewMedDaysOfWeek([])}
+                            className="text-[#7FFFD4] hover:underline cursor-pointer"
+                          >
+                            كل يوم
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {ARABIC_WEEKDAYS.map((day) => {
+                          const selected = newMedDaysOfWeek.includes(day.id);
+                          return (
+                            <button
+                              key={day.id}
+                              type="button"
+                              onClick={() =>
+                                setNewMedDaysOfWeek((prev) =>
+                                  prev.includes(day.id)
+                                    ? prev.filter((d) => d !== day.id)
+                                    : [...prev, day.id].sort((a, b) => a - b)
+                                )
+                              }
+                              className={`px-2 py-1 rounded-lg border text-[11px] cursor-pointer ${
+                                selected
+                                  ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                  : 'border-white/10 text-zinc-400 hover:text-white'
+                              }`}
+                            >
+                              {day.shortAr}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {calendarConnected && (
+                      <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer select-none pt-0.5">
+                        <input
+                          type="checkbox"
+                          checked={newMedSyncCalendar}
+                          onChange={(e) => setNewMedSyncCalendar(e.target.checked)}
+                          className="accent-[#7FFFD4] rounded"
+                        />
+                        <span>إضافة تلقائية للتقويم</span>
+                      </label>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-1">
-                    {ARABIC_WEEKDAYS.map((day) => {
-                      const selected = newMedDaysOfWeek.includes(day.id);
-                      return (
-                        <button
-                          key={day.id}
-                          type="button"
-                          onClick={() =>
-                            setNewMedDaysOfWeek((prev) =>
-                              prev.includes(day.id)
-                                ? prev.filter((d) => d !== day.id)
-                                : [...prev, day.id].sort((a, b) => a - b)
-                            )
-                          }
-                          className={`px-2 py-1 rounded-lg border text-[11px] cursor-pointer ${
-                            selected
-                              ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
-                              : 'border-white/10 text-zinc-400 hover:text-white'
-                          }`}
-                        >
-                          {day.shortAr}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {calendarConnected && (
-                  <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer select-none pt-0.5">
-                    <input
-                      type="checkbox"
-                      checked={newMedSyncCalendar}
-                      onChange={(e) => setNewMedSyncCalendar(e.target.checked)}
-                      className="accent-[#7FFFD4] rounded"
-                    />
-                    <span>إضافة تلقائية للتقويم</span>
-                  </label>
                 )}
 
                 <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.08]">
@@ -4071,7 +4091,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => setShowAddMedForm(false)}
+                      onClick={() => {
+                        setShowAddMedForm(false);
+                        setShowMedAdvanced(false);
+                      }}
                       className="px-2.5 py-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
                     >
                       إلغاء
@@ -4169,6 +4192,43 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <button
                             type="button"
                             onClick={() => {
+                              if (editingMedId === med.id) {
+                                setEditingMedId(null);
+                                return;
+                              }
+                              setEditingMedId(med.id);
+                              setEditMedName(med.name);
+                              const firstT = doseTimes[0] || '08:00';
+                              applyTime24To12hPicker(
+                                firstT,
+                                setEditMedHour12,
+                                setEditMedMinute,
+                                setEditMedPeriod
+                              );
+                              setEditMedTimes24(doseTimes);
+                              setEditMedDaysOfWeek(med.daysOfWeek ?? []);
+                              setEditMedNote(med.doseNote ?? '');
+                              setEditMedCourseEnd(med.courseEndDate ?? '');
+                              setEditMedRemainingDoses(
+                                typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
+                                  ? String(med.remainingDoses)
+                                  : ''
+                              );
+                              setEditMedRefillAlertDays(med.refillAlertDays ?? 3);
+                            }}
+                            className={`min-w-[42px] min-h-[42px] sm:min-w-0 sm:min-h-0 p-1.5 rounded-lg flex items-center justify-center cursor-pointer shrink-0 transition-colors ${
+                              editingMedId === med.id
+                                ? 'text-[#7FFFD4] bg-[#7FFFD4]/15'
+                                : 'text-zinc-500 hover:text-[#7FFFD4] hover:bg-[#7FFFD4]/10'
+                            }`}
+                            title={`تعديل ${med.name}`}
+                            aria-label={`تعديل ${med.name}`}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
                               setPendingDeleteMed(med);
                               setDeleteMedStep(1);
                               setDeleteMedConfirmed(false);
@@ -4181,6 +4241,221 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           </button>
                         </div>
                       </div>
+
+                      {editingMedId === med.id && (
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            if (!editMedName.trim()) return;
+                            let h24 = editMedHour12 % 12;
+                            if (editMedPeriod === 'PM') h24 += 12;
+                            const mClamped = Math.max(0, Math.min(59, Math.round(Number(editMedMinute) || 0)));
+                            const currentPicked24 = `${String(h24).padStart(2, '0')}:${String(mClamped).padStart(2, '0')}`;
+                            const finalTimes = editMedTimes24.length > 0 ? editMedTimes24 : [currentPicked24];
+                            const parsedRem = editMedRemainingDoses.trim()
+                              ? Math.max(0, Math.min(500, Math.round(Number(editMedRemainingDoses))))
+                              : -1;
+                            onUpdateMedication?.({
+                              operation: 'update',
+                              medicationId: med.id,
+                              name: editMedName.trim(),
+                              time24: finalTimes[0],
+                              times24: finalTimes,
+                              daysOfWeek: editMedDaysOfWeek,
+                              doseNote: editMedNote.trim(),
+                              courseEndDate: editMedCourseEnd.trim(),
+                              remainingDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
+                              refillAlertDays: editMedRefillAlertDays,
+                            });
+                            if (calendarConnected && med.calendarEventId) {
+                              const DAY_CODE_MAP = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+                              const byDays =
+                                editMedDaysOfWeek.length > 0
+                                  ? editMedDaysOfWeek.map((d) => DAY_CODE_MAP[d]).filter(Boolean)
+                                  : undefined;
+                              void onExecuteCalendarActions([
+                                {
+                                  operation: 'update',
+                                  eventId: med.calendarEventId,
+                                  calendarId: 'primary',
+                                  title: `💊 ⏰ ${editMedName.trim()}`,
+                                  dateIso: todayCairoIso,
+                                  startTime24: finalTimes[0],
+                                  durationMinutes: 15,
+                                  recurrenceRule: byDays && byDays.length > 0 ? 'WEEKLY' : 'DAILY',
+                                  byDays,
+                                  description: editMedNote.trim()
+                                    ? `موعد علاج/مكمل: ${editMedName.trim()} · ${editMedNote.trim()}`
+                                    : `موعد علاج/مكمل مجدول عبر إيقاع اليوم | DayRhythm`,
+                                },
+                              ]);
+                            }
+                            setEditingMedId(null);
+                          }}
+                          className="mt-2.5 rounded-xl border border-[#7FFFD4]/30 bg-black/70 p-3 space-y-2.5 text-xs"
+                        >
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <input
+                              type="text"
+                              value={editMedName}
+                              onChange={(e) => setEditMedName(e.target.value)}
+                              placeholder="اسم العلاج أو المكمل"
+                              className="rounded-lg border border-white/15 bg-black px-2.5 py-1.5 text-white focus:outline-none focus:border-[#7FFFD4]"
+                            />
+                            <input
+                              type="text"
+                              value={editMedNote}
+                              onChange={(e) => setEditMedNote(e.target.value)}
+                              placeholder="ملاحظة (مثال: مع وجبة)"
+                              className="rounded-lg border border-white/15 bg-black px-2.5 py-1.5 text-white focus:outline-none focus:border-[#7FFFD4]"
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[11px] text-zinc-400">الميعاد:</span>
+                              <select
+                                value={editMedHour12}
+                                onChange={(e) => setEditMedHour12(Number(e.target.value))}
+                                className="rounded-lg border border-white/15 bg-black px-2 py-1 text-white font-mono-tabular"
+                                aria-label="الساعة"
+                              >
+                                {[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((h) => (
+                                  <option key={h} value={h}>
+                                    {String(h).padStart(2, '0')}
+                                  </option>
+                                ))}
+                              </select>
+                              <span className="text-zinc-500 font-mono-tabular">:</span>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                maxLength={2}
+                                value={editMedMinute}
+                                onChange={(e) => {
+                                  const val = e.target.value.replace(/\D/g, '');
+                                  if (val === '') {
+                                    setEditMedMinute('');
+                                    return;
+                                  }
+                                  const v = Number(val);
+                                  setEditMedMinute(Number.isFinite(v) ? (v > 59 ? '59' : val.slice(0, 2)) : '');
+                                }}
+                                className="w-14 rounded-lg border border-white/15 bg-black px-2 py-1 text-center text-white font-mono-tabular focus:outline-none focus:border-[#7FFFD4]"
+                                aria-label="الدقائق"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setEditMedPeriod((p) => (p === 'AM' ? 'PM' : 'AM'))}
+                                className="px-2.5 py-1 rounded-lg border border-white/15 bg-black text-[#7FFFD4] font-bold cursor-pointer"
+                              >
+                                {editMedPeriod === 'AM' ? 'ص' : 'م'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  let h24 = editMedHour12 % 12;
+                                  if (editMedPeriod === 'PM') h24 += 12;
+                                  const mClamped = Math.max(0, Math.min(59, Math.round(Number(editMedMinute) || 0)));
+                                  const picked = `${String(h24).padStart(2, '0')}:${String(mClamped).padStart(2, '0')}`;
+                                  setEditMedTimes24((prev) =>
+                                    prev.includes(picked) ? prev : [...prev, picked].slice(0, 6)
+                                  );
+                                }}
+                                className="px-2 py-1 rounded-lg border border-[#7FFFD4]/40 bg-[#7FFFD4]/10 text-[11px] text-[#7FFFD4] font-semibold cursor-pointer"
+                              >
+                                + جرعة
+                              </button>
+                            </div>
+                            {editMedTimes24.length > 0 && (
+                              <div className="flex flex-wrap gap-1">
+                                {editMedTimes24.map((t24) => (
+                                  <span
+                                    key={t24}
+                                    className="inline-flex items-center gap-1 rounded-md border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 px-2 py-0.5 text-[11px] font-mono-tabular text-[#7FFFD4]"
+                                  >
+                                    {formatTime24To12h(t24, language)}
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setEditMedTimes24((prev) => prev.filter((x) => x !== t24))
+                                      }
+                                      className="text-zinc-400 hover:text-white cursor-pointer"
+                                    >
+                                      ×
+                                    </button>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <label className="flex items-center justify-between gap-2 rounded-lg border border-white/12 bg-black px-2.5 py-1 text-[11px] text-zinc-400">
+                              <span>نهاية الكورس:</span>
+                              <input
+                                type="date"
+                                value={editMedCourseEnd}
+                                onChange={(e) => setEditMedCourseEnd(e.target.value)}
+                                className="bg-black text-zinc-200 focus:outline-none font-mono-tabular"
+                              />
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={500}
+                              value={editMedRemainingDoses}
+                              onChange={(e) => setEditMedRemainingDoses(e.target.value)}
+                              placeholder="عدد الجرعات المتبقية"
+                              className="rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#7FFFD4] font-mono-tabular"
+                            />
+                          </div>
+
+                          <div className="flex flex-wrap gap-1">
+                            {ARABIC_WEEKDAYS.map((day) => {
+                              const selected = editMedDaysOfWeek.includes(day.id);
+                              return (
+                                <button
+                                  key={day.id}
+                                  type="button"
+                                  onClick={() =>
+                                    setEditMedDaysOfWeek((prev) =>
+                                      prev.includes(day.id)
+                                        ? prev.filter((d) => d !== day.id)
+                                        : [...prev, day.id].sort((a, b) => a - b)
+                                    )
+                                  }
+                                  className={`px-2 py-0.5 rounded-lg border text-[11px] cursor-pointer ${
+                                    selected
+                                      ? 'border-[#7FFFD4] bg-[#7FFFD4]/15 text-[#7FFFD4] font-bold'
+                                      : 'border-white/10 text-zinc-400 hover:text-white'
+                                  }`}
+                                >
+                                  {day.shortAr}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-white/[0.08]">
+                            <button
+                              type="button"
+                              onClick={() => setEditingMedId(null)}
+                              className="px-2.5 py-1 rounded-lg text-zinc-400 hover:text-white cursor-pointer"
+                            >
+                              إلغاء
+                            </button>
+                            <button
+                              type="submit"
+                              disabled={!editMedName.trim()}
+                              className="px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold disabled:opacity-40 cursor-pointer"
+                            >
+                              حفظ التعديل
+                            </button>
+                          </div>
+                        </form>
+                      )}
 
                       {doseTimes.length > 1 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
