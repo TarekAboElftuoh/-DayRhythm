@@ -9,10 +9,13 @@ import {
   RefreshCw,
   Sun,
   Moon,
+  Download,
+  X,
 } from 'lucide-react';
 import { ActiveTab, AppLanguage, APP_VERSION } from '../types/dayrhythm';
 import { t } from '../engines/i18n';
 import { PWAInstallButton } from './PWAInstallButton';
+import type { UpdateCheckResult } from '../services/updateCheckService';
 
 interface TopBarProps {
   activeTab: ActiveTab;
@@ -23,6 +26,8 @@ interface TopBarProps {
   brandLogoSrc?: string | null;
   onCheckAppUpdates?: () => void;
   isCheckingUpdates?: boolean;
+  availableUpdate?: UpdateCheckResult | null;
+  onDismissUpdate?: () => void;
   sunMode?: boolean;
   onToggleSunMode?: () => void;
 }
@@ -42,6 +47,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   brandLogoSrc,
   onCheckAppUpdates,
   isCheckingUpdates = false,
+  availableUpdate = null,
+  onDismissUpdate,
   sunMode = false,
   onToggleSunMode,
 }) => {
@@ -174,13 +181,27 @@ export const TopBar: React.FC<TopBarProps> = ({
                 type="button"
                 onClick={onCheckAppUpdates}
                 disabled={isCheckingUpdates}
-                className="min-w-[44px] min-h-[44px] sm:min-w-[40px] sm:min-h-[40px] sm:w-10 sm:h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-60"
-                title={language === 'ar' ? 'فحص التحديثات الآن' : 'Check for updates'}
+                className="relative min-w-[44px] min-h-[44px] sm:min-w-[40px] sm:min-h-[40px] sm:w-10 sm:h-10 rounded-xl text-zinc-400 hover:text-[#7FFFD4] hover:bg-white/[0.05] flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0 disabled:opacity-60"
+                title={
+                  availableUpdate?.hasUpdate
+                    ? language === 'ar'
+                      ? `يتوفر إصدار جديد ${availableUpdate.latestVersion}`
+                      : `New version ${availableUpdate.latestVersion} available`
+                    : language === 'ar'
+                      ? 'فحص التحديثات الآن'
+                      : 'Check for updates'
+                }
                 aria-label={language === 'ar' ? 'فحص التحديثات' : 'Check for updates'}
               >
                 <RefreshCw
                   className={`w-4 h-4 ${isCheckingUpdates ? 'animate-spin text-[#7FFFD4]' : ''}`}
                 />
+                {availableUpdate?.hasUpdate && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute top-2 right-2 w-2 h-2 rounded-full bg-[#7FFFD4] ring-2 ring-[var(--bg-surface)]"
+                  />
+                )}
               </button>
             )}
 
@@ -219,6 +240,59 @@ export const TopBar: React.FC<TopBarProps> = ({
           </div>
         </div>
       </header>
+
+      {availableUpdate?.hasUpdate && (
+        <div
+          dir={language === 'ar' ? 'rtl' : 'ltr'}
+          className="border-b border-[#7FFFD4]/25 bg-[#7FFFD4]/[0.07] backdrop-blur-md"
+        >
+          <div className="mx-auto flex max-w-[1380px] flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-2 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="px-2 py-0.5 rounded-full bg-[#7FFFD4]/15 border border-[#7FFFD4]/30 font-mono text-[11px] font-bold text-[#7FFFD4] shrink-0">
+                {availableUpdate.latestVersion}
+              </span>
+              <span className="text-zinc-200 truncate">
+                {language === 'ar'
+                  ? `يتوفر إصدار جديد من إيقاع اليوم (الحالي ${availableUpdate.currentVersion})`
+                  : `New DayRhythm release available (current ${availableUpdate.currentVersion})`}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <a
+                href={availableUpdate.downloadUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="min-h-[32px] px-3 py-1 rounded-lg bg-[#7FFFD4] text-black font-bold hover:bg-[#66eec2] transition-colors inline-flex items-center gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>
+                  {isMobileEnv && availableUpdate.apkUrl
+                    ? language === 'ar'
+                      ? 'تحميل APK'
+                      : 'Download APK'
+                    : !isMobileEnv && availableUpdate.exeUrl
+                      ? language === 'ar'
+                        ? 'تحميل EXE'
+                        : 'Download EXE'
+                      : language === 'ar'
+                        ? 'تحميل التحديث'
+                        : 'Download Update'}
+                </span>
+              </a>
+              {onDismissUpdate && (
+                <button
+                  type="button"
+                  onClick={onDismissUpdate}
+                  aria-label={language === 'ar' ? 'إغلاق إشعار التحديث' : 'Dismiss update notice'}
+                  className="min-w-[32px] min-h-[32px] rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.06] flex items-center justify-center cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile Bottom Thumb-Zone Navigation */}
       <nav

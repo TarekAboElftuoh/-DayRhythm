@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import { WeeklyReportCard } from './WeeklyReportCard';
 import { SunlightCard } from './SunlightCard';
+import { ErrorBoundary } from './ErrorBoundary';
 import type { ComputedSunlightSession } from '../engines/sunlightEngine';
 // Charts (recharts) are only shown when expanded, so load them on demand to keep app start-up light.
 const HydrationWeeklyChart = lazy(() =>
@@ -123,8 +124,49 @@ const LiveSecClock: React.FC<{ initialSec?: number; fallback: string; resetKey: 
   useEffect(() => {
     setSec(initialSec);
     if (typeof initialSec !== 'number') return;
-    const id = window.setInterval(() => setSec((s) => (typeof s === 'number' && s > 0 ? s - 1 : 0)), 1000);
-    return () => window.clearInterval(id);
+
+    const endAtMs = Date.now() + Math.max(0, initialSec) * 1000;
+    let intervalId: number | null = null;
+
+    const syncFromClock = () => {
+      setSec(Math.max(0, Math.round((endAtMs - Date.now()) / 1000)));
+    };
+
+    const startTicker = () => {
+      if (intervalId !== null) return;
+      intervalId = window.setInterval(syncFromClock, 1000);
+    };
+
+    const stopTicker = () => {
+      if (intervalId === null) return;
+      window.clearInterval(intervalId);
+      intervalId = null;
+    };
+
+    const onVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        stopTicker();
+      } else {
+        syncFromClock();
+        startTicker();
+      }
+    };
+
+    if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+      startTicker();
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityOrFocus);
+    }
+    window.addEventListener('focus', onVisibilityOrFocus);
+
+    return () => {
+      stopTicker();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+      }
+      window.removeEventListener('focus', onVisibilityOrFocus);
+    };
   }, [initialSec, resetKey]);
   if (typeof sec !== 'number') return <>{fallback}</>;
   const safe = Math.max(0, Math.floor(sec));
@@ -674,20 +716,48 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     [blocks]
   );
 
-  // Live 1-second wall-clock ticker with instant visibility/focus resync (eliminates timing drift!)
+  // Live wall-clock ticker paused while tab/app is hidden; resyncs immediately on visible/focus.
   const [liveNowMs, setLiveNowMs] = useState<number>(() => Date.now());
   useEffect(() => {
     const syncNow = () => setLiveNowMs(Date.now());
-    const id = window.setInterval(syncNow, 15_000);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') syncNow();
+    let intervalId: number | null = null;
+
+    const startTicker = () => {
+      if (intervalId !== null) return;
+      intervalId = window.setInterval(syncNow, 15_000);
     };
-    window.addEventListener('focus', syncNow);
-    document.addEventListener('visibilitychange', onVisible);
+
+    const stopTicker = () => {
+      if (intervalId === null) return;
+      window.clearInterval(intervalId);
+      intervalId = null;
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        stopTicker();
+      } else {
+        syncNow();
+        startTicker();
+      }
+    };
+
+    const onFocus = () => {
+      syncNow();
+      if (document.visibilityState !== 'hidden') {
+        startTicker();
+      }
+    };
+
+    if (document.visibilityState !== 'hidden') {
+      startTicker();
+    }
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
-      window.clearInterval(id);
-      window.removeEventListener('focus', syncNow);
-      document.removeEventListener('visibilitychange', onVisible);
+      stopTicker();
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);
 
@@ -2071,6 +2141,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       )}
 
       {/* 3. FOCAL HERO COMMAND CENTER — Swiss-Watch Hero + Ultra-Thin Progress + 5 Prayers */}
+      <ErrorBoundary sectionTitle="المتابعة اللحظية" compact>
       <section className={`rounded-2xl border p-5 sm:p-6 space-y-5 ${cardSurface}`}>
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5 md:gap-6 items-center">
           {/* Primary Focus: Current / Next Event + Oversized Tabular Countdown */}
@@ -2294,6 +2365,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       </section>
+      </ErrorBoundary>
 
       {onSnoozeSunlight && (
         <SunlightCard
@@ -2311,6 +2383,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         {/* Primary Column (7 cols): Schedule & Tasks -> Creative -> Gmail */}
         <div className="md:col-span-7 flex flex-col gap-4 min-w-0">
           {/* 1. Today's Schedule + Google Tasks (Segmented Switch) */}
+          <ErrorBoundary sectionTitle="جدول اليوم والمهام" compact>
           <section className={`rounded-2xl border p-4 sm:p-5 flex-1 ${cardSurface}`}>
             <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-[var(--border-subtle)]">
               <div className="flex flex-wrap items-center gap-2.5">
@@ -3224,6 +3297,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             )}
           </section>
+          </ErrorBoundary>
 
           {/* 3. Creative Activities & Hobbies (Shown only when non-empty) */}
           {creativePlacements.length > 0 && (
@@ -3481,6 +3555,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         {/* Support Column (5 cols): High-Frequency Daily Care FIRST — Water -> Medications -> Sleep -> Streaks */}
         <div className="md:col-span-5 flex flex-col gap-4 min-w-0">
           {/* 1. Hydration Card (Promoted to #1 in Support Column — highest tap frequency) */}
+          <ErrorBoundary sectionTitle="الماء والترطيب" compact>
           <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>
             <div className="flex items-baseline justify-between gap-2">
               <h2 className="text-base font-bold text-white flex items-center gap-2">
@@ -3724,8 +3799,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </Suspense>
             )}
           </section>
+          </ErrorBoundary>
 
           {/* 2. Medications & Supplements (Clean Dedicated Card right below Water) */}
+          <ErrorBoundary sectionTitle="العلاجات والمكملات" compact>
           <section className={`rounded-2xl border p-4 space-y-3 ${cardSurface}`}>
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.07]">
               <div className="flex items-baseline gap-2 flex-wrap">
@@ -4703,6 +4780,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
             )}
           </section>
+          </ErrorBoundary>
 
           {/* 3. Sleep & Sun Rhythm (Checked morning/night — positioned cleanly below Water & Meds) */}
           <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>

@@ -171,7 +171,7 @@ function sanitizeLifeProfile(raw: Partial<LifeProfile> | undefined): LifeProfile
   )
     ? (rawMode as SanctuarySilenceMode)
     : 'silent_inbox';
-  return { ...base, sanctuarySilenceMode };
+  return { ...base, sanctuarySilenceMode, schemaVersion: SCHEMA_VERSION };
 }
 
 function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayload {
@@ -243,6 +243,12 @@ import { triggerHapticWaveform } from './engines/hapticsEngine';
 import { formatCountdown } from './hooks/useCountdown';
 import { TopBar } from './components/TopBar';
 import { DashboardView } from './components/DashboardView';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { SCHEMA_VERSION, migrateAppState } from './utils/schemaMigration';
+import {
+  checkForGitHubReleaseUpdate,
+  type UpdateCheckResult,
+} from './services/updateCheckService';
 import {
   DEFAULT_LOGO_ID,
   SELECTED_LOGO_STORAGE_KEY,
@@ -412,6 +418,15 @@ export default function App() {
   const [changelog, setChangelog] = useState<SharedChangelogEntry[]>(INITIAL_CHANGELOG);
 
   const TRAVEL_STATE_STORAGE_KEY = 'dayrhythm_travel_state_v1';
+  const readMigratedStorageBundle = () => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return null;
+      return migrateAppState(JSON.parse(saved));
+    } catch {
+      return null;
+    }
+  };
   const sanitizeTravelState = (raw: Partial<TravelState> | null | undefined): TravelState => ({
     active: Boolean(raw?.active),
     location: raw?.location && typeof raw.location.lat === 'number' ? raw.location : HOME_LOCATION,
@@ -431,6 +446,8 @@ export default function App() {
     try {
       const saved = localStorage.getItem(TRAVEL_STATE_STORAGE_KEY);
       if (saved) return sanitizeTravelState(JSON.parse(saved));
+      const migrated = readMigratedStorageBundle();
+      if (migrated?.travelState) return sanitizeTravelState(migrated.travelState);
     } catch {
       // ignore storage errors
     }
@@ -465,18 +482,11 @@ export default function App() {
   });
 
   const [lifeProfile, setLifeProfile] = useState<LifeProfile>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.lifeProfile) {
-          return sanitizeLifeProfile(parsed.lifeProfile);
-        }
-      }
-    } catch {
-      // ignore storage errors
+    const migrated = readMigratedStorageBundle();
+    if (migrated?.lifeProfile) {
+      return sanitizeLifeProfile(migrated.lifeProfile);
     }
-    return DEFAULT_LIFE_PROFILE;
+    return sanitizeLifeProfile(DEFAULT_LIFE_PROFILE);
   });
   const lifeProfileRef = useRef<LifeProfile>(lifeProfile);
   lifeProfileRef.current = lifeProfile;
@@ -492,6 +502,7 @@ export default function App() {
   const [workspaceTokenExpired, setWorkspaceTokenExpired] = useState(false);
   const [isRefreshingWorkspaceToken, setIsRefreshingWorkspaceToken] = useState(false);
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateCheckResult | null>(null);
   const [nowTickMin, setNowTickMin] = useState<number>(() =>
     getNowMinutesInTimeZone(lifeProfile.currentTimeZone || 'Africa/Cairo')
   );
@@ -612,7 +623,7 @@ export default function App() {
         const current = currentRaw ? JSON.parse(currentRaw) : {};
         localStorage.setItem(
           STORAGE_KEY,
-          JSON.stringify({ ...current, lifeProfile: next })
+          JSON.stringify({ ...current, schemaVersion: SCHEMA_VERSION, lifeProfile: next })
         );
         localStorage.setItem('dayrhythm_life_profile_updated_at_v1', String(nowMs));
       } catch {
@@ -835,11 +846,18 @@ export default function App() {
   const [sanctuaryOverrideUntilMs, setSanctuaryOverrideUntilMs] = useState<number>(() => {
     try {
       const raw = localStorage.getItem('dayrhythm_sanctuary_override_until_v1');
-      const parsed = raw ? Number(raw) : 0;
-      return Number.isFinite(parsed) && parsed > Date.now() ? parsed : 0;
+      if (raw !== null) {
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) && parsed > Date.now() ? parsed : 0;
+      }
+      const migrated = readMigratedStorageBundle();
+      if (migrated && migrated.sanctuaryOverrideUntilMs > Date.now()) {
+        return migrated.sanctuaryOverrideUntilMs;
+      }
     } catch {
       return 0;
     }
+    return 0;
   });
   const sanctuaryOverrideUntilMsRef = useRef<number>(sanctuaryOverrideUntilMs);
   sanctuaryOverrideUntilMsRef.current = sanctuaryOverrideUntilMs;
@@ -978,6 +996,8 @@ export default function App() {
       if (Number.isFinite(saved) && saved >= 60 && saved <= 100) return Math.round(saved);
       const savedBypass = Number(localStorage.getItem('dayrhythm_bypass_limit_v1'));
       if (Number.isFinite(savedBypass) && savedBypass >= 60 && savedBypass <= 100) return Math.round(savedBypass);
+      const migrated = readMigratedStorageBundle();
+      if (migrated) return migrated.phoneChargeLimitPct;
     } catch {
       // ignore storage errors
     }
@@ -2019,29 +2039,70 @@ export default function App() {
     };
   }, []);
 
-  // Auto-revert countdown for Smart Timed Quiet Modes
+  // Auto-revert countdown for Smart Timed Quiet Modes (background revert timer stays active; 1s UI tick pauses while hidden)
   useEffect(() => {
     if (quietMode === 'normal' || quietRemainingSec <= 0) return;
-    const id = window.setInterval(() => {
-      setQuietRemainingSec((prev) => {
-        if (prev <= 1) {
-          const nowMs = Date.now();
-          quietModeRef.current = 'normal';
-          setQuietMode('normal');
-          setQuietUntilTs(null);
-          try {
-            localStorage.setItem('dayrhythm_quiet_mode_v1', 'normal');
-            localStorage.setItem('dayrhythm_quiet_until_ts_v1', 'null');
-            localStorage.setItem('dayrhythm_quiet_mode_updated_at_v1', String(nowMs));
-          } catch {}
-          showToast('🔊 انتهى مؤقت الهدوء — عاد النظام للوضع العادي تلقائياً');
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [quietMode, quietRemainingSec, showToast]);
+
+    const targetRevertMs =
+      quietUntilTs && quietUntilTs > Date.now()
+        ? quietUntilTs
+        : Date.now() + quietRemainingSec * 1000;
+
+    const revertNow = () => {
+      const nowMs = Date.now();
+      quietModeRef.current = 'normal';
+      setQuietMode('normal');
+      setQuietUntilTs(null);
+      setQuietRemainingSec(0);
+      try {
+        localStorage.setItem('dayrhythm_quiet_mode_v1', 'normal');
+        localStorage.setItem('dayrhythm_quiet_until_ts_v1', 'null');
+        localStorage.setItem('dayrhythm_quiet_mode_updated_at_v1', String(nowMs));
+      } catch {}
+      showToast('🔊 انتهى مؤقت الهدوء — عاد النظام للوضع العادي تلقائياً');
+    };
+
+    const revertTimeoutId = window.setTimeout(
+      revertNow,
+      Math.max(0, targetRevertMs - Date.now())
+    );
+
+    let uiIntervalId: number | null = null;
+    const syncRemaining = () => {
+      const leftSec = Math.max(0, Math.ceil((targetRevertMs - Date.now()) / 1000));
+      setQuietRemainingSec(leftSec);
+    };
+    const startUiTicker = () => {
+      if (uiIntervalId !== null) return;
+      uiIntervalId = window.setInterval(syncRemaining, 1000);
+    };
+    const stopUiTicker = () => {
+      if (uiIntervalId === null) return;
+      window.clearInterval(uiIntervalId);
+      uiIntervalId = null;
+    };
+    const onVisibilityOrFocus = () => {
+      if (document.visibilityState === 'hidden') {
+        stopUiTicker();
+      } else {
+        syncRemaining();
+        startUiTicker();
+      }
+    };
+
+    if (document.visibilityState !== 'hidden') {
+      startUiTicker();
+    }
+    document.addEventListener('visibilitychange', onVisibilityOrFocus);
+    window.addEventListener('focus', onVisibilityOrFocus);
+
+    return () => {
+      window.clearTimeout(revertTimeoutId);
+      stopUiTicker();
+      document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+      window.removeEventListener('focus', onVisibilityOrFocus);
+    };
+  }, [quietMode, quietRemainingSec, quietUntilTs, showToast]);
 
   const handleSetQuietMode = useCallback(
     (mode: QuietModeType, durationMinutes: number) => {
@@ -3005,6 +3066,7 @@ export default function App() {
       try {
         const backup = await loadFromGoogleDriveAppData(token);
         if (backup) {
+          const migratedBackup = migrateAppState(backup);
           const remoteUpdatedAt = typeof backup.updatedAtMs === 'number' ? backup.updatedAtMs : 0;
           let latestFirestoreUpdatedAt = lastFirestoreUpdatedAtRef.current;
           try {
@@ -3030,13 +3092,16 @@ export default function App() {
               localProfileUpdatedAt = 0;
             }
             if (remoteUpdatedAt > localProfileUpdatedAt || localProfileUpdatedAt === 0) {
-              const cleanProfile = sanitizeLifeProfile(backup.lifeProfile);
+              const cleanProfile = sanitizeLifeProfile(migratedBackup.lifeProfile);
               lifeProfileRef.current = cleanProfile;
               setLifeProfile(cleanProfile);
               try {
                 const raw = localStorage.getItem(STORAGE_KEY);
                 const parsed = raw ? JSON.parse(raw) : {};
-                localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+                localStorage.setItem(
+                  STORAGE_KEY,
+                  JSON.stringify({ ...parsed, schemaVersion: SCHEMA_VERSION, lifeProfile: cleanProfile })
+                );
                 localStorage.setItem('dayrhythm_life_profile_updated_at_v1', String(remoteUpdatedAt || Date.now()));
               } catch {
                 // ignore storage errors
@@ -3206,7 +3271,7 @@ export default function App() {
           }
           const backupWithTravel = backup as FullDayRhythmCloudBackup & { travelState?: TravelState };
           if (backupWithTravel.travelState && Date.now() >= localWriteLockUntilRef.current) {
-            const cleanDriveTravel = sanitizeTravelState(backupWithTravel.travelState);
+            const cleanDriveTravel = sanitizeTravelState(migratedBackup.travelState);
             const localTravelTs = travelStateRef.current.updatedAt ?? 0;
             if ((cleanDriveTravel.updatedAt ?? 0) > localTravelTs || localTravelTs === 0) {
               travelStateRef.current = cleanDriveTravel;
@@ -3251,12 +3316,14 @@ export default function App() {
       if (!token) return false;
 
       const backup: FullDayRhythmCloudBackup & {
+        schemaVersion: number;
         quietUntilTs?: number | null;
         quietModeUpdatedAt?: number;
         sanctuaryOverrideUntilMs?: number;
         travelState?: TravelState;
       } = {
         version: 1,
+        schemaVersion: SCHEMA_VERSION,
         updatedAtIso: new Date().toISOString(),
         updatedAtMs: Date.now(),
         lifeProfile: overrides?.lifeProfile ?? lifeProfile,
@@ -3686,6 +3753,7 @@ export default function App() {
     creativeActivities?: CreativeActivityItem[];
     memories?: MemoryItem[];
   }) => {
+    const migratedRemote = migrateAppState(remote);
     const remoteTs = (remote as { updatedAtMs?: number }).updatedAtMs;
     if (typeof remoteTs === 'number' && remoteTs > lastFirestoreUpdatedAtRef.current) {
       lastFirestoreUpdatedAtRef.current = remoteTs;
@@ -3892,7 +3960,7 @@ export default function App() {
       }
     }
     if (remote.lifeProfile) {
-      const cleanProfile = sanitizeLifeProfile(remote.lifeProfile);
+      const cleanProfile = sanitizeLifeProfile(migratedRemote.lifeProfile);
       const isDiff = JSON.stringify(cleanProfile) !== JSON.stringify(lifeProfileRef.current);
       if (isDiff && Date.now() >= localWriteLockUntilRef.current) {
         lifeProfileRef.current = cleanProfile;
@@ -3900,7 +3968,10 @@ export default function App() {
         try {
           const raw = localStorage.getItem(STORAGE_KEY);
           const parsed = raw ? JSON.parse(raw) : {};
-          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...parsed, lifeProfile: cleanProfile }));
+          localStorage.setItem(
+            STORAGE_KEY,
+            JSON.stringify({ ...parsed, schemaVersion: SCHEMA_VERSION, lifeProfile: cleanProfile })
+          );
           localStorage.setItem(
             'dayrhythm_life_profile_updated_at_v1',
             String((remote as { updatedAtMs?: number }).updatedAtMs || Date.now())
@@ -4398,6 +4469,7 @@ export default function App() {
           updatedAtMs: Date.now(),
         };
         Object.assign(payload, {
+          schemaVersion: SCHEMA_VERSION,
           medicationsUpdatedAt: loadMedicationsUpdatedAt() || Date.now(),
           deletedMedicationIds: loadDeletedMedicationIds(),
         });
@@ -4448,6 +4520,7 @@ export default function App() {
           updatedAtMs: Date.now(),
         };
         Object.assign(payload, {
+          schemaVersion: SCHEMA_VERSION,
           medicationsUpdatedAt: loadMedicationsUpdatedAt() || Date.now(),
           deletedMedicationIds: loadDeletedMedicationIds(),
         });
@@ -5180,12 +5253,14 @@ export default function App() {
       if (!token) return;
 
       const backup: FullDayRhythmCloudBackup & {
+        schemaVersion: number;
         quietUntilTs?: number | null;
         quietModeUpdatedAt?: number;
         sanctuaryOverrideUntilMs?: number;
         travelState?: TravelState;
       } = {
         version: 1,
+        schemaVersion: SCHEMA_VERSION,
         updatedAtIso: new Date().toISOString(),
         updatedAtMs: Date.now(),
         lifeProfile,
@@ -6121,6 +6196,21 @@ export default function App() {
     return () => window.removeEventListener('dayrhythm:update-status', onUpdateStatus);
   }, [showToast]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const timerId = window.setTimeout(() => {
+      void checkForGitHubReleaseUpdate({ force: false }).then((res) => {
+        if (!cancelled && res?.hasUpdate) {
+          setAvailableUpdate(res);
+        }
+      });
+    }, 2500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, []);
+
   const handleCheckAppUpdates = useCallback(() => {
     setIsCheckingUpdates(true);
     const stopSpinnerLater = () => {
@@ -6131,42 +6221,54 @@ export default function App() {
         DayRhythmNative?: { checkForUpdates?: () => void };
       }
     ).DayRhythmNative;
-    if (androidBridge?.checkForUpdates) {
-      androidBridge.checkForUpdates();
-      showToast('جاري فحص التحديثات من GitHub...');
-      stopSpinnerLater();
-      return;
-    }
     const wv = (
       window as Window & {
         chrome?: { webview?: { postMessage?: (msg: string) => void } };
       }
     ).chrome?.webview;
+
+    if (androidBridge?.checkForUpdates) {
+      androidBridge.checkForUpdates();
+      showToast('جاري فحص التحديثات من GitHub...');
+      stopSpinnerLater();
+      void checkForGitHubReleaseUpdate({ force: true }).then((res) => {
+        if (res?.hasUpdate) setAvailableUpdate(res);
+        else if (res && !res.hasUpdate) setAvailableUpdate(null);
+      });
+      return;
+    }
     if (wv?.postMessage) {
       wv.postMessage('check-updates');
       showToast('جاري فحص التحديثات من GitHub...');
       stopSpinnerLater();
+      void checkForGitHubReleaseUpdate({ force: true }).then((res) => {
+        if (res?.hasUpdate) setAvailableUpdate(res);
+        else if (res && !res.hasUpdate) setAvailableUpdate(null);
+      });
       return;
     }
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker
-        .getRegistration()
-        .then((reg) => {
+
+    void checkForGitHubReleaseUpdate({ force: true })
+      .then(async (res) => {
+        if (res?.hasUpdate) {
+          setAvailableUpdate(res);
+          showToast(`يتوفر إصدار جديد ${res.latestVersion} — رابط التحميل جاهز بالأعلى`);
+          return;
+        }
+        setAvailableUpdate(null);
+        if ('serviceWorker' in navigator) {
+          const reg = await navigator.serviceWorker.getRegistration().catch(() => undefined);
           if (reg) {
-            return reg.update().then(() => {
-              showToast('تم فحص التحديثات — أنت على أحدث إصدار متاح');
-            });
+            await reg.update().catch(() => undefined);
           }
-          showToast('أنت تستخدم أحدث إصدار حالياً');
-        })
-        .catch(() => {
-          showToast('أنت تستخدم أحدث إصدار حالياً');
-        })
-        .finally(() => setIsCheckingUpdates(false));
-      return;
-    }
-    setIsCheckingUpdates(false);
-    showToast('أنت تستخدم أحدث إصدار حالياً');
+        }
+        if (res) {
+          showToast('تم فحص التحديثات — أنت على أحدث إصدار متاح');
+        } else {
+          showToast('تعذر الاتصال بـ GitHub حالياً — تحقق من الإنترنت');
+        }
+      })
+      .finally(() => setIsCheckingUpdates(false));
   }, [showToast]);
 
   const handleGoogleSignIn = useCallback(async () => {
@@ -10367,6 +10469,7 @@ ${lifeConstitution}
   ]);
 
   return (
+    <ErrorBoundary>
     <div
       className={`app-root min-h-[100dvh] overflow-x-clip transition-colors ${
         surfaceTheme === 'amoled' ? 'bg-black' : 'bg-[#070A0F]'
@@ -10391,6 +10494,8 @@ ${lifeConstitution}
         brandLogoSrc={activeBrandLogo?.src ?? null}
         onCheckAppUpdates={handleCheckAppUpdates}
         isCheckingUpdates={isCheckingUpdates}
+        availableUpdate={availableUpdate}
+        onDismissUpdate={() => setAvailableUpdate(null)}
         sunMode={sunMode}
         onToggleSunMode={handleToggleSunMode}
       />
@@ -10724,6 +10829,7 @@ ${lifeConstitution}
             transition={{ duration: 0.16, ease: 'easeOut' }}
             className={activeTab === 'assistant' ? '' : 'hidden'}
           >
+            <ErrorBoundary sectionTitle="مساعد Gemini" compact>
             <Suspense fallback={null}><GeminiAssistantView
             isActive={activeTab === 'assistant'}
             language={language}
@@ -10764,7 +10870,7 @@ ${lifeConstitution}
             onUpdateMemory={handleUpdateMemory}
             onDeleteMemory={handleDeleteMemory}
             onSaveCloudApiUrl={handleSaveCloudApiUrl}
-          /></Suspense></motion.div>)}
+          /></Suspense></ErrorBoundary></motion.div>)}
       </main>
 
       <AppModals
@@ -10850,5 +10956,6 @@ ${lifeConstitution}
         undoSnapshot={undoSnapshot}
       />
     </div>
+    </ErrorBoundary>
   );
 }
