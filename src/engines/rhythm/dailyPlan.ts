@@ -12,7 +12,7 @@ import {
 } from '../prayerEngine';
 import { clamp, computeScientificHydration, durationForward, formatDurationAr, wrap1440 } from './constants';
 import { computeSeasonalSleepPlan, isFastingDay, SEASONAL_SLEEP_CONSTANTS } from './seasonalSleep';
-import { buildDailyHydrationSlots } from './dailyHydration';
+import { buildPrayerAwareHydrationSlots } from '../hydration/prayerAwareScheduler';
 import { buildSeasonalSleepGuidance } from './seasonalGuidanceBuilder';
 
 export function computeDailyRhythmPlan(
@@ -241,12 +241,18 @@ export function computeDailyRhythmPlan(
   const { completedCycles, caffeineCutoffMin, phase: seasonalPhase } = seasonalSleep;
 
 
-  const hydrationSlots = buildDailyHydrationSlots({
+  // Prayer-aware hydration: no cup may land inside [Adhan - 3m, Adhan + configured silence]
+  // (Friday Dhuhr always 50m), cups shift around the prayer instead of being muted.
+  const hydrationSlots = buildPrayerAwareHydrationSlots({
     isFastingToday,
     activeTargetCups: hydration.activeTargetCups,
     fajr,
     maghrib,
     bedtimeMin,
+    prayers,
+    prayerSilenceMinutes: profile.prayerSilenceMinutes,
+    fajrSilenceMinutes: profile.fajrSilenceMinutes,
+    isFridayToday: options.todayWeekday === 5,
   });
 
   const isWorkDayToday = profile.workEnabled && profile.workDays.includes(options.todayWeekday);
