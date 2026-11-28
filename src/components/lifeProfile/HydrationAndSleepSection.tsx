@@ -257,6 +257,15 @@ export const HydrationAndSleepSection: React.FC<{
           <p>الاستيقاظ تلقائياً قبل الفجر بـ 15 د (و45 د في أيام الصيام للسحور).</p>
           <p>النوم بعد العشاء بـ 30 د، ومع قصر الليل تُضاف قيلولة تعويضية بعد الظهر تلقائياً.</p>
         </div>
+        <label className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.05] bg-black/30 px-3 py-2.5 text-xs cursor-pointer">
+          <span className="text-zinc-200 font-semibold">منبه الاستيقاظ</span>
+          <input
+            type="checkbox"
+            checked={draft.enableWakeAlarm !== false}
+            onChange={(e) => updateDraft((p) => ({ ...p, enableWakeAlarm: e.target.checked }))}
+            className="h-4 w-4 accent-[#7FFFD4] cursor-pointer"
+          />
+        </label>
       </section>
     </>
   );

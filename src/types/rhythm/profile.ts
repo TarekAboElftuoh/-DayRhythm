@@ -65,6 +65,7 @@ export interface LifeProfile {
   fastingDays: number[]; // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
   suhoorLeadMinutes: number;
   sleepTargetMinutes: number; // e.g., 450 = 7.5 hours (5 x 90m cycles), allowed 180..840
+  enableWakeAlarm?: boolean; // Optional daily wake-up alarm at computed wakeTime (default true)
   bedtime24?: string; // Optional preferred bedtime override in HH:MM (24h)
   wakeLeadBeforeFajrMinutes?: number; // Optional wake lead before Fajr in minutes (0..180)
   sleepStrategy: SleepStrategy;

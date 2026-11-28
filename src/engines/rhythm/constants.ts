@@ -35,6 +35,7 @@ export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   fastingDays: [1, 4], // Monday & Thursday default
   suhoorLeadMinutes: 45,
   sleepTargetMinutes: 450, // 7.5 hours (5 full 90-min circadian cycles)
+  enableWakeAlarm: true,
   sleepStrategy: 'night_only_strict',
   sleepDebtMinutes: 0,
   sleepDebtLogDateKey: '',

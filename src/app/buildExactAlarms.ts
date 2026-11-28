@@ -247,6 +247,38 @@ export function buildExactAlarms(input: BuildExactAlarmsInput): ExactAlarmEntry[
     }
   }
 
+  if (input.lifeProfile.enableWakeAlarm !== false) {
+    const wakeMin = input.dailyRhythmPlan.wakeMin;
+    const suhoorMin = input.dailyRhythmPlan.isFastingToday ? input.dailyRhythmPlan.suhoorStartMin : null;
+    const wakeTriggerAtMs = msForMinuteToday(wakeMin);
+    if (wakeTriggerAtMs > nowMs + 1_000 && !isMutedByQuietModeAt(wakeTriggerAtMs)) {
+      const isCombinedSuhoor = suhoorMin !== null && suhoorMin === wakeMin;
+      alarms.push({
+        id: `wake_${input.todayCairoIso}`,
+        kind: 'event',
+        title: isCombinedSuhoor ? '⏰ منبه الاستيقاظ والسحور' : '⏰ منبه الاستيقاظ',
+        body: isCombinedSuhoor
+          ? `حان وقت الاستيقاظ والسحور قبل الفجر (${formatMinutes12h(wakeMin, 'ar')})`
+          : `حان وقت الاستيقاظ لبداية يومك (${formatMinutes12h(wakeMin, 'ar')})`,
+        triggerAtMs: wakeTriggerAtMs,
+        snoozeMinutes,
+      });
+    }
+    if (suhoorMin !== null && suhoorMin !== wakeMin) {
+      const suhoorTriggerAtMs = msForMinuteToday(suhoorMin);
+      if (suhoorTriggerAtMs > nowMs + 1_000 && !isMutedByQuietModeAt(suhoorTriggerAtMs)) {
+        alarms.push({
+          id: `suhoor_${input.todayCairoIso}`,
+          kind: 'event',
+          title: '🌙 منبه السحور',
+          body: `حان وقت الاستيقاظ للسحور (${formatMinutes12h(suhoorMin, 'ar')})`,
+          triggerAtMs: suhoorTriggerAtMs,
+          snoozeMinutes,
+        });
+      }
+    }
+  }
+
   alarms.sort((a, b) => a.triggerAtMs - b.triggerAtMs);
   return alarms.slice(0, 60).map((alarm) => ({
     ...alarm,

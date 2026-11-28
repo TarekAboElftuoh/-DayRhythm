@@ -113,6 +113,10 @@ export function sanitizeLifeProfile(
       720,
       DEFAULT_LIFE_PROFILE.sleepTargetMinutes
     ),
+    enableWakeAlarm:
+      typeof raw?.enableWakeAlarm === 'boolean'
+        ? raw.enableWakeAlarm
+        : DEFAULT_LIFE_PROFILE.enableWakeAlarm ?? true,
     sleepStrategy,
     sleepDebtMinutes: clampInt(
       raw?.sleepDebtMinutes,
