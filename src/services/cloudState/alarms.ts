@@ -1,4 +1,5 @@
 import {
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -149,6 +150,28 @@ export async function dismissActiveAlarmInCloud(
     return true;
   } catch (error) {
     console.error('[CloudSync] Failed dismissing active alarm in cloud:', error);
+    return false;
+  }
+}
+
+export async function saveDismissedKeyToCloud(
+  uid: string,
+  occurrenceKey: string
+): Promise<boolean> {
+  if (!uid || !occurrenceKey) return false;
+  try {
+    const userDocRef = doc(db, 'users', uid);
+    await setDoc(
+      userDocRef,
+      {
+        dismissedKeys: arrayUnion(occurrenceKey),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    return true;
+  } catch (error) {
+    console.warn('[CloudSync] Failed saving dismissedKey:', error);
     return false;
   }
 }

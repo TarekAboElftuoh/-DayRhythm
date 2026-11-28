@@ -8,6 +8,7 @@ import {
 import { stopContinuousAlert } from '../engines/audioEngine';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
 import { SCHEMA_VERSION } from '../utils/schemaMigration';
+import { addDismissedKeys, CLOCK_DRIFT_TOLERANCE_MS } from './alarmOccurrenceGuard';
 import { sanitizeLifeProfile } from './sanitizers';
 import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
 import type {
@@ -64,6 +65,11 @@ export function applyRemoteAlertsAndSettings(
   migratedRemote: SyncedRhythmPayload,
   ctx: ApplyRemoteCtx
 ): void {
+  const remoteDismissedKeys = (remote as { dismissedKeys?: unknown }).dismissedKeys;
+  if (Array.isArray(remoteDismissedKeys)) {
+    addDismissedKeys(remoteDismissedKeys.filter((k): k is string => typeof k === 'string'));
+  }
+
   const remoteDismiss =
     (remote as { lastDismissSignal?: { opId?: string; timestampMs: number; scope: string; action: string; clientId: string } })
       .lastDismissSignal || remote.syncSignal;
@@ -77,7 +83,8 @@ export function applyRemoteAlertsAndSettings(
       (remoteDismiss as { opId?: string }).opId ||
       `remote_dism_${dismissTs}_${remoteSenderId || 'unknown'}`;
     const activeAlertCreatedAt = ctx.persistentAlertRef.current?.createdAtMs ?? 0;
-    const isOlderThanActiveAlert = activeAlertCreatedAt > 0 && dismissTs < activeAlertCreatedAt;
+    const isOlderThanActiveAlert =
+      activeAlertCreatedAt > 0 && dismissTs + CLOCK_DRIFT_TOLERANCE_MS < activeAlertCreatedAt;
     if (!isOlderThanActiveAlert && Date.now() - dismissTs < 180_000 && !ctx.seenSyncOpIdsRef.current.has(dismissOpId)) {
       if (
         remoteDismiss.scope === 'alarm_dismiss' ||

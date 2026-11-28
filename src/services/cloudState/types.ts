@@ -83,6 +83,7 @@ export interface UserSettingsPayload {
   periodicRituals?: PeriodicRitualStatus[];
   travelState?: TravelState;
   pomodoro?: PomodoroState;
+  dismissedKeys?: string[];
   syncSignal?: WorkspaceSyncSignal;
   originClientId?: string;
   lastDismissSignal?: {

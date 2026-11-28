@@ -4,6 +4,7 @@ import type { DeletedWorkspaceSnapshot, TaskSoundCategory } from '../types/dayrh
 import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
 import { stopContinuousAlert, stopSmartChargeCompleteAlert } from '../engines/audioEngine';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
+import { addDismissedKeys } from './alarmOccurrenceGuard';
 
 export interface UseIncomingRemoteSyncParams {
   clientIdRef: React.MutableRefObject<string>;
@@ -24,6 +25,7 @@ export interface UseIncomingRemoteSyncParams {
       sourceLabel?: string;
       description?: string;
       blockId?: string;
+      occurrenceKey?: string;
       isRemoteSignal?: boolean;
       bypassSanctuary?: boolean;
     }
@@ -62,7 +64,10 @@ export function useIncomingRemoteSync(p: UseIncomingRemoteSyncParams) {
         p.setActiveAudioAlert(null);
         p.setPersistentAlert(null);
         p.setAlarmRinging(false);
-        const extraDismiss = payload.extra as { blockId?: string } | undefined;
+        const extraDismiss = payload.extra as { blockId?: string; occurrenceKey?: string } | undefined;
+        if (extraDismiss?.occurrenceKey) {
+          addDismissedKeys([extraDismiss.occurrenceKey]);
+        }
         if (extraDismiss?.blockId) {
           p.acknowledgedBlockIdsRef.current.add(extraDismiss.blockId);
           p.setCompletedOverrides((prev) => ({ ...prev, [extraDismiss.blockId!]: true }));
@@ -75,7 +80,7 @@ export function useIncomingRemoteSync(p: UseIncomingRemoteSyncParams) {
         p.setAlarmRinging(true);
         const extra = payload.extra as {
           title?: string; body?: string; kind?: TaskSoundCategory; privacyEmoji?: string;
-          sourceLabel?: string; blockId?: string; bypassSanctuary?: boolean;
+          sourceLabel?: string; blockId?: string; occurrenceKey?: string; bypassSanctuary?: boolean;
         } | undefined;
         const emoji = extra?.privacyEmoji || '🔔';
         p.triggerTaskAlert(emoji, (extra?.kind || 'general') as TaskSoundCategory, {
@@ -84,6 +89,7 @@ export function useIncomingRemoteSync(p: UseIncomingRemoteSyncParams) {
           sourceLabel: extra?.sourceLabel || 'مزامنة سحابية فورية',
           description: extra?.body,
           blockId: extra?.blockId,
+          occurrenceKey: extra?.occurrenceKey,
           isRemoteSignal: true,
           bypassSanctuary: Boolean(extra?.bypassSanctuary),
         });

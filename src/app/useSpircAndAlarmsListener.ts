@@ -16,6 +16,7 @@ import {
 } from '../services/spircClient';
 import { ACTIVE_UID_STORAGE_KEY } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
+import { addDismissedKeys, isOccurrenceDismissed } from './alarmOccurrenceGuard';
 
 export interface UseSpircAndAlarmsListenerParams {
   firebaseUser: User | null;
@@ -79,6 +80,9 @@ export function useSpircAndAlarmsListener(p: UseSpircAndAlarmsListenerParams): v
           p.setActiveAudioAlert(null);
           p.setPersistentAlert(null);
           p.setAlarmRinging(false);
+          if (typeof payload.occurrenceKey === 'string' && payload.occurrenceKey) {
+            addDismissedKeys([payload.occurrenceKey]);
+          }
           const remoteAction = typeof payload.action === 'string' ? payload.action : '';
           if (remoteAction === 'water_confirmed') {
             const waterOpId = (typeof payload.waterOpId === 'string' && payload.waterOpId) || spOpId;
@@ -102,6 +106,7 @@ export function useSpircAndAlarmsListener(p: UseSpircAndAlarmsListenerParams): v
       ) {
         const senderId = (typeof payload.clientId === 'string' && payload.clientId) || frame.clientId;
         if (senderId === p.clientIdRef.current) return;
+        if (typeof payload.occurrenceKey === 'string' && isOccurrenceDismissed(payload.occurrenceKey)) return;
         const startedMs = Number(payload.startedAtMs || frame.timestampMs || Date.now());
         if (Math.abs(Date.now() - startedMs) <= 300_000) {
           window.dispatchEvent(new CustomEvent('dayrhythm:cloud-alert-trigger', { detail: payload }));

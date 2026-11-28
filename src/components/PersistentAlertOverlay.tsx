@@ -20,6 +20,7 @@ export interface PersistentAlertItem {
   taskId?: string;
   taskListId?: string;
   blockId?: string;
+  occurrenceKey?: string;
 }
 
 interface PersistentAlertOverlayProps {

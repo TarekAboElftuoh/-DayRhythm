@@ -19,6 +19,7 @@ import {
 import { stopContinuousAlert, stopSmartChargeCompleteAlert } from '../engines/audioEngine';
 import { ACTIVE_UID_STORAGE_KEY } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
+import { addDismissedKeys } from './alarmOccurrenceGuard';
 import { useInitialCloudSettingsLoader } from './useInitialCloudSettingsLoader';
 
 export interface UseFirestoreListenersParams {
@@ -68,6 +69,9 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
     const unsubscribe = subscribeToUserDocument(
       uid,
       (remote) => {
+        if (Array.isArray(remote.dismissedKeys)) {
+          addDismissedKeys(remote.dismissedKeys);
+        }
         const sig = remote.syncSignal;
         if (sig && sig.clientId !== p.clientIdRef.current) {
           if (sig.scope === 'alarm_dismiss') {
@@ -86,6 +90,9 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
               p.setAlarmRinging(false);
 
               const extraSig = sig.extra as Record<string, unknown> | undefined;
+              if (typeof extraSig?.occurrenceKey === 'string' && extraSig.occurrenceKey) {
+                addDismissedKeys([extraSig.occurrenceKey]);
+              }
               if (sig.action === 'water_confirmed' || extraSig?.kind === 'water') {
                 const waterOpId = (typeof extraSig?.waterOpId === 'string' && extraSig.waterOpId) || sigOpId;
                 const dateKey = typeof extraSig?.hydrationDateKey === 'string' ? extraSig.hydrationDateKey : undefined;
@@ -158,7 +165,9 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
           p.setActiveAudioAlert(null);
           p.setPersistentAlert(null);
           p.setAlarmRinging(false);
-          const extraDismiss = signal.extra as { blockId?: string; action?: string; extra?: { blockId?: string } } | undefined;
+          const extraDismiss = signal.extra as { blockId?: string; action?: string; occurrenceKey?: string; extra?: { blockId?: string; occurrenceKey?: string } } | undefined;
+          const dismissedOccKey = extraDismiss?.occurrenceKey || extraDismiss?.extra?.occurrenceKey;
+          if (dismissedOccKey) addDismissedKeys([dismissedOccKey]);
           const blockId = signal.blockId || extraDismiss?.blockId || extraDismiss?.extra?.blockId;
           if (blockId) {
             p.acknowledgedBlockIdsRef.current.add(blockId);

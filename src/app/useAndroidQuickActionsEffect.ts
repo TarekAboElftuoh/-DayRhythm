@@ -122,7 +122,7 @@ export function useAndroidQuickActionsEffect(p: UseAndroidQuickActionsEffectPara
     const onCloudAlertTrigger = (ev: Event) => {
       const detail = (ev as CustomEvent<{
         title?: string; body?: string; kind?: TaskSoundCategory; emoji?: string;
-        privacyEmoji?: string; sourceLabel?: string; blockId?: string; bypassSanctuary?: boolean; action?: string;
+        privacyEmoji?: string; sourceLabel?: string; blockId?: string; occurrenceKey?: string; bypassSanctuary?: boolean; action?: string;
       }>).detail;
       p.setAlarmRinging(true);
       const badge = detail?.privacyEmoji || detail?.emoji || '🔔';
@@ -132,6 +132,7 @@ export function useAndroidQuickActionsEffect(p: UseAndroidQuickActionsEffectPara
         description: detail?.body,
         sourceLabel: detail?.sourceLabel || 'مزامنة فورية بين أجهزتك',
         blockId: detail?.blockId,
+        occurrenceKey: detail?.occurrenceKey,
         isRemoteSignal: true,
         bypassSanctuary: Boolean(detail?.bypassSanctuary || detail?.action === 'test_ring'),
       });

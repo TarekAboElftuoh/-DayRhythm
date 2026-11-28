@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type React from 'react';
 import type { User } from 'firebase/auth';
 import type {
@@ -20,7 +20,8 @@ import { triggerHapticWaveform } from '../engines/hapticsEngine';
 import { formatNow12hInTimeZone } from '../engines/prayerEngine';
 import { auth } from '../firebase';
 import { cleanCalendarText } from '../services/apiClient';
-import { broadcastAlertTrigger, registerActiveAlarm } from '../services/cloudStateService';
+import { broadcastAlertTrigger, registerActiveAlarm, saveDismissedKeyToCloud } from '../services/cloudStateService';
+import { addDismissedKeys, isOccurrenceDismissed, markFiredInSession } from './alarmOccurrenceGuard';
 import { handleSanctuaryAlert } from './handleSanctuaryAlert';
 import { ACTIVE_UID_STORAGE_KEY, extractEmojiPair } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
@@ -73,6 +74,8 @@ export function useAudioAlerts({
   emitCrossDeviceSync,
   showToast,
 }: UseAudioAlertsParams) {
+  const activeOccurrenceKeyRef = useRef<string | undefined>(undefined);
+
   const handleAcknowledgeAudioAlert = useCallback(() => {
     stopContinuousAlert();
     stopNativeAlerts();
@@ -80,6 +83,15 @@ export function useAudioAlerts({
     const title = activeAudioAlert?.title || persistentAlert?.title || 'التنبيه';
     const alertId = activeAudioAlert?.id || persistentAlert?.id || 'all';
     const dismissedBlockId = persistentAlert?.blockId;
+    const occurrenceKey = persistentAlert?.occurrenceKey || activeOccurrenceKeyRef.current;
+    activeOccurrenceKeyRef.current = undefined;
+
+    if (occurrenceKey) {
+      addDismissedKeys([occurrenceKey]);
+      const effectiveUid =
+        firebaseUser?.uid || authUser?.uid || auth.currentUser?.uid || localStorage.getItem(ACTIVE_UID_STORAGE_KEY) || '';
+      if (effectiveUid) void saveDismissedKeyToCloud(effectiveUid, occurrenceKey);
+    }
 
     if (dismissedBlockId) {
       acknowledgedBlockIdsRef.current.add(dismissedBlockId);
@@ -90,7 +102,7 @@ export function useAudioAlerts({
     setPersistentAlert(null);
     setAlarmRinging(false);
     triggerHapticWaveform('shake_undo');
-    emitCrossDeviceSync('alarm_dismiss', 'dismiss', undefined, { blockId: dismissedBlockId, alertId });
+    emitCrossDeviceSync('alarm_dismiss', 'dismiss', undefined, { blockId: dismissedBlockId, alertId, occurrenceKey });
 
     if (hadAlert) showToast(`✓ تم إيقاف وتأكيد تنبيه «${title}» على أجهزتك`);
   }, [
@@ -143,8 +155,16 @@ export function useAudioAlerts({
         description?: string;
         isRemoteSignal?: boolean;
         blockId?: string;
+        occurrenceKey?: string;
       }
     ) => {
+      if (options?.occurrenceKey) {
+        if (isOccurrenceDismissed(options.occurrenceKey)) return;
+        markFiredInSession(options.occurrenceKey);
+        activeOccurrenceKeyRef.current = options.occurrenceKey;
+      } else {
+        activeOccurrenceKeyRef.current = undefined;
+      }
       const meta = TASK_SOUND_META[category];
       const privacyBadge = (options?.privacyEmoji || extractEmojiPair(title, meta.icon)).trim();
       const visibleTitle = (options?.displayTitle || title || meta.labelAr).trim();
@@ -211,6 +231,7 @@ export function useAudioAlerts({
             time12h: nowTime12, category, createdAtMs: Date.now(), durationMs, isContinuous: Boolean(playRes.isContinuous || isContinuous),
             isHydration: category === 'water', medicationId: options?.medicationId, medicationDoseTime24: options?.medicationDoseTime24,
             taskId: options?.taskId, taskListId: options?.taskListId, blockId: options?.blockId,
+            occurrenceKey: options?.occurrenceKey,
           });
         }
       }
@@ -237,6 +258,7 @@ export function useAudioAlerts({
         emitCrossDeviceSync('alarm_trigger', options?.bypassSanctuary ? 'test_ring' : 'trigger', undefined, {
           title: visibleTitle, body: visibleDescription, kind: category, privacyEmoji: privacyBadge,
           sourceLabel: visibleSource, snoozeMinutes: defaultSnooze, alertId, blockId: options?.blockId,
+          occurrenceKey: options?.occurrenceKey,
           bypassSanctuary: Boolean(options?.bypassSanctuary),
         });
         const effectiveUid = firebaseUser?.uid || authUser?.uid || auth.currentUser?.uid || localStorage.getItem(ACTIVE_UID_STORAGE_KEY) || '';
