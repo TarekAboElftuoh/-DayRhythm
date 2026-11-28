@@ -5,6 +5,7 @@ import {
   formatMinutes12h,
   formatMinutes24h,
   getSpecialFastDay,
+  getTodayCalendarMeta,
   getTimeZoneOffsetString,
   haversineDistanceKm,
 } from './prayerEngine';
@@ -90,12 +91,25 @@ describe('prayerEngine', () => {
     expect(rangeCrossing.endDateTime).toBe('2026-11-25T00:15:00+02:00');
   });
 
-  it('detects Ramadan and White Days in getSpecialFastDay', () => {
+  it('detects Ramadan automatically and keeps White Days disabled unless enabled', () => {
     // 2026-02-20 = 3 Ramadan 1447 AH
     expect(getSpecialFastDay('2026-02-20', 'Africa/Cairo')?.id).toBe('ramadan');
-    // 2026-11-23 = 13 Jumada II 1448 AH (White Day)
-    expect(getSpecialFastDay('2026-11-23', 'Africa/Cairo')?.id).toBe('white_days');
+    // 2026-11-23 = 13 Jumada II 1448 AH (White Day disabled by default, enabled with option)
+    expect(getSpecialFastDay('2026-11-23', 'Africa/Cairo')).toBeNull();
+    expect(getSpecialFastDay('2026-11-23', 'Africa/Cairo', { whiteDaysEnabled: true })?.id).toBe('white_days');
     // 2026-11-28 = 18 Jumada II 1448 AH (normal day)
     expect(getSpecialFastDay('2026-11-28', 'Africa/Cairo')).toBeNull();
+
+    // Calendar meta exposes hijriMonth === 9 and isRamadan strictly in Ramadan
+    const ramadanMeta = getTodayCalendarMeta('Africa/Cairo', new Date('2026-02-20T12:00:00Z'));
+    expect(ramadanMeta.hijriMonth).toBe(9);
+    expect(ramadanMeta.isRamadan).toBe(true);
+
+    const eidMeta = getTodayCalendarMeta('Africa/Cairo', new Date('2026-03-20T12:00:00Z'));
+    expect(eidMeta.hijriMonth).toBe(10);
+    expect(eidMeta.isRamadan).toBe(false);
+
+    const normalMeta = getTodayCalendarMeta('Africa/Cairo', new Date('2026-11-28T12:00:00Z'));
+    expect(normalMeta.isRamadan).toBe(false);
   });
 });

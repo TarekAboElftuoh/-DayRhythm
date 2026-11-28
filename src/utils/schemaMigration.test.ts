@@ -9,6 +9,8 @@ describe('schemaMigration', () => {
     expect(empty.lifeProfile.schemaVersion).toBe(SCHEMA_VERSION);
     expect(empty.lifeProfile.sanctuarySilenceMode).toBe('silent_inbox');
     expect(empty.lifeProfile.weightKg).toBe(DEFAULT_LIFE_PROFILE.weightKg);
+    expect(empty.lifeProfile.fastingDays).toEqual([1, 4]);
+    expect(empty.lifeProfile.whiteDaysEnabled).toBe(false);
     expect(empty.phoneChargeLimitPct).toBe(90);
     expect(empty.travelState.active).toBe(false);
     expect(empty.travelState.postponedTaskIds).toContain('room_cleanup');
@@ -53,5 +55,14 @@ describe('schemaMigration', () => {
     const twice = migrateAppState(once);
     expect(twice).toEqual(once);
     expect(twice.phoneChargeLimitPct).toBe(85);
+  });
+
+  it('preserves explicit whiteDaysEnabled when user opts in', () => {
+    const optedIn = migrateAppState({
+      lifeProfile: { whiteDaysEnabled: true, fastingDays: [1, 4, 6] },
+    });
+    expect(optedIn.lifeProfile.whiteDaysEnabled).toBe(true);
+    expect(optedIn.lifeProfile.fastingWhiteDays).toBe(true);
+    expect(optedIn.lifeProfile.fastingDays).toEqual([1, 4, 6]);
   });
 });

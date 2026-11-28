@@ -1358,7 +1358,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </span>
               </>
             )}
-            {todayCalendarMeta.isFullMoonWhiteDay && (
+            {Boolean(lifeProfile.whiteDaysEnabled ?? lifeProfile.fastingWhiteDays) &&
+              todayCalendarMeta.isFullMoonWhiteDay && (
               <>
                 <span className="text-zinc-700" aria-hidden="true">·</span>
                 <span
@@ -1367,6 +1368,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 >
                   <span className="leading-none">🌕</span>
                   <span>{todayCalendarMeta.hijriDay} {todayCalendarMeta.hijriMonthAr}</span>
+                </span>
+              </>
+            )}
+            {(todayCalendarMeta.isRamadan || dailyRhythmPlan.isRamadan) && (
+              <>
+                <span className="text-zinc-700" aria-hidden="true">·</span>
+                <span
+                  className="text-xs font-semibold text-[#7FFFD4] inline-flex items-center gap-1"
+                  title="شهر رمضان"
+                >
+                  <span className="leading-none">🌙</span>
+                  <span>رمضان</span>
                 </span>
               </>
             )}
@@ -4961,7 +4974,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
                 <div className="text-[11px] md:text-xs text-zinc-500 mt-0.5 whitespace-nowrap">
                   {dailyRhythmPlan.suhoorStartMin !== null
-                    ? `قبل الفجر بـ ${lifeProfile.suhoorLeadMinutes} د`
+                    ? 'قبل الفجر بـ 45 د'
                     : 'قبل الفجر بـ 15 د'}
                 </div>
               </div>
@@ -5002,6 +5015,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 )}
               </div>
             </div>
+
+            {typeof dailyRhythmPlan.postFajrStartMin === 'number' &&
+              typeof dailyRhythmPlan.postFajrEndMin === 'number' &&
+              typeof dailyRhythmPlan.postFajrDurationMin === 'number' &&
+              dailyRhythmPlan.postFajrDurationMin > 0 && (
+                <div className="rounded-lg border border-[#7FFFD4]/25 bg-[#7FFFD4]/[0.05] px-3 py-1.5 flex items-center justify-between gap-2 text-[11px]">
+                  <span className="text-zinc-300">تعويض بعد الفجر (حتى الشروق)</span>
+                  <span className="font-mono-tabular font-semibold text-[#7FFFD4] whitespace-nowrap">
+                    {formatMinutes12h(dailyRhythmPlan.postFajrStartMin, language)} –{' '}
+                    {formatMinutes12h(dailyRhythmPlan.postFajrEndMin, language)} ({dailyRhythmPlan.postFajrDurationMin} د)
+                  </span>
+                </div>
+              )}
+
+            {dailyRhythmPlan.qailulahStartMin !== null && (
+              <div className="flex items-center justify-between gap-3 px-1 text-[11px] text-zinc-400">
+                <span className="inline-flex items-center gap-1 text-[#FBBF24]">
+                  <Sunrise className="w-3 h-3 shrink-0" />
+                  <span>الشروق</span>
+                  <span className="font-mono-tabular font-bold text-[#FDE68A]">
+                    {formatMinutes12h(dailyRhythmPlan.sunriseMin, language)}
+                  </span>
+                </span>
+                <span className="inline-flex items-center gap-1 text-[#FB7185]">
+                  <Sunset className="w-3 h-3 shrink-0" />
+                  <span>الغروب</span>
+                  <span className="font-mono-tabular font-bold text-[#FDA4AF]">
+                    {formatMinutes12h(dailyRhythmPlan.maghribMin, language)}
+                  </span>
+                </span>
+              </div>
+            )}
 
             {dailyRhythmPlan.conflictWarningAr && (
               <div className="rounded-lg border border-amber-400/30 bg-amber-400/[0.08] px-3 py-2 text-[11px] text-amber-200">

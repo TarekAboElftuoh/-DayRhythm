@@ -15,7 +15,9 @@ import {
   PrayerTimeItem,
   ScheduleBlock,
   SeasonalSleepGuidance,
+  SeasonalSleepMode,
   SeasonalSleepPhase,
+  SeasonalSleepPlan,
   TodayCalendarMeta,
   TomorrowAlertInfo,
   WeatherHydrationInfo,
@@ -53,12 +55,14 @@ export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   weightKg: 70,
   heightCm: 177,
   cupSizeMl: 250,
-  fastingDays: [],
+  fastingDays: [1, 4], // Monday & Thursday default
   suhoorLeadMinutes: 45,
   sleepTargetMinutes: 450, // 7.5 hours (5 full 90-min circadian cycles)
   sleepStrategy: 'night_only_strict',
   sleepDebtMinutes: 0,
   sleepDebtLogDateKey: '',
+  whiteDaysEnabled: false,
+  fastingWhiteDays: false,
   adhanLeadMinutes: 0, // 0 min = exact Adhan time
   prayerSilenceMinutes: 20, // 20 min silent window from actual Adhan
   fajrSilenceMinutes: 40, // 40 min silent window from actual Fajr Adhan (time for wudu + walking to the mosque + prayer)
@@ -163,9 +167,163 @@ export function computeScientificHydration(
   };
 }
 
+export const SEASONAL_SLEEP_CONSTANTS = {
+  NORMAL_WAKE_BEFORE_FAJR_MIN: 15,
+  FASTING_WAKE_BEFORE_FAJR_MIN: 45,
+  NORMAL_BED_AFTER_ISHA_MIN: 30,
+  RAMADAN_BED_AFTER_ISHA_MIN: 90,
+  SHORT_NIGHT_THRESHOLD_MIN: 330,
+  MEDIUM_DEFICIT_LIGHT_NAP_THRESHOLD_MIN: 45,
+  LIGHT_NAP_MIN: 25,
+  FULL_CYCLE_NAP_MIN: 90,
+  DEFAULT_TARGET_SLEEP_MIN: 450,
+  POST_FAJR_DELAY_MIN: 25,
+  POST_DHUHR_DELAY_MIN: 35,
+  PRE_ASR_BUFFER_MIN: 15,
+  PRE_MAGHRIB_LIGHT_BUFFER_MIN: 45,
+} as const;
+
+export interface SeasonalSleepSolverInput {
+  fajrMin: number;
+  sunriseMin: number;
+  dhuhrMin: number;
+  asrMin: number;
+  maghribMin: number;
+  ishaMin: number;
+  isFasting: boolean;
+  isRamadan: boolean;
+  targetSleepMin?: number;
+}
+
+function schedulePostDhuhrNapStart(
+  dhuhrMin: number,
+  asrMin: number,
+  maghribMin: number,
+  sunriseMin: number,
+  napDurationMin: number
+): number {
+  const earliestAfterDhuhrAndSun = Math.max(
+    dhuhrMin + SEASONAL_SLEEP_CONSTANTS.POST_DHUHR_DELAY_MIN,
+    sunriseMin + 90
+  );
+  const latestEndBeforeAsrAndMaghrib = Math.min(
+    asrMin - SEASONAL_SLEEP_CONSTANTS.PRE_ASR_BUFFER_MIN,
+    maghribMin - SEASONAL_SLEEP_CONSTANTS.PRE_MAGHRIB_LIGHT_BUFFER_MIN
+  );
+  if (latestEndBeforeAsrAndMaghrib - earliestAfterDhuhrAndSun >= napDurationMin) {
+    return wrap1440(earliestAfterDhuhrAndSun);
+  }
+  const minFallbackStart = dhuhrMin + 20;
+  if (latestEndBeforeAsrAndMaghrib - minFallbackStart >= napDurationMin) {
+    return wrap1440(latestEndBeforeAsrAndMaghrib - napDurationMin);
+  }
+  return wrap1440(Math.max(minFallbackStart, dhuhrMin + 25));
+}
+
+/**
+ * Unified Dynamic Sleep Solver using fixed physiological & circadian constants:
+ * - wakeTime: Fajr - 15m (normal) or Fajr - 45m (fasting Suhoor prep)
+ * - earliestBedtime: Isha + 30m (normal) or Isha + 90m (Ramadan Taraweeh)
+ * - Selects Long Night (single block), Medium Night (+ 25m/90m Post-Dhuhr nap),
+ *   or Short Night (+ Post-Fajr recovery capped at Sunrise + 25m Post-Dhuhr nap).
+ */
+export function computeSeasonalSleepPlan(input: SeasonalSleepSolverInput): SeasonalSleepPlan {
+  const targetSleepMin = clamp(
+    Math.round(input.targetSleepMin ?? SEASONAL_SLEEP_CONSTANTS.DEFAULT_TARGET_SLEEP_MIN),
+    180,
+    720
+  );
+  const wakeLead = input.isFasting
+    ? SEASONAL_SLEEP_CONSTANTS.FASTING_WAKE_BEFORE_FAJR_MIN
+    : SEASONAL_SLEEP_CONSTANTS.NORMAL_WAKE_BEFORE_FAJR_MIN;
+  const wakeTimeMin = wrap1440(input.fajrMin - wakeLead);
+
+  const bedDelay = input.isRamadan
+    ? SEASONAL_SLEEP_CONSTANTS.RAMADAN_BED_AFTER_ISHA_MIN
+    : SEASONAL_SLEEP_CONSTANTS.NORMAL_BED_AFTER_ISHA_MIN;
+  const earliestBedtimeMin = wrap1440(input.ishaMin + bedDelay);
+  const availableNightMin = durationForward(earliestBedtimeMin, wakeTimeMin);
+
+  let mode: SeasonalSleepMode;
+  let bedtimeMin: number;
+  let nightSleepMin: number;
+  let deficitMin: number;
+  let postFajrStartMin: number | null = null;
+  let postFajrEndMin: number | null = null;
+  let postFajrDurationMin = 0;
+  let postDhuhrNapStartMin: number | null = null;
+  let postDhuhrNapDurationMin = 0;
+
+  if (availableNightMin >= targetSleepMin) {
+    mode = 'long_night';
+    bedtimeMin = wrap1440(wakeTimeMin - targetSleepMin);
+    nightSleepMin = targetSleepMin;
+    deficitMin = 0;
+  } else if (availableNightMin >= SEASONAL_SLEEP_CONSTANTS.SHORT_NIGHT_THRESHOLD_MIN) {
+    mode = 'medium_night';
+    bedtimeMin = earliestBedtimeMin;
+    nightSleepMin = availableNightMin;
+    deficitMin = targetSleepMin - availableNightMin;
+    postDhuhrNapDurationMin =
+      deficitMin <= SEASONAL_SLEEP_CONSTANTS.MEDIUM_DEFICIT_LIGHT_NAP_THRESHOLD_MIN
+        ? SEASONAL_SLEEP_CONSTANTS.LIGHT_NAP_MIN
+        : SEASONAL_SLEEP_CONSTANTS.FULL_CYCLE_NAP_MIN;
+    postDhuhrNapStartMin = schedulePostDhuhrNapStart(
+      input.dhuhrMin,
+      input.asrMin,
+      input.maghribMin,
+      input.sunriseMin,
+      postDhuhrNapDurationMin
+    );
+  } else {
+    mode = 'short_night';
+    bedtimeMin = earliestBedtimeMin;
+    nightSleepMin = availableNightMin;
+    deficitMin = targetSleepMin - availableNightMin;
+    postDhuhrNapDurationMin = SEASONAL_SLEEP_CONSTANTS.LIGHT_NAP_MIN;
+    postDhuhrNapStartMin = schedulePostDhuhrNapStart(
+      input.dhuhrMin,
+      input.asrMin,
+      input.maghribMin,
+      input.sunriseMin,
+      postDhuhrNapDurationMin
+    );
+
+    const rawPostFajrStart = wrap1440(input.fajrMin + SEASONAL_SLEEP_CONSTANTS.POST_FAJR_DELAY_MIN);
+    const gapToSunrise = durationForward(rawPostFajrStart, input.sunriseMin);
+    const usableSunriseGap = gapToSunrise > 0 && gapToSunrise <= 180 ? gapToSunrise : 0;
+    const neededPostFajr = Math.max(0, deficitMin - postDhuhrNapDurationMin);
+    const rawPostFajrDur = Math.min(usableSunriseGap, neededPostFajr);
+    if (rawPostFajrDur >= 15) {
+      postFajrStartMin = rawPostFajrStart;
+      postFajrDurationMin = rawPostFajrDur;
+      postFajrEndMin = wrap1440(rawPostFajrStart + rawPostFajrDur);
+    }
+  }
+
+  return {
+    mode,
+    isFasting: input.isFasting,
+    isRamadan: input.isRamadan,
+    targetSleepMin,
+    wakeTimeMin,
+    earliestBedtimeMin,
+    bedtimeMin,
+    availableNightMin,
+    nightSleepMin,
+    deficitMin,
+    postFajrStartMin,
+    postFajrEndMin,
+    postFajrDurationMin,
+    postDhuhrNapStartMin,
+    postDhuhrNapDurationMin,
+    totalSleepMin: nightSleepMin + postFajrDurationMin + postDhuhrNapDurationMin,
+  };
+}
+
 export interface FastingDayInput {
   weekday: number; // 0=Sun..6=Sat
-  fastingDays: number[]; // Custom selected weekdays (e.g., Sat [6], Mon/Thu [1, 4])
+  fastingDays: number[]; // Custom selected weekdays (e.g., Mon/Thu [1, 4], Sat [6])
   dateIso?: string;
   timeZone?: string;
   fastingOverride?: 'auto' | 'fasting' | 'normal';
@@ -173,11 +331,13 @@ export interface FastingDayInput {
   specialFastAr?: string | null;
   isWhiteDay?: boolean;
   isRamadan?: boolean;
+  whiteDaysEnabled?: boolean;
 }
 
 /**
  * Single authoritative fasting detector shared across hydration, medications, Suhoor, and conflict checks.
- * Honors custom selected weekdays, Mon/Thu, White Days, Ramadan, Arafah/Ashura, and one-off toggles.
+ * Honors custom selected weekdays (Mon/Thu default), Ramadan (Hijri month 9), Arafah/Ashura,
+ * opt-in White Days, and one-off toggles.
  */
 export function isFastingDay(input: FastingDayInput): boolean {
   if (input.fastingOverride === 'fasting') return true;
@@ -185,12 +345,20 @@ export function isFastingDay(input: FastingDayInput): boolean {
   if (Array.isArray(input.fastingDays) && input.fastingDays.includes(input.weekday)) {
     return true;
   }
-  if (input.isRamadan || input.isWhiteDay) return true;
+  if (input.isRamadan) return true;
+  if (input.isWhiteDay && input.whiteDaysEnabled !== false) return true;
   if (input.specialFastAr !== undefined) {
+    if (input.specialFastAr === 'الأيام البيض' && !input.whiteDaysEnabled) {
+      return false;
+    }
     return Boolean(input.specialFastAr);
   }
   if (input.dateIso) {
-    return Boolean(getSpecialFastDay(input.dateIso, input.timeZone));
+    return Boolean(
+      getSpecialFastDay(input.dateIso, input.timeZone, {
+        whiteDaysEnabled: Boolean(input.whiteDaysEnabled),
+      })
+    );
   }
   return false;
 }
@@ -216,7 +384,7 @@ export function computeDailyRhythmPlan(
   }
 ): DailyRhythmPlan {
   const fajr = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
-  const sunrise = prayers.find((p) => p.id === 'sunrise')?.adhanMinutes ?? 6 * 60 + 15; // kept for other uses
+  const sunrise = prayers.find((p) => p.id === 'sunrise')?.adhanMinutes ?? 6 * 60 + 15;
 
   const dhuhr = prayers.find((p) => p.id === 'dhuhr')?.adhanMinutes ?? 12 * 60;
   const asr = prayers.find((p) => p.id === 'asr')?.adhanMinutes ?? 15 * 60;
@@ -226,18 +394,36 @@ export function computeDailyRhythmPlan(
   const isha = prayers.find((p) => p.id === 'isha')?.adhanMinutes ?? 19 * 60;
 
   const tz = options.timeZone ?? profile.currentTimeZone;
-  const resolvedSpecialToday =
+  const whiteDaysEnabled = Boolean(profile.whiteDaysEnabled ?? profile.fastingWhiteDays ?? false);
+
+  const rawSpecialToday =
     options.specialFastTodayAr !== undefined
       ? options.specialFastTodayAr
       : options.todayIso
-        ? getSpecialFastDay(options.todayIso, tz)?.nameAr ?? null
+        ? getSpecialFastDay(options.todayIso, tz, { whiteDaysEnabled })?.nameAr ?? null
         : null;
-  const resolvedSpecialTomorrow =
+  const rawSpecialTomorrow =
     options.specialFastTomorrowAr !== undefined
       ? options.specialFastTomorrowAr
       : options.tomorrowIso
-        ? getSpecialFastDay(options.tomorrowIso, tz)?.nameAr ?? null
+        ? getSpecialFastDay(options.tomorrowIso, tz, { whiteDaysEnabled })?.nameAr ?? null
         : null;
+
+  const resolvedSpecialToday =
+    !whiteDaysEnabled && rawSpecialToday === 'الأيام البيض' ? null : rawSpecialToday;
+  const resolvedSpecialTomorrow =
+    !whiteDaysEnabled && rawSpecialTomorrow === 'الأيام البيض' ? null : rawSpecialTomorrow;
+
+  const isRamadanToday = Boolean(
+    options.isRamadanToday ??
+      (resolvedSpecialToday === 'شهر رمضان' ||
+        (options.todayIso ? getSpecialFastDay(options.todayIso, tz)?.id === 'ramadan' : false))
+  );
+  const isRamadanTomorrow = Boolean(
+    options.isRamadanTomorrow ??
+      (resolvedSpecialTomorrow === 'شهر رمضان' ||
+        (options.tomorrowIso ? getSpecialFastDay(options.tomorrowIso, tz)?.id === 'ramadan' : false))
+  );
 
   const autoFastToday = isFastingDay({
     weekday: options.todayWeekday,
@@ -246,7 +432,8 @@ export function computeDailyRhythmPlan(
     timeZone: tz,
     specialFastAr: resolvedSpecialToday,
     isWhiteDay: options.isWhiteDayToday,
-    isRamadan: options.isRamadanToday,
+    isRamadan: isRamadanToday,
+    whiteDaysEnabled,
   });
   const isFastingToday = isFastingDay({
     weekday: options.todayWeekday,
@@ -256,7 +443,8 @@ export function computeDailyRhythmPlan(
     fastingOverride: options.fastingOverride,
     specialFastAr: resolvedSpecialToday,
     isWhiteDay: options.isWhiteDayToday,
-    isRamadan: options.isRamadanToday,
+    isRamadan: isRamadanToday,
+    whiteDaysEnabled,
   });
 
   const isFastingTomorrow = isFastingDay({
@@ -266,7 +454,8 @@ export function computeDailyRhythmPlan(
     timeZone: tz,
     specialFastAr: resolvedSpecialTomorrow,
     isWhiteDay: options.isWhiteDayTomorrow,
-    isRamadan: options.isRamadanTomorrow,
+    isRamadan: isRamadanTomorrow,
+    whiteDaysEnabled,
   });
 
   const dayNameMap: Record<number, string> = {
@@ -282,9 +471,9 @@ export function computeDailyRhythmPlan(
   const fastingReasonAr = isFastingToday
     ? options.fastingOverride === 'fasting' && !autoFastToday
       ? 'صيام إضافي مفعّل لليوم'
-      : options.isRamadanToday
+      : isRamadanToday
         ? 'صيام شهر رمضان'
-        : options.isWhiteDayToday
+        : options.isWhiteDayToday && whiteDaysEnabled
           ? 'صيام الأيام البيض'
           : resolvedSpecialToday
             ? `صيام ${resolvedSpecialToday}`
@@ -296,110 +485,72 @@ export function computeDailyRhythmPlan(
   const appliedHeatBonusMl = Math.max(0, Math.round(options.heatBonusMl ?? 0));
   const hydration = computeScientificHydration(profile, isFastingToday, appliedHeatBonusMl);
 
-  // --- Priority #1 (Prayers) -> Priority #2 (Night-Only Circadian Sleep) -> Trim Flexible Study ---
-  const sleepLatencyMin = 15;
-  const normalWakeMin = wrap1440(fajr - 15);
-  const suhoorStartMin = isFastingTomorrow
-    ? wrap1440(fajr - profile.suhoorLeadMinutes)
-    : null;
-  const wakeMin = suhoorStartMin ?? normalWakeMin;
+  // --- Unified Dynamic Sleep Solver (fixed seasonal & circadian rules) ---
+  const solvedSleep = computeSeasonalSleepPlan({
+    fajrMin: fajr,
+    sunriseMin: sunrise,
+    dhuhrMin: dhuhr,
+    asrMin: asr,
+    maghribMin: maghrib,
+    ishaMin: isha,
+    isFasting: isFastingTomorrow,
+    isRamadan: isRamadanToday,
+    targetSleepMin: profile.sleepTargetMinutes || SEASONAL_SLEEP_CONSTANTS.DEFAULT_TARGET_SLEEP_MIN,
+  });
 
-  // Earliest realistic bedtime after Isha (20m when seasonal night is tight, 25m normally)
-  const rawPostIshaGap = durationForward(wrap1440(isha + 20), wakeMin) - sleepLatencyMin;
-  const isTightNight = rawPostIshaGap < profile.sleepTargetMinutes;
-  const earliestBedAfterIsha = wrap1440(isha + (isTightNight ? 20 : 25));
-  const maxNightWindowMin = Math.max(
-    0,
-    durationForward(earliestBedAfterIsha, wakeMin) - sleepLatencyMin
-  );
+  let bedtimeMin = solvedSleep.bedtimeMin;
+  const wakeMin = solvedSleep.wakeTimeMin;
+  const suhoorStartMin = isFastingTomorrow ? wakeMin : null;
+  const qailulahStartMin = solvedSleep.postDhuhrNapStartMin;
+  const qailulahDurationMin = solvedSleep.postDhuhrNapDurationMin;
+  const postFajrStartMin = solvedSleep.postFajrStartMin;
+  const postFajrEndMin = solvedSleep.postFajrEndMin;
+  const postFajrDurationMin = solvedSleep.postFajrDurationMin;
 
-  // Ideal bedtime for full sleep target before wakeMin
-  const idealBedForTarget = wrap1440(wakeMin - profile.sleepTargetMinutes - sleepLatencyMin);
-  const idealNormalBed = wrap1440(normalWakeMin - profile.sleepTargetMinutes - sleepLatencyMin);
-
-  let bedtimeMin = idealBedForTarget;
-  let qailulahStartMin: number | null = null;
-  let qailulahDurationMin = 0;
   let eveningStudyTrimMin = 0;
   let conflictWarningAr: string | null = null;
   let autoAdaptationProposalAr: string | null = null;
   let sleepAdviceAr = '';
 
-  if (profile.sleepStrategy === 'night_only_strict') {
-    // STRICT NIGHT-ONLY SLEEP: Zero daytime sleep; protect Sunrise & Sunset attendance.
-    // On conflict (fasting suhoor or short summer night), pull bedtime earlier right after Isha
-    // and trim flexible evening study/work time instead of touching Prayer or Sleep.
-    if (maxNightWindowMin < profile.sleepTargetMinutes) {
-      bedtimeMin = earliestBedAfterIsha;
-      const deficit = profile.sleepTargetMinutes - maxNightWindowMin;
-      eveningStudyTrimMin = Math.min(180, Math.max(45, deficit + 30));
-      conflictWarningAr = `الليل الفلكي بين العشاء و${suhoorStartMin !== null ? 'السحور' : 'الفجر'} هو ${formatDurationAr(maxNightWindowMin)} فقط (أقل من هدف ${formatDurationAr(profile.sleepTargetMinutes)} بـ ${formatDurationAr(deficit)}). تم تثبيت النوم مباشرة بعد العشاء (${formatMinutes12h(bedtimeMin)}) وتقليص الجلسات المسائية باكراً.`;
-      autoAdaptationProposalAr = `اقتراح التكيّف الذاتي: نقل جلسات العمل أو الدراسة المسائية للصباح بعد الشروق (${formatMinutes12h(safeRedSun + 20)}) وتقليل وقت المهام المرنة بـ ${eveningStudyTrimMin} د لحماية نومك الليلي دون أي نوم نهاري.`;
-      sleepAdviceAr = `نوم ليلي حصري بعد العشاء مباشرة (${formatDurationAr(maxNightWindowMin)}) مع حضور الشروق (${formatMinutes12h(sunrise)}) والغروب (${formatMinutes12h(maghrib)}).`;
-    } else {
-      bedtimeMin = idealBedForTarget;
-      // On fasting eve, bedtime shifts earlier by (suhoorLead - 15) minutes -> trim flexible evening study automatically
-      if (isFastingTomorrow && suhoorStartMin !== null) {
-        const shiftEarlier = durationForward(bedtimeMin, idealNormalBed);
-        eveningStudyTrimMin = shiftEarlier > 0 && shiftEarlier < 180 ? shiftEarlier : profile.suhoorLeadMinutes - 15;
-        autoAdaptationProposalAr = `ليلة سحور غداً: تقديم النوم الليلي إلى ${formatMinutes12h(bedtimeMin)} وتقليل المذاكرة المسائية تلقائياً بـ ${eveningStudyTrimMin} د حتى تستيقظ للسحور (${formatMinutes12h(suhoorStartMin)}) بـ ${formatDurationAr(profile.sleepTargetMinutes)} نوم ليلي كامل.`;
-        sleepAdviceAr = `نوم ليلي متكامل (${formatDurationAr(profile.sleepTargetMinutes)}) قبل سحور غداً بـ ${profile.suhoorLeadMinutes} د — صفر نوم نهاري.`;
-      } else {
-        sleepAdviceAr = `نوم ليلي متكامل (${formatDurationAr(profile.sleepTargetMinutes)}) يحفظ حضور الفجر والشروق (${formatMinutes12h(sunrise)}) والغروب (${formatMinutes12h(maghrib)}).`;
-      }
-    }
-  } else if (profile.sleepStrategy === 'biphasic_qailulah') {
-    // Optional legacy mode if user explicitly enables it
-    const idealNormalTight =
-      durationForward(earliestBedAfterIsha, normalWakeMin) <
-      profile.sleepTargetMinutes + sleepLatencyMin;
-    const baseNormalBed = idealNormalTight ? earliestBedAfterIsha : idealNormalBed;
+  const normalWakeMin = wrap1440(fajr - SEASONAL_SLEEP_CONSTANTS.NORMAL_WAKE_BEFORE_FAJR_MIN);
+  const idealNormalBed = wrap1440(normalWakeMin - solvedSleep.targetSleepMin);
 
+  if (solvedSleep.mode === 'long_night') {
     if (isFastingTomorrow && suhoorStartMin !== null) {
-      const gentleEarlyBed = wrap1440(baseNormalBed - 30);
-      const canShift30 =
-        durationForward(earliestBedAfterIsha, suhoorStartMin) >=
-        durationForward(gentleEarlyBed, suhoorStartMin);
-      bedtimeMin = canShift30 ? gentleEarlyBed : earliestBedAfterIsha;
-      const coreSleep = Math.max(0, durationForward(bedtimeMin, suhoorStartMin) - sleepLatencyMin);
-      const deficit = Math.max(0, profile.sleepTargetMinutes - coreSleep);
-      if (deficit >= 20) {
-        qailulahDurationMin = deficit >= 70 ? 90 : 30;
-        qailulahStartMin = Math.min(dhuhr + 45, Math.max(dhuhr + 30, asr - qailulahDurationMin - 15));
-      }
-      sleepAdviceAr = `نوم مرتكز مع قيلولة تعويضية (${qailulahDurationMin} د) بعد الظهر.`;
+      const shiftEarlier = durationForward(bedtimeMin, idealNormalBed);
+      eveningStudyTrimMin =
+        shiftEarlier > 0 && shiftEarlier < 180
+          ? shiftEarlier
+          : SEASONAL_SLEEP_CONSTANTS.FASTING_WAKE_BEFORE_FAJR_MIN -
+            SEASONAL_SLEEP_CONSTANTS.NORMAL_WAKE_BEFORE_FAJR_MIN;
+      autoAdaptationProposalAr = `ليلة سحور غداً: تقديم النوم الليلي إلى ${formatMinutes12h(bedtimeMin)} وتقليل المذاكرة المسائية تلقائياً بـ ${eveningStudyTrimMin} د حتى تستيقظ للسحور (${formatMinutes12h(suhoorStartMin)}) بـ ${formatDurationAr(solvedSleep.targetSleepMin)} نوم ليلي كامل.`;
+      sleepAdviceAr = `نوم ليلي متكامل (${formatDurationAr(solvedSleep.targetSleepMin)}) قبل سحور غداً بـ ${SEASONAL_SLEEP_CONSTANTS.FASTING_WAKE_BEFORE_FAJR_MIN} د — بدون قيلولة.`;
     } else {
-      bedtimeMin = baseNormalBed;
-      const coreSleep = Math.max(0, durationForward(bedtimeMin, normalWakeMin) - sleepLatencyMin);
-      const deficit = Math.max(0, profile.sleepTargetMinutes - coreSleep);
-      if (deficit >= 25) {
-        qailulahDurationMin = deficit >= 70 ? 90 : 30;
-        qailulahStartMin = Math.min(dhuhr + 45, Math.max(dhuhr + 30, asr - qailulahDurationMin - 15));
-      }
-      sleepAdviceAr = `نوم متوازن مرتبط بموعد الفجر.`;
+      sleepAdviceAr = `نوم ليلي متكامل (${formatDurationAr(solvedSleep.targetSleepMin)}) يحفظ حضور الفجر والشروق (${formatMinutes12h(sunrise)}) والغروب (${formatMinutes12h(maghrib)}).`;
     }
+  } else if (solvedSleep.mode === 'medium_night') {
+    eveningStudyTrimMin = Math.min(180, Math.max(45, solvedSleep.deficitMin + 30));
+    conflictWarningAr = `الليل الفلكي بين العشاء و${suhoorStartMin !== null ? 'السحور' : 'الفجر'} هو ${formatDurationAr(solvedSleep.availableNightMin)} (أقل من هدف ${formatDurationAr(solvedSleep.targetSleepMin)} بـ ${formatDurationAr(solvedSleep.deficitMin)}). تم تثبيت النوم عند ${formatMinutes12h(bedtimeMin)} مع قيلولة تعويضية بعد الظهر (${qailulahDurationMin} د).`;
+    autoAdaptationProposalAr = `تمت جدولة قيلولة تعويضية بعد الظهر (${formatMinutes12h(qailulahStartMin!)} · ${qailulahDurationMin} د) دون المساس بضوء الشروق أو الغروب.`;
+    sleepAdviceAr = `نوم ليلي (${formatDurationAr(solvedSleep.availableNightMin)}) + قيلولة بعد الظهر (${qailulahDurationMin} د الساعة ${formatMinutes12h(qailulahStartMin!)}).`;
   } else {
-    // anchor_early_bed
-    bedtimeMin = maxNightWindowMin < profile.sleepTargetMinutes ? earliestBedAfterIsha : idealBedForTarget;
-    if (maxNightWindowMin < profile.sleepTargetMinutes) {
-      eveningStudyTrimMin = 60;
-      conflictWarningAr = `الليل أقصر من هدف النوم (${formatDurationAr(maxNightWindowMin)}) — تم تثبيت النوم بعد العشاء مباشرة.`;
-    }
-    sleepAdviceAr = 'نوم ليلي مبكر متواصل قبل الفجر/السحور.';
+    eveningStudyTrimMin = Math.min(180, Math.max(60, solvedSleep.deficitMin + 30));
+    conflictWarningAr = `الليل القصير (${formatDurationAr(solvedSleep.availableNightMin)}) — تم تفعيل تعويض بعد الفجر${postFajrDurationMin > 0 ? ` (${postFajrDurationMin} د حتى الشروق)` : ''} + قيلولة خفيفة بعد الظهر (${qailulahDurationMin} د).`;
+    autoAdaptationProposalAr = `بروتوكول الليل القصير: نوم ليلي (${formatMinutes12h(bedtimeMin)} – ${formatMinutes12h(wakeMin)})${postFajrStartMin !== null ? ` + تعويض بعد الفجر (${formatMinutes12h(postFajrStartMin)} – ${formatMinutes12h(postFajrEndMin!)})` : ''} + قيلولة ${qailulahDurationMin} د بعد الظهر.`;
+    sleepAdviceAr = `نوم ليلي (${formatDurationAr(solvedSleep.availableNightMin)})${postFajrDurationMin > 0 ? ` + تعويض الفجر (${postFajrDurationMin} د)` : ''} + قيلولة ${qailulahDurationMin} د بعد الظهر.`;
   }
 
-  // --- Smooth Sleep Debt Recovery (gentle 15–45m/night shift, bounded by Isha + 25m) ---
+  // --- Smooth Sleep Debt Recovery (only when Long Night has earlier slack before bedtime) ---
   const sleepDebtMinutes = Math.max(0, Math.min(480, Math.round(profile.sleepDebtMinutes ?? 0)));
   let nightlyRecoveryMin = 0;
   let sleepDebtPlanAr: string | null = null;
 
   if (sleepDebtMinutes > 0) {
-    // Spread larger debt over 2+ nights (max 45m/night) so evening schedule stays calm & realistic
     const desiredRecovery =
       sleepDebtMinutes <= 30
         ? sleepDebtMinutes
         : Math.min(45, Math.max(15, Math.ceil(sleepDebtMinutes / 2 / 15) * 15));
-    const availableEarlierSlack = durationForward(earliestBedAfterIsha, bedtimeMin);
+    const availableEarlierSlack = durationForward(solvedSleep.earliestBedtimeMin, bedtimeMin);
     const maxPull = availableEarlierSlack <= 360 ? availableEarlierSlack : 0;
     nightlyRecoveryMin = Math.min(desiredRecovery, maxPull);
 
@@ -412,57 +563,55 @@ export function computeDailyRhythmPlan(
           ? `تم تقديم نوم الليلة تلقائياً بـ ${nightlyRecoveryMin} د (إلى ${formatMinutes12h(bedtimeMin)}) لتعويض جزء من العجز، وسيتبقى ${formatDurationAr(remainingAfterTonight)} لليلة التالية.`
           : `تم تقديم نوم الليلة تلقائياً بـ ${nightlyRecoveryMin} د (إلى ${formatMinutes12h(bedtimeMin)}) لتسديد كامل العجز والعودة لتوازنك غداً.`;
     } else {
-      sleepDebtPlanAr = `موعد النوم بالفعل مباشرة بعد العشاء (${formatMinutes12h(bedtimeMin)}) — إذا كنت متعباً أخبر Gemini ليفرّغ لك قيلولة تعويضية 30 د اليوم.`;
+      sleepDebtPlanAr = `موعد النوم بالفعل عند الحد الأبكر (${formatMinutes12h(bedtimeMin)}) — راقب القيلولة التعويضية بعد الظهر.`;
     }
   }
 
-  const coreNightSleepMin = Math.max(0, durationForward(bedtimeMin, wakeMin) - sleepLatencyMin);
-  const totalSleepMin = coreNightSleepMin + qailulahDurationMin;
+  const coreNightSleepMin = Math.max(0, durationForward(bedtimeMin, wakeMin));
+  const totalSleepMin = coreNightSleepMin + postFajrDurationMin + qailulahDurationMin;
 
   // --- Year-Round Seasonal Sleep Intelligence (Circadian Cycles + Diurnal Sunrise/Sunset Protection) ---
   const completedCycles = Math.max(2, Math.floor(coreNightSleepMin / 90));
   const caffeineCutoffMin = wrap1440(bedtimeMin - 8 * 60);
+  const maxNightWindowMin = solvedSleep.availableNightMin;
   const seasonalPhase: SeasonalSleepPhase =
     maxNightWindowMin < 360
       ? 'short_summer_night'
-      : maxNightWindowMin < profile.sleepTargetMinutes
+      : maxNightWindowMin < solvedSleep.targetSleepMin
         ? 'transitional_tight'
-        : maxNightWindowMin >= profile.sleepTargetMinutes + 90
+        : maxNightWindowMin >= solvedSleep.targetSleepMin + 90
           ? 'abundant_winter'
           : 'balanced_equinox';
 
   const phaseLabelMap: Record<SeasonalSleepPhase, string> = {
     abundant_winter: 'ليل شتوي طويل ومريح',
     balanced_equinox: 'توازن فصلي مثالي',
-    transitional_tight: 'ليل انتقالي قصير نسبياً',
-    short_summer_night: 'بروتوكول الصيف القصير (~5 ساعات)',
+    transitional_tight: 'ليل انتقالي + قيلولة تعويضية',
+    short_summer_night: 'بروتوكول الليل القصير',
   };
 
-  // On short summer/tight nights, start wind-down between Maghrib and Isha right after Sunset
   const windDownStartMin =
     seasonalPhase === 'short_summer_night' || seasonalPhase === 'transitional_tight'
       ? Math.max(wrap1440(maghrib + 15), wrap1440(bedtimeMin - 45))
       : wrap1440(bedtimeMin - 35);
 
-  const nsdrEarlyMin = wrap1440(dhuhr + 30);
   const nsdrWindowAr =
-    seasonalPhase === 'short_summer_night'
-      ? sleepDebtMinutes >= 60
-        ? `استرخاء يقظ 15 د أو باور ناب 20 د كحد أقصى الساعة ${formatMinutes12h(nsdrEarlyMin)} (تنتهي قبل العصر بمسافة لتصون نوم العشاء والشروق/الغروب)`
-        : `استرخاء يقظ بدون نوم (NSDR 10–15 د) الساعة ${formatMinutes12h(nsdrEarlyMin)} مع ضوء الشروق صباحاً للحفاظ على ضغط الأدينوزين للنوم فوراً بعد العشاء`
-      : 'صفر نوم نهاري — تعويض كامل بضوء الشروق الصباحي';
+    qailulahStartMin !== null
+      ? `قيلولة تعويضية ${qailulahDurationMin} د الساعة ${formatMinutes12h(qailulahStartMin)} (بعد الظهر وبعيداً عن الشروق والغروب)`
+      : 'صفر نوم نهاري — نوم ليلي كامل مع ضوء الشروق الصباحي';
 
   const protocolSummaryAr =
-    seasonalPhase === 'short_summer_night'
-      ? `النوم بعد العشاء مباشرة (${formatMinutes12h(bedtimeMin)}) لحفظ ${completedCycles} دورات نوم كاملة (${formatDurationAr(coreNightSleepMin)})، بدء التهدئة بين المغرب والعشاء (${formatMinutes12h(windDownStartMin)})، ومنع الكافيين بعد ${formatMinutes12h(caffeineCutoffMin)}.`
-      : seasonalPhase === 'transitional_tight'
-        ? `حماية ${completedCycles} دورات كاملة (${formatDurationAr(coreNightSleepMin)}) بالنوم الفوري بعد العشاء (${formatMinutes12h(bedtimeMin)})، ونقل المذاكرة المرنة لبعد الشروق.`
+    solvedSleep.mode === 'short_night'
+      ? `نوم ليلي (${formatMinutes12h(bedtimeMin)} – ${formatMinutes12h(wakeMin)})${postFajrDurationMin > 0 ? ` + تعويض بعد الفجر (${postFajrDurationMin} د حتى الشروق)` : ''} + قيلولة ${qailulahDurationMin} د بعد الظهر.`
+      : solvedSleep.mode === 'medium_night'
+        ? `نوم ليلي (${formatMinutes12h(bedtimeMin)} – ${formatMinutes12h(wakeMin)} · ${formatDurationAr(coreNightSleepMin)}) + قيلولة ${qailulahDurationMin} د الساعة ${formatMinutes12h(qailulahStartMin!)}.`
         : seasonalPhase === 'abundant_winter'
-          ? `متّسع ليلي مريح (${formatDurationAr(maxNightWindowMin)} بين العشاء والفجر) يكفي 5 دورات نوم كاملة (${formatDurationAr(coreNightSleepMin)}) مع مرونة مسائية هادئة.`
-          : `إيقاع متوازن (${completedCycles} دورات · ${formatDurationAr(coreNightSleepMin)}) من ${formatMinutes12h(bedtimeMin)} حتى ${formatMinutes12h(wakeMin)} دون نوم نهاري.`;
+          ? `متّسع ليلي مريح (${formatDurationAr(maxNightWindowMin)} متاح) يكفي ${completedCycles} دورات نوم كاملة (${formatDurationAr(coreNightSleepMin)}) بدون قيلولة.`
+          : `إيقاع متوازن (${completedCycles} دورات · ${formatDurationAr(coreNightSleepMin)}) من ${formatMinutes12h(bedtimeMin)} حتى ${formatMinutes12h(wakeMin)} بدون قيلولة.`;
 
   const seasonalSleep: SeasonalSleepGuidance = {
     phase: seasonalPhase,
+    mode: solvedSleep.mode,
     phaseLabelAr: phaseLabelMap[seasonalPhase],
     astronomicalNightMin: maxNightWindowMin,
     completedCycles,
@@ -470,6 +619,9 @@ export function computeDailyRhythmPlan(
     caffeineCutoffMin,
     nsdrWindowAr,
     protocolSummaryAr,
+    postFajrStartMin,
+    postFajrEndMin,
+    postFajrDurationMin,
   };
 
   // --- Scientific Hydration Distribution (12-Hour Aware, Zero Water During Fast) ---
@@ -480,7 +632,7 @@ export function computeDailyRhythmPlan(
     const eveningCups = Math.max(1, hydration.activeTargetCups - suhoorCups);
 
     // Suhoor happens strictly before Fajr; place it first to match sequential slot logging.
-    const suhoorLead = Math.max(10, profile.suhoorLeadMinutes);
+    const suhoorLead = SEASONAL_SLEEP_CONSTANTS.FASTING_WAKE_BEFORE_FAJR_MIN;
     const suhoorBegin = wrap1440(fajr - suhoorLead);
     const maxSuhoorSpan = Math.max(0, suhoorLead - 5);
     const suhoorSpan = Math.min(maxSuhoorSpan, Math.max(5, suhoorLead - 10));
@@ -546,6 +698,7 @@ export function computeDailyRhythmPlan(
   return {
     isFastingToday,
     isFastingTomorrow,
+    isRamadan: isRamadanToday,
     fastingReasonAr,
     heatBonusMl: appliedHeatBonusMl,
     normalTargetMl: hydration.normalTargetMl,
@@ -562,6 +715,10 @@ export function computeDailyRhythmPlan(
     maghribMin: maghrib,
     suhoorStartMin,
     coreNightSleepMin,
+    sleepMode: solvedSleep.mode,
+    postFajrStartMin,
+    postFajrEndMin,
+    postFajrDurationMin,
     qailulahStartMin,
     qailulahDurationMin,
     totalSleepMin,
@@ -600,8 +757,20 @@ export function computeAnnualSleepForecast(location: GeoLocation): {
   const wFajr = wPrayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 310;
   const wIsha = wPrayers.find((p) => p.id === 'isha')?.adhanMinutes ?? 1090;
 
-  const sNight = Math.max(0, durationForward(wrap1440(sIsha + 20), wrap1440(sFajr - 15)) - 15);
-  const wNight = Math.max(0, durationForward(wrap1440(wIsha + 25), wrap1440(wFajr - 15)) - 15);
+  const sNight = Math.max(
+    0,
+    durationForward(
+      wrap1440(sIsha + SEASONAL_SLEEP_CONSTANTS.NORMAL_BED_AFTER_ISHA_MIN),
+      wrap1440(sFajr - SEASONAL_SLEEP_CONSTANTS.NORMAL_WAKE_BEFORE_FAJR_MIN)
+    )
+  );
+  const wNight = Math.max(
+    0,
+    durationForward(
+      wrap1440(wIsha + SEASONAL_SLEEP_CONSTANTS.NORMAL_BED_AFTER_ISHA_MIN),
+      wrap1440(wFajr - SEASONAL_SLEEP_CONSTANTS.NORMAL_WAKE_BEFORE_FAJR_MIN)
+    )
+  );
 
   return {
     summerMinNightMin: sNight,
@@ -859,6 +1028,22 @@ export function findFreeTimeSlotsForToday(
     }
   }
 
+  // 2.5. Recovery sleep blocks (Post-Fajr & Post-Dhuhr nap)
+  if (
+    typeof plan.postFajrStartMin === 'number' &&
+    typeof plan.postFajrDurationMin === 'number' &&
+    plan.postFajrDurationMin > 0
+  ) {
+    const s = Math.max(dayStart, plan.postFajrStartMin);
+    const e = Math.min(dayEnd, plan.postFajrStartMin + plan.postFajrDurationMin);
+    if (e > s) busy.push([s, e]);
+  }
+  if (plan.qailulahStartMin !== null && plan.qailulahDurationMin > 0) {
+    const s = Math.max(dayStart, plan.qailulahStartMin);
+    const e = Math.min(dayEnd, plan.qailulahStartMin + plan.qailulahDurationMin);
+    if (e > s) busy.push([s, e]);
+  }
+
   // 3. Existing real Calendar / Schedule blocks (excluding auto-placed creative blocks & deleted/all-day)
   for (const blk of occupiedBlocks) {
     if (blk.deleted || blk.isAllDay || blk.source === 'creative') continue;
@@ -961,6 +1146,18 @@ export function checkSmartScheduleConflict(params: {
     warnings.push(
       `يقع داخل وقت النوم الليلي (${formatMinutes12h(bed)} – ${formatMinutes12h(wake)})`
     );
+  }
+  if (plan.qailulahStartMin !== null && plan.qailulahDurationMin > 0) {
+    const qStart = plan.qailulahStartMin;
+    const qEnd = qStart + plan.qailulahDurationMin;
+    const hitsNap = isZeroDuration
+      ? startMin >= qStart && startMin < qEnd
+      : startMin < qEnd && endMin > qStart;
+    if (hitsNap) {
+      warnings.push(
+        `يتداخل مع القيلولة التعويضية (${formatMinutes12h(qStart)} – ${formatMinutes12h(qEnd)})`
+      );
+    }
   }
 
   // 3. Fasting window conflict for oral medications/supplements
@@ -1206,10 +1403,11 @@ export function buildLifeProfileGeminiSummary(
       : ''
   }${seasonalLine}`;
 
+  const whiteDaysEnabled = Boolean(profile.whiteDaysEnabled ?? profile.fastingWhiteDays ?? false);
   const dateLine = calendarMeta
     ? `اليوم والتاريخ: ${calendarMeta.weekdayAr}، ${calendarMeta.gregorianAr}${
         calendarMeta.hijriFullAr ? ` · الهجري: ${calendarMeta.hijriFullAr}` : ''
-      }${calendarMeta.isFullMoonWhiteDay ? ' · 🌕 (أيام البدر المكتمل / الأيام البيض)' : ''}`
+      }${whiteDaysEnabled && calendarMeta.isFullMoonWhiteDay ? ' · 🌕 (أيام البدر المكتمل / الأيام البيض)' : ''}`
     : '';
 
   const weatherLine = weather
@@ -1483,6 +1681,89 @@ export function buildMedicationAlarmEntries(params: {
         });
       }
     }
+  }
+
+  return alarms;
+}
+
+export interface NativeSleepAlarmEntry {
+  id: string;
+  kind: 'sleep_bedtime' | 'sleep_wake' | 'sleep_post_fajr_wake' | 'sleep_nap_wake';
+  title: string;
+  body: string;
+  triggerAtMs: number;
+  snoozeMinutes: number;
+}
+
+/**
+ * Builds Android AlarmManager payloads from the resolved DailyRhythmPlan
+ * (bedtime wind-down, wake/Suhoor alarm, optional Post-Fajr recovery wake, and optional Post-Dhuhr nap wake).
+ */
+export function buildSleepAlarmEntries(params: {
+  plan: DailyRhythmPlan;
+  todayIso: string;
+  nowMs: number;
+  snoozeMinutes: number;
+  msForMinuteToday: (targetMin: number) => number;
+}): NativeSleepAlarmEntry[] {
+  const { plan, todayIso, nowMs, snoozeMinutes, msForMinuteToday } = params;
+  const alarms: NativeSleepAlarmEntry[] = [];
+
+  const pushIfFuture = (
+    id: string,
+    kind: NativeSleepAlarmEntry['kind'],
+    title: string,
+    body: string,
+    minuteOfDay: number
+  ) => {
+    const triggerAtMs = msForMinuteToday(minuteOfDay);
+    if (triggerAtMs > nowMs + 1_000) {
+      alarms.push({ id, kind, title, body, triggerAtMs, snoozeMinutes });
+    }
+  };
+
+  pushIfFuture(
+    `sleep_wake_${todayIso}`,
+    'sleep_wake',
+    plan.suhoorStartMin !== null ? '🌙 استيقاظ السحور' : '⏰ استيقاظ الفجر',
+    plan.suhoorStartMin !== null
+      ? `وقت السحور (${formatMinutes12h(plan.wakeMin, 'ar')})`
+      : `موعد الاستيقاظ قبل الفجر (${formatMinutes12h(plan.wakeMin, 'ar')})`,
+    plan.wakeMin
+  );
+
+  pushIfFuture(
+    `sleep_bed_${todayIso}`,
+    'sleep_bedtime',
+    '😴 موعد النوم',
+    `بداية النوم الليلي (${formatMinutes12h(plan.bedtimeMin, 'ar')})`,
+    plan.bedtimeMin
+  );
+
+  if (
+    typeof plan.postFajrStartMin === 'number' &&
+    typeof plan.postFajrEndMin === 'number' &&
+    typeof plan.postFajrDurationMin === 'number' &&
+    plan.postFajrDurationMin > 0
+  ) {
+    pushIfFuture(
+      `sleep_post_fajr_wake_${todayIso}`,
+      'sleep_post_fajr_wake',
+      '🌅 نهاية تعويض الفجر',
+      `انتهاء تعويض ما بعد الفجر قبل الشروق (${formatMinutes12h(plan.postFajrEndMin, 'ar')})`,
+      plan.postFajrEndMin
+    );
+  }
+
+  if (plan.qailulahStartMin !== null && plan.qailulahDurationMin > 0) {
+    const napEndMin = wrap1440(plan.qailulahStartMin + plan.qailulahDurationMin);
+    pushIfFuture(
+      `sleep_nap_wake_${todayIso}`,
+      'sleep_nap_wake',
+      '🔋 نهاية القيلولة',
+      `انتهاء قيلولة الظهر (${plan.qailulahDurationMin} د · ${formatMinutes12h(napEndMin, 'ar')})`,
+      napEndMin
+    );
   }
 
   return alarms;

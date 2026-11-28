@@ -139,9 +139,25 @@ function migrateLifeProfile(rawValue: unknown): LifeProfile {
     ? (rawMode as SanctuarySilenceMode)
     : 'silent_inbox';
 
+  const fastingDays = Array.isArray(input.fastingDays)
+    ? input.fastingDays.filter(
+        (d): d is number => typeof d === 'number' && Number.isInteger(d) && d >= 0 && d <= 6
+      )
+    : [...DEFAULT_LIFE_PROFILE.fastingDays];
+
+  const whiteDaysEnabled =
+    typeof input.whiteDaysEnabled === 'boolean'
+      ? input.whiteDaysEnabled
+      : typeof input.fastingWhiteDays === 'boolean'
+        ? input.fastingWhiteDays
+        : false;
+
   return {
     ...DEFAULT_LIFE_PROFILE,
     ...(input as Partial<LifeProfile>),
+    fastingDays,
+    whiteDaysEnabled,
+    fastingWhiteDays: whiteDaysEnabled,
     sanctuarySilenceMode,
     schemaVersion: SCHEMA_VERSION,
   };

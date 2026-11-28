@@ -332,9 +332,11 @@ export interface TodayCalendarMeta {
   gregorianAr: string;
   gregorianEn: string;
   hijriDay: number;
+  hijriMonth: number; // 1..12 (9 = Ramadan), 0 if unavailable
   hijriMonthAr: string;
   hijriYear: number;
   hijriFullAr: string;
+  isRamadan: boolean; // True strictly when Hijri month === 9
   isFullMoonWhiteDay: boolean; // 13, 14, 15 Hijri
 }
 
@@ -407,7 +409,8 @@ export interface LifeProfile {
   sleepStrategy: SleepStrategy;
   sleepDebtMinutes: number; // 0..480 accumulated sleep deficit for gentle automatic recovery
   sleepDebtLogDateKey: string; // YYYY-MM-DD when user last checked in morning sleep quality
-  fastingWhiteDays?: boolean; // Whether 13/14/15 Hijri White Days auto-fasting is enabled
+  whiteDaysEnabled?: boolean; // Whether 13/14/15 Hijri White Days auto-fasting is enabled (default false)
+  fastingWhiteDays?: boolean; // Legacy alias for whiteDaysEnabled
   dailyWaterTargetMl?: number; // Optional explicit daily hydration target override in ml (1000..8000)
   adhanLeadMinutes: number; // default 0 min (exact Adhan time)
   prayerSilenceMinutes: number; // default 20 min from Adhan for Dhuhr/Asr/Maghrib/Isha
@@ -532,6 +535,27 @@ export interface GmailDigestItem {
   suggestedAction: CalendarActionProposal;
 }
 
+export type SeasonalSleepMode = 'long_night' | 'medium_night' | 'short_night';
+
+export interface SeasonalSleepPlan {
+  mode: SeasonalSleepMode;
+  isFasting: boolean;
+  isRamadan: boolean;
+  targetSleepMin: number;
+  wakeTimeMin: number;
+  earliestBedtimeMin: number;
+  bedtimeMin: number;
+  availableNightMin: number;
+  nightSleepMin: number;
+  deficitMin: number;
+  postFajrStartMin: number | null;
+  postFajrEndMin: number | null;
+  postFajrDurationMin: number;
+  postDhuhrNapStartMin: number | null;
+  postDhuhrNapDurationMin: number;
+  totalSleepMin: number;
+}
+
 export type SeasonalSleepPhase =
   | 'abundant_winter'
   | 'balanced_equinox'
@@ -540,6 +564,7 @@ export type SeasonalSleepPhase =
 
 export interface SeasonalSleepGuidance {
   phase: SeasonalSleepPhase;
+  mode?: SeasonalSleepMode;
   phaseLabelAr: string;
   astronomicalNightMin: number;
   completedCycles: number;
@@ -547,6 +572,9 @@ export interface SeasonalSleepGuidance {
   caffeineCutoffMin: number;
   nsdrWindowAr: string;
   protocolSummaryAr: string;
+  postFajrStartMin?: number | null;
+  postFajrEndMin?: number | null;
+  postFajrDurationMin?: number;
   summerMinNightMin?: number;
   winterMaxNightMin?: number;
 }
@@ -554,6 +582,7 @@ export interface SeasonalSleepGuidance {
 export interface DailyRhythmPlan {
   isFastingToday: boolean;
   isFastingTomorrow: boolean;
+  isRamadan: boolean;
   fastingReasonAr: string;
   heatBonusMl: number;
   normalTargetMl: number;
@@ -570,6 +599,10 @@ export interface DailyRhythmPlan {
   maghribMin: number;
   suhoorStartMin: number | null;
   coreNightSleepMin: number;
+  sleepMode?: SeasonalSleepMode;
+  postFajrStartMin?: number | null;
+  postFajrEndMin?: number | null;
+  postFajrDurationMin?: number;
   qailulahStartMin: number | null;
   qailulahDurationMin: number;
   totalSleepMin: number;
