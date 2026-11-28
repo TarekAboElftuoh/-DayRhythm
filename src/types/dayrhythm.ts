@@ -269,6 +269,14 @@ export interface FreeTimeSlot {
   startMin: number;
   endMin: number;
   durationMin: number;
+  label?: string;
+}
+
+export interface FreeWindow {
+  startMin: number;
+  endMin: number;
+  durationMin: number;
+  label: string;
 }
 
 export interface CreativeActivityPlacement {
@@ -894,6 +902,8 @@ export interface SettingsSnapshotContext {
   fastingOverride?: 'auto' | 'fasting' | 'normal';
   travelState?: TravelState;
   sanctuaryOverrideUntilMs?: number;
+  freeWindows?: FreeWindow[];
+  seasonalSleepMode?: SeasonalSleepMode;
   medications?: Array<{
     id: string;
     name: string;

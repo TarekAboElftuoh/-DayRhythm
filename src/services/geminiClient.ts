@@ -2,13 +2,17 @@ import {
   AppSettingsPatch,
   CalendarActionProposal,
   CreativeActivityActionProposal,
+  FreeWindow,
   GroundingPlace,
   MedicationActionProposal,
   MemoryActionProposal,
   PersistedChatMessage,
+  SeasonalSleepMode,
   SettingsSnapshotContext,
   TaskActionProposal,
 } from '../types/dayrhythm';
+import { formatMinutes12h } from '../engines/prayerEngine';
+import { formatDurationAr } from '../engines/lifeRhythmEngine';
 import { formatSettingsSchemaForGemini } from '../utils/settingsPatchValidator';
 import {
   type GeminiFunctionCall,
@@ -247,6 +251,8 @@ export interface ChatRequestPayload {
     takenDates?: string[];
   }>;
   settingsSnapshot?: SettingsSnapshotContext;
+  freeWindows?: FreeWindow[];
+  seasonalSleepMode?: SeasonalSleepMode;
   creativeActivities?: Array<{
     id: string;
     name: string;
@@ -368,7 +374,8 @@ export const DAYRHYTHM_SYSTEM_INSTRUCTION = `
    - الأولوية #3 (الالتزامات الثابتة عند تفعيلها): مواعيد الشغل الرسمي بمجرد أن يبلغك بها المستخدم.
    - الأولوية #4 (المرونة الذكية وتوسّع العادات): تنظيم الشغل والمهام في الوقت الفاضي بين الصلوات والشروق والغروب، توزيع أكواب الماء (المحسوبة بالمعادلة والمعدّلة حسب حرارة الطقس)، العلاجات، المشي، وأي عادات مستقبلية يضيفها المستخدم عبر propose_creative_actions أو propose_memory_actions.
 3. الفحص الاستباقي للتعارض والمناقشة الذكية قبل الحجز في Google Calendar:
-   - قبل اقتراح حجز أي حدث جديد أو ميعاد علاج/مكمل، افحص تلقائياً: (أ) أوقات الصلوات الخمس + فترة الصمت، (ب) نافذة النوم الليلي، (ج) ساعات الصيام (الفجر–المغرب في أيام الصيام)، (د) أحداث Google Calendar المسجلة فعلياً.
+   - قاعدة الجدولة الصارمة من freeWindows: عندما يطلب المستخدم جدولة مهمة مؤجلة، أو إيجاد وقت لنشاط، أو إعادة ترتيب يومه، اختر دائماً من نوافذ الفراغ المتاحة اليوم (freeWindows) فقط بما يكفي للمدة المطلوبة، ويُمنع منعاً باتاً التداخل مع الصلوات الخمس (ومناطق أمانها)، أو النوم الليلي، أو القيلولة التعويضية / تعويض ما بعد الفجر، أو نافذة السحور في أيام الصيام، أو أحداث Google Calendar القائمة. واحترم وضع النوم الموسمي النشط (long-night / medium-night / short-night).
+   - قبل اقتراح حجز أي حدث جديد أو ميعاد علاج/مكمل، افحص تلقائياً: (أ) أوقات الصلوات الخمس + فترة الصمت، (ب) نافذة النوم الليلي والسحور والقيلولة، (ج) ساعات الصيام (الفجر–المغرب في أيام الصيام)، (د) أحداث Google Calendar المسجلة فعلياً.
    - إذا وجدت أي تعارض مع النوم أو الصلاة أو الصيام أو حدث آخر، حذّر المستخدم بلطف ووضوح واشرح سبب التعارض واقترح عليه أنسب وقت فاضي متوافق مع شروطه للنقاش قبل التنفيذ.
    - بمجرد أن يتفق معك المستخدم على ميعاد مناسب، اقترح العملية فوراً عبر الأدوات (propose_calendar_actions وغيرها) ليضغط «تأكيد التنفيذ» فيُحجز الموعد مباشرة في Google Calendar.
    - التعديل والحذف على كل الأيام القادمة (Recurring Events): إذا طلب المستخدم تطبيق تعديل أو حذف لحدث متكرر على كل الأيام القادمة (مثل "امسح الفطور لكل الأيام الجاية" أو "غيّر ميعاد الجيم يومياً للأيام القادمة")، استخدم applyToAllDays: true في propose_calendar_actions ليتم تعديل أو حذف السلسلة المتكررة بالكامل في Google Calendar وليس فقط يوم واحد. وعند إضافة حدث متكرر جديد استخدم recurrenceRule: 'DAILY' أو 'WEEKLY' مع byDays.
@@ -750,7 +757,7 @@ export const GEMINI_CHAT_TOOLS = [
 
 /** Tools cost tokens and a tool round-trip. Attach them only when the message may change data. */
 const ACTION_INTENT_PATTERN =
-  /(أضف|اضف|ضيف|ضيّف|أنشئ|انشئ|اعمل|أنشأ|جدول|جدوللي|عدّل|عدل|غيّر|غير|خلّي|خلي|اجعل|اضبط|ضبط|فعّل|فعل|شغّل|شغل|اقفل|أوقف|وقف|عطّل|عطل|احذف|امسح|ألغ|الغ|ذكرني|فكّرني|فكرني|مهمة|مهمه|مهام|تاسك|موعد|حدث|أحداث|دواء|علاج|جرعة|مكمل|فيتامين|نشاط|عادة|هدف|ذاكرة|قاعدة|احفظ|سجل|سجّل|أجل|انقل|رحّل|رتب|نظم|إعداد|اعداد|صيام|صوم|سحور|إفطار|افطار|شحن|بطارية|نوم|استيقاظ|ماء|مية|مياه|كوب|وزن|طول|صمت|كتم|هدوء|اجتماع|سفر|حرم|أذان|لغة|كبسولة|ثيم|مظهر|نهاري|ليلي|plan|schedule|remind|create|add|edit|update|set|change|enable|disable|turn|mute|quiet|meeting|travel|fasting|sleep|bedtime|wake|suhoor|water|hydration|charge|battery|sanctuary|silence|language|theme|delete|cancel|task|event|memory|setting)/i;
+  /(أضف|اضف|ضيف|ضيّف|أنشئ|انشئ|اعمل|أنشأ|جدول|جدوللي|عدّل|عدل|غيّر|غير|خلّي|خلي|اجعل|اضبط|ضبط|فعّل|فعل|شغّل|شغل|اقفل|أوقف|وقف|عطّل|عطل|احذف|امسح|ألغ|الغ|ذكرني|فكّرني|فكرني|مهمة|مهمه|مهام|تاسك|موعد|حدث|أحداث|دواء|علاج|جرعة|مكمل|فيتامين|نشاط|عادة|هدف|ذاكرة|قاعدة|احفظ|سجل|سجّل|أجل|انقل|رحّل|رتب|نظم|فاضي|فراغ|متاح|مؤجل|مؤجلة|إعداد|اعداد|صيام|صوم|سحور|إفطار|افطار|شحن|بطارية|نوم|استيقاظ|ماء|مية|مياه|كوب|وزن|طول|صمت|كتم|هدوء|اجتماع|سفر|حرم|أذان|لغة|كبسولة|ثيم|مظهر|نهاري|ليلي|plan|schedule|remind|create|add|edit|update|set|change|enable|disable|turn|mute|quiet|meeting|travel|fasting|sleep|bedtime|wake|suhoor|water|hydration|charge|battery|sanctuary|silence|language|theme|delete|cancel|task|event|memory|setting|reorganize|free)/i;
 
 export function shouldAttachChatTools(message?: string): boolean {
   return ACTION_INTENT_PATTERN.test(message ?? '');
@@ -869,8 +876,39 @@ export function buildChatSystemInstruction(
         )}`
       : '';
 
+  const resolvedSeasonalMode =
+    payload.seasonalSleepMode ?? payload.settingsSnapshot?.seasonalSleepMode;
+  const seasonalModeTag = resolvedSeasonalMode
+    ? resolvedSeasonalMode.replace(/_/g, '-')
+    : null;
+  const resolvedFreeWindows =
+    Array.isArray(payload.freeWindows) && payload.freeWindows.length > 0
+      ? payload.freeWindows
+      : Array.isArray(payload.settingsSnapshot?.freeWindows)
+        ? payload.settingsSnapshot.freeWindows
+        : [];
+  const freeWindowsLines =
+    resolvedFreeWindows.length > 0
+      ? resolvedFreeWindows
+          .map(
+            (w) =>
+              `- [${w.label}] ${formatMinutes12h(w.startMin, 'ar')} – ${formatMinutes12h(w.endMin, 'ar')} (${formatDurationAr(w.durationMin)} / ${w.durationMin} د)`
+          )
+          .join('\n')
+      : '';
+  const seasonalAndFreeWindowsBlock =
+    seasonalModeTag || freeWindowsLines
+      ? `\n\n=== نوافذ الفراغ اليوم ووضع النوم الموسمي ===${
+          seasonalModeTag ? `\nوضع النوم الموسمي النشط: ${seasonalModeTag}` : ''
+        }${
+          freeWindowsLines
+            ? `\nfreeWindows (نوافذ الفراغ المتاحة بين الاستيقاظ والنوم — خالية من الصلوات والنوم والسحور والقيلولة وأحداث التقويم):\n${freeWindowsLines}`
+            : ''
+        }`
+      : '';
+
   const contextText = (payload.contextSummary ?? '').slice(0, lean ? 600 : 1800);
-  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${contextText}${settingsSchemaBlock}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${contextText}${seasonalAndFreeWindowsBlock}${settingsSchemaBlock}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
 
   return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
 }

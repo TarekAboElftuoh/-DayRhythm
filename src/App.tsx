@@ -24,7 +24,7 @@ import {
   DayMode,
   DeletedWorkspaceSnapshot,
   DualStreaks,
-  FreeTimeSlot,
+  FreeWindow,
   GmailDigestItem,
   GoogleCalendarEventItem,
   GoogleCalendarInfo,
@@ -250,8 +250,8 @@ import {
   buildMedicationAlarmEntries,
   computeCreativePlacements,
   computeDailyRhythmPlan,
+  computeFreeWindows,
   computeMedicationDaysLeft,
-  findFreeTimeSlotsForToday,
   resolveMedicationDosesForDay,
 } from './engines/lifeRhythmEngine';
 import { applyTravelMatrix, buildBaseSchedule } from './engines/scheduleEngine';
@@ -6573,9 +6573,15 @@ export default function App() {
     travelState.deferredCategories,
   ]);
 
-  // Genuinely free time slots today (away from Prayers, Sleep, Work & existing Google Calendar events)
-  const freeSlotsToday: FreeTimeSlot[] = useMemo(
-    () => findFreeTimeSlotsForToday(prayers, dailyRhythmPlan, lifeProfile, baseLiveBlocks),
+  // Genuinely free time windows today (away from Prayers, Sleep, Suhoor, Naps, Work & Calendar events)
+  const freeSlotsToday: FreeWindow[] = useMemo(
+    () =>
+      computeFreeWindows({
+        prayers,
+        plan: dailyRhythmPlan,
+        profile: lifeProfile,
+        occupiedBlocks: baseLiveBlocks,
+      }),
     [prayers, dailyRhythmPlan, lifeProfile, baseLiveBlocks]
   );
 
@@ -8982,6 +8988,8 @@ export default function App() {
       fastingOverride,
       travelState,
       sanctuaryOverrideUntilMs,
+      freeWindows: freeSlotsToday,
+      seasonalSleepMode: dailyRhythmPlan.sleepMode ?? 'long_night',
       medications: medications.map((m) => ({
         id: m.id,
         name: m.name,
@@ -8992,12 +9000,14 @@ export default function App() {
       adhanOverrideSilent,
       capsulePrefs.orientation,
       capsulePrefs.size,
+      dailyRhythmPlan.sleepMode,
       deviceSettings.liveAlertsAlwaysOn,
       deviceSettings.liveAlertsEnabled,
       deviceSettings.liveAlertsLeadMinutes,
       deviceSettings.liveAlertsShowCharging,
       deviceSettings.persistentCountdownNotif,
       fastingOverride,
+      freeSlotsToday,
       includePrayerAnchors,
       language,
       lifeProfile,
