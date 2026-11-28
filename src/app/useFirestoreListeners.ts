@@ -26,6 +26,7 @@ export interface UseFirestoreListenersParams {
   firebaseUser: User | null;
   authUser: User | null;
   clientIdRef: React.MutableRefObject<string>;
+  persistentAlertRef: React.RefObject<{ id: string; createdAtMs: number } | null>;
   seenSyncOpIdsRef: React.MutableRefObject<Set<string>>;
   acknowledgedBlockIdsRef: React.MutableRefObject<Set<string>>;
   isLoadingSettingsRef: React.MutableRefObject<boolean>;
@@ -81,17 +82,26 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
             if (isFresh && !p.seenSyncOpIdsRef.current.has(sigOpId)) {
               p.seenSyncOpIdsRef.current.add(sigOpId);
               if (p.seenSyncOpIdsRef.current.size > 200) p.seenSyncOpIdsRef.current.clear();
-              stopContinuousAlert();
-              stopSmartChargeCompleteAlert();
-              stopNativeAlerts();
-              p.setSmartChargeAudioActive(false);
-              p.setActiveAudioAlert(null);
-              p.setPersistentAlert(null);
-              p.setAlarmRinging(false);
-
               const extraSig = sig.extra as Record<string, unknown> | undefined;
-              if (typeof extraSig?.occurrenceKey === 'string' && extraSig.occurrenceKey) {
-                addDismissedKeys([extraSig.occurrenceKey]);
+              const sigAlertId = typeof extraSig?.alertId === 'string' ? extraSig.alertId : undefined;
+              const sigOccKey = typeof extraSig?.occurrenceKey === 'string' ? extraSig.occurrenceKey : undefined;
+              const activeAlert = p.persistentAlertRef.current;
+              const matchesActive = Boolean(
+                activeAlert && sigAlertId && sigAlertId === activeAlert.id
+              );
+              const shouldDismissActive = !activeAlert || matchesActive || sigTs >= activeAlert.createdAtMs;
+              if (shouldDismissActive) {
+                stopContinuousAlert();
+                stopSmartChargeCompleteAlert();
+                stopNativeAlerts();
+                p.setSmartChargeAudioActive(false);
+                p.setActiveAudioAlert(null);
+                p.setPersistentAlert(null);
+                p.setAlarmRinging(false);
+              }
+
+              if (sigOccKey) {
+                addDismissedKeys([sigOccKey]);
               }
               if (sig.action === 'water_confirmed' || extraSig?.kind === 'water') {
                 const waterOpId = (typeof extraSig?.waterOpId === 'string' && extraSig.waterOpId) || sigOpId;
@@ -155,18 +165,25 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
           if (!sigOp && p.seenSyncOpIdsRef.current.has(dismissOpId)) return;
           p.seenSyncOpIdsRef.current.add(dismissOpId);
           if (p.seenSyncOpIdsRef.current.size > 200) p.seenSyncOpIdsRef.current.clear();
-          stopContinuousAlert();
-          stopSmartChargeCompleteAlert();
-          stopNativeAlerts();
-          if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-            try { navigator.vibrate(0); } catch { /* ignore */ }
-          }
-          p.setSmartChargeAudioActive(false);
-          p.setActiveAudioAlert(null);
-          p.setPersistentAlert(null);
-          p.setAlarmRinging(false);
           const extraDismiss = signal.extra as { blockId?: string; action?: string; occurrenceKey?: string; extra?: { blockId?: string; occurrenceKey?: string } } | undefined;
           const dismissedOccKey = extraDismiss?.occurrenceKey || extraDismiss?.extra?.occurrenceKey;
+          const activeAlert = p.persistentAlertRef.current;
+          const matchesActive = Boolean(
+            activeAlert && signal.alertId && signal.alertId === activeAlert.id
+          );
+          const shouldDismissActive = !activeAlert || matchesActive || dismissTs >= activeAlert.createdAtMs;
+          if (shouldDismissActive) {
+            stopContinuousAlert();
+            stopSmartChargeCompleteAlert();
+            stopNativeAlerts();
+            if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+              try { navigator.vibrate(0); } catch { /* ignore */ }
+            }
+            p.setSmartChargeAudioActive(false);
+            p.setActiveAudioAlert(null);
+            p.setPersistentAlert(null);
+            p.setAlarmRinging(false);
+          }
           if (dismissedOccKey) addDismissedKeys([dismissedOccKey]);
           const blockId = signal.blockId || extraDismiss?.blockId || extraDismiss?.extra?.blockId;
           if (blockId) {

@@ -103,14 +103,8 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
     const id = window.setInterval(() => {
       const t = Date.now();
       setNowMs(t);
-      if (t - alert.createdAtMs >= alert.durationMs) {
-        if (alert.id.startsWith('charge_')) {
-          onDismissRef.current();
-        } else if (onAutoSnoozeRef.current) {
-          onAutoSnoozeRef.current(alert, 5);
-        } else {
-          onDismissRef.current();
-        }
+      if (alert.id.startsWith('charge_') && t - alert.createdAtMs >= alert.durationMs) {
+        onDismissRef.current();
       }
     }, 1000);
 

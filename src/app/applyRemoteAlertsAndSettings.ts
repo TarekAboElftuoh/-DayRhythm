@@ -82,9 +82,17 @@ export function applyRemoteAlertsAndSettings(
     const dismissOpId =
       (remoteDismiss as { opId?: string }).opId ||
       `remote_dism_${dismissTs}_${remoteSenderId || 'unknown'}`;
-    const activeAlertCreatedAt = ctx.persistentAlertRef.current?.createdAtMs ?? 0;
+    const activeAlert = ctx.persistentAlertRef.current;
+    const activeAlertCreatedAt = activeAlert?.createdAtMs ?? 0;
+    const dismissExtra = (remoteDismiss as { extra?: { alertId?: string } }).extra;
+    const matchesActiveAlert = Boolean(
+      activeAlert && dismissExtra?.alertId && dismissExtra.alertId === activeAlert.id
+    );
     const isOlderThanActiveAlert =
-      activeAlertCreatedAt > 0 && dismissTs + CLOCK_DRIFT_TOLERANCE_MS < activeAlertCreatedAt;
+      activeAlertCreatedAt > 0 &&
+      (matchesActiveAlert
+        ? dismissTs + CLOCK_DRIFT_TOLERANCE_MS < activeAlertCreatedAt
+        : dismissTs < activeAlertCreatedAt);
     if (!isOlderThanActiveAlert && Date.now() - dismissTs < 180_000 && !ctx.seenSyncOpIdsRef.current.has(dismissOpId)) {
       if (
         remoteDismiss.scope === 'alarm_dismiss' ||

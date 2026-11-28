@@ -22,6 +22,7 @@ export interface UseSpircAndAlarmsListenerParams {
   firebaseUser: User | null;
   authUser: User | null;
   clientIdRef: React.MutableRefObject<string>;
+  persistentAlertRef: React.RefObject<{ id: string; createdAtMs: number } | null>;
   spircClusterRef: React.MutableRefObject<SpircClusterHandle | null>;
   seenSyncOpIdsRef: React.MutableRefObject<Set<string>>;
   handledDismissedAlarmIdsRef: React.MutableRefObject<Set<string>>;
@@ -156,13 +157,17 @@ export function useSpircAndAlarmsListener(p: UseSpircAndAlarmsListenerParams): v
 
         if (relevantDismissal) {
           p.handledDismissedAlarmIdsRef.current.add(relevantDismissal.id);
-          stopContinuousAlert();
-          stopSmartChargeCompleteAlert();
-          stopNativeAlerts();
-          p.setSmartChargeAudioActive(false);
-          p.setActiveAudioAlert(null);
-          p.setPersistentAlert(null);
-          p.setAlarmRinging(false);
+          const activeAlert = p.persistentAlertRef.current;
+          const shouldDismissActive = !activeAlert || activeAlert.id === relevantDismissal.id;
+          if (shouldDismissActive) {
+            stopContinuousAlert();
+            stopSmartChargeCompleteAlert();
+            stopNativeAlerts();
+            p.setSmartChargeAudioActive(false);
+            p.setActiveAudioAlert(null);
+            p.setPersistentAlert(null);
+            p.setAlarmRinging(false);
+          }
         }
       },
       (err) => {
