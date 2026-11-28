@@ -1,17 +1,18 @@
 import React, { useMemo } from 'react';
 import type { AppLanguage, FreeWindow } from '../../types/dayrhythm';
 import { formatMinutes12h } from '../../engines/prayerEngine';
-import type {
-  DayTimelineLockedBlock,
-  DayTimelineModel,
-  DayTimelinePlacedItem,
+import {
+  formatDurationAr,
+  type DayTimelineLockedBlock,
+  type DayTimelineModel,
+  type DayTimelinePlacedItem,
 } from '../../engines/lifeRhythmEngine';
 import { FreeGapSlot } from './FreeGapSlot';
 import { TimeBlockCard } from './TimeBlockCard';
+import { clampToDaySlices, formatHourRulerLabel } from './types';
+import { PX_PER_HOUR, PX_PER_MIN, useTimelineDrag } from './useTimelineDrag';
 
 const MINUTES_PER_DAY = 24 * 60;
-const PX_PER_HOUR = 64;
-const PX_PER_MIN = PX_PER_HOUR / 60;
 const GRID_HEIGHT_PX = 24 * PX_PER_HOUR;
 const MIN_BLOCK_PX = 26;
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
@@ -22,62 +23,10 @@ interface TimeGridProps {
   nowMinutes: number;
   onSelectFreeGap?: (gap: FreeWindow) => void;
   onSelectActiveItem?: (item: DayTimelinePlacedItem) => void;
-}
-
-interface PositionedSlice<T> {
-  key: string;
-  data: T;
-  topPx: number;
-  heightPx: number;
-  startMin: number;
-  endMin: number;
-}
-
-function formatHourRulerLabel(hour24: number, language: AppLanguage): string {
-  const period = language === 'en' ? (hour24 >= 12 ? 'PM' : 'AM') : hour24 >= 12 ? 'م' : 'ص';
-  const h12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
-  return `${h12} ${period}`;
-}
-
-function clampToDaySlices<T>(
-  rawStart: number,
-  rawEnd: number,
-  id: string,
-  data: T,
-  minPx: number
-): PositionedSlice<T>[] {
-  const duration = Math.max(1, rawEnd - rawStart);
-  const start = ((rawStart % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
-  const end = start + duration;
-
-  if (end <= MINUTES_PER_DAY) {
-    const heightPx = Math.max(minPx, Math.min(GRID_HEIGHT_PX - start * PX_PER_MIN, duration * PX_PER_MIN));
-    return [{ key: id, data, topPx: start * PX_PER_MIN, heightPx, startMin: start, endMin: end }];
-  }
-
-  const firstDur = MINUTES_PER_DAY - start;
-  const secondDur = Math.min(MINUTES_PER_DAY, end - MINUTES_PER_DAY);
-  const slices: PositionedSlice<T>[] = [
-    {
-      key: `${id}-p1`,
-      data,
-      topPx: start * PX_PER_MIN,
-      heightPx: Math.max(minPx, firstDur * PX_PER_MIN),
-      startMin: start,
-      endMin: MINUTES_PER_DAY,
-    },
-  ];
-  if (secondDur > 0) {
-    slices.push({
-      key: `${id}-p2`,
-      data,
-      topPx: 0,
-      heightPx: Math.max(minPx, secondDur * PX_PER_MIN),
-      startMin: 0,
-      endMin: secondDur,
-    });
-  }
-  return slices;
+  onCommitDragOrResize?: (
+    item: DayTimelinePlacedItem,
+    next: { startMin: number; durationMin: number }
+  ) => Promise<void> | void;
 }
 
 export const TimeGrid: React.FC<TimeGridProps> = ({
@@ -86,14 +35,27 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
   nowMinutes,
   onSelectFreeGap,
   onSelectActiveItem,
+  onCommitDragOrResize,
 }) => {
+  const {
+    dragState,
+    startMove,
+    startResize,
+    handlePointerMove,
+    handlePointerEnd,
+    consumeClickAllowed,
+  } = useTimelineDrag({
+    lockedBlocks: model.lockedBlocks,
+    onCommitDrag: onCommitDragOrResize,
+  });
+
   const clampedNow = ((Math.round(nowMinutes) % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
   const nowTopPx = clampedNow * PX_PER_MIN;
 
   const lockedSlices = useMemo(
     () =>
       model.lockedBlocks.flatMap((blk) =>
-        clampToDaySlices<DayTimelineLockedBlock>(blk.startMin, blk.endMin, blk.id, blk, MIN_BLOCK_PX)
+        clampToDaySlices<DayTimelineLockedBlock>(blk.startMin, blk.endMin, blk.id, blk, MIN_BLOCK_PX, PX_PER_MIN)
       ),
     [model.lockedBlocks]
   );
@@ -101,7 +63,7 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
   const activeSlices = useMemo(
     () =>
       model.placedBlocks.flatMap((item) =>
-        clampToDaySlices<DayTimelinePlacedItem>(item.startMin, item.endMin, item.id, item, MIN_BLOCK_PX)
+        clampToDaySlices<DayTimelinePlacedItem>(item.startMin, item.endMin, item.id, item, MIN_BLOCK_PX, PX_PER_MIN)
       ),
     [model.placedBlocks]
   );
@@ -109,13 +71,7 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
   const gapSlices = useMemo(
     () =>
       model.freeWindows.flatMap((gap, idx) =>
-        clampToDaySlices<FreeWindow>(
-          gap.startMin,
-          gap.endMin,
-          `gap-${gap.startMin}-${gap.endMin}-${idx}`,
-          gap,
-          24
-        )
+        clampToDaySlices<FreeWindow>(gap.startMin, gap.endMin, `gap-${gap.startMin}-${gap.endMin}-${idx}`, gap, 24, PX_PER_MIN)
       ),
     [model.freeWindows]
   );
@@ -207,9 +163,43 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
               heightPx={slice.heightPx}
               language={language}
               isNow={clampedNow >= slice.startMin && clampedNow < slice.endMin}
-              onSelect={onSelectActiveItem}
+              isDragging={Boolean(dragState?.hasMoved && dragState.item.id === slice.data.id)}
+              onSelect={(item) => {
+                if (!consumeClickAllowed()) return;
+                onSelectActiveItem?.(item);
+              }}
+              onMovePointerDown={startMove}
+              onResizePointerDown={startResize}
+              onPointerMove={handlePointerMove}
+              onPointerEnd={handlePointerEnd}
             />
           ))}
+
+          {dragState?.hasMoved && (
+            <div
+              style={{
+                top: `${dragState.startMin * PX_PER_MIN}px`,
+                height: `${Math.max(MIN_BLOCK_PX, dragState.durationMin * PX_PER_MIN)}px`,
+              }}
+              className="pointer-events-none absolute inset-x-1 z-50 rounded-xl border-2 border-[#7FFFD4] bg-[#7FFFD4]/15 shadow-[0_0_24px_rgba(127,255,212,0.35)]"
+            >
+              <div
+                className={`absolute right-2 ${
+                  dragState.startMin < 45 ? 'top-full mt-1.5' : '-top-8'
+                } inline-flex items-center gap-1.5 rounded-full border border-[#7FFFD4]/60 bg-[#040B09]/95 px-2.5 py-1 font-mono-tabular text-[11px] font-bold text-[#7FFFD4] shadow-lg whitespace-nowrap`}
+              >
+                <span>
+                  {formatMinutes12h(dragState.startMin, language)} –{' '}
+                  {formatMinutes12h(dragState.startMin + dragState.durationMin, language)}
+                </span>
+                <span className="text-zinc-400">·</span>
+                <span className="text-white">{formatDurationAr(dragState.durationMin)}</span>
+                {dragState.skippedLocked && (
+                  <span className="text-[10px] text-amber-300">⚡ تخطي مقفل</span>
+                )}
+              </div>
+            </div>
+          )}
 
           <div
             style={{ top: `${nowTopPx}px` }}

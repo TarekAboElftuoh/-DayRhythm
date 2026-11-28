@@ -24,7 +24,12 @@ type TimeBlockCardProps =
       heightPx: number;
       language: AppLanguage;
       isNow: boolean;
+      isDragging?: boolean;
       onSelect?: (item: DayTimelinePlacedItem) => void;
+      onMovePointerDown?: (e: React.PointerEvent<HTMLElement>, item: DayTimelinePlacedItem) => void;
+      onResizePointerDown?: (e: React.PointerEvent<HTMLElement>, item: DayTimelinePlacedItem) => void;
+      onPointerMove?: (e: React.PointerEvent<HTMLElement>) => void;
+      onPointerEnd?: (e: React.PointerEvent<HTMLElement>) => void;
     };
 
 const HATCH_PATTERN =
@@ -86,20 +91,39 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
     );
   }
 
-  const { item, onSelect } = props;
+  const {
+    item,
+    isDragging,
+    onSelect,
+    onMovePointerDown,
+    onResizePointerDown,
+    onPointerMove,
+    onPointerEnd,
+  } = props;
   const rangeText = `${formatMinutes12h(item.startMin, language)} – ${formatMinutes12h(item.endMin, language)}`;
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect?.(item)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect?.(item);
+        }
+      }}
+      onPointerDown={(e) => onMovePointerDown?.(e, item)}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerEnd}
+      onPointerCancel={onPointerEnd}
       style={{ top: `${topPx}px`, height: `${heightPx}px` }}
       aria-label={`${item.title} (${rangeText})`}
-      className={`absolute inset-x-1 z-30 flex flex-col justify-center rounded-xl border border-r-[3px] border-r-[#7FFFD4] bg-[#060E0C] px-2.5 text-right transition-colors overflow-hidden cursor-pointer hover:bg-[#091613] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#7FFFD4] ${
+      className={`group absolute inset-x-1 z-30 flex flex-col justify-center rounded-xl border border-r-[3px] border-r-[#7FFFD4] bg-[#060E0C] px-2.5 text-right transition-colors overflow-hidden cursor-grab active:cursor-grabbing select-none hover:bg-[#091613] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#7FFFD4] ${
         isNow
           ? 'border-[#7FFFD4]/60 shadow-[0_0_16px_rgba(127,255,212,0.16)]'
           : 'border-[#7FFFD4]/25'
-      } ${item.completed ? 'opacity-55' : ''}`}
+      } ${isDragging ? 'opacity-30' : item.completed ? 'opacity-55' : ''}`}
     >
       <div className="flex items-center justify-between gap-2 min-w-0 w-full">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -131,6 +155,22 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
           )}
         </div>
       )}
-    </button>
+
+      <div
+        role="separator"
+        aria-label={language === 'ar' ? 'تغيير المدة' : 'Resize duration'}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onResizePointerDown?.(e, item);
+        }}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerEnd}
+        onPointerCancel={onPointerEnd}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute inset-x-2 bottom-0 h-2.5 cursor-ns-resize touch-none flex items-end justify-center pb-0.5"
+      >
+        <span className="h-0.5 w-8 rounded-full bg-[#7FFFD4]/30 group-hover:bg-[#7FFFD4]/80 transition-colors" />
+      </div>
+    </div>
   );
 };

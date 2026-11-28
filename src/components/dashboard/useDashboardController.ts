@@ -24,6 +24,7 @@ export function useDashboardController(props: DashboardViewProps) {
 
   const [showTrash, setShowTrash] = useState(false);
   const [autoPlacedBlockStarts, setAutoPlacedBlockStarts] = useState<Record<string, number>>({});
+  const [autoPlacedBlockDurations, setAutoPlacedBlockDurations] = useState<Record<string, number>>({});
   const [unplacedLocalBlockIds, setUnplacedLocalBlockIds] = useState<Record<string, boolean>>({});
   const [isSyncingAutoPlace, setIsSyncingAutoPlace] = useState(false);
   const [showSilentInbox, setShowSilentInbox] = useState(false);
@@ -123,12 +124,12 @@ export function useDashboardController(props: DashboardViewProps) {
     lifeProfile: props.lifeProfile, habits: props.habits ?? [], googleTasks: props.googleTasks,
     calendarEvents: props.calendarEvents, todayCairoIso,
     todayWeekday: medSummary.last7CairoDays[medSummary.last7CairoDays.length - 1]?.weekdayNum,
-    activeTimeZone, language: props.language, timelineFilter, autoPlacedBlockStarts, unplacedLocalBlockIds,
+    activeTimeZone, language: props.language, timelineFilter, autoPlacedBlockStarts, autoPlacedBlockDurations, unplacedLocalBlockIds,
   });
 
   const timelineMoves = useTimelineMoves({
     todayCairoIso, calendarConnected: props.calendarConnected, setIsSyncingAutoPlace,
-    setAutoPlacedBlockStarts, setUnplacedLocalBlockIds, onUpdateHabit: props.onUpdateHabit,
+    setAutoPlacedBlockStarts, setAutoPlacedBlockDurations, setUnplacedLocalBlockIds, onUpdateHabit: props.onUpdateHabit,
     onExecuteCalendarActions: props.onExecuteCalendarActions, onExecuteTaskActions: props.onExecuteTaskActions,
   });
 

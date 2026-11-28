@@ -27,6 +27,7 @@ export function useTimelineModel({
   language,
   timelineFilter,
   autoPlacedBlockStarts,
+  autoPlacedBlockDurations = {},
   unplacedLocalBlockIds,
 }: {
   blocks: ScheduleBlock[];
@@ -42,6 +43,7 @@ export function useTimelineModel({
   language: AppLanguage;
   timelineFilter: 'today' | 'tomorrow' | 'special' | 'done';
   autoPlacedBlockStarts: Record<string, number>;
+  autoPlacedBlockDurations?: Record<string, number>;
   unplacedLocalBlockIds: Record<string, boolean>;
 }) {
   const activeBlocks = useMemo(() => blocks.filter((b) => !b.deleted), [blocks]);
@@ -186,9 +188,16 @@ export function useTimelineModel({
     () =>
       blocks.map((b) => {
         if (unplacedLocalBlockIds[b.id]) return { ...b, startMin: dailyRhythmPlan.bedtimeMin };
-        return typeof autoPlacedBlockStarts[b.id] === 'number' ? { ...b, startMin: autoPlacedBlockStarts[b.id] } : b;
+        const nextStart = autoPlacedBlockStarts[b.id];
+        const nextDur = autoPlacedBlockDurations[b.id];
+        if (typeof nextStart !== 'number' && typeof nextDur !== 'number') return b;
+        return {
+          ...b,
+          ...(typeof nextStart === 'number' ? { startMin: nextStart } : {}),
+          ...(typeof nextDur === 'number' ? { durationMin: nextDur } : {}),
+        };
       }),
-    [blocks, autoPlacedBlockStarts, unplacedLocalBlockIds, dailyRhythmPlan.bedtimeMin]
+    [blocks, autoPlacedBlockStarts, autoPlacedBlockDurations, unplacedLocalBlockIds, dailyRhythmPlan.bedtimeMin]
   );
 
   const dayTimelineModel = useMemo(

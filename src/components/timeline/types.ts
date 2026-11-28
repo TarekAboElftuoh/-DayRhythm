@@ -105,3 +105,107 @@ export function toPlacementTargetFromUnplaced(item: DayTimelineUnplacedItem): Pl
     scheduleBlock: item.scheduleBlock,
   };
 }
+
+export interface PositionedSlice<T> {
+  key: string;
+  data: T;
+  topPx: number;
+  heightPx: number;
+  startMin: number;
+  endMin: number;
+}
+
+export function formatHourRulerLabel(hour24: number, language: AppLanguage): string {
+  const period = language === 'en' ? (hour24 >= 12 ? 'PM' : 'AM') : hour24 >= 12 ? 'م' : 'ص';
+  const h12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${h12} ${period}`;
+}
+
+export function clampToDaySlices<T>(
+  rawStart: number,
+  rawEnd: number,
+  id: string,
+  data: T,
+  minPx: number,
+  pxPerMin: number
+): PositionedSlice<T>[] {
+  const MINUTES_PER_DAY = 1440;
+  const GRID_HEIGHT_PX = MINUTES_PER_DAY * pxPerMin;
+  const duration = Math.max(1, rawEnd - rawStart);
+  const start = ((rawStart % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  const end = start + duration;
+
+  if (end <= MINUTES_PER_DAY) {
+    const heightPx = Math.max(minPx, Math.min(GRID_HEIGHT_PX - start * pxPerMin, duration * pxPerMin));
+    return [{ key: id, data, topPx: start * pxPerMin, heightPx, startMin: start, endMin: end }];
+  }
+
+  const firstDur = MINUTES_PER_DAY - start;
+  const secondDur = Math.min(MINUTES_PER_DAY, end - MINUTES_PER_DAY);
+  const slices: PositionedSlice<T>[] = [
+    { key: `${id}-p1`, data, topPx: start * pxPerMin, heightPx: Math.max(minPx, firstDur * pxPerMin), startMin: start, endMin: MINUTES_PER_DAY },
+  ];
+  if (secondDur > 0) {
+    slices.push({ key: `${id}-p2`, data, topPx: 0, heightPx: Math.max(minPx, secondDur * pxPerMin), startMin: 0, endMin: secondDur });
+  }
+  return slices;
+}
+
+export const EDITOR_DURATION_CHIPS = [
+  { min: 15, label: '15د' },
+  { min: 30, label: '30د' },
+  { min: 45, label: '45د' },
+  { min: 60, label: '1س' },
+  { min: 90, label: '1.5س' },
+  { min: 120, label: '2س' },
+] as const;
+
+export const EDITOR_NUDGE_STEPS = [
+  { delta: -15, label: '-15د' },
+  { delta: -5, label: '-5د' },
+  { delta: 5, label: '+5د' },
+  { delta: 15, label: '+15د' },
+] as const;
+
+export function splitStartMin12h(startMin: number) {
+  const clamped = ((Math.round(startMin) % 1440) + 1440) % 1440;
+  const h24 = Math.floor(clamped / 60);
+  return {
+    hour12: h24 % 12 === 0 ? 12 : h24 % 12,
+    minute: clamped % 60,
+    period: (h24 >= 12 ? 'PM' : 'AM') as 'AM' | 'PM',
+  };
+}
+
+export function combine12hToStartMin(hour12: number, minute: number, period: 'AM' | 'PM'): number {
+  let h24 = hour12 % 12;
+  if (period === 'PM') h24 += 12;
+  return h24 * 60 + Math.max(0, Math.min(59, minute));
+}
+
+export function toOccupiedScheduleBlocks(
+  placed: DayTimelinePlacedItem[],
+  excludeId: string
+): ScheduleBlock[] {
+  return placed
+    .filter((p) => p.id !== excludeId)
+    .map((p) => ({
+      id: p.id,
+      title: p.title,
+      emoji: p.emoji,
+      emojiPair: p.emoji,
+      categoryAr: p.kind,
+      startMin: p.startMin,
+      durationMin: p.durationMin,
+      minDurationMin: 5,
+      isAnchor: false,
+      isBreak: false,
+      fixed: false,
+      priority: 1,
+      completed: p.completed,
+      source: 'offline',
+      travelGroup: 'A_FIXED',
+      canShiftEvening: true,
+      deleted: false,
+    }));
+}

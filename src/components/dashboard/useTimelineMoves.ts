@@ -18,6 +18,7 @@ export function useTimelineMoves({
   calendarConnected,
   setIsSyncingAutoPlace,
   setAutoPlacedBlockStarts,
+  setAutoPlacedBlockDurations,
   setUnplacedLocalBlockIds,
   onUpdateHabit,
   onExecuteCalendarActions,
@@ -27,6 +28,7 @@ export function useTimelineMoves({
   calendarConnected: boolean;
   setIsSyncingAutoPlace: React.Dispatch<React.SetStateAction<boolean>>;
   setAutoPlacedBlockStarts: React.Dispatch<React.SetStateAction<Record<string, number>>>;
+  setAutoPlacedBlockDurations?: React.Dispatch<React.SetStateAction<Record<string, number>>>;
   setUnplacedLocalBlockIds: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   onUpdateHabit?: (
     id: string,
@@ -128,7 +130,7 @@ export function useTimelineMoves({
     const nextOverrides = { ...(habit.dailyOverrides ?? {}) };
     delete nextOverrides[todayCairoIso];
     onUpdateHabit(habit.id, {
-      title: habit.title, status: habit.status, anchor: slot.suggestedAnchor, durationMin: habit.durationMin,
+      title: habit.title, status: habit.status, anchor: slot.suggestedAnchor, durationMin: slot.durationMin,
       daysOfWeek: habit.daysOfWeek, skipOnFasting: habit.skipOnFasting, dailyOverrides: nextOverrides,
     });
   };
@@ -160,6 +162,7 @@ export function useTimelineMoves({
             return next;
           });
           setAutoPlacedBlockStarts((prev) => ({ ...prev, [blkId]: slot.startMin }));
+          setAutoPlacedBlockDurations?.((prev) => ({ ...prev, [blkId]: item.durationMin }));
         }
       }
     } finally {

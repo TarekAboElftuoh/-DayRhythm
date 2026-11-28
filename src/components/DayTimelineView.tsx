@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, Magnet } from 'lucide-react';
-import { formatMinutes12h } from '../engines/prayerEngine';
+import { formatMinutes12h, formatMinutes24h } from '../engines/prayerEngine';
 import {
   buildGhostSlotsForItem,
+  mapMinutesToHabitAnchor,
   type DayTimelineGhostSlot,
   type DayTimelinePlacedItem,
   type SnapToFreeWindowResult,
@@ -15,6 +16,7 @@ import {
   type PlacementTarget,
   type TimelineRenderNode,
 } from './timeline/types';
+import { BlockEditorSheet } from './timeline/BlockEditorSheet';
 import { UnplacedTray } from './timeline/UnplacedTray';
 import { TimeGrid } from './timeline/TimeGrid';
 import { TimelineNodes } from './timeline/TimelineNodes';
@@ -23,28 +25,17 @@ import { useTimelinePointerDrag } from './timeline/useTimelinePointerDrag';
 
 export type { DayTimelineViewProps };
 
-export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
-  model,
-  prayers,
-  plan,
-  profile,
-  language,
-  nowMinutes,
-  isSyncingAutoPlace = false,
-  onToggleBlockComplete,
-  onToggleHabitToday,
-  onCompleteTask,
-  onDeleteEventBlock,
-  onTriggerAlert,
-  onConfirmAutoPlace,
-  onCommitHabitMove,
-  onCommitItemMove,
-  onMoveToUnplaced,
-}) => {
+export const DayTimelineView: React.FC<DayTimelineViewProps> = (props) => {
+  const {
+    model, prayers, plan, profile, todayIso, language, nowMinutes,
+    isSyncingAutoPlace = false, onToggleBlockComplete, onToggleHabitToday, onCompleteTask,
+    onDeleteEventBlock, onTriggerAlert, onConfirmAutoPlace, onCommitHabitMove, onCommitItemMove, onMoveToUnplaced,
+  } = props;
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [confirmSheetOpen, setConfirmSheetOpen] = useState(false);
   const [placementTarget, setPlacementTarget] = useState<PlacementTarget | null>(null);
   const [pendingMove, setPendingMove] = useState<PendingMoveConfirmation | null>(null);
+  const [editingItem, setEditingItem] = useState<DayTimelinePlacedItem | null>(null);
   const [isApplyingMove, setIsApplyingMove] = useState(false);
   const [dragState, setDragState] = useState<{
     target: PlacementTarget;
@@ -53,24 +44,10 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
   const [swipePreview, setSwipePreview] = useState<{ id: string; dx: number } | null>(null);
 
   const {
-    timelineRef,
-    gestureRef,
-    handleSelectGhostSlot,
-    handleCardPointerDown,
-    handleCardPointerMove,
-    finishPointerGesture,
+    timelineRef, gestureRef, handleSelectGhostSlot, handleCardPointerDown, handleCardPointerMove, finishPointerGesture,
   } = useTimelinePointerDrag({
-    model,
-    prayers,
-    plan,
-    profile,
-    placementTarget,
-    setPlacementTarget,
-    dragState,
-    setDragState,
-    setSwipePreview,
-    setPendingMove,
-    onMoveToUnplaced,
+    model, prayers, plan, profile, placementTarget, setPlacementTarget,
+    dragState, setDragState, setSwipePreview, setPendingMove, onMoveToUnplaced,
   });
 
   const activeGhostOwner = dragState?.target ?? placementTarget;
@@ -78,12 +55,8 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
   const ghostSlots = useMemo<DayTimelineGhostSlot[]>(() => {
     if (!activeGhostOwner) return [];
     return buildGhostSlotsForItem({
-      durationMin: activeGhostOwner.durationMin,
-      freeWindows: model.freeWindows,
-      prayers,
-      plan,
-      profile,
-      excludeRange: activeGhostOwner.currentRange,
+      durationMin: activeGhostOwner.durationMin, freeWindows: model.freeWindows,
+      prayers, plan, profile, excludeRange: activeGhostOwner.currentRange,
     });
   }, [activeGhostOwner, model.freeWindows, prayers, plan, profile]);
 
@@ -112,6 +85,31 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
     if (placeableItems.length === 0 || isSyncingAutoPlace) return;
     await onConfirmAutoPlace(placeableItems);
     setConfirmSheetOpen(false);
+  };
+
+  const handleCommitBlockChange = async (
+    item: DayTimelinePlacedItem,
+    next: { startMin: number; durationMin: number; scope: 'today' | 'permanent' }
+  ) => {
+    if (item.kind === 'habit' && item.habit && onCommitHabitMove) {
+      const suggestedAnchor = mapMinutesToHabitAnchor(next.startMin, prayers, plan);
+      await onCommitHabitMove(item.habit, next.scope, {
+        startMin: next.startMin,
+        durationMin: next.durationMin,
+        suggestedAnchor,
+      });
+    } else if ((item.kind === 'task' || item.kind === 'event') && onCommitItemMove) {
+      await onCommitItemMove(
+        {
+          kind: item.kind,
+          title: item.title,
+          durationMin: next.durationMin,
+          googleTask: item.googleTask,
+          scheduleBlock: item.scheduleBlock,
+        },
+        { startMin: next.startMin, time24: formatMinutes24h(next.startMin) }
+      );
+    }
   };
 
   const handleCommitPendingMove = async (scope: 'today' | 'permanent') => {
@@ -155,24 +153,16 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
             </span>
           )}
           <div className="inline-flex rounded-lg border border-white/10 bg-[#000000] p-0.5 text-[11px]">
-            <button
-              type="button"
-              onClick={() => setViewMode('grid')}
-              className={`rounded-md px-2.5 py-1 font-medium transition-colors cursor-pointer ${
-                viewMode === 'grid' ? 'bg-[#7FFFD4]/15 text-[#7FFFD4]' : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              {language === 'ar' ? 'الشبكة' : 'Grid'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('list')}
-              className={`rounded-md px-2.5 py-1 font-medium transition-colors cursor-pointer ${
-                viewMode === 'list' ? 'bg-[#7FFFD4]/15 text-[#7FFFD4]' : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              {language === 'ar' ? 'القائمة' : 'List'}
-            </button>
+            {(['grid', 'list'] as const).map((mode) => (
+              <button
+                key={mode} type="button" onClick={() => setViewMode(mode)}
+                className={`rounded-md px-2.5 py-1 font-medium transition-colors cursor-pointer ${
+                  viewMode === mode ? 'bg-[#7FFFD4]/15 text-[#7FFFD4]' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {mode === 'grid' ? (language === 'ar' ? 'الشبكة' : 'Grid') : (language === 'ar' ? 'القائمة' : 'List')}
+              </button>
+            ))}
           </div>
         </div>
       </div>
@@ -206,54 +196,43 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
       </AnimatePresence>
 
       <UnplacedTray
-        unplacedBlocks={model.unplacedBlocks}
-        placeableCount={placeableItems.length}
-        placementTarget={placementTarget}
-        language={language}
-        isSyncingAutoPlace={isSyncingAutoPlace}
-        onSelectTarget={setPlacementTarget}
-        onOpenAutoPlaceSheet={() => setConfirmSheetOpen(true)}
+        unplacedBlocks={model.unplacedBlocks} placeableCount={placeableItems.length}
+        placementTarget={placementTarget} language={language} isSyncingAutoPlace={isSyncingAutoPlace}
+        onSelectTarget={setPlacementTarget} onOpenAutoPlaceSheet={() => setConfirmSheetOpen(true)}
       />
 
       {viewMode === 'grid' ? (
         <TimeGrid
-          model={model}
-          language={language}
-          nowMinutes={nowMinutes}
-          onSelectActiveItem={handleToggleMovable}
+          model={model} language={language} nowMinutes={nowMinutes}
+          onSelectActiveItem={setEditingItem}
+          onCommitDragOrResize={(item, next) => handleCommitBlockChange(item, { ...next, scope: 'today' })}
         />
       ) : (
         <TimelineNodes
-          timelineRef={timelineRef}
-          nodes={nodes}
-          language={language}
-          nowMinutes={nowMinutes}
-          placementTarget={placementTarget}
-          dragState={dragState}
-          swipePreview={swipePreview}
-          gestureRef={gestureRef}
-          onSelectGhostSlot={handleSelectGhostSlot}
-          onCardPointerDown={handleCardPointerDown}
-          onCardPointerMove={handleCardPointerMove}
-          onFinishPointerGesture={finishPointerGesture}
-          onSelectPlacementTarget={setPlacementTarget}
-          onToggleMovable={handleToggleMovable}
-          onTriggerAlert={onTriggerAlert}
-          onDeleteEventBlock={onDeleteEventBlock}
+          timelineRef={timelineRef} nodes={nodes} language={language} nowMinutes={nowMinutes}
+          placementTarget={placementTarget} dragState={dragState} swipePreview={swipePreview} gestureRef={gestureRef}
+          onSelectGhostSlot={handleSelectGhostSlot} onCardPointerDown={handleCardPointerDown}
+          onCardPointerMove={handleCardPointerMove} onFinishPointerGesture={finishPointerGesture}
+          onSelectPlacementTarget={setPlacementTarget} onToggleMovable={handleToggleMovable}
+          onTriggerAlert={onTriggerAlert} onDeleteEventBlock={onDeleteEventBlock}
         />
       )}
 
       <TimelineSheets
-        language={language}
-        pendingMove={pendingMove}
-        isApplyingMove={isApplyingMove}
-        onClosePendingMove={() => setPendingMove(null)}
-        onCommitPendingMove={handleCommitPendingMove}
-        confirmSheetOpen={confirmSheetOpen}
-        isSyncingAutoPlace={isSyncingAutoPlace}
-        placeableItems={placeableItems}
-        onCloseAutoPlace={() => setConfirmSheetOpen(false)}
+        language={language} pendingMove={pendingMove} isApplyingMove={isApplyingMove}
+        onClosePendingMove={() => setPendingMove(null)} onCommitPendingMove={handleCommitPendingMove}
+        confirmSheetOpen={confirmSheetOpen} isSyncingAutoPlace={isSyncingAutoPlace}
+        placeableItems={placeableItems} onCloseAutoPlace={() => setConfirmSheetOpen(false)}
         onApplyAutoPlace={handleApplyAutoPlace}
+      />
+      <BlockEditorSheet
+        item={editingItem} model={model} prayers={prayers} plan={plan} profile={profile}
+        todayIso={todayIso} language={language} isSaving={isApplyingMove}
+        onClose={() => setEditingItem(null)} onToggleComplete={handleToggleMovable}
+        onSave={async (item, next) => {
+          setIsApplyingMove(true);
+          try { await handleCommitBlockChange(item, next); setEditingItem(null); } finally { setIsApplyingMove(false); }
+        }}
       />
     </div>
   );
