@@ -22,7 +22,6 @@ import {
   hasFiredInSession,
   isLiveTransition,
   isOccurrenceDismissed,
-  markFiredInSession,
 } from './alarmOccurrenceGuard';
 
 export interface UseRemindersEffectParams {
@@ -38,11 +37,13 @@ export interface UseRemindersEffectParams {
   liveBlocks: ScheduleBlock[];
   googleTasks: GoogleTaskItem[];
   includePrayerAnchors: boolean;
+  adhanOverrideSilent?: boolean;
+  adhanLeadMinutes?: number;
   activeSanctuary: ActiveSanctuaryState;
   quietMode: QuietModeType;
   firedReminderKeysRef: React.MutableRefObject<Set<string>>;
   acknowledgedBlockIdsRef: React.MutableRefObject<Set<string>>;
-  triggerTaskAlert: (title: string, category: TaskSoundCategory, opts?: Record<string, unknown>) => void;
+  triggerTaskAlert: (title: string, category: TaskSoundCategory, opts?: Record<string, unknown>) => boolean | void;
   handleLogWaterCup: (opts?: { fromRemote?: boolean; waterOpId?: string; dateKey?: string }) => void;
   handleAcknowledgeAudioAlert: () => void;
 }
@@ -65,6 +66,34 @@ export function useRemindersEffect(p: UseRemindersEffectParams): void {
       (window as Window & { DayRhythmNative?: { scheduleExactAlarms?: unknown } }).DayRhythmNative?.scheduleExactAlarms
     );
     if (!nativeOwnsReminders) {
+      if (p.includePrayerAnchors) {
+        const isFullMute = p.quietMode === 'silent_all' || p.quietMode === 'mute_audio';
+        const allowPrayerRing = !isFullMute || Boolean(p.adhanOverrideSilent);
+        const leadMin = p.adhanLeadMinutes ?? 0;
+        p.prayers.forEach((pr) => {
+          if (!pr.isObligatory) return;
+          const triggerMin = pr.alarmMinutes;
+          const occurrenceKey = buildOccurrenceKey(`prayer_${pr.id}`, todayIso, triggerMin);
+          const key = `${todayIso}:prayer:${pr.id}:${triggerMin}`;
+          if (p.firedReminderKeysRef.current.has(key)) return;
+          if (!canFireScheduled(occurrenceKey, triggerMin, 4)) return;
+          if (!allowPrayerRing) return;
+          const fired = p.triggerTaskAlert(pr.emojiPair, 'prayer', {
+            bypassSanctuary: true,
+            privacyEmoji: pr.emojiPair,
+            displayTitle:
+              leadMin > 0
+                ? `متبقي ${leadMin} د على أذان ${pr.nameAr}`
+                : `حان الآن موعد أذان ${pr.nameAr}`,
+            sourceLabel: 'مواقيت الصلاة',
+            description: `وقت أذان ${pr.nameAr} (${formatMinutes12h(pr.adhanMinutes, 'ar')})`,
+            blockId: `prayer_${pr.id}`,
+            occurrenceKey,
+          });
+          if (fired !== false) p.firedReminderKeysRef.current.add(key);
+        });
+      }
+
       const deferWater = p.travelState.active && (p.travelState.deferredCategories?.includes('water') ?? false);
       if (p.waterRemindersEnabled && p.hydrationToday && !deferWater) {
         p.dailyRhythmPlan.hydrationSlots.forEach((slot, idx) => {
@@ -74,14 +103,13 @@ export function useRemindersEffect(p: UseRemindersEffectParams): void {
           const key = `${todayIso}:water:${slot.cupIndex}`;
           if (p.firedReminderKeysRef.current.has(key)) return;
           if (!canFireScheduled(occurrenceKey, slot.timeMinutes, 4)) return;
-          p.firedReminderKeysRef.current.add(key);
-          markFiredInSession(occurrenceKey);
-          p.triggerTaskAlert('💧', 'water', {
+          const fired = p.triggerTaskAlert('💧', 'water', {
             privacyEmoji: '💧',
             displayTitle: `موعد شرب كوب ماء (${p.dailyRhythmPlan.cupSizeMl} مل)`,
             sourceLabel: 'ترطيب يومي',
             occurrenceKey,
           });
+          if (fired !== false) p.firedReminderKeysRef.current.add(key);
         });
       }
 
@@ -109,9 +137,7 @@ export function useRemindersEffect(p: UseRemindersEffectParams): void {
           const key = `${todayIso}:med:${med.id}:${dose.effectiveTime24}`;
           if (p.firedReminderKeysRef.current.has(key)) return;
           if (!canFireScheduled(occurrenceKey, dose.effectiveMin, 4)) return;
-          p.firedReminderKeysRef.current.add(key);
-          markFiredInSession(occurrenceKey);
-          p.triggerTaskAlert('💊', 'medication', {
+          const fired = p.triggerTaskAlert('💊', 'medication', {
             privacyEmoji: '💊',
             displayTitle: `موعد الجرعة: ${med.name}`,
             sourceLabel: dose.wasShifted ? 'العلاجات والأدوية · معدّل للصيام' : 'العلاجات والأدوية',
@@ -119,6 +145,7 @@ export function useRemindersEffect(p: UseRemindersEffectParams): void {
             medicationDoseTime24: rawTimesCount > 1 ? dose.originalTime24 : undefined,
             occurrenceKey,
           });
+          if (fired !== false) p.firedReminderKeysRef.current.add(key);
         });
       });
 
@@ -135,15 +162,14 @@ export function useRemindersEffect(p: UseRemindersEffectParams): void {
         const key = `${todayIso}:event:${block.id}:${block.startMin}`;
         if (p.firedReminderKeysRef.current.has(key)) return;
         if (!canFireScheduled(occurrenceKey, block.startMin, 2)) return;
-        p.firedReminderKeysRef.current.add(key);
-        markFiredInSession(occurrenceKey);
         const emojiOnly = (block.emojiPair || '📅').trim();
         const cleanTitle = cleanCalendarText(block.categoryAr) || 'موعد في التقويم';
         const soundCat = classifyTaskSound(block.categoryAr, block.emojiPair, block.isAnchor);
-        p.triggerTaskAlert(emojiOnly, soundCat, {
+        const fired = p.triggerTaskAlert(emojiOnly, soundCat, {
           privacyEmoji: emojiOnly, displayTitle: cleanTitle, sourceLabel: 'تقويم Google',
           description: block.description, blockId: block.id, occurrenceKey,
         });
+        if (fired !== false) p.firedReminderKeysRef.current.add(key);
       });
 
       const deferTasks = p.travelState.active && (p.travelState.deferredCategories?.includes('tasks') ?? false);
@@ -156,15 +182,14 @@ export function useRemindersEffect(p: UseRemindersEffectParams): void {
           const key = `${todayIso}:gtask:${tk.id}:${info.startMin}`;
           if (p.firedReminderKeysRef.current.has(key)) return;
           if (!canFireScheduled(occurrenceKey, info.startMin, 2)) return;
-          p.firedReminderKeysRef.current.add(key);
-          markFiredInSession(occurrenceKey);
           const cleanTitle = cleanCalendarText(tk.title) || 'مهمة مطلوبة الآن';
           const soundCat = classifyTaskSound(tk.title, '☑️', false);
-          p.triggerTaskAlert('☑️', soundCat, {
+          const fired = p.triggerTaskAlert('☑️', soundCat, {
             privacyEmoji: '☑️', displayTitle: cleanTitle,
             sourceLabel: tk.taskListTitle ? `مهام · ${tk.taskListTitle}` : 'مهام Google',
             taskId: tk.id, taskListId: tk.taskListId, description: tk.notes, occurrenceKey,
           });
+          if (fired !== false) p.firedReminderKeysRef.current.add(key);
         });
       }
 
@@ -176,25 +201,23 @@ export function useRemindersEffect(p: UseRemindersEffectParams): void {
             const occurrenceKeyRed = buildOccurrenceKey('redSun', todayIso, redSunMin);
             const keyRed = `${todayIso}:redSun:${redSunMin}`;
             if (!p.firedReminderKeysRef.current.has(keyRed) && canFireScheduled(occurrenceKeyRed, redSunMin, 4)) {
-              p.firedReminderKeysRef.current.add(keyRed);
-              markFiredInSession(occurrenceKeyRed);
-              p.triggerTaskAlert('🌇 ☀️', 'general', {
+              const firedRed = p.triggerTaskAlert('🌇 ☀️', 'general', {
                 privacyEmoji: '🌇', displayTitle: 'الشمس الحمراء · الساعة الذهبية', sourceLabel: 'مواقيت شمسية',
                 description: `الشمس الحمراء · بداية الساعة الذهبية المسائية (${formatMinutes12h(redSunMin, 'ar')}) — الغروب بعد ~6 دقائق`,
                 occurrenceKey: occurrenceKeyRed,
               });
+              if (firedRed !== false) p.firedReminderKeysRef.current.add(keyRed);
             }
           }
           const occurrenceKeyMag = buildOccurrenceKey('maghrib_solar', todayIso, maghribItem.adhanMinutes);
           const keyMag = `${todayIso}:maghrib_solar:${maghribItem.adhanMinutes}`;
           if (!p.firedReminderKeysRef.current.has(keyMag) && canFireScheduled(occurrenceKeyMag, maghribItem.adhanMinutes, 4)) {
-            p.firedReminderKeysRef.current.add(keyMag);
-            markFiredInSession(occurrenceKeyMag);
-            p.triggerTaskAlert('🌆', 'general', {
+            const firedMag = p.triggerTaskAlert('🌆', 'general', {
               privacyEmoji: '🌆', displayTitle: 'غروب الشمس', sourceLabel: 'مواقيت شمسية',
               description: `غروب الشمس (${formatMinutes12h(maghribItem.adhanMinutes, 'ar')}) — وقت المغرب`,
               occurrenceKey: occurrenceKeyMag,
             });
+            if (firedMag !== false) p.firedReminderKeysRef.current.add(keyMag);
           }
         }
       }
@@ -221,6 +244,6 @@ export function useRemindersEffect(p: UseRemindersEffectParams): void {
     p.dailyRhythmPlan.isFastingToday, p.dailyRhythmPlan.cupSizeMl, p.hydrationToday,
     p.medications, p.liveBlocks, p.googleTasks, p.activeTimeZone, p.activeSanctuary.type,
     p.quietMode, p.triggerTaskAlert, p.handleLogWaterCup, p.handleAcknowledgeAudioAlert,
-    p.includePrayerAnchors, p.lowEnergyActive, p.prayers,
+    p.includePrayerAnchors, p.adhanOverrideSilent, p.adhanLeadMinutes, p.lowEnergyActive, p.prayers,
   ]);
 }

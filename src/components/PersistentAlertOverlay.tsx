@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bell, BellOff, Check, Clock, Droplets, Pill, X } from 'lucide-react';
 import { hasPlayedAlertId, playTaskSignature, unlockAudioContext } from '../engines/audioEngine';
-import { TaskSoundCategory } from '../types/dayrhythm';
+import { SoundRepeatSetting, TaskSoundCategory } from '../types/dayrhythm';
 
 export interface PersistentAlertItem {
   id: string;
@@ -14,6 +14,8 @@ export interface PersistentAlertItem {
   createdAtMs: number;
   durationMs: number;
   isContinuous?: boolean;
+  repeatCount?: SoundRepeatSetting;
+  queuedCount?: number;
   isHydration?: boolean;
   medicationId?: string;
   medicationDoseTime24?: string;
@@ -188,6 +190,11 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
                       {remFormatted}
                     </span>
                   </>
+                )}
+                {typeof alert.queuedCount === 'number' && alert.queuedCount > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-[#7FFFD4]/15 border border-[#7FFFD4]/35 text-[#7FFFD4] font-bold text-[10px]">
+                    +{alert.queuedCount} في الانتظار
+                  </span>
                 )}
               </div>
               <p className="text-sm font-bold text-white leading-snug mt-1 break-words">

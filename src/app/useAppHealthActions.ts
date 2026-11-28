@@ -125,6 +125,8 @@ export function useAppHealthActions(b: AppBaseState, p0: AppSyncWorkspace, p1: A
     liveBlocks,
     googleTasks,
     includePrayerAnchors,
+    adhanOverrideSilent,
+    adhanLeadMinutes: lifeProfile.adhanLeadMinutes,
     activeSanctuary,
     quietMode,
     firedReminderKeysRef,

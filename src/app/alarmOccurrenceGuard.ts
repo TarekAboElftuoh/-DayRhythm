@@ -13,8 +13,9 @@ export function buildOccurrenceKey(
 }
 
 /**
- * Only fires on a live minute transition (`prevMin < triggerMin` -> `nowMin >= triggerMin`).
- * Returns false on initial mount (`prevMin === null`) so app load/refresh never rings past alarms.
+ * Fires on a live minute transition (`prevMin < triggerMin` -> `nowMin >= triggerMin`),
+ * OR on initial mount / same-minute recalculation ONLY when `nowMin === triggerMin` (happening live right now).
+ * Past occurrences (`nowMin > triggerMin` on mount/same-minute) are suppressed.
  */
 export function isLiveTransition(
   prevMin: number | null,
@@ -22,7 +23,9 @@ export function isLiveTransition(
   triggerMin: number,
   maxLagMin = 4
 ): boolean {
-  if (prevMin === null) return false;
+  if (prevMin === null || nowMin === prevMin) {
+    return nowMin === triggerMin;
+  }
   const effectivePrev = nowMin < prevMin ? -1 : prevMin;
   return (
     effectivePrev < triggerMin &&

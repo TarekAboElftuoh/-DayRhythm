@@ -57,6 +57,7 @@ export function useAlertSnoozeHandler(p: {
       blockId?: string;
     }
   ) => void;
+  onAfterSnooze?: () => boolean;
   showToast: (msg: string) => void;
 }) {
   const {
@@ -67,6 +68,7 @@ export function useAlertSnoozeHandler(p: {
     emitCrossDeviceSync,
     snoozeTimersRef,
     triggerTaskAlert,
+    onAfterSnooze,
     showToast,
   } = p;
 
@@ -82,9 +84,12 @@ export function useAlertSnoozeHandler(p: {
       if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
         try { navigator.vibrate(0); } catch { /* ignore */ }
       }
-      setActiveAudioAlert(null);
-      setPersistentAlert(null);
-      setAlarmRinging(false);
+      const promotedNext = onAfterSnooze?.() ?? false;
+      if (!promotedNext) {
+        setActiveAudioAlert(null);
+        setPersistentAlert(null);
+        setAlarmRinging(false);
+      }
       if (!options?.localOnly) emitCrossDeviceSync('alarm_dismiss', 'snooze', undefined, { alertId: alertItem.id });
       const timerId = window.setTimeout(() => {
         snoozeTargetMap.delete(timerId);

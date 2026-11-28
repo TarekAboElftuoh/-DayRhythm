@@ -10,22 +10,17 @@ import type {
   TaskSoundCategory,
 } from '../types/dayrhythm';
 import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
-import {
-  DEFAULT_SOUND_REPEATS,
-  playTaskSignature,
-  stopContinuousAlert,
-  TASK_SOUND_META,
-} from '../engines/audioEngine';
+import { DEFAULT_SOUND_REPEATS, stopContinuousAlert, TASK_SOUND_META } from '../engines/audioEngine';
 import { triggerHapticWaveform } from '../engines/hapticsEngine';
 import { formatNow12hInTimeZone } from '../engines/prayerEngine';
 import { auth } from '../firebase';
 import { cleanCalendarText } from '../services/apiClient';
-import { broadcastAlertTrigger, registerActiveAlarm, saveDismissedKeyToCloud } from '../services/cloudStateService';
+import { saveDismissedKeyToCloud } from '../services/cloudStateService';
 import { addDismissedKeys, isOccurrenceDismissed, markFiredInSession } from './alarmOccurrenceGuard';
 import { handleSanctuaryAlert } from './handleSanctuaryAlert';
+import { presentAudioAlert } from './presentAudioAlert';
 import { ACTIVE_UID_STORAGE_KEY, extractEmojiPair } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
-
 import { cancelSnoozeTimersForTarget, useAlertSnoozeHandler } from './useAlertSnoozeHandler';
 
 export interface UseAudioAlertsParams {
@@ -54,27 +49,56 @@ export interface UseAudioAlertsParams {
   showToast: (msg: string) => void;
 }
 
-export function useAudioAlerts({
-  activeAudioAlert,
-  persistentAlert,
-  alarmRinging,
-  activeSanctuary,
-  activeTimeZone,
-  lifeProfile,
-  firebaseUser,
-  authUser,
-  clientIdRef,
-  acknowledgedBlockIdsRef,
-  snoozeTimersRef,
-  setActiveAudioAlert,
-  setPersistentAlert,
-  setAlarmRinging,
-  setCompletedOverrides,
-  setSilentNotifications,
-  emitCrossDeviceSync,
-  showToast,
-}: UseAudioAlertsParams) {
+interface QueuedAlertEntry {
+  item: PersistentAlertItem;
+  repeatCount: SoundRepeatSetting;
+  isRemoteSignal?: boolean;
+  bypassSanctuary?: boolean;
+}
+
+export function useAudioAlerts(p: UseAudioAlertsParams) {
+  const {
+    activeAudioAlert, persistentAlert, alarmRinging, activeSanctuary, activeTimeZone, lifeProfile,
+    firebaseUser, authUser, clientIdRef, acknowledgedBlockIdsRef, snoozeTimersRef, setActiveAudioAlert,
+    setPersistentAlert, setAlarmRinging, setCompletedOverrides, setSilentNotifications, emitCrossDeviceSync, showToast,
+  } = p;
   const activeOccurrenceKeyRef = useRef<string | undefined>(undefined);
+  const persistentAlertRef = useRef<PersistentAlertItem | null>(persistentAlert);
+  persistentAlertRef.current = persistentAlert;
+  const alertQueueRef = useRef<QueuedAlertEntry[]>([]);
+
+  const getEffectiveUid = useCallback(
+    () => firebaseUser?.uid || authUser?.uid || auth.currentUser?.uid || localStorage.getItem(ACTIVE_UID_STORAGE_KEY) || '',
+    [authUser?.uid, firebaseUser?.uid]
+  );
+
+  const promoteNextQueuedAlert = useCallback((): boolean => {
+    const next = alertQueueRef.current.shift();
+    if (!next) return false;
+    const itemWithQueue: PersistentAlertItem = {
+      ...next.item,
+      createdAtMs: Date.now(),
+      queuedCount: alertQueueRef.current.length,
+    };
+    persistentAlertRef.current = itemWithQueue;
+    activeOccurrenceKeyRef.current = itemWithQueue.occurrenceKey;
+    presentAudioAlert({
+      item: itemWithQueue,
+      repeatCount: next.repeatCount,
+      isRemoteSignal: next.isRemoteSignal,
+      bypassSanctuary: next.bypassSanctuary,
+      lifeProfile,
+      firebaseUser,
+      authUser,
+      effectiveUid: getEffectiveUid(),
+      clientIdRef,
+      setActiveAudioAlert,
+      setPersistentAlert,
+      emitCrossDeviceSync,
+      showToast,
+    });
+    return true;
+  }, [authUser, clientIdRef, emitCrossDeviceSync, firebaseUser, getEffectiveUid, lifeProfile, setActiveAudioAlert, setPersistentAlert, showToast]);
 
   const handleAcknowledgeAudioAlert = useCallback(() => {
     stopContinuousAlert();
@@ -88,8 +112,7 @@ export function useAudioAlerts({
 
     if (occurrenceKey) {
       addDismissedKeys([occurrenceKey]);
-      const effectiveUid =
-        firebaseUser?.uid || authUser?.uid || auth.currentUser?.uid || localStorage.getItem(ACTIVE_UID_STORAGE_KEY) || '';
+      const effectiveUid = getEffectiveUid();
       if (effectiveUid) void saveDismissedKeyToCloud(effectiveUid, occurrenceKey);
     }
 
@@ -101,24 +124,20 @@ export function useAudioAlerts({
       setCompletedOverrides((prev) => ({ ...prev, [dismissedBlockId]: true }));
     }
 
-    setActiveAudioAlert(null);
-    setPersistentAlert(null);
-    setAlarmRinging(false);
-    triggerHapticWaveform('shake_undo');
+    persistentAlertRef.current = null;
     emitCrossDeviceSync('alarm_dismiss', 'dismiss', undefined, { blockId: dismissedBlockId, alertId, occurrenceKey });
 
+    if (!promoteNextQueuedAlert()) {
+      setActiveAudioAlert(null);
+      setPersistentAlert(null);
+      setAlarmRinging(false);
+    }
+    triggerHapticWaveform('shake_undo');
     if (hadAlert) showToast(`✓ تم إيقاف وتأكيد تنبيه «${title}» على أجهزتك`);
   }, [
-    acknowledgedBlockIdsRef,
-    activeAudioAlert,
-    alarmRinging,
-    emitCrossDeviceSync,
-    persistentAlert,
-    setActiveAudioAlert,
-    setAlarmRinging,
-    setCompletedOverrides,
-    setPersistentAlert,
-    showToast,
+    acknowledgedBlockIdsRef, activeAudioAlert, alarmRinging, emitCrossDeviceSync, getEffectiveUid,
+    persistentAlert, promoteNextQueuedAlert, setActiveAudioAlert, setAlarmRinging, setCompletedOverrides,
+    setPersistentAlert, showToast, snoozeTimersRef,
   ]);
 
   useEffect(() => {
@@ -160,14 +179,9 @@ export function useAudioAlerts({
         blockId?: string;
         occurrenceKey?: string;
       }
-    ) => {
-      if (options?.occurrenceKey) {
-        if (isOccurrenceDismissed(options.occurrenceKey)) return;
-        markFiredInSession(options.occurrenceKey);
-        activeOccurrenceKeyRef.current = options.occurrenceKey;
-      } else {
-        activeOccurrenceKeyRef.current = undefined;
-      }
+    ): boolean => {
+      if (options?.occurrenceKey && isOccurrenceDismissed(options.occurrenceKey)) return false;
+
       const meta = TASK_SOUND_META[category];
       const privacyBadge = (options?.privacyEmoji || extractEmojiPair(title, meta.icon)).trim();
       const visibleTitle = (options?.displayTitle || title || meta.labelAr).trim();
@@ -179,107 +193,70 @@ export function useAudioAlerts({
       const repeatCount: SoundRepeatSetting =
         (lifeProfile.soundRepeats ?? DEFAULT_SOUND_REPEATS)[category] ?? DEFAULT_SOUND_REPEATS[category] ?? 1;
 
-      const androidNative = (
-        window as Window & {
-          DayRhythmNative?: {
-            triggerNativeAlarm?: (title: string, body: string, kind: string, continuous: boolean, snoozeMinutes: number) => void;
-          };
-        }
-      ).DayRhythmNative;
+      const androidNative = (window as Window & { DayRhythmNative?: unknown }).DayRhythmNative;
       const isAndroidNative = Boolean(androidNative);
 
       if (
         !options?.bypassSanctuary &&
         handleSanctuaryAlert({
-          activeSanctuary,
-          lifeProfile,
-          category,
-          visibleTitle,
-          visibleDescription,
-          visibleSource,
-          isAndroidNative,
-          activeTimeZone,
-          setSilentNotifications,
-          showToast,
+          activeSanctuary, lifeProfile, category, visibleTitle, visibleDescription, visibleSource,
+          isAndroidNative, activeTimeZone, setSilentNotifications, showToast,
         })
       ) {
-        return;
+        if (options?.occurrenceKey) markFiredInSession(options.occurrenceKey);
+        return true;
       }
 
-      const isContinuous = repeatCount === 'continuous';
       const alertId = `alert_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-      const ringPauseSeconds = lifeProfile.ringPauseSeconds ?? 2;
-      const playRes = !isAndroidNative
-        ? playTaskSignature(category, { bypassSanctuary: true, repeatCount, alertId, ringPauseSeconds })
-        : { playedAudio: false, vibrated: false, isContinuous };
       const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
-      const defaultSnooze = lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15 ? lifeProfile.defaultSnoozeMinutes : 5;
+      const item: PersistentAlertItem = {
+        id: alertId, emoji: privacyBadge, title: visibleTitle, description: visibleDescription,
+        sourceLabel: visibleSource, time12h: nowTime12, category, createdAtMs: Date.now(), durationMs,
+        isContinuous: repeatCount === 'continuous', repeatCount, isHydration: category === 'water',
+        medicationId: options?.medicationId, medicationDoseTime24: options?.medicationDoseTime24,
+        taskId: options?.taskId, taskListId: options?.taskListId, blockId: options?.blockId, occurrenceKey: options?.occurrenceKey,
+      };
+
       const wv = (window as Window & { chrome?: { webview?: { postMessage?: (msg: string) => void } } }).chrome?.webview;
       const isNativeWin = Boolean(wv?.postMessage);
+      const canShowWebCard = !isNativeWin && !(isAndroidNative && document.visibilityState === 'visible');
 
-      setActiveAudioAlert({ id: alertId, title: privacyBadge, category, isContinuous: Boolean(playRes.isContinuous || isContinuous) });
-
-      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
-        void registerActiveAlarm(firebaseUser.uid, {
-          id: alertId, title: visibleTitle, body: visibleDescription, category, originClientId: clientIdRef.current,
-          medicationId: options?.medicationId, doseTime24: options?.medicationDoseTime24, taskId: options?.taskId, taskListId: options?.taskListId,
-        });
-      }
-
-      if (!isNativeWin) {
-        if (Boolean(androidNative) && document.visibilityState === 'visible') {
-          showToast(`${privacyBadge} ${visibleTitle}${visibleDescription ? ` — ${visibleDescription}` : ''}`);
-        } else {
-          setPersistentAlert({
-            id: alertId, emoji: privacyBadge, title: visibleTitle, description: visibleDescription, sourceLabel: visibleSource,
-            time12h: nowTime12, category, createdAtMs: Date.now(), durationMs, isContinuous: Boolean(playRes.isContinuous || isContinuous),
-            isHydration: category === 'water', medicationId: options?.medicationId, medicationDoseTime24: options?.medicationDoseTime24,
-            taskId: options?.taskId, taskListId: options?.taskListId, blockId: options?.blockId,
-            occurrenceKey: options?.occurrenceKey,
+      if (canShowWebCard && persistentAlertRef.current) {
+        const occ = options?.occurrenceKey;
+        const alreadyQueued = occ
+          ? persistentAlertRef.current.occurrenceKey === occ || alertQueueRef.current.some((q) => q.item.occurrenceKey === occ)
+          : false;
+        if (!alreadyQueued) {
+          alertQueueRef.current.push({
+            item,
+            repeatCount,
+            isRemoteSignal: options?.isRemoteSignal,
+            bypassSanctuary: options?.bypassSanctuary,
           });
+          setPersistentAlert((prev) => (prev ? { ...prev, queuedCount: alertQueueRef.current.length } : prev));
         }
+        if (occ) markFiredInSession(occ);
+        return true;
       }
 
-      try {
-        androidNative?.triggerNativeAlarm?.(
-          `${privacyBadge} ${visibleTitle}`,
-          visibleDescription ? `${visibleDescription}\n${visibleSource} · ${nowTime12}` : `${visibleSource} · ${nowTime12}`,
-          category, Boolean(playRes.isContinuous || isContinuous), defaultSnooze
-        );
-      } catch { /* ignore */ }
-
-      try {
-        wv?.postMessage?.(JSON.stringify({
-          type: 'native-alert', id: alertId, emoji: privacyBadge, title: visibleTitle, description: visibleDescription,
-          sourceLabel: visibleSource, time12h: nowTime12, category, isHydration: category === 'water',
-          isMedication: category === 'medication', medicationId: options?.medicationId || '',
-          medicationDoseTime24: options?.medicationDoseTime24 || '', isContinuous: playRes.isContinuous,
-          cupSizeMl: lifeProfile.cupSizeMl, durationSeconds: Math.round(durationMs / 1000), snoozeMinutes: defaultSnooze,
-        }));
-      } catch { /* ignore */ }
-
-      if (!options?.isRemoteSignal) {
-        emitCrossDeviceSync('alarm_trigger', options?.bypassSanctuary ? 'test_ring' : 'trigger', undefined, {
-          title: visibleTitle, body: visibleDescription, kind: category, privacyEmoji: privacyBadge,
-          sourceLabel: visibleSource, snoozeMinutes: defaultSnooze, alertId, blockId: options?.blockId,
-          occurrenceKey: options?.occurrenceKey,
-          bypassSanctuary: Boolean(options?.bypassSanctuary),
-        });
-        const effectiveUid = firebaseUser?.uid || authUser?.uid || auth.currentUser?.uid || localStorage.getItem(ACTIVE_UID_STORAGE_KEY) || '';
-        if (effectiveUid) {
-          void broadcastAlertTrigger(effectiveUid, clientIdRef.current, {
-            alertId, title: visibleTitle, body: visibleDescription, kind: category,
-            snoozeMinutes: defaultSnooze, blockId: options?.blockId, startedAtMs: Date.now(),
-          });
-        }
+      if (options?.occurrenceKey) {
+        markFiredInSession(options.occurrenceKey);
+        activeOccurrenceKeyRef.current = options.occurrenceKey;
+      } else {
+        activeOccurrenceKeyRef.current = undefined;
       }
 
-      if (!isNativeWin) showToast(`${privacyBadge} · ${visibleTitle} · ${nowTime12}`);
+      if (canShowWebCard) persistentAlertRef.current = item;
+      presentAudioAlert({
+        item, repeatCount, isRemoteSignal: options?.isRemoteSignal, bypassSanctuary: options?.bypassSanctuary,
+        lifeProfile, firebaseUser, authUser, effectiveUid: getEffectiveUid(), clientIdRef,
+        setActiveAudioAlert, setPersistentAlert, emitCrossDeviceSync, showToast,
+      });
+      return true;
     },
     [
-      activeSanctuary, activeTimeZone, authUser?.uid, clientIdRef, emitCrossDeviceSync, firebaseUser,
-      lifeProfile.cupSizeMl, lifeProfile.defaultSnoozeMinutes, lifeProfile.ringPauseSeconds, lifeProfile.sanctuarySilenceMode, lifeProfile.soundRepeats,
-      setActiveAudioAlert, setPersistentAlert, setSilentNotifications, showToast,
+      activeSanctuary, activeTimeZone, authUser, clientIdRef, emitCrossDeviceSync, firebaseUser,
+      getEffectiveUid, lifeProfile, setActiveAudioAlert, setPersistentAlert, setSilentNotifications, showToast,
     ]
   );
 
@@ -291,6 +268,10 @@ export function useAudioAlerts({
     emitCrossDeviceSync,
     snoozeTimersRef,
     triggerTaskAlert,
+    onAfterSnooze: () => {
+      persistentAlertRef.current = null;
+      return promoteNextQueuedAlert();
+    },
     showToast,
   });
 

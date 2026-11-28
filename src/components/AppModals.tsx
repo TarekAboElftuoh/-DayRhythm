@@ -138,7 +138,6 @@ export function AppModals(props: AppModalsProps) {
             handleStopSmartChargeAlert();
           } else {
             handleAcknowledgeAudioAlert();
-            setPersistentAlert(null);
           }
         }}
         onAutoSnooze={(alertItem, mins) => {
@@ -147,12 +146,10 @@ export function AppModals(props: AppModalsProps) {
         onConfirmWater={() => {
           handleLogWaterCup();
           handleAcknowledgeAudioAlert();
-          setPersistentAlert(null);
         }}
         onConfirmMedication={(medId, doseTime24) => {
           handleToggleMedication(medId, doseTime24);
           handleAcknowledgeAudioAlert();
-          setPersistentAlert(null);
         }}
         onCompleteTask={(taskId, taskListId) => {
           void handleExecuteTaskActions([
@@ -164,7 +161,6 @@ export function AppModals(props: AppModalsProps) {
             },
           ]).catch(() => {});
           handleAcknowledgeAudioAlert();
-          setPersistentAlert(null);
         }}
         onSnoozeAlert={handleSnoozeAlert}
       />
