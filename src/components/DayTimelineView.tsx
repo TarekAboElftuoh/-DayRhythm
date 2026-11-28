@@ -16,6 +16,7 @@ import {
   type TimelineRenderNode,
 } from './timeline/types';
 import { UnplacedTray } from './timeline/UnplacedTray';
+import { TimeGrid } from './timeline/TimeGrid';
 import { TimelineNodes } from './timeline/TimelineNodes';
 import { TimelineSheets } from './timeline/TimelineSheets';
 import { useTimelinePointerDrag } from './timeline/useTimelinePointerDrag';
@@ -40,6 +41,7 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
   onCommitItemMove,
   onMoveToUnplaced,
 }) => {
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [confirmSheetOpen, setConfirmSheetOpen] = useState(false);
   const [placementTarget, setPlacementTarget] = useState<PlacementTarget | null>(null);
   const [pendingMove, setPendingMove] = useState<PendingMoveConfirmation | null>(null);
@@ -144,13 +146,35 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
             <span className="font-mono-tabular font-semibold text-white">{formatMinutes12h(model.bedtimeMin, language)}</span>
           </span>
         </div>
-        {model.unplacedBlocks.length > 0 && (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-[11px] font-semibold text-amber-300">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-            <span>تحتاج توظيف</span>
-            <span className="font-mono-tabular">· {model.unplacedBlocks.length}</span>
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {model.unplacedBlocks.length > 0 && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-1 text-[11px] font-semibold text-amber-300">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>تحتاج توظيف</span>
+              <span className="font-mono-tabular">· {model.unplacedBlocks.length}</span>
+            </span>
+          )}
+          <div className="inline-flex rounded-lg border border-white/10 bg-[#000000] p-0.5 text-[11px]">
+            <button
+              type="button"
+              onClick={() => setViewMode('grid')}
+              className={`rounded-md px-2.5 py-1 font-medium transition-colors cursor-pointer ${
+                viewMode === 'grid' ? 'bg-[#7FFFD4]/15 text-[#7FFFD4]' : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {language === 'ar' ? 'الشبكة' : 'Grid'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              className={`rounded-md px-2.5 py-1 font-medium transition-colors cursor-pointer ${
+                viewMode === 'list' ? 'bg-[#7FFFD4]/15 text-[#7FFFD4]' : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              {language === 'ar' ? 'القائمة' : 'List'}
+            </button>
+          </div>
+        </div>
       </div>
 
       <AnimatePresence initial={false}>
@@ -191,24 +215,33 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = ({
         onOpenAutoPlaceSheet={() => setConfirmSheetOpen(true)}
       />
 
-      <TimelineNodes
-        timelineRef={timelineRef}
-        nodes={nodes}
-        language={language}
-        nowMinutes={nowMinutes}
-        placementTarget={placementTarget}
-        dragState={dragState}
-        swipePreview={swipePreview}
-        gestureRef={gestureRef}
-        onSelectGhostSlot={handleSelectGhostSlot}
-        onCardPointerDown={handleCardPointerDown}
-        onCardPointerMove={handleCardPointerMove}
-        onFinishPointerGesture={finishPointerGesture}
-        onSelectPlacementTarget={setPlacementTarget}
-        onToggleMovable={handleToggleMovable}
-        onTriggerAlert={onTriggerAlert}
-        onDeleteEventBlock={onDeleteEventBlock}
-      />
+      {viewMode === 'grid' ? (
+        <TimeGrid
+          model={model}
+          language={language}
+          nowMinutes={nowMinutes}
+          onSelectActiveItem={handleToggleMovable}
+        />
+      ) : (
+        <TimelineNodes
+          timelineRef={timelineRef}
+          nodes={nodes}
+          language={language}
+          nowMinutes={nowMinutes}
+          placementTarget={placementTarget}
+          dragState={dragState}
+          swipePreview={swipePreview}
+          gestureRef={gestureRef}
+          onSelectGhostSlot={handleSelectGhostSlot}
+          onCardPointerDown={handleCardPointerDown}
+          onCardPointerMove={handleCardPointerMove}
+          onFinishPointerGesture={finishPointerGesture}
+          onSelectPlacementTarget={setPlacementTarget}
+          onToggleMovable={handleToggleMovable}
+          onTriggerAlert={onTriggerAlert}
+          onDeleteEventBlock={onDeleteEventBlock}
+        />
+      )}
 
       <TimelineSheets
         language={language}
