@@ -6,6 +6,7 @@ import type {
   GoogleCalendarEventItem,
   GoogleTaskItem,
   LifeProfile,
+  MedicationItem,
   PrayerTimeItem,
   ScheduleBlock,
 } from '../../types/dayrhythm';
@@ -19,6 +20,7 @@ export function useTimelineModel({
   dailyRhythmPlan,
   lifeProfile,
   habits,
+  medications = [],
   googleTasks,
   calendarEvents,
   todayCairoIso,
@@ -35,6 +37,7 @@ export function useTimelineModel({
   dailyRhythmPlan: DailyRhythmPlan;
   lifeProfile: LifeProfile;
   habits: DynamicHabit[];
+  medications?: MedicationItem[];
   googleTasks: GoogleTaskItem[];
   calendarEvents: GoogleCalendarEventItem[];
   todayCairoIso: string;
@@ -203,11 +206,11 @@ export function useTimelineModel({
   const dayTimelineModel = useMemo(
     () =>
       buildDayTimelineModel({
-        prayers, plan: dailyRhythmPlan, profile: lifeProfile, habits,
+        prayers, plan: dailyRhythmPlan, profile: lifeProfile, habits, medications,
         blocks: effectiveBlocksForTimeline, googleTasks, calendarEvents,
         todayIso: todayCairoIso, weekday: todayWeekday, timeZone: activeTimeZone,
       }),
-    [prayers, dailyRhythmPlan, lifeProfile, habits, effectiveBlocksForTimeline, googleTasks, calendarEvents, todayCairoIso, todayWeekday, activeTimeZone]
+    [prayers, dailyRhythmPlan, lifeProfile, habits, medications, effectiveBlocksForTimeline, googleTasks, calendarEvents, todayCairoIso, todayWeekday, activeTimeZone]
   );
 
   return {

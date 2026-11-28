@@ -141,7 +141,7 @@ export const DayTimelineView: React.FC<DayTimelineViewProps> = (props) => {
                   : 'border-white/15 bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
               }`}
             >
-              <span>{language === 'ar' ? 'إظهار المهام الخلفية' : 'Background items'}</span>
+              <span>{language === 'ar' ? 'إظهار مواعيد النظام المخفية' : 'System items'}</span>
               {backgroundCount > 0 && (
                 <span className="font-mono-tabular opacity-80">· {backgroundCount}</span>
               )}

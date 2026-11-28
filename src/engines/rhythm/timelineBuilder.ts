@@ -13,6 +13,7 @@ import {
 } from '../prayerEngine';
 import { computeFreeWindows } from './freeWindows';
 import { buildLockedIntervalsAndBlocks, findLockedCollision } from './timelineIntervals';
+import { buildSystemBackgroundBlocks } from './timelineSystemBlocks';
 import { claimFreeInterval, mapMinutesToHabitAnchor, parseTaskMinutesForTimeline, pickScientificFreeSlot } from './timelineHelpers';
 import { placeTimelineHabits } from './timelineHabits';
 import { classifyScientificTaskEnergy, type BuildDayTimelineInput, type DayTimelineModel, type DayTimelinePlacedItem, type DayTimelineUnplacedItem } from './timelineTypes';
@@ -24,6 +25,7 @@ export function buildDayTimelineModel(input: BuildDayTimelineInput): DayTimeline
     profile,
     habits = [],
     blocks = [],
+    medications = [],
     googleTasks = [],
     calendarEvents = [],
     todayIso,
@@ -31,6 +33,8 @@ export function buildDayTimelineModel(input: BuildDayTimelineInput): DayTimeline
   } = input;
   const weekday = input.weekday ?? resolveWeekdayFromIso(todayIso);
   const { lockedBlocks, collisionIntervals } = buildLockedIntervalsAndBlocks(prayers, plan, profile);
+  lockedBlocks.push(...buildSystemBackgroundBlocks(prayers, plan, blocks, medications, weekday));
+  lockedBlocks.sort((a, b) => a.startMin - b.startMin);
 
   const bedtime = plan.bedtimeMin > plan.wakeMin ? plan.bedtimeMin : 1440;
   const windDownStartMin =

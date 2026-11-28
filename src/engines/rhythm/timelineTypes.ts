@@ -33,7 +33,8 @@ export type DayTimelineLockedKind =
   | 'suhoor'
   | 'sleep'
   | 'nap'
-  | 'post_fajr_sleep';
+  | 'post_fajr_sleep'
+  | 'system';
 
 export interface DayTimelineLockedBlock {
   id: string;
@@ -126,6 +127,7 @@ export interface BuildDayTimelineInput {
   profile: LifeProfile;
   habits?: DynamicHabit[];
   blocks?: ScheduleBlock[];
+  medications?: MedicationItem[];
   googleTasks?: GoogleTaskItem[];
   calendarEvents?: GoogleCalendarEventItem[];
   todayIso: string;

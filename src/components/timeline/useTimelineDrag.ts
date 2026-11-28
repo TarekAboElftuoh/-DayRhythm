@@ -82,6 +82,8 @@ export function useTimelineDrag(params: {
   const handlePointerMove = (e: React.PointerEvent<HTMLElement>) => {
     const s = sessionRef.current;
     if (!s || e.pointerId !== s.pointerId) return;
+    e.preventDefault();
+    e.stopPropagation();
     const dy = e.clientY - s.startClientY;
     if (!s.hasMoved && Math.abs(dy) < 4) return;
     s.hasMoved = true;

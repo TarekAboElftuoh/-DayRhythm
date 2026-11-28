@@ -121,7 +121,7 @@ export function useDashboardController(props: DashboardViewProps) {
 
   const timelineModelData = useTimelineModel({
     blocks: props.blocks, prayers: props.prayers, dailyRhythmPlan: props.dailyRhythmPlan,
-    lifeProfile: props.lifeProfile, habits: props.habits ?? [], googleTasks: props.googleTasks,
+    lifeProfile: props.lifeProfile, habits: props.habits ?? [], medications: props.medications ?? [], googleTasks: props.googleTasks,
     calendarEvents: props.calendarEvents, todayCairoIso,
     todayWeekday: medSummary.last7CairoDays[medSummary.last7CairoDays.length - 1]?.weekdayNum,
     activeTimeZone, language: props.language, timelineFilter, autoPlacedBlockStarts, autoPlacedBlockDurations, unplacedLocalBlockIds,

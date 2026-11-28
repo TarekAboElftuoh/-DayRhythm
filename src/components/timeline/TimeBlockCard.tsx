@@ -134,15 +134,7 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
     );
   }
 
-  const {
-    item,
-    isDragging,
-    onSelect,
-    onMovePointerDown,
-    onResizePointerDown,
-    onPointerMove,
-    onPointerEnd,
-  } = props;
+  const { item, isDragging, onSelect, onMovePointerDown, onResizePointerDown, onPointerMove, onPointerEnd } = props;
   const rangeText = `${formatMinutes12h(item.startMin, language)} – ${formatMinutes12h(item.endMin, language)}`;
 
   return (
@@ -174,15 +166,14 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
             role="button"
             tabIndex={-1}
             aria-label={language === 'ar' ? 'سحب لتحريك الموعد' : 'Drag to move'}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              onMovePointerDown?.(e, item, true);
-            }}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerEnd}
-            onPointerCancel={onPointerEnd}
+            style={{ touchAction: 'none' }}
+            onPointerDown={(e) => { e.stopPropagation(); onMovePointerDown?.(e, item, true); }}
+            onPointerMove={(e) => { e.stopPropagation(); onPointerMove?.(e); }}
+            onPointerUp={(e) => { e.stopPropagation(); onPointerEnd?.(e); }}
+            onPointerCancel={(e) => { e.stopPropagation(); onPointerEnd?.(e); }}
+            onTouchMove={(e) => { e.stopPropagation(); e.preventDefault(); }}
             onClick={(e) => e.stopPropagation()}
-            className="touch-none cursor-grab active:cursor-grabbing shrink-0 -mr-1 px-1 py-1 text-zinc-400 hover:text-[#7FFFD4] flex items-center justify-center"
+            className="touch-none cursor-grab active:cursor-grabbing shrink-0 -mr-1.5 min-w-[28px] min-h-[28px] px-1 py-1 rounded-lg text-zinc-300 bg-white/[0.04] border border-white/10 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 flex items-center justify-center"
           >
             <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
           </div>
@@ -218,13 +209,11 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
       <div
         role="separator"
         aria-label={language === 'ar' ? 'تغيير المدة' : 'Resize duration'}
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          onResizePointerDown?.(e, item);
-        }}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerEnd}
-        onPointerCancel={onPointerEnd}
+        onPointerDown={(e) => { e.stopPropagation(); onResizePointerDown?.(e, item); }}
+        onPointerMove={(e) => { e.stopPropagation(); onPointerMove?.(e); }}
+        onPointerUp={(e) => { e.stopPropagation(); onPointerEnd?.(e); }}
+        onPointerCancel={(e) => { e.stopPropagation(); onPointerEnd?.(e); }}
+        onTouchMove={(e) => { e.stopPropagation(); e.preventDefault(); }}
         onClick={(e) => e.stopPropagation()}
         className="absolute inset-x-2 bottom-0 h-2.5 cursor-ns-resize touch-none flex items-end justify-center pb-0.5"
       >
