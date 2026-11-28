@@ -82,6 +82,7 @@ namespace DayRhythm
 
             HandleCreated += (_, __) => ApplyDarkObsidianTitleBar(Handle);
             Load += async (_, __) => await OnFormLoadedAsync();
+            Resize += OnMainFormResize;
             FormClosing += OnMainFormClosing;
         }
 
@@ -180,7 +181,7 @@ namespace DayRhythm
                 Enabled = false,
             };
 
-            ToolStripMenuItem openItem = new ToolStripMenuItem("فتح النافذة", null, (_, __) => ShowAndFocusWindow());
+            ToolStripMenuItem openItem = new ToolStripMenuItem("فتح اليوم", null, (_, __) => ShowAndFocusWindow());
             ToolStripMenuItem reloadItem = new ToolStripMenuItem("تحديث الواجهة", null, (_, __) => _webView?.Reload());
 
             _capsuleMenuItem = new ToolStripMenuItem("كبسولة سطح المكتب العائمة")
@@ -209,12 +210,14 @@ namespace DayRhythm
             };
             _autoLaunchMenuItem.CheckedChanged += (_, __) =>
             {
+                if (_settings.AutoLaunch == _autoLaunchMenuItem.Checked) return;
                 _settings.AutoLaunch = _autoLaunchMenuItem.Checked;
                 AppConfig.SaveSettings(_settings);
                 AppConfig.ApplyAutoLaunch(_settings.AutoLaunch);
+                PushWindowsPrefsToWeb();
             };
 
-            ToolStripMenuItem exitItem = new ToolStripMenuItem("خروج نهائي", null, (_, __) =>
+            ToolStripMenuItem exitItem = new ToolStripMenuItem("إغلاق نهائي", null, (_, __) =>
             {
                 _isQuitting = true;
                 Close();
@@ -363,6 +366,11 @@ namespace DayRhythm
                             RunOnUi(() => _ = RunInteractiveUpdateCheckAsync());
                             return;
                         }
+                        if (string.Equals(msg, "get-win-prefs", StringComparison.OrdinalIgnoreCase))
+                        {
+                            RunOnUi(PushWindowsPrefsToWeb);
+                            return;
+                        }
                         if (msg.StartsWith("{", StringComparison.Ordinal))
                         {
                             using (JsonDocument doc = JsonDocument.Parse(msg))
@@ -427,6 +435,22 @@ namespace DayRhythm
                                             AppConfig.SaveSettings(_settings);
                                         }
                                     }
+                                    else if (string.Equals(msgType, "set-auto-launch", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        bool enabled = doc.RootElement.TryGetProperty("enabled", out JsonElement enProp)
+                                            && enProp.ValueKind == JsonValueKind.True;
+                                        RunOnUi(() =>
+                                        {
+                                            _settings.AutoLaunch = enabled;
+                                            AppConfig.SaveSettings(_settings);
+                                            AppConfig.ApplyAutoLaunch(enabled);
+                                            if (_autoLaunchMenuItem != null && _autoLaunchMenuItem.Checked != enabled)
+                                            {
+                                                _autoLaunchMenuItem.Checked = enabled;
+                                            }
+                                            PushWindowsPrefsToWeb();
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -445,7 +469,11 @@ namespace DayRhythm
                 _webView.CoreWebView2.NewWindowRequested += OnNewWindowRequested;
                 // Windows' clock drifts (it was ~15 s fast) and only resyncs occasionally, so the PC
                 // rang before the phone. Measure real time and let the page fire on it instead.
-                _webView.CoreWebView2.NavigationCompleted += (_, __) => PushClockOffsetToWeb();
+                _webView.CoreWebView2.NavigationCompleted += (_, __) =>
+                {
+                    PushClockOffsetToWeb();
+                    PushWindowsPrefsToWeb();
+                };
                 _ = RefreshClockOffsetLoopAsync();
                 _webView.CoreWebView2.Navigate(VirtualAppUrl);
                 _bgServices.Start(_settings.RemoteWsUrl);
@@ -703,6 +731,12 @@ namespace DayRhythm
 
         private long _clockOffsetMs;
 
+        private void PushWindowsPrefsToWeb()
+        {
+            string val = _settings.AutoLaunch ? "true" : "false";
+            DispatchToWeb($"window.__drWinAutoLaunch={val};window.dispatchEvent(new CustomEvent('dayrhythm:win-prefs',{{detail:{{autoLaunch:{val}}}}}));");
+        }
+
         private void PushClockOffsetToWeb()
         {
             long off = _clockOffsetMs;
@@ -868,6 +902,15 @@ namespace DayRhythm
                 }
             }
             catch { }
+        }
+
+        private void OnMainFormResize(object sender, EventArgs e)
+        {
+            if (!_isQuitting && WindowState == FormWindowState.Minimized)
+            {
+                Hide();
+                ShowInTaskbar = false;
+            }
         }
 
         private void OnMainFormClosing(object sender, FormClosingEventArgs e)

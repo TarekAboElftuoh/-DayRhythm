@@ -459,6 +459,36 @@ public class DayRhythmSyncService extends Service {
         }
     };
 
+    public static boolean isRunning() {
+        DayRhythmSyncService svc = instance;
+        return svc != null && !svc.isDestroyed;
+    }
+
+    public static boolean hasPersistedLiveState(Context context) {
+        if (context == null) return false;
+        try {
+            SharedPreferences live = context.getSharedPreferences(PREFS_LIVE, MODE_PRIVATE);
+            if (live.getLong(EXTRA_LIVE_TARGET_MS, 0L) > 0L
+                    || !live.getString(EXTRA_LIVE_TITLE, "").isEmpty()) {
+                return true;
+            }
+            SharedPreferences alarms = context.getSharedPreferences(ReminderAlarmReceiver.PREFS_ALARMS, MODE_PRIVATE);
+            String cached = alarms.getString(ReminderAlarmReceiver.KEY_CACHED_SCHEDULE, "");
+            return cached != null && !cached.trim().isEmpty();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    public static void restartIfActive(Context context) {
+        if (context == null) return;
+        if (isRunning()) {
+            onScheduleUpdated(context);
+        } else if (hasPersistedLiveState(context)) {
+            startServiceCompat(context);
+        }
+    }
+
     public static void startServiceCompat(Context context) {
         Intent intent = new Intent(context, DayRhythmSyncService.class);
         try {

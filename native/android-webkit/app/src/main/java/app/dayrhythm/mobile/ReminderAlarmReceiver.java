@@ -719,14 +719,31 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         }
     }
 
+    public static void rescheduleFromPrefs(Context context) {
+        if (context == null) return;
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
+        String cached = prefs.getString(KEY_CACHED_SCHEDULE, "");
+        if (cached == null || cached.trim().isEmpty()) {
+            cached = prefs.getString("last_batch_raw", "");
+        }
+        if (cached == null || cached.trim().isEmpty()) {
+            return;
+        }
+        scheduleBatchInternal(context, cached, true);
+    }
+
     public static void scheduleBatchFromJson(Context context, String jsonArrayStr) {
+        scheduleBatchInternal(context, jsonArrayStr, false);
+    }
+
+    private static void scheduleBatchInternal(Context context, String jsonArrayStr, boolean forceReschedule) {
         if (context == null || jsonArrayStr == null) return;
         AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
 
         SharedPreferences prefs = context.getSharedPreferences(PREFS_ALARMS, Context.MODE_PRIVATE);
         String prevBatch = prefs.getString("last_batch_raw", "");
-        if (jsonArrayStr.equals(prevBatch)) {
+        if (!forceReschedule && jsonArrayStr.equals(prevBatch)) {
             return;
         }
 
@@ -797,7 +814,7 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 newIds.append(reqCode);
 
                 String oldSig = prevMap.get(reqCode);
-                if (!sig.equals(oldSig)) {
+                if (forceReschedule || !sig.equals(oldSig)) {
                     anyAlarmChanged = true;
                     scheduleSingleExactAlarm(
                             context,
@@ -865,13 +882,15 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
         } catch (Exception ignored) {
         }
 
-        prefs.edit()
-                .putString("last_batch_raw", jsonArrayStr)
+        SharedPreferences.Editor editor = prefs.edit()
                 .putString("scheduled_sigs_map", nextMapObj.toString())
                 .putString(KEY_SCHEDULED_IDS, newIds.toString())
-                .putString(KEY_CACHED_SCHEDULE, alarmsArrayStr)
-                .apply();
-        if (anyAlarmChanged || prevMap.isEmpty()) {
+                .putString(KEY_CACHED_SCHEDULE, alarmsArrayStr);
+        if (!forceReschedule) {
+            editor.putString("last_batch_raw", jsonArrayStr);
+        }
+        editor.apply();
+        if (anyAlarmChanged || prevMap.isEmpty() || forceReschedule) {
             DayRhythmSyncService.onScheduleUpdated(context);
         }
     }
@@ -918,15 +937,29 @@ public class ReminderAlarmReceiver extends BroadcastReceiver {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        try {
-            // setAlarmClock() bypasses OnePlus OxygenOS Doze & background throttling reliably!
-            // It does not depend on SCHEDULE_EXACT_ALARM special access toggles.
-            am.setAlarmClock(new AlarmManager.AlarmClockInfo(triggerAtMs, showPi), pi);
-        } catch (Throwable t) {
+        boolean canExact = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
-                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
+                canExact = am.canScheduleExactAlarms();
             } catch (Throwable ignored) {
+                canExact = false;
             }
+        }
+        if (canExact) {
+            try {
+                // setAlarmClock() bypasses OnePlus OxygenOS Doze & background throttling reliably!
+                am.setAlarmClock(new AlarmManager.AlarmClockInfo(triggerAtMs, showPi), pi);
+                return;
+            } catch (SecurityException ignored) {
+                // Exact alarm permission revoked (e.g. OxygenOS / Android 12-16); fall back safely.
+            } catch (Throwable ignored) {
+                // Fall back safely.
+            }
+        }
+        try {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, pi);
+        } catch (SecurityException ignored) {
+        } catch (Throwable ignored) {
         }
     }
 

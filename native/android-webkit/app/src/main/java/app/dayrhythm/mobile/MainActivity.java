@@ -842,9 +842,13 @@ public class MainActivity extends Activity {
 
                     // 2. Exact Alarm (Android 12+ / SDK 31)
                     boolean exact = true;
-                    if (Build.VERSION.SDK_INT >= 31) {
-                        AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
-                        exact = (am != null && am.canScheduleExactAlarms());
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        try {
+                            AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
+                            exact = (am != null && am.canScheduleExactAlarms());
+                        } catch (Exception ignored) {
+                            exact = false;
+                        }
                     }
                     obj.put("exactAlarm", exact);
 

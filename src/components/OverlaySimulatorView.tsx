@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   BellRing,
   BatteryCharging,
   Columns2,
+  Power,
   Rows2,
   Volume2,
   VolumeX,
@@ -73,6 +74,27 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
           .chrome?.webview
       : undefined;
   const isNativeWindowsExe = Boolean(webviewBridge?.postMessage);
+  const [winAutoLaunch, setWinAutoLaunch] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return (window as Window & { __drWinAutoLaunch?: boolean }).__drWinAutoLaunch ?? true;
+  });
+
+  useEffect(() => {
+    if (!isNativeWindowsExe) return;
+    const onWinPrefs = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ autoLaunch?: boolean }>).detail;
+      if (typeof detail?.autoLaunch === 'boolean') {
+        setWinAutoLaunch(detail.autoLaunch);
+      }
+    };
+    window.addEventListener('dayrhythm:win-prefs', onWinPrefs);
+    try {
+      webviewBridge?.postMessage?.('get-win-prefs');
+    } catch {
+      // ignore
+    }
+    return () => window.removeEventListener('dayrhythm:win-prefs', onWinPrefs);
+  }, [isNativeWindowsExe, webviewBridge]);
 
   const batteryFresh = Boolean(
     phoneBattery && Date.now() - phoneBattery.updatedAtMs < 45 * 60_000
@@ -366,6 +388,42 @@ export const OverlaySimulatorView: React.FC<OverlaySimulatorViewProps> = ({
               {stealthAudioOnly ? 'مفعّل' : 'متوقف'}
             </button>
           </div>
+
+          {isNativeWindowsExe && (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-[var(--bg-surface)] px-3.5 py-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                  <Power className={`w-3.5 h-3.5 ${winAutoLaunch ? 'text-[#7FFFD4]' : 'text-zinc-400'}`} />
+                  <span>التشغيل تلقائياً مع ويندوز</span>
+                </div>
+                <div className="text-[11px] text-zinc-400 mt-0.5">
+                  يبدأ مصغّراً في شريط النظام لتبقى الكبسولة والتنبيهات 24/7
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-pressed={winAutoLaunch}
+                onClick={() => {
+                  const next = !winAutoLaunch;
+                  setWinAutoLaunch(next);
+                  try {
+                    webviewBridge?.postMessage?.(
+                      JSON.stringify({ type: 'set-auto-launch', enabled: next })
+                    );
+                  } catch {
+                    // ignore
+                  }
+                }}
+                className={`min-h-[44px] px-3.5 rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 ${
+                  winAutoLaunch
+                    ? 'bg-[#7FFFD4] text-black'
+                    : 'bg-white/[0.06] text-zinc-300 hover:bg-white/[0.12]'
+                }`}
+              >
+                {winAutoLaunch ? 'مفعّل' : 'متوقف'}
+              </button>
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-2 text-xs text-zinc-400 px-1">
             <span>وضع الاجتماع الحالي</span>
