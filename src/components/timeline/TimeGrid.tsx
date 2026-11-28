@@ -171,7 +171,32 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
           })}
 
           {gapSlices.map((slice) => (
-            <FreeGapSlot key={slice.key} gap={slice.data} topPx={slice.topPx} heightPx={slice.heightPx} language={language} onSelectGap={(g) => { setFocusedPeriod(g); onSelectFreeGap?.(g); }} />
+            <FreeGapSlot
+              key={slice.key}
+              gap={slice.data}
+              topPx={slice.topPx}
+              heightPx={slice.heightPx}
+              language={language}
+              onSelectGap={(g) => {
+                const prev = hardLockedBlocks.filter((b) => b.endMin <= g.startMin).sort((a, b) => b.endMin - a.endMin)[0];
+                const next = hardLockedBlocks.filter((b) => b.startMin >= g.endMin).sort((a, b) => a.startMin - b.startMin)[0];
+                const startMin = prev ? prev.endMin : 0;
+                const endMin = next ? next.startMin : MINUTES_PER_DAY;
+                const periodName =
+                  prev && next
+                    ? `${prev.titleAr} – ${next.titleAr}`
+                    : prev
+                      ? prev.titleAr
+                      : next
+                        ? next.titleAr
+                        : language === 'ar'
+                          ? 'اليوم كامل'
+                          : 'Full Day';
+                const label = language === 'ar' ? `تعديل الفترة • ${periodName}` : `Edit Period • ${periodName}`;
+                setFocusedPeriod({ ...g, startMin, endMin, durationMin: Math.max(0, endMin - startMin), label });
+                onSelectFreeGap?.(g);
+              }}
+            />
           ))}
           {bgSlices.map((slice) => (
             <TimeBlockCard key={slice.key} variant="background" item={slice.data} topPx={slice.topPx} heightPx={slice.heightPx} language={language} isNow={clampedNow >= slice.startMin && clampedNow < slice.endMin} />
