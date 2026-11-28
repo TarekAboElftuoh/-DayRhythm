@@ -110,7 +110,7 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
 
     return (
       <div
-        style={{ top: `${topPx}px`, height: `${heightPx}px` }}
+        style={{ top: `${topPx}px`, height: `${heightPx}px`, maxHeight: `${heightPx}px` }}
         aria-label={`${item.title} (${rangeText})`}
         className={`pointer-events-none select-none absolute inset-x-1 z-10 flex flex-col justify-center rounded-xl border border-dashed bg-white/[0.02] px-2.5 overflow-hidden opacity-65 ${
           isNow ? 'border-[#7FFFD4]/30' : 'border-white/10'
@@ -160,7 +160,7 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
       onPointerMove={onPointerMove}
       onPointerUp={onPointerEnd}
       onPointerCancel={onPointerEnd}
-      style={{ top: `${topPx}px`, height: `${heightPx}px` }}
+      style={{ top: `${topPx}px`, height: `${heightPx}px`, maxHeight: `${heightPx}px` }}
       aria-label={`${item.title} (${rangeText})`}
       className={`group absolute inset-x-1 z-30 flex flex-col justify-center rounded-xl border border-r-[3px] border-r-[#7FFFD4] bg-[#060E0C] px-2.5 text-right transition-colors overflow-hidden cursor-grab active:cursor-grabbing select-none hover:bg-[#091613] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#7FFFD4] ${
         isNow

@@ -18,6 +18,7 @@ import {
   type BackgroundGridItem,
 } from './types';
 import { PX_PER_HOUR, PX_PER_MIN, useTimelineDrag } from './useTimelineDrag';
+import { clampVisualSliceToLocked, getClampedDragPreviewRect, type VisualLockedBound } from './timelineCollision';
 
 const MINUTES_PER_DAY = 24 * 60;
 const GRID_HEIGHT_PX = 24 * PX_PER_HOUR;
@@ -112,6 +113,11 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
     [hardLockedBlocks]
   );
 
+  const lockedBounds = useMemo<VisualLockedBound[]>(
+    () => lockedSlices.map((s) => ({ startMin: s.startMin, endMin: s.endMin, topPx: s.topPx, bottomPx: s.topPx + s.heightPx })),
+    [lockedSlices]
+  );
+
   const activeSlices = useMemo(
     () =>
       model.placedBlocks
@@ -122,9 +128,10 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
           const durationMin = ov ? ov.durationMin : item.durationMin;
           const endMin = startMin + durationMin;
           const eff = ov ? { ...item, startMin, endMin, durationMin } : item;
-          return clampToDaySlices<DayTimelinePlacedItem>(startMin, endMin, item.id, eff, MIN_BLOCK_PX, PX_PER_MIN);
+          return clampToDaySlices<DayTimelinePlacedItem>(startMin, endMin, item.id, eff, MIN_BLOCK_PX, PX_PER_MIN)
+            .map((sl) => ({ ...sl, ...clampVisualSliceToLocked(sl.startMin, sl.endMin, sl.topPx, sl.heightPx, lockedBounds, GRID_HEIGHT_PX) }));
         }),
-    [model.placedBlocks, optimisticOverrides]
+    [model.placedBlocks, optimisticOverrides, lockedBounds]
   );
 
   const gapSlices = useMemo(
@@ -197,31 +204,31 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
             />
           ))}
 
-          {dragState?.hasMoved && (
-            <div
-              style={{
-                top: `${dragState.startMin * PX_PER_MIN}px`,
-                height: `${Math.max(MIN_BLOCK_PX, dragState.durationMin * PX_PER_MIN)}px`,
-              }}
-              className="pointer-events-none absolute inset-x-1 z-50 rounded-xl border-2 border-[#7FFFD4] bg-[#7FFFD4]/15 shadow-[0_0_24px_rgba(127,255,212,0.35)]"
-            >
+          {dragState?.hasMoved && (() => {
+            const r = getClampedDragPreviewRect(dragState.startMin, dragState.durationMin, MIN_BLOCK_PX, PX_PER_MIN, lockedBounds, GRID_HEIGHT_PX);
+            return (
               <div
-                className={`absolute right-2 ${
-                  dragState.startMin < 45 ? 'top-full mt-1.5' : '-top-8'
-                } inline-flex items-center gap-1.5 rounded-full border border-[#7FFFD4]/60 bg-[#040B09]/95 px-2.5 py-1 font-mono-tabular text-[11px] font-bold text-[#7FFFD4] shadow-lg whitespace-nowrap`}
+                style={{ top: `${r.topPx}px`, height: `${r.heightPx}px`, maxHeight: `${r.heightPx}px` }}
+                className="pointer-events-none absolute inset-x-1 z-50 rounded-xl border-2 border-[#7FFFD4] bg-[#7FFFD4]/15 shadow-[0_0_24px_rgba(127,255,212,0.35)]"
               >
-                <span>
-                  {formatMinutes12h(dragState.startMin, language)} –{' '}
-                  {formatMinutes12h(dragState.startMin + dragState.durationMin, language)}
-                </span>
-                <span className="text-zinc-400">·</span>
-                <span className="text-white">{formatDurationAr(dragState.durationMin)}</span>
-                {dragState.skippedLocked && (
-                  <span className="text-[10px] text-amber-300">⚡ تخطي مقفل</span>
-                )}
+                <div
+                  className={`absolute right-2 ${
+                    dragState.startMin < 45 ? 'top-full mt-1.5' : '-top-8'
+                  } inline-flex items-center gap-1.5 rounded-full border border-[#7FFFD4]/60 bg-[#040B09]/95 px-2.5 py-1 font-mono-tabular text-[11px] font-bold text-[#7FFFD4] shadow-lg whitespace-nowrap`}
+                >
+                  <span>
+                    {formatMinutes12h(dragState.startMin, language)} –{' '}
+                    {formatMinutes12h(dragState.startMin + dragState.durationMin, language)}
+                  </span>
+                  <span className="text-zinc-400">·</span>
+                  <span className="text-white">{formatDurationAr(dragState.durationMin)}</span>
+                  {dragState.skippedLocked && (
+                    <span className="text-[10px] text-amber-300">⚡ تخطي مقفل</span>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           <div
             style={{ top: `${nowTopPx}px` }}

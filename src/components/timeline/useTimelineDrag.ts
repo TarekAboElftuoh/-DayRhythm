@@ -1,11 +1,16 @@
 import { useRef, useState } from 'react';
 import type { DayTimelineLockedBlock, DayTimelinePlacedItem } from '../../engines/lifeRhythmEngine';
+import {
+  MIN_DURATION_MIN,
+  MINUTES_PER_DAY,
+  normalizeLockedIntervals,
+  resolveMoveClamped,
+  resolveResizeClamped,
+  type LockedInterval,
+} from './timelineCollision';
 
 export const PX_PER_HOUR = 64;
 export const PX_PER_MIN = PX_PER_HOUR / 60;
-const MIN_DURATION_MIN = 5;
-const MAX_DURATION_MIN = 480;
-const MINUTES_PER_DAY = 1440;
 
 export interface ActiveTimelineDrag {
   mode: 'move' | 'resize';
@@ -14,75 +19,6 @@ export interface ActiveTimelineDrag {
   durationMin: number;
   hasMoved: boolean;
   skippedLocked: boolean;
-}
-
-interface LockedInterval {
-  start: number;
-  end: number;
-}
-
-function snap5(min: number): number {
-  return Math.round(min / 5) * 5;
-}
-
-function normalizeLockedIntervals(blocks: DayTimelineLockedBlock[]): LockedInterval[] {
-  const out: LockedInterval[] = [];
-  for (const b of blocks) {
-    const s = ((b.startMin % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
-    const dur = Math.max(1, b.endMin - b.startMin);
-    const e = s + dur;
-    if (e <= MINUTES_PER_DAY) {
-      out.push({ start: s, end: e });
-    } else {
-      out.push({ start: s, end: MINUTES_PER_DAY });
-      out.push({ start: 0, end: Math.min(MINUTES_PER_DAY, e - MINUTES_PER_DAY) });
-    }
-  }
-  return out.sort((a, b) => a.start - b.start);
-}
-
-function resolveMoveSkippingLocked(
-  rawStart: number,
-  durationMin: number,
-  deltaMin: number,
-  locked: LockedInterval[]
-): { startMin: number; skippedLocked: boolean } {
-  const maxStart = Math.max(0, MINUTES_PER_DAY - durationMin);
-  let cand = Math.max(0, Math.min(maxStart, snap5(rawStart)));
-  let skippedLocked = false;
-
-  for (let i = 0; i < 12; i++) {
-    const hit = locked.find((l) => cand < l.end && cand + durationMin > l.start);
-    if (!hit) break;
-    skippedLocked = true;
-    const after = Math.ceil(hit.end / 5) * 5;
-    const before = Math.floor((hit.start - durationMin) / 5) * 5;
-    if (deltaMin >= 0) {
-      cand = after <= maxStart ? after : Math.max(0, before);
-    } else {
-      cand = before >= 0 ? before : Math.min(maxStart, after);
-    }
-  }
-  return { startMin: cand, skippedLocked };
-}
-
-function resolveResizeSkippingLocked(
-  startMin: number,
-  rawDuration: number,
-  locked: LockedInterval[]
-): { durationMin: number; skippedLocked: boolean } {
-  const maxByDay = Math.max(MIN_DURATION_MIN, MINUTES_PER_DAY - startMin);
-  let dur = Math.max(MIN_DURATION_MIN, Math.min(MAX_DURATION_MIN, maxByDay, snap5(rawDuration)));
-  let skippedLocked = false;
-
-  for (const l of locked) {
-    if (l.start > startMin && startMin + dur > l.start) {
-      const clamped = Math.floor((l.start - startMin) / 5) * 5;
-      dur = Math.max(MIN_DURATION_MIN, Math.min(dur, clamped));
-      skippedLocked = true;
-    }
-  }
-  return { durationMin: dur, skippedLocked };
 }
 
 export function useTimelineDrag(params: {
@@ -152,10 +88,10 @@ export function useTimelineDrag(params: {
 
     const deltaMin = dy / PX_PER_MIN;
     if (s.mode === 'move') {
-      const res = resolveMoveSkippingLocked(
+      const res = resolveMoveClamped(
         s.initialStartMin + deltaMin,
         s.initialDurationMin,
-        deltaMin,
+        s.initialStartMin,
         s.locked
       );
       s.lastStartMin = res.startMin;
@@ -169,9 +105,10 @@ export function useTimelineDrag(params: {
         skippedLocked: res.skippedLocked,
       });
     } else {
-      const res = resolveResizeSkippingLocked(
+      const res = resolveResizeClamped(
         s.initialStartMin,
         s.initialDurationMin + deltaMin,
+        s.initialDurationMin,
         s.locked
       );
       s.lastStartMin = s.initialStartMin;
