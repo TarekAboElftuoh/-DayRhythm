@@ -47,6 +47,7 @@ export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   oneTimeSilenceDateKey: '',
   lowEnergyDateKey: '',
   defaultSnoozeMinutes: 5,
+  enableWakeAlarm: true,
   soundRepeats: { ...DEFAULT_SOUND_REPEATS },
   careerTrack: '',
   workEnabled: false,

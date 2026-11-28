@@ -109,8 +109,10 @@ export function buildSleepAlarmEntries(params: {
   nowMs: number;
   snoozeMinutes: number;
   msForMinuteToday: (targetMin: number) => number;
+  /** When false the real wake-up alarm is not scheduled at all (nothing left to cancel). */
+  enableWakeAlarm?: boolean;
 }): NativeSleepAlarmEntry[] {
-  const { plan, todayIso, nowMs, snoozeMinutes, msForMinuteToday } = params;
+  const { plan, todayIso, nowMs, snoozeMinutes, msForMinuteToday, enableWakeAlarm = true } = params;
   const alarms: NativeSleepAlarmEntry[] = [];
 
   const pushIfFuture = (
@@ -126,15 +128,17 @@ export function buildSleepAlarmEntries(params: {
     }
   };
 
-  pushIfFuture(
-    `sleep_wake_${todayIso}`,
-    'sleep_wake',
-    plan.suhoorStartMin !== null ? '🌙 استيقاظ السحور' : '⏰ استيقاظ الفجر',
-    plan.suhoorStartMin !== null
-      ? `وقت السحور (${formatMinutes12h(plan.wakeMin, 'ar')})`
-      : `موعد الاستيقاظ قبل الفجر (${formatMinutes12h(plan.wakeMin, 'ar')})`,
-    plan.wakeMin
-  );
+  if (enableWakeAlarm) {
+    pushIfFuture(
+      `sleep_wake_${todayIso}`,
+      'sleep_wake',
+      plan.suhoorStartMin !== null ? '🌙 استيقاظ السحور' : '⏰ استيقاظ الفجر',
+      plan.suhoorStartMin !== null
+        ? `وقت السحور (${formatMinutes12h(plan.wakeMin, 'ar')})`
+        : `موعد الاستيقاظ قبل الفجر (${formatMinutes12h(plan.wakeMin, 'ar')})`,
+      plan.wakeMin
+    );
+  }
 
   pushIfFuture(
     `sleep_bed_${todayIso}`,

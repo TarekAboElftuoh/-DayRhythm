@@ -51,6 +51,7 @@ export function useAlarmSchedulerEffect(p: UseAlarmSchedulerEffectParams): void 
     p.quietUntilTs, p.adhanOverrideSilent, p.sanctuaryOverrideUntilMs, p.lowEnergyActive,
     p.firebaseUser?.isAnonymous, p.firebaseUser?.uid, p.googleTasks, p.hydrationToday,
     p.includePrayerAnchors, p.lifeProfile.adhanLeadMinutes, p.lifeProfile.defaultSnoozeMinutes,
+    p.lifeProfile.enableWakeAlarm,
     p.liveBlocks, p.medications, p.needsAuth, p.prayers, p.sunlightSessions, p.sunlightSettings.enabled,
     p.todayCairoIso, p.travelState, p.waterRemindersEnabled, p.settingsAlarmEpoch,
   ]);

@@ -18,13 +18,14 @@ import type { UserSettingsPayload } from '../services/cloudStateService';
 import { stopContinuousAlert } from '../engines/audioEngine';
 import { triggerHapticWaveform } from '../engines/hapticsEngine';
 import { getDateIsoInTimeZone } from '../engines/prayerEngine';
-import { cleanCalendarText } from '../services/apiClient';
-import {
-  CREATIVE_STORAGE_KEY,
-  normalizeSkipPatternKey,
-  SKIP_PATTERN_STORAGE_KEY,
-} from '../utils/appHelpers';
+import { CREATIVE_STORAGE_KEY } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
+import {
+  cancelBlockAlarmOccurrences,
+  deleteGoogleCalendarEventIfSynced,
+  dismissBlockAlarmOccurrences,
+} from './blockRemoval';
+import { recordSkippedBlockPatterns } from './reflowSkipPatterns';
 
 export interface UseScheduleAndTravelHandlersParams {
   activeTimeZone: string;
@@ -215,7 +216,12 @@ export function useScheduleAndTravelHandlers(p: UseScheduleAndTravelHandlersPara
       p.setActiveAudioAlert(null);
       p.setPersistentAlert(null);
       p.setAlarmRinging(false);
-      p.emitCrossDeviceSync('alarm_dismiss', 'block_completed', undefined, { blockId: id, alertId: id });
+      // Done keeps the Google Calendar event; only its ringing occurrence is dismissed.
+      const completedBlock = p.liveBlocks.find((b) => b.id === id);
+      const occurrenceKeys = completedBlock
+        ? dismissBlockAlarmOccurrences(completedBlock, getDateIsoInTimeZone(p.activeTimeZone))
+        : [];
+      p.emitCrossDeviceSync('alarm_dismiss', 'block_completed', undefined, { blockId: id, alertId: id, occurrenceKeys });
       p.setCompletedOverrides((prev) => {
         const next = { ...prev, [id]: !prev[id] };
         void p.pushToTasksVaultImmediately({ completedOverrides: next });
@@ -230,6 +236,10 @@ export function useScheduleAndTravelHandlers(p: UseScheduleAndTravelHandlersPara
     const target = p.liveBlocks.find((b) => b.id === id) ?? null;
     p.setOfflineBlocks((prev) => prev.map((b) => (b.id === id ? { ...b, deleted: true } : b)));
     if (target) {
+      // Delete cancels the JS/gate alarm, the Android pendingIntent (scheduler diff) and the Google event.
+      const occurrenceKeys = cancelBlockAlarmOccurrences(target, getDateIsoInTimeZone(p.activeTimeZone));
+      void deleteGoogleCalendarEventIfSynced(target);
+      p.emitCrossDeviceSync('alarm_dismiss', 'block_deleted', undefined, { blockId: id, alertId: id, occurrenceKeys });
       p.setLastDeletedBlock(target);
       p.setShakeUndoSecondsLeft(8);
       p.setTombstones((prev) => [
@@ -252,28 +262,7 @@ export function useScheduleAndTravelHandlers(p: UseScheduleAndTravelHandlersPara
     if (!p.undoSnapshot) p.setUndoSnapshot(p.liveBlocks);
     p.setReflowedBlocksOverride(reflowed);
     p.appendChangelog('Web/PC', 'تطبيق زحزحة وتدارك اليوم الخالية من التصادم', 'Applied Collision-Free Reflow');
-    try {
-      const skipped = reflowed.filter((b) => b.reflowStatus === 'skipped');
-      if (skipped.length > 0) {
-        const counts: Record<string, number> = JSON.parse(localStorage.getItem(SKIP_PATTERN_STORAGE_KEY) || '{}');
-        const flaggedTitles: string[] = [];
-        skipped.forEach((b) => {
-          const titleAr = cleanCalendarText(b.categoryAr) || b.emojiPair;
-          const key = normalizeSkipPatternKey(titleAr);
-          if (!key) return;
-          counts[key] = (counts[key] ?? 0) + 1;
-          if (counts[key] === 3 && !p.memories.some((m) => m.ruleText.includes(titleAr))) flaggedTitles.push(titleAr);
-        });
-        localStorage.setItem(SKIP_PATTERN_STORAGE_KEY, JSON.stringify(counts));
-        flaggedTitles.forEach((titleAr) => {
-          p.handleAddMemory({
-            category: 'priority',
-            ruleText: `لاحظ النظام أن المستخدم تخطّى «${titleAr}» ٣ أيام على الأقل عبر "تدارك اليوم" — هذا نمط متكرر، فاقترح بنفسك تعديل ميعاده أو تبسيطه أو حذفه بدل الاستمرار في جدولته كما هو دون تغيير.`,
-            source: 'system_seed',
-          });
-        });
-      }
-    } catch { /* ignore */ }
+    recordSkippedBlockPatterns(reflowed, p.memories, p.handleAddMemory);
   };
 
   const handleUndoReflow = () => {

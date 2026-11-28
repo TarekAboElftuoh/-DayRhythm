@@ -150,6 +150,10 @@ export function sanitizeLifeProfile(
       raw?.defaultSnoozeMinutes === 10 || raw?.defaultSnoozeMinutes === 15
         ? raw.defaultSnoozeMinutes
         : 5,
+    enableWakeAlarm:
+      typeof raw?.enableWakeAlarm === 'boolean'
+        ? raw.enableWakeAlarm
+        : DEFAULT_LIFE_PROFILE.enableWakeAlarm,
     soundRepeats: sanitizeSoundRepeats(raw?.soundRepeats),
     careerTrack: String(raw?.careerTrack ?? DEFAULT_LIFE_PROFILE.careerTrack)
       .trim()

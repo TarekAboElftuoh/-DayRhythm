@@ -11,7 +11,7 @@ import type {
 } from '../types/dayrhythm';
 import type { ComputedSunlightSession } from '../engines/sunlightEngine';
 import { calculateEgyptianPrayerTimes, formatMinutes12h, getNowMinutesInTimeZone, getWeekdayInTimeZone } from '../engines/prayerEngine';
-import { buildMedicationAlarmEntries } from '../engines/lifeRhythmEngine';
+import { buildMedicationAlarmEntries, buildSleepAlarmEntries } from '../engines/lifeRhythmEngine';
 import { cleanCalendarText } from '../services/apiClient';
 import { trueNowMs } from '../engines/trueClock';
 import { extractTaskTimeMinutesForToday } from '../utils/appHelpers';
@@ -21,7 +21,7 @@ export type PrayerTimeEntry = ReturnType<typeof calculateEgyptianPrayerTimes>[nu
 
 export interface ExactAlarmEntry {
   id: string;
-  kind: 'prayer' | 'water' | 'medication' | 'event' | 'task';
+  kind: 'prayer' | 'water' | 'medication' | 'event' | 'task' | 'sleep_suhoor' | 'general';
   title: string;
   body: string;
   triggerAtMs: number;
@@ -169,6 +169,25 @@ export function buildExactAlarms(input: BuildExactAlarmsInput): ExactAlarmEntry[
       msForMinuteToday,
       isSilencedAt,
     })
+  );
+
+  // Real wake-up alarm (wakeTime, Suhoor-labeled on fasting days) — only when the profile allows it.
+  alarms.push(
+    ...buildSleepAlarmEntries({
+      plan: input.dailyRhythmPlan,
+      todayIso: input.todayCairoIso,
+      nowMs,
+      snoozeMinutes,
+      msForMinuteToday,
+      enableWakeAlarm: input.lifeProfile.enableWakeAlarm !== false,
+    }).map((entry): ExactAlarmEntry => ({
+      id: entry.id,
+      kind: entry.kind === 'sleep_wake' ? 'sleep_suhoor' : 'general',
+      title: entry.title,
+      body: entry.body,
+      triggerAtMs: entry.triggerAtMs,
+      snoozeMinutes: entry.snoozeMinutes,
+    }))
   );
 
   const deferCalendarAlarm = input.travelState.active && (input.travelState.deferredCategories?.includes('calendar') ?? false);

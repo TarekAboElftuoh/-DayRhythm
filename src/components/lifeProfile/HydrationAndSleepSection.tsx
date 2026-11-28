@@ -253,6 +253,24 @@ export const HydrationAndSleepSection: React.FC<{
             <span className="rounded-full border border-[#7FFFD4]/30 bg-[#7FFFD4]/10 px-2 py-0.5 text-[11px] font-semibold text-[#7FFFD4]">{modeLabel}</span>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            const next: LifeProfile = { ...draft, enableWakeAlarm: !(draft.enableWakeAlarm ?? true) };
+            updateDraft(() => next);
+            onSaveProfile(next);
+          }}
+          className={`w-full flex items-center justify-between rounded-xl border px-3 py-2 text-xs cursor-pointer transition-colors ${
+            (draft.enableWakeAlarm ?? true)
+              ? 'border-[#7FFFD4]/45 bg-[#7FFFD4]/10 text-[#7FFFD4]'
+              : 'border-white/10 bg-black/30 text-zinc-400'
+          }`}
+        >
+          <span className="font-semibold">⏰ منبّه الاستيقاظ{previewPlan.suhoorStartMin !== null ? ' والسحور' : ''}</span>
+          <span className="font-mono-tabular">
+            {(draft.enableWakeAlarm ?? true) ? `مفعّل · ${formatMinutes12h(previewPlan.wakeMin)}` : 'متوقف'}
+          </span>
+        </button>
         <div className="space-y-1 text-[11px] text-zinc-400 leading-relaxed">
           <p>الاستيقاظ تلقائياً قبل الفجر بـ 15 د (و45 د في أيام الصيام للسحور).</p>
           <p>النوم بعد العشاء بـ 30 د، ومع قصر الليل تُضاف قيلولة تعويضية بعد الظهر تلقائياً.</p>
