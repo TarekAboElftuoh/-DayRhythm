@@ -7,6 +7,7 @@ import type { EmitCrossDeviceSync } from '../types/appTypes';
 import { auth } from '../firebase';
 import { dismissActiveAlarmInCloud, setCloudAlertSession } from '../services/cloudStateService';
 import { stopContinuousAlert, stopSmartChargeCompleteAlert } from '../engines/audioEngine';
+import { collectDismissedOccurrenceKeys } from './occurrenceDismiss';
 import { formatNow12hInTimeZone } from '../engines/prayerEngine';
 import { ACTIVE_UID_STORAGE_KEY } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
@@ -45,10 +46,11 @@ export function useAndroidQuickActionsEffect(p: UseAndroidQuickActionsEffectPara
         p.setActiveAudioAlert(null);
         p.setPersistentAlert(null);
         p.setAlarmRinging(false);
+        const occurrenceKeys = collectDismissedOccurrenceKeys();
         const effectiveUid = p.firebaseUser?.uid || p.authUser?.uid || auth.currentUser?.uid || localStorage.getItem(ACTIVE_UID_STORAGE_KEY) || '';
         if (effectiveUid) {
           void setCloudAlertSession(effectiveUid, { status: 'dismissed', alertId: 'all', dismissedBy: p.clientIdRef.current, dismissedAtMs: Date.now() });
-          void dismissActiveAlarmInCloud(effectiveUid, 'all', p.clientIdRef.current);
+          void dismissActiveAlarmInCloud(effectiveUid, 'all', p.clientIdRef.current, occurrenceKeys);
         }
         p.emitCrossDeviceSync('alarm_dismiss', 'native_action');
         p.showToast(`✓ تمت مزامنة ${items.length} إجراء وإيقاف التنبيه على أجهزتك`);

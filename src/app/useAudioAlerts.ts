@@ -10,21 +10,22 @@ import type {
   TaskSoundCategory,
 } from '../types/dayrhythm';
 import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
-import {
-  DEFAULT_SOUND_REPEATS,
-  playTaskSignature,
-  stopContinuousAlert,
-  TASK_SOUND_META,
-} from '../engines/audioEngine';
+import { DEFAULT_SOUND_REPEATS, playTaskSignature, TASK_SOUND_META } from '../engines/audioEngine';
 import { triggerHapticWaveform } from '../engines/hapticsEngine';
 import { formatNow12hInTimeZone } from '../engines/prayerEngine';
-import { auth } from '../firebase';
 import { cleanCalendarText } from '../services/apiClient';
 import { broadcastAlertTrigger, registerActiveAlarm } from '../services/cloudStateService';
+import {
+  forgetRingingOccurrence,
+  isOccurrenceDismissed,
+  markOccurrenceFired,
+  rememberRingingOccurrence,
+} from '../engines/alarmOccurrence';
+import { resolveActiveUid } from './occurrenceDismiss';
 import { handleSanctuaryAlert } from './handleSanctuaryAlert';
-import { ACTIVE_UID_STORAGE_KEY, extractEmojiPair } from '../utils/appHelpers';
-import { stopNativeAlerts } from '../utils/deviceHelpers';
+import { extractEmojiPair } from '../utils/appHelpers';
 
+import { useAlertAcknowledgement } from './useAlertAcknowledgement';
 import { useAlertSnoozeHandler } from './useAlertSnoozeHandler';
 
 export interface UseAudioAlertsParams {
@@ -73,44 +74,32 @@ export function useAudioAlerts({
   emitCrossDeviceSync,
   showToast,
 }: UseAudioAlertsParams) {
-  const handleAcknowledgeAudioAlert = useCallback(() => {
-    stopContinuousAlert();
-    stopNativeAlerts();
-    const hadAlert = Boolean(activeAudioAlert || persistentAlert || alarmRinging);
-    const title = activeAudioAlert?.title || persistentAlert?.title || 'التنبيه';
-    const alertId = activeAudioAlert?.id || persistentAlert?.id || 'all';
-    const dismissedBlockId = persistentAlert?.blockId;
-
-    if (dismissedBlockId) {
-      acknowledgedBlockIdsRef.current.add(dismissedBlockId);
-      setCompletedOverrides((prev) => ({ ...prev, [dismissedBlockId]: true }));
-    }
-
-    setActiveAudioAlert(null);
-    setPersistentAlert(null);
-    setAlarmRinging(false);
-    triggerHapticWaveform('shake_undo');
-    emitCrossDeviceSync('alarm_dismiss', 'dismiss', undefined, { blockId: dismissedBlockId, alertId });
-
-    if (hadAlert) showToast(`✓ تم إيقاف وتأكيد تنبيه «${title}» على أجهزتك`);
-  }, [
-    acknowledgedBlockIdsRef,
+  const handleAcknowledgeAudioAlert = useAlertAcknowledgement({
     activeAudioAlert,
-    alarmRinging,
-    emitCrossDeviceSync,
     persistentAlert,
+    alarmRinging,
+    firebaseUser,
+    authUser,
+    clientIdRef,
+    acknowledgedBlockIdsRef,
     setActiveAudioAlert,
+    setPersistentAlert,
     setAlarmRinging,
     setCompletedOverrides,
-    setPersistentAlert,
+    emitCrossDeviceSync,
     showToast,
-  ]);
+  });
 
   useEffect(() => {
     if (!activeAudioAlert || activeAudioAlert.isContinuous) return;
     const id = window.setTimeout(() => setActiveAudioAlert(null), 12_000);
     return () => window.clearTimeout(id);
   }, [activeAudioAlert, setActiveAudioAlert]);
+
+  useEffect(() => {
+    if (!activeAudioAlert) return;
+    return () => forgetRingingOccurrence(activeAudioAlert.id);
+  }, [activeAudioAlert]);
 
   useEffect(() => {
     if (!activeAudioAlert || typeof window === 'undefined') return;
@@ -143,8 +132,11 @@ export function useAudioAlerts({
         description?: string;
         isRemoteSignal?: boolean;
         blockId?: string;
+        occurrenceKey?: string;
       }
     ) => {
+      // A dismissed occurrence never rings again, not even from a late remote trigger.
+      if (options?.occurrenceKey && isOccurrenceDismissed(options.occurrenceKey)) return;
       const meta = TASK_SOUND_META[category];
       const privacyBadge = (options?.privacyEmoji || extractEmojiPair(title, meta.icon)).trim();
       const visibleTitle = (options?.displayTitle || title || meta.labelAr).trim();
@@ -185,6 +177,10 @@ export function useAudioAlerts({
 
       const isContinuous = repeatCount === 'continuous';
       const alertId = `alert_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      if (options?.occurrenceKey) {
+        rememberRingingOccurrence(alertId, options.occurrenceKey);
+        markOccurrenceFired(options.occurrenceKey);
+      }
       const playRes = !isAndroidNative
         ? playTaskSignature(category, { bypassSanctuary: true, repeatCount, alertId })
         : { playedAudio: false, vibrated: false, isContinuous };
@@ -237,9 +233,9 @@ export function useAudioAlerts({
         emitCrossDeviceSync('alarm_trigger', options?.bypassSanctuary ? 'test_ring' : 'trigger', undefined, {
           title: visibleTitle, body: visibleDescription, kind: category, privacyEmoji: privacyBadge,
           sourceLabel: visibleSource, snoozeMinutes: defaultSnooze, alertId, blockId: options?.blockId,
-          bypassSanctuary: Boolean(options?.bypassSanctuary),
+          bypassSanctuary: Boolean(options?.bypassSanctuary), occurrenceKey: options?.occurrenceKey,
         });
-        const effectiveUid = firebaseUser?.uid || authUser?.uid || auth.currentUser?.uid || localStorage.getItem(ACTIVE_UID_STORAGE_KEY) || '';
+        const effectiveUid = resolveActiveUid(firebaseUser?.uid, authUser?.uid);
         if (effectiveUid) {
           void broadcastAlertTrigger(effectiveUid, clientIdRef.current, {
             alertId, title: visibleTitle, body: visibleDescription, kind: category,

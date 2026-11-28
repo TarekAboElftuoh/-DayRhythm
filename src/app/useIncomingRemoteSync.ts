@@ -3,6 +3,7 @@ import type React from 'react';
 import type { DeletedWorkspaceSnapshot, TaskSoundCategory } from '../types/dayrhythm';
 import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
 import { stopContinuousAlert, stopSmartChargeCompleteAlert } from '../engines/audioEngine';
+import { applyRemoteDismissedOccurrences } from '../engines/alarmOccurrence';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
 
 export interface UseIncomingRemoteSyncParams {
@@ -26,6 +27,7 @@ export interface UseIncomingRemoteSyncParams {
       blockId?: string;
       isRemoteSignal?: boolean;
       bypassSanctuary?: boolean;
+      occurrenceKey?: string;
     }
   ) => void;
   setLastDeletedWorkspaceItem: React.Dispatch<React.SetStateAction<DeletedWorkspaceSnapshot | null>>;
@@ -62,7 +64,8 @@ export function useIncomingRemoteSync(p: UseIncomingRemoteSyncParams) {
         p.setActiveAudioAlert(null);
         p.setPersistentAlert(null);
         p.setAlarmRinging(false);
-        const extraDismiss = payload.extra as { blockId?: string } | undefined;
+        const extraDismiss = payload.extra as { blockId?: string; occurrenceKeys?: unknown } | undefined;
+        applyRemoteDismissedOccurrences(extraDismiss?.occurrenceKeys);
         if (extraDismiss?.blockId) {
           p.acknowledgedBlockIdsRef.current.add(extraDismiss.blockId);
           p.setCompletedOverrides((prev) => ({ ...prev, [extraDismiss.blockId!]: true }));
@@ -75,7 +78,7 @@ export function useIncomingRemoteSync(p: UseIncomingRemoteSyncParams) {
         p.setAlarmRinging(true);
         const extra = payload.extra as {
           title?: string; body?: string; kind?: TaskSoundCategory; privacyEmoji?: string;
-          sourceLabel?: string; blockId?: string; bypassSanctuary?: boolean;
+          sourceLabel?: string; blockId?: string; bypassSanctuary?: boolean; occurrenceKey?: string;
         } | undefined;
         const emoji = extra?.privacyEmoji || '🔔';
         p.triggerTaskAlert(emoji, (extra?.kind || 'general') as TaskSoundCategory, {
@@ -86,6 +89,7 @@ export function useIncomingRemoteSync(p: UseIncomingRemoteSyncParams) {
           blockId: extra?.blockId,
           isRemoteSignal: true,
           bypassSanctuary: Boolean(extra?.bypassSanctuary),
+          occurrenceKey: extra?.occurrenceKey,
         });
         return;
       }

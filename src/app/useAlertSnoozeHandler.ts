@@ -3,6 +3,7 @@ import type React from 'react';
 import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
 import type { LifeProfile, TaskSoundCategory } from '../types/dayrhythm';
 import { stopContinuousAlert } from '../engines/audioEngine';
+import { forgetRingingOccurrence } from '../engines/alarmOccurrence';
 import { triggerHapticWaveform } from '../engines/hapticsEngine';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
 
@@ -56,6 +57,8 @@ export function useAlertSnoozeHandler(p: {
       setActiveAudioAlert(null);
       setPersistentAlert(null);
       setAlarmRinging(false);
+      // Snooze is a postpone, not a dismissal: the occurrence may legitimately ring again.
+      forgetRingingOccurrence(alertItem.id);
       if (!options?.localOnly) emitCrossDeviceSync('alarm_dismiss', 'snooze', undefined, { alertId: alertItem.id });
       const timerId = window.setTimeout(() => {
         snoozeTimersRef.current = snoozeTimersRef.current.filter((id) => id !== timerId);

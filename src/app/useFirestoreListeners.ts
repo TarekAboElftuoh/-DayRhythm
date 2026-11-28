@@ -17,6 +17,7 @@ import {
   type UserSettingsPayload,
 } from '../services/cloudStateService';
 import { stopContinuousAlert, stopSmartChargeCompleteAlert } from '../engines/audioEngine';
+import { applyRemoteDismissedOccurrences } from '../engines/alarmOccurrence';
 import { ACTIVE_UID_STORAGE_KEY } from '../utils/appHelpers';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
 import { useInitialCloudSettingsLoader } from './useInitialCloudSettingsLoader';
@@ -86,6 +87,8 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
               p.setAlarmRinging(false);
 
               const extraSig = sig.extra as Record<string, unknown> | undefined;
+              applyRemoteDismissedOccurrences(extraSig);
+              applyRemoteDismissedOccurrences(extraSig?.extra);
               if (sig.action === 'water_confirmed' || extraSig?.kind === 'water') {
                 const waterOpId = (typeof extraSig?.waterOpId === 'string' && extraSig.waterOpId) || sigOpId;
                 const dateKey = typeof extraSig?.hydrationDateKey === 'string' ? extraSig.hydrationDateKey : undefined;
@@ -158,7 +161,14 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
           p.setActiveAudioAlert(null);
           p.setPersistentAlert(null);
           p.setAlarmRinging(false);
-          const extraDismiss = signal.extra as { blockId?: string; action?: string; extra?: { blockId?: string } } | undefined;
+          const extraDismiss = signal.extra as {
+            blockId?: string;
+            action?: string;
+            occurrenceKeys?: unknown;
+            extra?: { blockId?: string; occurrenceKeys?: unknown };
+          } | undefined;
+          applyRemoteDismissedOccurrences(extraDismiss?.occurrenceKeys);
+          applyRemoteDismissedOccurrences(extraDismiss?.extra?.occurrenceKeys);
           const blockId = signal.blockId || extraDismiss?.blockId || extraDismiss?.extra?.blockId;
           if (blockId) {
             p.acknowledgedBlockIdsRef.current.add(blockId);
@@ -214,6 +224,7 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
               body: signal.body || (extra.body as string) || '',
               kind: (signal.kind || (extra.kind as string) || 'general') as TaskSoundCategory,
               blockId: signal.blockId || (extra.blockId as string | undefined),
+              occurrenceKey: typeof extra.occurrenceKey === 'string' ? extra.occurrenceKey : undefined,
               ...extra,
             },
             clientId: signal.clientId,

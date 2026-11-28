@@ -6,6 +6,7 @@ import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
 import { auth, sanitizePhoneBattery, type SyncedRhythmPayload } from '../firebase';
 import { cleanupExpiredActiveAlarms, subscribeToActiveAlarms } from '../services/cloudStateService';
 import { stopContinuousAlert, stopSmartChargeCompleteAlert } from '../engines/audioEngine';
+import { applyRemoteDismissedOccurrences } from '../engines/alarmOccurrence';
 import { getSavedCloudApiUrl } from '../services/apiClient';
 import {
   connectSpircCluster,
@@ -79,6 +80,7 @@ export function useSpircAndAlarmsListener(p: UseSpircAndAlarmsListenerParams): v
           p.setActiveAudioAlert(null);
           p.setPersistentAlert(null);
           p.setAlarmRinging(false);
+          applyRemoteDismissedOccurrences(payload.occurrenceKeys);
           const remoteAction = typeof payload.action === 'string' ? payload.action : '';
           if (remoteAction === 'water_confirmed') {
             const waterOpId = (typeof payload.waterOpId === 'string' && payload.waterOpId) || spOpId;

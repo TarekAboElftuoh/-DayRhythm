@@ -86,10 +86,43 @@ export async function registerActiveAlarm(
  * Requirement 3: Update alarm status to "dismissed" in the active_alarms collection.
  * When called on either device, the other device's onSnapshot triggers and stops sound/notification immediately.
  */
+function occurrenceDocId(key: string): string {
+  return key.replace(/\//g, '-').slice(0, 900);
+}
+
+/**
+ * Persists deterministic occurrenceKeys so every client (PC, mobile, later page loads) treats the
+ * alarm as handled forever. Doc id == the key, so re-writes are idempotent.
+ */
+export async function recordDismissedOccurrencesInCloud(
+  uid: string,
+  occurrenceKeys: string[],
+  clientId: string
+): Promise<boolean> {
+  if (!uid || occurrenceKeys.length === 0) return false;
+  try {
+    const nowMs = Date.now();
+    await Promise.all(
+      occurrenceKeys.slice(0, 12).map((key) =>
+        setDoc(
+          doc(db, 'users', uid, 'dismissed_occurrences', occurrenceDocId(key)),
+          { occurrenceKey: key, clientId, dismissedAtMs: nowMs, updatedAt: serverTimestamp() },
+          { merge: true }
+        ).catch((err) => console.warn('[CloudSync] Failed writing dismissed occurrence:', key, err))
+      )
+    );
+    return true;
+  } catch (error) {
+    console.error('[CloudSync] Failed recording dismissed occurrences:', error);
+    return false;
+  }
+}
+
 export async function dismissActiveAlarmInCloud(
   uid: string,
   alarmId: string,
-  clientId: string
+  clientId: string,
+  occurrenceKeys: string[] = []
 ): Promise<boolean> {
   if (!uid) return false;
   try {
@@ -103,10 +136,16 @@ export async function dismissActiveAlarmInCloud(
           status: 'dismissed',
           dismissedByClientId: clientId,
           dismissedAtMs: nowMs,
+          occurrenceKey: occurrenceKeys[0],
+          occurrenceKeys,
           updatedAt: serverTimestamp(),
         },
         { merge: true }
       );
+    }
+
+    if (occurrenceKeys.length > 0) {
+      await recordDismissedOccurrencesInCloud(uid, occurrenceKeys, clientId);
     }
 
     // Also mark any ringing alarms in the collection as dismissed to guarantee all ringing sounds stop
@@ -140,6 +179,7 @@ export async function dismissActiveAlarmInCloud(
           clientId,
           timestampMs: nowMs,
           opId: `dismiss_${nowMs}_${clientId}`,
+          extra: { occurrenceKeys },
         },
         updatedAt: serverTimestamp(),
       },

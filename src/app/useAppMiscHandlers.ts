@@ -9,6 +9,11 @@ import {
 import type { AppSyncSettings } from '../firebase';
 import { hasPermanentLink, startPermanentLink } from '../services/googleOfflineAccess';
 import { playSoftChime, stopContinuousAlert, stopSmartChargeCompleteAlert } from '../engines/audioEngine';
+import {
+  collectDismissedOccurrenceKeys,
+  pushDismissedOccurrencesToCloud,
+  resolveActiveUid,
+} from './occurrenceDismiss';
 import { triggerHapticWaveform } from '../engines/hapticsEngine';
 import { stopNativeAlerts } from '../utils/deviceHelpers';
 import type { PersistentAlertItem } from '../components/PersistentAlertOverlay';
@@ -26,7 +31,12 @@ export interface UseAppMiscHandlersParams {
   setActiveAudioAlert: Dispatch<SetStateAction<{ id: string; title: string; category: TaskSoundCategory; isContinuous?: boolean } | null>>;
   setPersistentAlert: Dispatch<SetStateAction<PersistentAlertItem | null>>;
   setAlarmRinging: Dispatch<SetStateAction<boolean>>;
-  emitCrossDeviceSync: (type: 'alarm_dismiss', action: string) => void;
+  emitCrossDeviceSync: (
+    type: 'alarm_dismiss',
+    action: string,
+    undoSnapshot?: undefined,
+    extra?: Record<string, unknown>
+  ) => void;
   shortcutHandledRef: MutableRefObject<boolean>;
   setActiveTab: Dispatch<SetStateAction<ActiveTab>>;
   setHydrationHistory: Dispatch<SetStateAction<HydrationDayLog[]>>;
@@ -136,7 +146,14 @@ export function useAppMiscHandlers(p: UseAppMiscHandlersParams) {
     setActiveAudioAlert(null);
     setPersistentAlert(null);
     setAlarmRinging(false);
-    emitCrossDeviceSync('alarm_dismiss', 'dismiss');
+    const occurrenceKeys = collectDismissedOccurrenceKeys();
+    pushDismissedOccurrencesToCloud({
+      uid: resolveActiveUid(authUser?.uid),
+      alertId: 'all',
+      clientId: 'local',
+      occurrenceKeys,
+    });
+    emitCrossDeviceSync('alarm_dismiss', 'dismiss', undefined, { occurrenceKeys });
     showToast('🔕 تم الإيقاف المتزامن على الموبايل والكمبيوتر في نفس اللحظة ✓');
   }, [emitCrossDeviceSync, setActiveAudioAlert, setAlarmRinging, setPersistentAlert, setSmartChargeAudioActive, showToast]);
 
