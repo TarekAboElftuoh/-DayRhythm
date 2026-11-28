@@ -755,6 +755,91 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
           </p>
         </section>
 
+        {/* 2b. Minimalist Sleep Rhythm Summary & Control */}
+        {(() => {
+          const sleepMode = previewPlan.sleepMode ?? previewPlan.seasonalSleep?.mode ?? 'long_night';
+          const modeLabel =
+            sleepMode === 'short_night'
+              ? 'ليل قصير'
+              : sleepMode === 'medium_night'
+                ? 'ليل متوسط + قيلولة'
+                : 'ليل طويل';
+          const napStart = previewPlan.qailulahStartMin ?? null;
+          const napDuration = previewPlan.qailulahDurationMin ?? 0;
+          const targetHours = Math.min(10, Math.max(5, Math.round((draft.sleepTargetMinutes / 60) * 2) / 2));
+          const stepTargetHours = (deltaHours: number) => {
+            const nextHours = Math.min(10, Math.max(5, Math.round((targetHours + deltaHours) * 2) / 2));
+            const nextMinutes = Math.round(nextHours * 60);
+            setRawInputs((prev) => {
+              const copy = { ...prev };
+              delete copy.sleepTargetMinutes;
+              return copy;
+            });
+            const nextProfile: LifeProfile = { ...draft, sleepTargetMinutes: nextMinutes };
+            updateDraft(() => nextProfile);
+            onSaveProfile(nextProfile);
+          };
+
+          return (
+            <section
+              dir="rtl"
+              className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Moon className="w-4 h-4 text-[#7FFFD4]" />
+                  <span>إيقاع النوم التلقائي</span>
+                </h3>
+                <div className="flex items-center gap-1.5" aria-label="ساعات النوم المستهدفة">
+                  <button
+                    type="button"
+                    onClick={() => stepTargetHours(-0.5)}
+                    disabled={targetHours <= 5}
+                    className="w-7 h-7 rounded-lg border border-white/10 bg-black/40 text-zinc-200 hover:border-[#7FFFD4]/60 disabled:opacity-40 cursor-pointer font-mono-tabular text-sm"
+                  >
+                    -
+                  </button>
+                  <span className="min-w-[3.5rem] text-center font-mono-tabular text-xs font-bold text-[#7FFFD4]">
+                    {targetHours} س
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => stepTargetHours(0.5)}
+                    disabled={targetHours >= 10}
+                    className="w-7 h-7 rounded-lg border border-white/10 bg-black/40 text-zinc-200 hover:border-[#7FFFD4]/60 disabled:opacity-40 cursor-pointer font-mono-tabular text-sm"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.05] bg-black/30 px-3 py-2 text-xs">
+                <div className="flex items-center gap-2 font-mono-tabular text-zinc-200">
+                  <span>
+                    {formatMinutes12h(previewPlan.bedtimeMin)} ← {formatMinutes12h(previewPlan.wakeMin)}
+                  </span>
+                  <span className="text-zinc-400">({formatDurationAr(previewPlan.totalSleepMin)})</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {napDuration > 0 && napStart !== null && (
+                    <span className="font-mono-tabular text-[11px] text-amber-300">
+                      قيلولة {formatMinutes12h(napStart)} ({napDuration} د)
+                    </span>
+                  )}
+                  <span className="rounded-full border border-[#7FFFD4]/30 bg-[#7FFFD4]/10 px-2 py-0.5 text-[11px] font-semibold text-[#7FFFD4]">
+                    {modeLabel}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1 text-[11px] text-zinc-400 leading-relaxed">
+                <p>الاستيقاظ تلقائياً قبل الفجر بـ 15 د (و45 د في أيام الصيام للسحور).</p>
+                <p>النوم بعد العشاء بـ 30 د، ومع قصر الليل تُضاف قيلولة تعويضية بعد الظهر تلقائياً.</p>
+              </div>
+            </section>
+          );
+        })()}
+
         {/* 3. Automatic Audio Silence Sanctuaries (Prayer & Sleep) */}
         <section className="rounded-2xl border border-white/[0.06] bg-[var(--bg-surface)] p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
