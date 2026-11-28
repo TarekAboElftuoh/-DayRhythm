@@ -1,12 +1,8 @@
+import { HydrationScheduleSlot } from '../../types/dayrhythm';
 import {
-  CreativeActivityItem, CreativeActivityPlacement, CreativeCadence, DailyRhythmPlan,
-  DynamicHabit, DynamicHabitAnchor, FreeTimeSlot, FreeWindow, GeoLocation,
-  GoogleCalendarEventItem, GoogleTaskItem, HydrationScheduleSlot, LifeProfile,
-  MedicationFastingPolicy, MedicationItem, MemoryCategory, MemoryItem, PrayerTimeItem,
-  ResolvedHabitPlacement, ScheduleBlock, SeasonalSleepGuidance, SeasonalSleepMode,
-  SeasonalSleepPhase, SeasonalSleepPlan, TodayCalendarMeta, TomorrowAlertInfo, WeatherHydrationInfo,
-} from '../../types/dayrhythm';
-
+  distributeCupsAvoidingPrayers,
+  PrayerBlockedWindow,
+} from '../hydration/prayerAwareScheduler';
 import { durationForward, wrap1440 } from './constants';
 import { SEASONAL_SLEEP_CONSTANTS } from './seasonalSleep';
 
@@ -16,8 +12,16 @@ export function buildDailyHydrationSlots(params: {
   fajr: number;
   maghrib: number;
   bedtimeMin: number;
+  prayerBlockedWindows?: PrayerBlockedWindow[];
 }): HydrationScheduleSlot[] {
-  const { isFastingToday, activeTargetCups, fajr, maghrib, bedtimeMin } = params;
+  const {
+    isFastingToday,
+    activeTargetCups,
+    fajr,
+    maghrib,
+    bedtimeMin,
+    prayerBlockedWindows = [],
+  } = params;
   const hydrationSlots: HydrationScheduleSlot[] = [];
 
   if (isFastingToday) {
@@ -28,14 +32,19 @@ export function buildDailyHydrationSlots(params: {
     const suhoorBegin = wrap1440(fajr - suhoorLead);
     const maxSuhoorSpan = Math.max(0, suhoorLead - 5);
     const suhoorSpan = Math.min(maxSuhoorSpan, Math.max(5, suhoorLead - 10));
-    for (let s = 0; s < suhoorCups; s++) {
-      const offset =
+    const suhoorTimes = distributeCupsAvoidingPrayers({
+      spanStartMin:
         suhoorCups === 1
-          ? Math.min(10, Math.floor(suhoorLead / 2))
-          : Math.round((s * suhoorSpan) / (suhoorCups - 1));
+          ? wrap1440(suhoorBegin + Math.min(10, Math.floor(suhoorLead / 2)))
+          : suhoorBegin,
+      spanLengthMin: suhoorCups === 1 ? 0 : suhoorSpan,
+      count: suhoorCups,
+      blockedWindows: prayerBlockedWindows,
+    });
+    for (let s = 0; s < suhoorTimes.length; s++) {
       hydrationSlots.push({
         cupIndex: s + 1,
-        timeMinutes: wrap1440(suhoorBegin + offset),
+        timeMinutes: suhoorTimes[s],
         windowAr: 'السحور',
         noteAr: '',
       });
@@ -52,16 +61,21 @@ export function buildDailyHydrationSlots(params: {
             maxAllowedEveningSpan,
             Math.max(15, Math.min(durationForward(eveningStart, bedtimeMin), maxAllowedEveningSpan))
           );
-    const step = eveningCups > 1 ? Math.floor(eveningSpan / (eveningCups - 1)) : 0;
 
-    for (let i = 0; i < eveningCups; i++) {
-      const tMin = wrap1440(eveningStart + i * step);
+    const eveningTimes = distributeCupsAvoidingPrayers({
+      spanStartMin: eveningStart,
+      spanLengthMin: eveningSpan,
+      count: eveningCups,
+      blockedWindows: prayerBlockedWindows,
+    });
+
+    for (let i = 0; i < eveningTimes.length; i++) {
       let windowAr = '';
       if (i === 0) windowAr = 'عند الإفطار';
       else if (i === eveningCups - 1) windowAr = 'قبل النوم';
       hydrationSlots.push({
         cupIndex: suhoorCups + i + 1,
-        timeMinutes: tMin,
+        timeMinutes: eveningTimes[i],
         windowAr,
         noteAr: '',
       });
@@ -70,14 +84,17 @@ export function buildDailyHydrationSlots(params: {
     const startMin = wrap1440(fajr + 20);
     const stopMin = wrap1440(bedtimeMin - 75);
     const awakeSpan = Math.max(360, durationForward(startMin, stopMin));
-    const total = activeTargetCups;
-    const step = total > 1 ? awakeSpan / (total - 1) : 0;
+    const normalTimes = distributeCupsAvoidingPrayers({
+      spanStartMin: startMin,
+      spanLengthMin: awakeSpan,
+      count: activeTargetCups,
+      blockedWindows: prayerBlockedWindows,
+    });
 
-    for (let i = 0; i < total; i++) {
-      const tMin = wrap1440(startMin + Math.round(i * step));
+    for (let i = 0; i < normalTimes.length; i++) {
       hydrationSlots.push({
         cupIndex: i + 1,
-        timeMinutes: tMin,
+        timeMinutes: normalTimes[i],
         windowAr: '',
         noteAr: '',
       });

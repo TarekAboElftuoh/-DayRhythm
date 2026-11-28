@@ -13,6 +13,7 @@ import {
 import { clamp, computeScientificHydration, durationForward, formatDurationAr, wrap1440 } from './constants';
 import { computeSeasonalSleepPlan, isFastingDay, SEASONAL_SLEEP_CONSTANTS } from './seasonalSleep';
 import { buildDailyHydrationSlots } from './dailyHydration';
+import { buildPrayerBlockedWindows } from '../hydration/prayerAwareScheduler';
 import { buildSeasonalSleepGuidance } from './seasonalGuidanceBuilder';
 
 export function computeDailyRhythmPlan(
@@ -241,12 +242,18 @@ export function computeDailyRhythmPlan(
   const { completedCycles, caffeineCutoffMin, phase: seasonalPhase } = seasonalSleep;
 
 
+  const prayerBlockedWindows = buildPrayerBlockedWindows(
+    prayers,
+    profile,
+    options.todayWeekday
+  );
   const hydrationSlots = buildDailyHydrationSlots({
     isFastingToday,
     activeTargetCups: hydration.activeTargetCups,
     fajr,
     maghrib,
     bedtimeMin,
+    prayerBlockedWindows,
   });
 
   const isWorkDayToday = profile.workEnabled && profile.workDays.includes(options.todayWeekday);
