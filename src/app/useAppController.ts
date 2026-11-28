@@ -1,0 +1,217 @@
+import { useAppBaseState } from './useAppBaseState';
+import { useAppSyncWorkspace } from './useAppSyncWorkspace';
+import { useAppSyncCloud } from './useAppSyncCloud';
+import { useAppScheduleAndWorkspaceActions } from './useAppScheduleAndWorkspaceActions';
+import { useAppHealthActions } from './useAppHealthActions';
+import { useAppDeviceAndCapsuleLayer } from './useAppDeviceAndCapsuleLayer';
+import { useUpdatesAndSignOut } from './useUpdatesAndSignOut';
+import { useBatteryGuardHandlers } from './useBatteryGuardHandlers';
+
+export function useAppController() {
+  const b = useAppBaseState();
+  const sw = useAppSyncWorkspace(b);
+  const sc = useAppSyncCloud(b, sw);
+  const sa = useAppScheduleAndWorkspaceActions(b, sw, sc);
+  const ha = useAppHealthActions(b, sw, sc, sa);
+  const dc = useAppDeviceAndCapsuleLayer(b, sw, sc, sa, ha);
+
+  const {
+    activeTab, hasOpenedAssistantRef, language, setLanguage, isFridayMode, 
+    includeBiweeklyPcCleanup, surfaceTheme, quietMode, quietRemainingSec, stealthAudioOnly, 
+    setStealthAudioOnly, adhanOverrideSilent, syncTier, setSyncTier, periodicRituals, travelState, 
+    needsAuth, authUser, firestoreSynced, googleDriveSynced, isSyncingGoogleDrive, isLoggingIn, 
+    deviceSettings, lifeProfile, fastingOverride, isLifeProfileModalOpen, 
+    setIsLifeProfileModalOpen, isDetectingGps, locationResolutionState, workspaceTokenExpired, 
+    isCheckingUpdates, availableUpdate, setAvailableUpdate, silentNotifications, activeAudioAlert, 
+    persistentAlert, setPersistentAlert, wsConnected, lastDeletedWorkspaceItem, 
+    setLastDeletedWorkspaceItem, calendarList, calendarEvents, loadingEvents, googleTaskLists, 
+    googleTasks, loadingTasks, weatherInfo, gmailDigest, gmailScannedCount, loadingGmail, 
+    gmailNeedsReauth, gmailError, chatMessages, setChatMessages, includePrayerAnchors, 
+    useOfflineDemo, setUseOfflineDemo, undoSnapshot, activeLocation, activeTimeZone, todayCairoIso, 
+    prayers, todayCalendarMeta, dailyRhythmPlan, tomorrowAlert, lowEnergyActive, 
+    activeOneTimeSilenceMinutes, activeSanctuary, handleCancelActiveSanctuaryEarly, 
+    lastDeletedBlock, shakeUndoSecondsLeft, toastMessage, tombstones, batteryGuard, 
+    phoneChargeLimitPct, phoneBattery, phoneChargeAlertDismissed, setPhoneChargeAlertDismissed, 
+    smartChargeAudioActive, smartChargeAlertEnabled, smartChargeKeepUntilUnplugged, 
+    handleSelectTab, hydrationHistory, medications, habits, waterRemindersEnabled, sunMode, 
+    themeWaveDirection, handleToggleIncludePrayerAnchors, sunlightSettings, 
+    handleUpdateSunlightSettings, sunlightSessions, handleSnoozeSunlight, notificationPermission, 
+    memories, pendingAssistantPrompt, setPendingAssistantPrompt, autoStartVoice, setAutoStartVoice, 
+    streaks, pomodoro, setPomodoro, isTravelModalOpen, setIsTravelModalOpen, isCatchUpModalOpen, 
+    setIsCatchUpModalOpen, isPomodoroModalOpen, setIsPomodoroModalOpen, isLogoPickerOpen, 
+    setIsLogoPickerOpen, selectedLogoId, capsulePrefs, activeBrandLogo, 
+    handleUpdatePhoneChargeLimit, handleClearSilentNotifications,
+  } = b;
+  const {
+    handleAcknowledgeAudioAlert, triggerTaskAlert, handleSnoozeAlert, handleSetQuietMode, 
+    gmailLastSyncedIso, gmailNextRetryInSec, fetchGmailDigest, refreshWorkspace, 
+    handleRefreshWorkspaceToken, handleToggleSunMode, pushFullCloudBackupImmediately, 
+    permanentLinkActive,
+  } = sw;
+  const {
+    pushToTasksVaultImmediately,
+  } = sc;
+  const {
+    handleSaveCloudApiUrl, handleUpdateCapsulePrefs, handleSelectBrandLogo, handleResetBrandLogo, 
+    handleChangeFastingOverride, handleToggleSurfaceTheme, handleUpdateDeviceSettings, 
+    handleUpdateLifeProfile, handleQuickUpdateWeight, handleToggleLowEnergyToday, 
+    handleUpdateSoundRepeat, handleLogSleepQuality, handleOpenAssistantWithPrompt, handleAddMemory, 
+    handleDeleteMemory, handleUpdateMemory, handleResetChatMode, handleExecuteMemoryActions, 
+    handleDetectGpsLocation,
+    freeSlotsToday, creativePlacements, resolvedHabits, liveBlocks, handleTriggerShakeUndo, 
+    handleToggleFridayMode, handleToggleBiweeklyPcCleanup, handleToggleAdhanOverrideSilent, 
+    handleApplyTravel, handleDisableTravel, handleImportIcsBlocks, handleCompletePeriodicRitual, 
+    handleToggleCreativeToday, handleToggleComplete, handleDeleteBlock, handleRestoreBlock, 
+    handleRestoreAllDeleted, handleSweepOldTombstones, handleCommitReflow, handleUndoReflow, 
+    prayersReady,
+  } = sa;
+  const {
+    queuedGoogleOpsCount, handleExecuteCalendarActions, handleExecuteTaskActions, 
+    handleUndoWorkspaceDelete, handleLogWaterCup, handleToggleWaterSlot, handleSunlightSessionEnd, 
+    handleToggleMedication, handleToggleMedicationDate, handleRefillMedication, 
+    handleAddMedication, handleDeleteMedication, handleExecuteMedicationActions, 
+    handleApplyAppSettings, currentSettingsSnapshot, handleApplySettingsPatch, hydrationToday,
+  } = ha;
+
+  const { handleCheckAppUpdates, handleGoogleSignIn, handleGoogleSignOut } = useUpdatesAndSignOut({
+    activeTimeZone,
+    hasHydratedRemoteRef: b.hasHydratedRemoteRef,
+    hasHydratedCloudChatRef: sw.hasHydratedCloudChatRef,
+    syncedChatTextByIdRef: sw.syncedChatTextByIdRef,
+    cloudChatIdsRef: sw.cloudChatIdsRef,
+    lastGmailAutoScanMsRef: sw.lastGmailAutoScanMsRef,
+    gpsFirstAttemptedRef: sa.gpsFirstAttemptedRef,
+    gmailRetryAttemptRef: sw.gmailRetryAttemptRef,
+    setIsCheckingUpdates: b.setIsCheckingUpdates,
+    setAvailableUpdate: b.setAvailableUpdate,
+    setIsLoggingIn: b.setIsLoggingIn,
+    setAuthUser: b.setAuthUser,
+    setNeedsAuth: b.setNeedsAuth,
+    setUseOfflineDemo: b.setUseOfflineDemo,
+    setLocationResolutionState: b.setLocationResolutionState,
+    setWorkspaceTokenExpired: b.setWorkspaceTokenExpired,
+    setCalendarList: b.setCalendarList,
+    setCalendarEvents: b.setCalendarEvents,
+    setGoogleTaskLists: b.setGoogleTaskLists,
+    setGoogleTasks: b.setGoogleTasks,
+    setGmailDigest: b.setGmailDigest,
+    setGmailScannedCount: b.setGmailScannedCount,
+    setGmailLastSyncedIso: sw.setGmailLastSyncedIso,
+    setGmailError: b.setGmailError,
+    setGmailNeedsReauth: b.setGmailNeedsReauth,
+    setMedications: b.setMedications,
+    setCreativeActivities: b.setCreativeActivities,
+    setHabits: b.setHabits,
+    setMemories: b.setMemories,
+    setLifeProfile: b.setLifeProfile,
+    setDeviceSettings: b.setDeviceSettings,
+    setChatMessages: b.setChatMessages,
+    setSilentNotifications: b.setSilentNotifications,
+    setPeriodicRituals: b.setPeriodicRituals,
+    setChangelog: b.setChangelog,
+    setPhoneBattery: b.setPhoneBattery,
+    setPersistentAlert: b.setPersistentAlert,
+    setStreaks: b.setStreaks,
+    setHydrationHistory: b.setHydrationHistory,
+    setReflowedBlocksOverride: b.setReflowedBlocksOverride,
+    refreshWorkspace,
+    clearGmailRetryTimers: sw.clearGmailRetryTimers,
+    showToast: b.showToast,
+  });
+
+  const {
+    handleTriggerRing, handleSimulateCharge90, handleSimulatePowerDisconnect,
+    handleSimulateBedtimeLowBattery, handleToggleBypassCharging, handleSimulateWindowsWake,
+    handleStopSmartChargeAlert, handleToggleSmartChargeKeepUntilUnplugged,
+    handleToggleSmartChargeAlertEnabled, handleTestSmartChargeAlert,
+  } = useBatteryGuardHandlers({
+    activeTimeZone,
+    firebaseUser: b.firebaseUser,
+    batteryGuard,
+    smartChargeAudioActive,
+    appSettingsRef: b.appSettingsRef,
+    phoneChargeLimitRef: b.phoneChargeLimitRef,
+    setAlarmRinging: b.setAlarmRinging,
+    setBatteryGuard: b.setBatteryGuard,
+    setSmartChargeAudioActive: b.setSmartChargeAudioActive,
+    setPhoneChargeAlertDismissed,
+    setPersistentAlert,
+    setPhoneBattery: b.setPhoneBattery,
+    updateAppSettings: b.updateAppSettings,
+    triggerTaskAlert,
+    emitCrossDeviceSync: sw.emitCrossDeviceSync,
+    appendChangelog: b.appendChangelog,
+    showToast: b.showToast,
+  });
+  const {
+    handleAddCreativeActivity, handleDeleteCreativeActivity, handleScheduleCreativeInCalendar, 
+    handleExecuteCreativeActions, handleAddHabit, handleUpdateHabit, handleToggleHabitToday, 
+    handleDeleteHabit, handleToggleHabitStatus, handleExecuteHabitActions, isStartingPermanentLink, 
+    permanentLinkHintDismissed, setPermanentLinkHintDismissed, handleStartPermanentLink, 
+    handleToggleWaterReminders, handleRequestNotificationPermission, handleTestAdhanChime, 
+    handleDismissTwoWay, handleToggleDailyCommitmentStreak, nextMedicationQuick, hasDailyWirdHabit, 
+    capsuleTimerState, assistantContextSummary, handleExportBackupJson, handleImportBackupJson,
+  } = dc;
+
+  return {
+    surfaceTheme, themeWaveDirection, activeTab, handleSelectTab, setIsCatchUpModalOpen,
+    language, setLanguage, activeBrandLogo, handleCheckAppUpdates, isCheckingUpdates,
+    availableUpdate, setAvailableUpdate, sunMode, handleToggleSunMode, toastMessage,
+    authUser, needsAuth, workspaceTokenExpired, permanentLinkActive, permanentLinkHintDismissed,
+    isStartingPermanentLink, handleStartPermanentLink, handleRefreshWorkspaceToken,
+    setPermanentLinkHintDismissed, queuedGoogleOpsCount,
+    activeLocation, activeTimeZone, capsulePrefs, capsuleTimerState, googleDriveSynced,
+    handleAcknowledgeAudioAlert, handleAddMemory, handleApplyTravel, handleCommitReflow,
+    handleDeleteMemory, handleDetectGpsLocation, handleDisableTravel, handleExecuteTaskActions,
+    handleExportBackupJson, handleGoogleSignOut, handleImportBackupJson, handleLogWaterCup,
+    handleResetBrandLogo, handleSelectBrandLogo, handleSetQuietMode, handleSnoozeAlert,
+    handleStopSmartChargeAlert, handleTestSmartChargeAlert, handleToggleBiweeklyPcCleanup,
+    handleToggleFridayMode, handleToggleIncludePrayerAnchors, handleToggleMedication,
+    handleToggleSmartChargeAlertEnabled, handleToggleSmartChargeKeepUntilUnplugged,
+    handleUndoReflow, handleUpdateCapsulePrefs, handleUpdateLifeProfile, handleUpdateMemory,
+    handleUpdatePhoneChargeLimit, handleUpdateSoundRepeat, handleUpdateSunlightSettings,
+    includeBiweeklyPcCleanup, includePrayerAnchors, isCatchUpModalOpen, isDetectingGps,
+    isFridayMode, isLifeProfileModalOpen, isLogoPickerOpen, isPomodoroModalOpen,
+    isSyncingGoogleDrive, isTravelModalOpen, lifeProfile, liveBlocks, medications,
+    memories, nextMedicationQuick, persistentAlert, phoneBattery, phoneChargeLimitPct,
+    pomodoro, prayers, pushFullCloudBackupImmediately, pushToTasksVaultImmediately,
+    quietMode, selectedLogoId, setIsLifeProfileModalOpen, setIsLogoPickerOpen,
+    setIsPomodoroModalOpen, setIsTravelModalOpen, setPersistentAlert, setPomodoro,
+    smartChargeAlertEnabled, smartChargeAudioActive, smartChargeKeepUntilUnplugged,
+    sunlightSettings, todayCairoIso, travelState, triggerTaskAlert, undoSnapshot,
+    adhanOverrideSilent, handleToggleAdhanOverrideSilent, handleTestAdhanChime,
+    handleToggleSurfaceTheme, useOfflineDemo, setUseOfflineDemo,
+    handleToggleComplete, handleDeleteBlock, handleRestoreBlock, handleRestoreAllDeleted, lastDeletedBlock,
+    shakeUndoSecondsLeft, handleTriggerShakeUndo, tombstones, handleSweepOldTombstones, hydrationToday,
+    hydrationHistory, handleToggleWaterSlot, handleToggleMedicationDate, handleRefillMedication,
+    handleAddMedication, handleDeleteMedication, streaks,
+    handleToggleDailyCommitmentStreak, prayersReady, locationResolutionState, isLoggingIn,
+    loadingEvents, calendarList, calendarEvents, googleTaskLists, googleTasks, loadingTasks,
+    chatMessages, setChatMessages, handleGoogleSignIn, refreshWorkspace, handleExecuteCalendarActions,
+    syncTier, setSyncTier, handleImportIcsBlocks, periodicRituals, handleCompletePeriodicRitual,
+    batteryGuard, phoneChargeAlertDismissed, setPhoneChargeAlertDismissed, firestoreSynced,
+    dailyRhythmPlan, fastingOverride, handleChangeFastingOverride,
+    handleQuickUpdateWeight, activeSanctuary, handleCancelActiveSanctuaryEarly, silentNotifications,
+    handleClearSilentNotifications, activeAudioAlert, weatherInfo, gmailDigest, gmailScannedCount,
+    loadingGmail, gmailNeedsReauth, gmailError, gmailLastSyncedIso, gmailNextRetryInSec,
+    fetchGmailDigest, handleLogSleepQuality, handleOpenAssistantWithPrompt, todayCalendarMeta,
+    creativePlacements, freeSlotsToday, handleAddCreativeActivity, handleToggleCreativeToday,
+    handleDeleteCreativeActivity, handleScheduleCreativeInCalendar, waterRemindersEnabled,
+    notificationPermission, handleToggleWaterReminders, handleRequestNotificationPermission,
+    tomorrowAlert, lowEnergyActive, handleToggleLowEnergyToday, hasDailyWirdHabit,
+    lastDeletedWorkspaceItem, handleUndoWorkspaceDelete, setLastDeletedWorkspaceItem, wsConnected,
+    activeOneTimeSilenceMinutes, sunlightSessions, handleSnoozeSunlight, handleSunlightSessionEnd,
+    habits, resolvedHabits, handleAddHabit, handleUpdateHabit, handleToggleHabitToday,
+    handleDeleteHabit, handleToggleHabitStatus, handleToggleBypassCharging, handleDismissTwoWay,
+    handleTriggerRing, handleSimulateCharge90, handleSimulatePowerDisconnect, handleSimulateBedtimeLowBattery,
+    deviceSettings, handleUpdateDeviceSettings, stealthAudioOnly, setStealthAudioOnly,
+    handleSimulateWindowsWake, hasOpenedAssistantRef, assistantContextSummary,
+    handleResetChatMode, handleExecuteMedicationActions, handleExecuteCreativeActions,
+    handleExecuteHabitActions, handleApplyAppSettings, handleApplySettingsPatch,
+    currentSettingsSnapshot, handleExecuteMemoryActions, pendingAssistantPrompt,
+    setPendingAssistantPrompt, autoStartVoice, setAutoStartVoice, handleSaveCloudApiUrl, quietRemainingSec,
+    alarmRinging: b.alarmRinging, isRefreshingWorkspaceToken: b.isRefreshingWorkspaceToken,
+    };
+}
+
+export type AppControllerModel = ReturnType<typeof useAppController>;

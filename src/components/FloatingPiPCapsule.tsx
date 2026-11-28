@@ -1,137 +1,32 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  EyeOff,
   Eye,
-  LayoutDashboard,
   GripHorizontal,
   PictureInPicture2,
-  Zap,
-  Columns2,
-  Rows2,
-  Droplets,
-  Pill,
-  Check,
   SlidersHorizontal,
+  Zap,
 } from 'lucide-react';
-import {
-  CapsuleOrientation,
-  CapsuleSize,
-  PhoneBatteryTelemetry,
-} from '../types/dayrhythm';
 import { pickActiveCountdownItem } from '../hooks/useCountdown';
+import {
+  CAPSULE_PREFS_KEY,
+  formatChargeEtaShort,
+  loadCapsulePrefs,
+  resolveDigitalClock,
+  type CapsuleOrientation,
+  type CapsulePrefs,
+  type CapsuleSize,
+  type CapsuleTrackInfo,
+  type DocumentPictureInPictureApi,
+  type FloatingPiPCapsuleProps,
+  type WebView2Bridge,
+} from './pip/types';
+import { useNativeWindowsCapsule } from './pip/useNativeWindowsCapsule';
+import { useDocumentPiP } from './pip/useDocumentPiP';
+import { CapsulePopover } from './pip/CapsulePopover';
+import { computePhoneBatteryBadge, getCapsuleSizeTokens, useCapsuleDrag } from './capsule/capsuleHelpers';
+import { NativeWindowsCapsuleTrigger } from './capsule/NativeWindowsCapsuleTrigger';
 
-interface DocumentPictureInPictureApi {
-  requestWindow: (options?: { width?: number; height?: number }) => Promise<Window>;
-}
-
-interface WebView2Bridge {
-  postMessage?: (message: string) => void;
-}
-
-export type { CapsuleOrientation, CapsuleSize };
-
-export interface CapsulePrefs {
-  orientation: CapsuleOrientation;
-  size: CapsuleSize;
-}
-
-const CAPSULE_PREFS_KEY = 'dayrhythm_capsule_prefs_v1';
-
-function loadCapsulePrefs(): CapsulePrefs {
-  if (typeof window === 'undefined') {
-    return { orientation: 'horizontal', size: 'md' };
-  }
-  try {
-    const raw = window.localStorage.getItem(CAPSULE_PREFS_KEY);
-    if (!raw) return { orientation: 'horizontal', size: 'md' };
-    const parsed = JSON.parse(raw) as Partial<CapsulePrefs>;
-    const orientation: CapsuleOrientation =
-      parsed.orientation === 'vertical' ? 'vertical' : 'horizontal';
-    const size: CapsuleSize =
-      parsed.size === 'sm' || parsed.size === 'lg' ? parsed.size : 'md';
-    return { orientation, size };
-  } catch {
-    return { orientation: 'horizontal', size: 'md' };
-  }
-}
-
-export interface CapsuleTrackInfo {
-  emoji: string;
-  title: string;
-  statusLabel: string;
-  clockLabel?: string;
-  countdownText: string;
-  isNow: boolean;
-  isUrgent: boolean;
-  targetEpochMs: number;
-  durationSeconds: number;
-}
-
-interface FloatingPiPCapsuleProps {
-  nextEmoji: string;
-  nextTitle: string;
-  statusLabel: string;
-  sourceKind: 'calendar' | 'task' | 'water' | 'medication' | 'none';
-  countdownText: string;
-  isNow: boolean;
-  isUrgent: boolean;
-  progressRatio: number;
-  targetEpochMs: number;
-  durationSeconds: number;
-  calendarTrack?: CapsuleTrackInfo | null;
-  taskTrack?: CapsuleTrackInfo | null;
-  upcomingQueue?: CapsuleTrackInfo[];
-  phoneBattery?: PhoneBatteryTelemetry | null;
-  capsulePrefs?: CapsulePrefs;
-  onChangeCapsulePrefs?: (next: CapsulePrefs) => void;
-  onQuickLogWater?: () => void;
-  nextMedicationQuick?: { id: string; name: string; doseTime24?: string; timeLabel?: string } | null;
-  onQuickTakeMedication?: (id: string, doseTime24?: string) => void;
-  onOpenDashboard: () => void;
-}
-
-function formatDigitalCountdown(remainingMs: number): string {
-  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return '00:00';
-  const totalSec = Math.ceil(remainingMs / 1000);
-  if (totalSec <= 0) return '00:00';
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) {
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  }
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-function resolveDigitalClock(
-  targetEpochMs: number,
-  countdownText: string | undefined,
-  nowMs: number
-): string {
-  if (targetEpochMs > 0) {
-    return formatDigitalCountdown(Math.max(0, targetEpochMs - nowMs));
-  }
-  const trimmed = (countdownText ?? '').trim();
-  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(trimmed)) return trimmed;
-  if (!trimmed || trimmed === 'الآن') return '00:00';
-
-  const hMatch = trimmed.match(/(\d+)\s*(?:ساعة|س|h)/i);
-  const mMatch = trimmed.match(/(\d+)\s*(?:دقيقة|دقائق|د|m)/i);
-  const sMatch = trimmed.match(/(\d+)\s*(?:ثانية|ث|s)/i);
-  const h = hMatch ? Number(hMatch[1]) : 0;
-  const m = mMatch ? Number(mMatch[1]) : 0;
-  const s = sMatch ? Number(sMatch[1]) : 0;
-  const totalMs = (h * 3600 + m * 60 + s) * 1000;
-  return totalMs > 0 ? formatDigitalCountdown(totalMs) : '00:00';
-}
-
-function formatChargeEtaShort(etaMin?: number): string {
-  if (typeof etaMin !== 'number' || !Number.isFinite(etaMin) || etaMin <= 0) return '';
-  const totalMin = Math.round(etaMin);
-  const h = Math.floor(totalMin / 60);
-  const m = totalMin % 60;
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
+export type { CapsuleOrientation, CapsuleSize, CapsulePrefs, CapsuleTrackInfo };
 
 export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
   nextEmoji,
@@ -156,7 +51,6 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
 }) => {
   const [visible, setVisible] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [localPrefs, setLocalPrefs] = useState<CapsulePrefs>(loadCapsulePrefs);
   const [quickDoneFlash, setQuickDoneFlash] = useState<string | null>(null);
 
@@ -183,14 +77,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
     }, 1800);
   };
 
-  const pipWindowRef = useRef<Window | null>(null);
-  const dragStateRef = useRef<{
-    active: boolean;
-    startX: number;
-    startY: number;
-    originX: number;
-    originY: number;
-  }>({ active: false, startX: 0, startY: 0, originX: 0, originY: 0 });
+  const { offset, handlePointerDown, handlePointerMove, handlePointerUp } = useCapsuleDrag();
 
   const webviewBridge: WebView2Bridge | undefined =
     typeof window !== 'undefined'
@@ -208,106 +95,13 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       : undefined;
   const supportsDesktopPopout = Boolean(docPiP?.requestWindow);
 
-  // Fresh telemetry from the phone (WebSocket or Firestore) is shown even when unplugged, so the
-  // capsule always reflects the live level; the charging badges stay charging-only.
-  const phoneBatteryFresh = Boolean(
-    phoneBattery && Date.now() - phoneBattery.updatedAtMs < 30 * 60_000
-  );
-  const showPhoneChargingBadge = Boolean(phoneBatteryFresh && phoneBattery?.charging);
-  const phoneReachedLimit = Boolean(
-    showPhoneChargingBadge && phoneBattery && phoneBattery.levelPct >= phoneBattery.chargeLimitPct
-  );
-  const phoneEtaShort = showPhoneChargingBadge
-    ? formatChargeEtaShort(phoneBattery?.chargeTimeRemainingMin)
-    : '';
-  const phoneBatteryBadge =
-    phoneBatteryFresh && phoneBattery
-      ? `${phoneBattery.charging ? '⚡' : '🔋'}${phoneBattery.levelPct}%${phoneEtaShort ? ` · ${phoneEtaShort}` : ''}`
-      : '';
+  const { phoneBatteryFresh, showPhoneChargingBadge, phoneReachedLimit, phoneEtaShort, phoneBatteryBadge } = computePhoneBatteryBadge(phoneBattery);
   const hasDualTimers = Boolean(calendarTrack && taskTrack);
   const isVertical = prefs.orientation === 'vertical';
 
-  // Sleek size scale tokens matching the main app's obsidian-glass design system
-  const sizeTokens =
-    prefs.size === 'sm'
-      ? {
-          shellPad: isVertical ? 'px-2.5 py-2' : 'px-3 py-1.5',
-          shellGap: isVertical ? 'gap-1.5' : 'gap-2',
-          emojiCls: 'text-sm leading-none shrink-0',
-          clockCls: 'font-digits text-[11px] font-bold tracking-tight shrink-0',
-        }
-      : prefs.size === 'lg'
-        ? {
-            shellPad: isVertical ? 'px-4 py-3' : 'px-4 py-2.5',
-            shellGap: isVertical ? 'gap-2.5' : 'gap-3',
-            emojiCls: 'text-lg leading-none shrink-0',
-            clockCls: 'font-digits text-sm font-bold tracking-tight shrink-0',
-          }
-        : {
-            shellPad: isVertical ? 'px-3 py-2.5' : 'px-3.5 py-2',
-            shellGap: isVertical ? 'gap-2' : 'gap-2.5',
-            emojiCls: 'text-[15px] leading-none shrink-0',
-            clockCls: 'font-digits text-xs font-bold tracking-tight shrink-0',
-          };
+  const sizeTokens = getCapsuleSizeTokens(prefs.size, isVertical);
 
-  const lastPostedCapsuleJsonRef = useRef<string>('');
-
-  // Keep native Windows free-floating DesktopCapsuleForm synced live outside the EXE window
-  useEffect(() => {
-    if (!isNativeWindowsExe || !webviewBridge?.postMessage) return;
-    try {
-      const primary = calendarTrack ?? {
-        emoji: nextEmoji,
-        title: nextTitle,
-        statusLabel,
-        countdownText,
-        isNow,
-        isUrgent,
-        targetEpochMs,
-        durationSeconds,
-      };
-      const nowMs = Date.now();
-      const payloadJson = JSON.stringify({
-        type: 'capsule-state',
-        emoji: primary.emoji,
-        title: primary.title,
-        statusLabel: primary.statusLabel,
-        sourceKind: calendarTrack ? 'calendar' : sourceKind,
-        countdownText: resolveDigitalClock(primary.targetEpochMs, primary.countdownText, nowMs),
-        isNow: primary.isNow,
-        isUrgent: primary.isUrgent,
-        targetEpochMs: primary.targetEpochMs,
-        durationSeconds: primary.durationSeconds,
-        hasSecondaryTimer: Boolean(calendarTrack && taskTrack),
-        secondaryEmoji: taskTrack?.emoji ?? '💧',
-        secondaryTitle: taskTrack?.title ?? '',
-        secondaryCountdownText: taskTrack
-          ? resolveDigitalClock(taskTrack.targetEpochMs, taskTrack.countdownText, nowMs)
-          : '',
-        secondaryTargetEpochMs: taskTrack?.targetEpochMs ?? 0,
-        secondaryIsNow: taskTrack?.isNow ?? false,
-        secondaryIsUrgent: taskTrack?.isUrgent ?? false,
-        phoneBatteryPct: showPhoneChargingBadge && phoneBattery ? phoneBattery.levelPct : -1,
-        phoneCharging: showPhoneChargingBadge,
-        phoneChargeLimitPct: phoneBattery?.chargeLimitPct ?? 90,
-        phoneChargeEtaMin:
-          showPhoneChargingBadge && typeof phoneBattery?.chargeTimeRemainingMin === 'number'
-            ? phoneBattery.chargeTimeRemainingMin
-            : -1,
-        upcomingQueue: upcomingQueue.slice(0, 4).map((item) => ({
-          ...item,
-          countdownText: resolveDigitalClock(item.targetEpochMs, item.countdownText, nowMs),
-        })),
-        orientation: prefs.orientation,
-        size: prefs.size,
-      });
-      if (lastPostedCapsuleJsonRef.current === payloadJson) return;
-      lastPostedCapsuleJsonRef.current = payloadJson;
-      webviewBridge.postMessage(payloadJson);
-    } catch {
-      // ignore WebView2 postMessage issues
-    }
-  }, [
+  useNativeWindowsCapsule({
     isNativeWindowsExe,
     webviewBridge,
     nextEmoji,
@@ -323,10 +117,9 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
     taskTrack,
     showPhoneChargingBadge,
     phoneBattery,
-    prefs.orientation,
-    prefs.size,
+    prefs,
     upcomingQueue,
-  ]);
+  });
 
   const [nowTickMs, setNowTickMs] = useState<number>(() => Date.now());
   useEffect(() => {
@@ -337,16 +130,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
 
   const primaryTrack: CapsuleTrackInfo = hasDualTimers && calendarTrack
     ? calendarTrack
-    : {
-        emoji: nextEmoji,
-        title: nextTitle,
-        statusLabel,
-        countdownText,
-        isNow,
-        isUrgent,
-        targetEpochMs,
-        durationSeconds,
-      };
+    : { emoji: nextEmoji, title: nextTitle, statusLabel, countdownText, isNow, isUrgent, targetEpochMs, durationSeconds };
   const activePrimary = pickActiveCountdownItem(primaryTrack, upcomingQueue, nowTickMs);
   const activePrimaryRemMs = activePrimary.targetEpochMs > 0 ? Math.max(0, activePrimary.targetEpochMs - nowTickMs) : 0;
   const activePrimaryClock = resolveDigitalClock(activePrimary.targetEpochMs, activePrimary.countdownText, nowTickMs);
@@ -365,403 +149,47 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
     : '';
   const activeTaskUrgent = Boolean(activeTask && (activeTask.targetEpochMs > 0 ? activeTaskRemMs <= 60_000 : activeTask.isUrgent));
 
-  // Keep open Browser Document Picture-in-Picture mini capsule updated live every second
-  useEffect(() => {
-    const pipWin = pipWindowRef.current;
-    if (!pipWin || pipWin.closed) return;
-    const doc = pipWin.document;
-    const shellEl = doc.getElementById('dr-pip-shell');
-    const clockEl = doc.getElementById('dr-pip-clock');
-    const emojiEl = doc.getElementById('dr-pip-emoji');
-    const taskWrapEl = doc.getElementById('dr-pip-task-wrap');
-    const taskEmojiEl = doc.getElementById('dr-pip-task-emoji');
-    const taskClockEl = doc.getElementById('dr-pip-task-clock');
-    const batEl = doc.getElementById('dr-pip-bat');
-
-    const displayClock = activePrimaryClock;
-    const displayEmoji = activePrimary.emoji;
-    const primaryUrgent = activePrimaryUrgent;
-    const primaryNow = activePrimary.isNow;
-    const accent = primaryUrgent ? '#FF6B6B' : primaryNow ? '#4ADE80' : '#7FFFD4';
-
-    if (shellEl) {
-      shellEl.style.flexDirection = isVertical ? 'column' : 'row';
-      shellEl.style.gap = isVertical ? '6px' : '10px';
-      shellEl.style.borderRadius = isVertical ? '16px' : '999px';
-    }
-    if (clockEl) {
-      clockEl.textContent = displayClock;
-      clockEl.style.color = accent;
-      clockEl.style.fontSize = prefs.size === 'lg' ? '15px' : prefs.size === 'sm' ? '12px' : '13.5px';
-    }
-    if (emojiEl) {
-      emojiEl.textContent = displayEmoji;
-      emojiEl.style.fontSize = prefs.size === 'lg' ? '18px' : prefs.size === 'sm' ? '13px' : '15px';
-    }
-    if (taskWrapEl && taskClockEl) {
-      if (hasDualTimers && activeTask) {
-        taskWrapEl.style.display = 'inline-flex';
-        taskWrapEl.style.borderRight = isVertical ? 'none' : '1px solid rgba(255,255,255,0.12)';
-        taskWrapEl.style.paddingRight = isVertical ? '0' : '9px';
-        taskWrapEl.style.borderTop = isVertical ? '1px solid rgba(255,255,255,0.12)' : 'none';
-        taskWrapEl.style.paddingTop = isVertical ? '5px' : '0';
-        if (taskEmojiEl) {
-          taskEmojiEl.textContent = activeTask.emoji;
-          taskEmojiEl.style.fontSize = prefs.size === 'lg' ? '17px' : prefs.size === 'sm' ? '13px' : '15px';
-        }
-        taskClockEl.textContent = activeTaskClock;
-        taskClockEl.style.fontSize = prefs.size === 'lg' ? '15px' : prefs.size === 'sm' ? '12px' : '13.5px';
-        taskClockEl.style.color = activeTaskUrgent
-          ? '#FF6B6B'
-          : activeTask.isNow
-            ? '#4ADE80'
-            : activeTask.emoji === '💧'
-              ? '#38BDF8'
-              : '#FCD34D';
-      } else {
-        taskWrapEl.style.display = 'none';
-      }
-    }
-    if (batEl) {
-      if (phoneBatteryBadge) {
-        batEl.style.display = 'inline';
-        batEl.textContent = phoneBatteryBadge;
-        batEl.style.color = phoneReachedLimit ? '#4ADE80' : '#FCD34D';
-      } else {
-        batEl.style.display = 'none';
-      }
-    }
-  }, [
-    activePrimaryClock,
-    activePrimary.emoji,
-    activePrimaryUrgent,
-    activePrimary.isNow,
+  const { openBrowserDesktopPopout } = useDocumentPiP({
+    docPiP,
+    prefs,
+    isVertical,
     hasDualTimers,
+    calendarTrack,
+    taskTrack,
+    nextEmoji,
+    isUrgent,
+    activePrimary,
+    activePrimaryClock,
+    activePrimaryUrgent,
     activeTask,
     activeTaskClock,
     activeTaskUrgent,
     phoneBatteryBadge,
     phoneReachedLimit,
-    isVertical,
-    prefs.size,
-  ]);
+    onMenuClose: () => setMenuOpen(false),
+  });
 
-  useEffect(() => {
-    return () => {
-      try {
-        if (pipWindowRef.current && !pipWindowRef.current.closed) {
-          pipWindowRef.current.close();
-        }
-      } catch {
-        // ignore cleanup error
-      }
-    };
-  }, []);
+  if (isNativeAndroidApk) return null;
 
-  // Mobile NEVER renders an in-app capsule — OnePlus 12R uses Native Dynamic Island (Live Alerts) + Persistent Notification!
-  if (isNativeAndroidApk) {
-    return null;
-  }
-
-  const openBrowserDesktopPopout = async () => {
-    if (!docPiP?.requestWindow) return;
-    try {
-      if (pipWindowRef.current && !pipWindowRef.current.closed) {
-        pipWindowRef.current.focus();
-        return;
-      }
-      const scaleMult = prefs.size === 'lg' ? 1.18 : prefs.size === 'sm' ? 0.88 : 1;
-      const popWidth = isVertical
-        ? Math.round(138 * scaleMult)
-        : Math.round((hasDualTimers ? 256 : 156) * scaleMult);
-      const popHeight = isVertical
-        ? Math.round((hasDualTimers ? 104 : 64) * scaleMult)
-        : Math.round(52 * scaleMult);
-
-      const pipWin = await docPiP.requestWindow({
-        width: popWidth,
-        height: popHeight,
-      });
-      pipWindowRef.current = pipWin;
-      setMenuOpen(false);
-
-      const primary = hasDualTimers && calendarTrack ? calendarTrack : null;
-      const pClock = activePrimaryClock;
-      const pEmoji = primary ? primary.emoji : nextEmoji;
-      const pAccent = (primary ? primary.isUrgent : isUrgent) ? '#FF6B6B' : '#7FFFD4';
-      const tEmoji = taskTrack?.emoji ?? '💧';
-      const tAccent = tEmoji === '💧' ? '#38BDF8' : '#FCD34D';
-      const emojiPx = prefs.size === 'lg' ? 18 : prefs.size === 'sm' ? 13 : 15;
-      const clockPx = prefs.size === 'lg' ? 15 : prefs.size === 'sm' ? 12 : 13.5;
-
-      const pipDoc = pipWin.document;
-      pipDoc.title = 'إيقاع اليوم';
-      pipDoc.documentElement.dir = 'rtl';
-      pipDoc.documentElement.lang = 'ar';
-
-      pipDoc.head.replaceChildren();
-      const styleEl = pipDoc.createElement('style');
-      styleEl.textContent = [
-        '* { box-sizing: border-box; margin: 0; padding: 0; }',
-        'body { background: #000000; color: #F4F4F5; font-family: "Cairo", "Segoe UI", system-ui, sans-serif; height: 100vh; display: flex; align-items: center; justify-content: center; padding: 4px; overflow: hidden; user-select: none; }',
-        `#dr-pip-shell { width: 100%; height: 100%; border-radius: ${isVertical ? '16px' : '999px'}; background: linear-gradient(180deg, #10151E 0%, #07080B 100%); border: 1px solid rgba(255, 255, 255, 0.14); box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); padding: 6px 12px; display: flex; flex-direction: ${isVertical ? 'column' : 'row'}; align-items: center; justify-content: center; gap: ${isVertical ? '6px' : '10px'}; }`,
-        '.seg { display: inline-flex; align-items: center; gap: 6px; }',
-        `#dr-pip-emoji, #dr-pip-task-emoji { font-size: ${emojiPx}px; line-height: 1; }`,
-        `#dr-pip-clock, #dr-pip-task-clock { font-family: "JetBrains Mono", "Cascadia Mono", "Consolas", ui-monospace, monospace; font-variant-numeric: tabular-nums; direction: ltr; font-size: ${clockPx}px; font-weight: 700; }`,
-        `#dr-pip-clock { color: ${pAccent}; }`,
-        `#dr-pip-task-wrap { ${isVertical ? 'border-top: 1px solid rgba(255,255,255,0.12); padding-top: 5px;' : 'border-right: 1px solid rgba(255,255,255,0.12); padding-right: 9px;'} }`,
-        '#dr-pip-bat { font-family: "JetBrains Mono", "Consolas", ui-monospace, monospace; font-variant-numeric: tabular-nums; direction: ltr; font-size: 11px; font-weight: 700; }',
-      ].join('\n');
-      pipDoc.head.appendChild(styleEl);
-
-      pipDoc.body.replaceChildren();
-      const shellEl = pipDoc.createElement('div');
-      shellEl.id = 'dr-pip-shell';
-
-      const primarySeg = pipDoc.createElement('span');
-      primarySeg.className = 'seg';
-      const primaryEmojiEl = pipDoc.createElement('span');
-      primaryEmojiEl.id = 'dr-pip-emoji';
-      primaryEmojiEl.textContent = pEmoji;
-      const primaryClockEl = pipDoc.createElement('span');
-      primaryClockEl.id = 'dr-pip-clock';
-      primaryClockEl.textContent = pClock;
-      primarySeg.append(primaryEmojiEl, primaryClockEl);
-
-      const taskWrapEl = pipDoc.createElement('span');
-      taskWrapEl.id = 'dr-pip-task-wrap';
-      taskWrapEl.className = 'seg';
-      taskWrapEl.style.display = hasDualTimers && taskTrack ? 'inline-flex' : 'none';
-      const taskEmojiEl = pipDoc.createElement('span');
-      taskEmojiEl.id = 'dr-pip-task-emoji';
-      taskEmojiEl.textContent = tEmoji;
-      const taskClockEl = pipDoc.createElement('span');
-      taskClockEl.id = 'dr-pip-task-clock';
-      taskClockEl.style.color = tAccent;
-      taskClockEl.textContent = activeTaskClock;
-      taskWrapEl.append(taskEmojiEl, taskClockEl);
-
-      const batEl = pipDoc.createElement('span');
-      batEl.id = 'dr-pip-bat';
-      batEl.style.display = phoneBatteryBadge ? 'inline' : 'none';
-      batEl.style.color = phoneReachedLimit ? '#4ADE80' : '#FCD34D';
-      batEl.textContent = phoneBatteryBadge;
-
-      shellEl.append(primarySeg, taskWrapEl, batEl);
-      pipDoc.body.appendChild(shellEl);
-
-      pipWin.addEventListener('pagehide', () => {
-        pipWindowRef.current = null;
-      });
-    } catch {
-      // ignore PiP rejection
-    }
-  };
-
-  const renderShapeControls = () => (
-    <div className="space-y-2.5 border-b border-white/[0.08] pb-2.5">
-      <div className="space-y-1.5">
-        <div className="px-0.5 text-[10px] font-semibold text-zinc-400">اتجاه الكبسولة</div>
-        <div className="grid grid-cols-2 gap-1 rounded-lg bg-white/[0.03] border border-white/[0.06] p-1">
-          <button
-            type="button"
-            onClick={() => updatePrefs({ orientation: 'horizontal' })}
-            className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-semibold transition-colors cursor-pointer ${
-              prefs.orientation === 'horizontal'
-                ? 'bg-[#7FFFD4] text-black'
-                : 'text-zinc-300 hover:bg-white/[0.06]'
-            }`}
-          >
-            <Columns2 className="w-3.5 h-3.5 shrink-0" />
-            <span>عرضي</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => updatePrefs({ orientation: 'vertical' })}
-            className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-[11px] font-semibold transition-colors cursor-pointer ${
-              prefs.orientation === 'vertical'
-                ? 'bg-[#7FFFD4] text-black'
-                : 'text-zinc-300 hover:bg-white/[0.06]'
-            }`}
-          >
-            <Rows2 className="w-3.5 h-3.5 shrink-0" />
-            <span>طولي</span>
-          </button>
-        </div>
-      </div>
-
-      <div className="space-y-1.5">
-        <div className="px-0.5 text-[10px] font-semibold text-zinc-400">حجم الكبسولة</div>
-        <div className="grid grid-cols-3 gap-1 rounded-lg bg-white/[0.03] border border-white/[0.06] p-1">
-          {(
-            [
-              { id: 'sm', label: 'صغير' },
-              { id: 'md', label: 'متوسط' },
-              { id: 'lg', label: 'كبير' },
-            ] as const
-          ).map((opt) => (
-            <button
-              key={opt.id}
-              type="button"
-              onClick={() => updatePrefs({ size: opt.id })}
-              className={`rounded-md py-1.5 text-[11px] font-semibold transition-colors cursor-pointer ${
-                prefs.size === opt.id
-                  ? 'bg-[#7FFFD4] text-black'
-                  : 'text-zinc-300 hover:bg-white/[0.06]'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderQuickCheckIn = () => {
-    if (!onQuickLogWater && !(nextMedicationQuick && onQuickTakeMedication)) return null;
-    return (
-      <div className="space-y-1.5 border-b border-white/[0.08] pb-2.5">
-        <div className="px-0.5 text-[10px] font-semibold text-zinc-400">تسجيل سريع</div>
-        {quickDoneFlash && (
-          <div className="rounded-lg bg-emerald-500/15 border border-emerald-400/30 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-300 flex items-center gap-1.5">
-            <Check className="w-3.5 h-3.5 shrink-0" />
-            <span>{quickDoneFlash}</span>
-          </div>
-        )}
-        <div className="space-y-1.5">
-          {onQuickLogWater && (
-            <button
-              type="button"
-              onClick={() => {
-                onQuickLogWater();
-                flashQuickDone('تم تسجيل كوب ماء ✓');
-              }}
-              className="w-full flex items-center justify-between gap-2 rounded-lg border border-sky-400/25 bg-sky-500/10 px-2.5 py-2 text-[11px] font-semibold text-sky-200 hover:bg-sky-500/20 cursor-pointer transition-colors"
-            >
-              <span className="flex items-center gap-1.5">
-                <Droplets className="w-3.5 h-3.5 text-sky-300 shrink-0" />
-                <span>سجّل كوب ماء</span>
-              </span>
-              <span className="font-digits text-[10px] text-sky-300">+1</span>
-            </button>
-          )}
-          {nextMedicationQuick && onQuickTakeMedication && (
-            <button
-              type="button"
-              onClick={() => {
-                onQuickTakeMedication(nextMedicationQuick.id, nextMedicationQuick.doseTime24);
-                flashQuickDone(`تم تسجيل ${nextMedicationQuick.name} ✓`);
-              }}
-              className="w-full flex items-center justify-between gap-2 rounded-lg border border-rose-400/25 bg-rose-500/10 px-2.5 py-2 text-[11px] font-semibold text-rose-200 hover:bg-rose-500/20 cursor-pointer transition-colors"
-            >
-              <span className="flex items-center gap-1.5 min-w-0">
-                <Pill className="w-3.5 h-3.5 text-rose-300 shrink-0" />
-                <span className="truncate">أخذت {nextMedicationQuick.name}</span>
-              </span>
-              {nextMedicationQuick.timeLabel && (
-                <span className="font-digits text-[10px] text-rose-300 shrink-0">
-                  {nextMedicationQuick.timeLabel}
-                </span>
-              )}
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  // Inside native Windows EXE, the sleek native DesktopCapsuleForm floats freely on the desktop.
-  // Provide only a clean obsidian-glass dock trigger with popover controls (no duplicate floating bar).
   if (isNativeWindowsExe) {
+    const showNative = () => {
+      try {
+        webviewBridge?.postMessage?.(JSON.stringify({ type: 'show-native-capsule' }));
+      } catch {
+        // ignore
+      }
+    };
     return (
-      <div className="fixed bottom-4 left-4 z-40">
-        <div className="relative inline-block">
-          {menuOpen && (
-            <div className="absolute bottom-[calc(100%+8px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">
-              {renderShapeControls()}
-              <button
-                type="button"
-                onClick={() => {
-                  try {
-                    webviewBridge?.postMessage?.(JSON.stringify({ type: 'show-native-capsule' }));
-                  } catch {
-                    // ignore
-                  }
-                  setMenuOpen(false);
-                }}
-                className="w-full flex items-center justify-center gap-2 rounded-lg bg-[#7FFFD4] text-black py-2 text-xs font-bold hover:bg-[#66eec2] transition-colors cursor-pointer"
-              >
-                <PictureInPicture2 className="w-3.5 h-3.5" />
-                <span>إظهار الكبسولة على سطح المكتب</span>
-              </button>
-            </div>
-          )}
-          <div className="flex items-center gap-1 rounded-full border border-white/[0.12] bg-gradient-to-b from-[#10151E] to-[#07080B] p-1 shadow-[0_8px_30px_rgba(0,0,0,0.65)]">
-          <button
-            type="button"
-            onClick={() => {
-              try {
-                webviewBridge?.postMessage?.(JSON.stringify({ type: 'show-native-capsule' }));
-              } catch {
-                // ignore
-              }
-            }}
-            className="rounded-full px-3 py-1.5 text-[11px] font-medium text-zinc-200 hover:bg-white/[0.06] hover:text-[#7FFFD4] flex items-center gap-1.5 transition-colors cursor-pointer"
-            title="إظهار الكبسولة العائمة على سطح المكتب"
-          >
-            <PictureInPicture2 className="w-3.5 h-3.5 text-[#7FFFD4]" />
-            <span>الكبسولة</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setMenuOpen((v) => !v)}
-            className="rounded-full p-1.5 text-zinc-400 hover:bg-white/[0.06] hover:text-white transition-colors cursor-pointer"
-            title="خيارات حجم واتجاه الكبسولة"
-            aria-label="خيارات الكبسولة"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-          </button>
-        </div>
-        </div>
-      </div>
+      <NativeWindowsCapsuleTrigger
+        menuOpen={menuOpen}
+        setMenuOpen={setMenuOpen}
+        prefs={prefs}
+        updatePrefs={updatePrefs}
+        showNative={showNative}
+      />
     );
   }
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    if (e.button !== 0) return;
-    dragStateRef.current = {
-      active: true,
-      startX: e.clientX,
-      startY: e.clientY,
-      originX: offset.x,
-      originY: offset.y,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragStateRef.current.active) return;
-    const dx = e.clientX - dragStateRef.current.startX;
-    const dy = e.clientY - dragStateRef.current.startY;
-    setOffset({
-      x: dragStateRef.current.originX + dx,
-      y: dragStateRef.current.originY + dy,
-    });
-  };
-
-  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragStateRef.current.active) return;
-    dragStateRef.current.active = false;
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      // ignore if capture already released
-    }
-  };
-
-  // Desktop-only (md:flex / md:block) — Mobile NEVER shows an in-app floating capsule!
   if (!visible) {
     return (
       <button
@@ -782,20 +210,12 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        setMenuOpen((v) => !v);
-      }}
-      style={{
-        transform: `translate3d(${offset.x}px, ${offset.y}px, 0)`,
-      }}
+      onContextMenu={(e) => { e.preventDefault(); setMenuOpen((v) => !v); }}
+      style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0)` }}
       className="hidden md:block fixed bottom-5 left-5 z-40 select-none touch-none"
     >
-      {/* Sleek Obsidian-Glass Desktop Capsule (Emoji + Tabular Countdown + Optional Phone Charging ETA) */}
       <div
-        className={`flex ${
-          isVertical ? 'flex-col items-center rounded-2xl' : 'flex-row items-center rounded-full'
-        } ${sizeTokens.shellGap} ${sizeTokens.shellPad} border border-white/[0.14] bg-gradient-to-b from-[#10151E]/95 to-[#07080B]/95 shadow-[0_12px_36px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-[#7FFFD4]/40 transition-colors cursor-grab active:cursor-grabbing`}
+        className={`flex ${isVertical ? 'flex-col items-center rounded-2xl' : 'flex-row items-center rounded-full'} ${sizeTokens.shellGap} ${sizeTokens.shellPad} border border-white/[0.14] bg-gradient-to-b from-[#10151E]/95 to-[#07080B]/95 shadow-[0_12px_36px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.08)] hover:border-[#7FFFD4]/40 transition-colors cursor-grab active:cursor-grabbing`}
         title={
           hasDualTimers && activeTask
             ? `${activePrimary.title} (${activePrimaryClock}) · ${activeTask.title} (${activeTaskClock})`
@@ -803,78 +223,28 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
         }
       >
         <GripHorizontal className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+        <div className="flex items-center gap-1.5" title={`${activePrimary.title}${activePrimary.clockLabel ? ` (${activePrimary.clockLabel})` : ''} · ${activePrimary.statusLabel ?? statusLabel}`}>
+          <span className={sizeTokens.emojiCls}>{activePrimary.emoji}</span>
+          <span dir="ltr" className={`${sizeTokens.clockCls} ${activePrimaryUrgent ? 'text-[#FF6B6B]' : activePrimary.isNow ? 'text-[#4ADE80]' : 'text-[#7FFFD4]'}`}>
+            {activePrimaryClock}
+          </span>
+        </div>
 
-        {hasDualTimers && activeTask ? (
+        {hasDualTimers && activeTask && (
           <>
-            <div
-              className="flex items-center gap-1.5"
-              title={`${activePrimary.title}${activePrimary.clockLabel ? ` (${activePrimary.clockLabel})` : ''} · ${activePrimary.statusLabel ?? statusLabel}`}
-            >
-              <span className={sizeTokens.emojiCls}>{activePrimary.emoji}</span>
-              <span
-                dir="ltr"
-                className={`${sizeTokens.clockCls} ${
-                  activePrimaryUrgent
-                    ? 'text-[#FF6B6B]'
-                    : activePrimary.isNow
-                      ? 'text-[#4ADE80]'
-                      : 'text-[#7FFFD4]'
-                }`}
-              >
-                {activePrimaryClock}
-              </span>
-            </div>
-
-            <span
-              className={
-                isVertical
-                  ? 'w-full h-px bg-white/[0.08] shrink-0'
-                  : 'h-3.5 w-px bg-white/[0.12] shrink-0'
-              }
-            />
-
-            <div
-              className="flex items-center gap-1.5"
-              title={`${activeTask.title}${activeTask.clockLabel ? ` — الساعة ${activeTask.clockLabel}` : ''} · ${activeTask.statusLabel ?? ''}`}
-            >
+            <span className={isVertical ? 'w-full h-px bg-white/[0.08] shrink-0' : 'h-3.5 w-px bg-white/[0.12] shrink-0'} />
+            <div className="flex items-center gap-1.5" title={`${activeTask.title}${activeTask.clockLabel ? ` — الساعة ${activeTask.clockLabel}` : ''} · ${activeTask.statusLabel ?? ''}`}>
               <span className={sizeTokens.emojiCls}>{activeTask.emoji}</span>
-              <span
-                dir="ltr"
-                className={`${sizeTokens.clockCls} ${
-                  activeTaskUrgent
-                    ? 'text-[#FF6B6B]'
-                    : activeTask.isNow
-                      ? 'text-[#4ADE80]'
-                      : activeTask.emoji === '💧'
-                        ? 'text-sky-300'
-                        : 'text-amber-300'
-                }`}
-              >
+              <span dir="ltr" className={`${sizeTokens.clockCls} ${activeTaskUrgent ? 'text-[#FF6B6B]' : activeTask.isNow ? 'text-[#4ADE80]' : activeTask.emoji === '💧' ? 'text-sky-300' : 'text-amber-300'}`}>
                 {activeTaskClock}
               </span>
             </div>
           </>
-        ) : (
-          <div className="flex items-center gap-1.5" title={`${activePrimary.title} · ${activePrimary.statusLabel ?? statusLabel}`}>
-            <span className={sizeTokens.emojiCls}>{activePrimary.emoji}</span>
-            <span
-              dir="ltr"
-              className={`${sizeTokens.clockCls} ${
-                activePrimaryUrgent ? 'text-[#FF6B6B]' : activePrimary.isNow ? 'text-[#4ADE80]' : 'text-[#7FFFD4]'
-              }`}
-            >
-              {activePrimaryClock}
-            </span>
-          </div>
         )}
 
         {phoneBatteryFresh && phoneBattery && (
           <span
-            className={`flex items-center gap-1 font-digits text-[11px] font-bold ${
-              isVertical
-                ? 'border-t border-white/[0.08] pt-1.5'
-                : 'border-r border-white/[0.12] pr-2'
-            } ${phoneReachedLimit ? 'text-[#4ADE80]' : 'text-amber-300'}`}
+            className={`flex items-center gap-1 font-digits text-[11px] font-bold ${isVertical ? 'border-t border-white/[0.08] pt-1.5' : 'border-r border-white/[0.12] pr-2'} ${phoneReachedLimit ? 'text-[#4ADE80]' : 'text-amber-300'}`}
             title={`بطارية ${phoneBattery.deviceLabel}: ${phoneBattery.levelPct}%${phoneEtaShort ? ` · متبقي ${phoneEtaShort}` : ''} (الحد ${phoneBattery.chargeLimitPct}%)`}
           >
             <Zap className="w-3 h-3 shrink-0" />
@@ -886,11 +256,7 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
         <button
           type="button"
           onClick={() => setMenuOpen((v) => !v)}
-          className={`rounded-full text-zinc-500 hover:text-zinc-100 hover:bg-white/[0.06] transition-colors cursor-pointer ${
-            isVertical
-              ? 'w-full border-t border-white/[0.08] pt-1 flex items-center justify-center'
-              : 'p-1'
-          }`}
+          className={`rounded-full text-zinc-500 hover:text-zinc-100 hover:bg-white/[0.06] transition-colors cursor-pointer ${isVertical ? 'w-full border-t border-white/[0.08] pt-1 flex items-center justify-center' : 'p-1'}`}
           aria-label="خيارات الكبسولة"
           title="خيارات الكبسولة"
         >
@@ -898,89 +264,23 @@ export const FloatingPiPCapsule: React.FC<FloatingPiPCapsuleProps> = ({
         </button>
       </div>
 
-      {/* Sleek Obsidian Popover Menu anchored cleanly ABOVE the capsule so the pill NEVER shifts horizontally */}
       {menuOpen && (
-        <div className="absolute bottom-[calc(100%+10px)] left-0 w-64 rounded-2xl border border-white/[0.1] bg-[#0B0E14]/96 p-3 text-xs shadow-[0_18px_48px_rgba(0,0,0,0.85)] space-y-2.5">
-          {renderQuickCheckIn()}
-          {renderShapeControls()}
-
-          {upcomingQueue.length > 0 && (
-            <div className="border-b border-white/[0.08] pb-2.5 space-y-1.5">
-              <div className="px-0.5 text-[10px] font-semibold text-zinc-400">
-                القادم خلال اليوم
-              </div>
-              {upcomingQueue.slice(0, 4).map((item, idx) => (
-                <div
-                  key={`${item.title}-${idx}`}
-                  className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2.5 py-1.5"
-                >
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-sm leading-none shrink-0">{item.emoji}</span>
-                    <div className="min-w-0">
-                      <div className="text-[11px] font-medium text-zinc-100 truncate">
-                        {item.title}
-                      </div>
-                      {item.clockLabel && (
-                        <div className="text-[10px] text-zinc-500 font-digits">
-                          {item.clockLabel}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <span
-                    dir="ltr"
-                    className={`font-digits text-[11px] font-bold shrink-0 ${
-                      item.isUrgent
-                        ? 'text-[#FF6B6B]'
-                        : item.isNow
-                          ? 'text-[#4ADE80]'
-                          : item.emoji === '💧'
-                            ? 'text-sky-300'
-                            : 'text-[#7FFFD4]'
-                    }`}
-                  >
-                    {resolveDigitalClock(item.targetEpochMs, item.countdownText, nowTickMs)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="space-y-1">
-            {supportsDesktopPopout && (
-              <button
-                type="button"
-                onClick={() => void openBrowserDesktopPopout()}
-                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[#7FFFD4] hover:bg-[#7FFFD4]/12 transition-colors cursor-pointer"
-              >
-                <PictureInPicture2 className="w-3.5 h-3.5" />
-                <span>فصلها خارج المتصفح</span>
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                onOpenDashboard();
-                setMenuOpen(false);
-              }}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-200 hover:bg-white/[0.06] transition-colors cursor-pointer"
-            >
-              <LayoutDashboard className="w-3.5 h-3.5" />
-              <span>فتح لوحة التحكم</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setVisible(false);
-                setMenuOpen(false);
-              }}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-zinc-400 hover:bg-white/[0.06] hover:text-white transition-colors cursor-pointer"
-            >
-              <EyeOff className="w-3.5 h-3.5" />
-              <span>إخفاء الكبسولة</span>
-            </button>
-          </div>
-        </div>
+        <CapsulePopover
+          prefs={prefs}
+          onUpdatePrefs={updatePrefs}
+          quickDoneFlash={quickDoneFlash}
+          onFlashQuickDone={flashQuickDone}
+          onQuickLogWater={onQuickLogWater}
+          nextMedicationQuick={nextMedicationQuick}
+          onQuickTakeMedication={onQuickTakeMedication}
+          upcomingQueue={upcomingQueue}
+          nowTickMs={nowTickMs}
+          supportsDesktopPopout={supportsDesktopPopout}
+          onOpenPopout={() => void openBrowserDesktopPopout()}
+          onOpenDashboard={onOpenDashboard}
+          onHideCapsule={() => { setVisible(false); setMenuOpen(false); }}
+          onCloseMenu={() => setMenuOpen(false)}
+        />
       )}
     </div>
   );

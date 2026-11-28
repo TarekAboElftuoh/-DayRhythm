@@ -4,21 +4,7 @@ import { Drawer } from 'vaul';
 import { CatchUpDecision, ScheduleBlock } from '../types/dayrhythm';
 import { computeCollisionFreeReflow } from '../engines/scheduleEngine';
 import { formatMinutes12h, getNowMinutesInTimeZone } from '../engines/prayerEngine';
-
-function useIsMobileViewport(): boolean {
-  const [isMobile, setIsMobile] = useState<boolean>(() =>
-    typeof window !== 'undefined' ? window.matchMedia('(max-width: 767px)').matches : false
-  );
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mq = window.matchMedia('(max-width: 767px)');
-    const onChange = () => setIsMobile(mq.matches);
-    onChange();
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }, []);
-  return isMobile;
-}
+import { useIsMobileViewport } from './lifeProfile/types';
 
 interface SmartCatchUpModalProps {
   isOpen: boolean;
@@ -299,14 +285,10 @@ export const SmartCatchUpModal: React.FC<SmartCatchUpModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="تدارك اليوم"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border border-white/[0.06] bg-[var(--bg-card)] p-6 text-zinc-100 shadow-2xl">
-        {renderContent(
-          <h2 className="text-lg font-bold text-white">⚡ تدارك اليوم ببساطة</h2>
-        )}
+        {renderContent(<h2 className="text-lg font-bold text-white">⚡ تدارك اليوم ببساطة</h2>)}
       </div>
     </div>
   );

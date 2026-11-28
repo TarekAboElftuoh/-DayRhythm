@@ -1,0 +1,12 @@
+[
+{
+  "directory": "C:/Users/Administrator/Downloads/DayRhythm/native/android-webkit/app/.cxx/Debug/4b423c2b/arm64-v8a",
+  "command": "C:\\android-sdk\\ndk\\26.1.10909125\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=aarch64-none-linux-android26 --sysroot=C:/android-sdk/ndk/26.1.10909125/toolchains/llvm/prebuilt/windows-x86_64/sysroot -DDR_BUILDING_SHARED=1 -Ddayrhythm_core_EXPORTS -IC:/Users/Administrator/Downloads/DayRhythm/core/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -fno-limit-debug-info  -fPIC -std=c++20 -o CMakeFiles\\dayrhythm_core.dir\\src\\spirc_codec.cpp.o -c C:\\Users\\Administrator\\Downloads\\DayRhythm\\core\\src\\spirc_codec.cpp",
+  "file": "C:\\Users\\Administrator\\Downloads\\DayRhythm\\core\\src\\spirc_codec.cpp"
+},
+{
+  "directory": "C:/Users/Administrator/Downloads/DayRhythm/native/android-webkit/app/.cxx/Debug/4b423c2b/arm64-v8a",
+  "command": "C:\\android-sdk\\ndk\\26.1.10909125\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang++.exe --target=aarch64-none-linux-android26 --sysroot=C:/android-sdk/ndk/26.1.10909125/toolchains/llvm/prebuilt/windows-x86_64/sysroot -DDR_BUILDING_SHARED=1 -Ddayrhythm_core_EXPORTS -IC:/Users/Administrator/Downloads/DayRhythm/core/include -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++20 -fno-limit-debug-info  -fPIC -std=c++20 -o CMakeFiles\\dayrhythm_core.dir\\src\\jni_bridge.cpp.o -c C:\\Users\\Administrator\\Downloads\\DayRhythm\\core\\src\\jni_bridge.cpp",
+  "file": "C:\\Users\\Administrator\\Downloads\\DayRhythm\\core\\src\\jni_bridge.cpp"
+}
+]

@@ -9,3 +9,4 @@
 8. Audio: Strict sound signature and sanctuary adherence; instant dismiss sync.
 9. Verification: Run tests and type checks before finishing changes.
 10. Efficiency: Smallest complete change wins. Deletion beats addition.
+11. File size: Keep every source file under 300 lines; extract new UI sections or engine logic into focused sub-modules instead of bloating existing files.

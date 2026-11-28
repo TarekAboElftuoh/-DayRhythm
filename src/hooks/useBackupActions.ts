@@ -28,6 +28,8 @@ import {
 import { getDateIsoInTimeZone } from '../engines/prayerEngine';
 import { CAPSULE_PREFS_STORAGE_KEY, rollOverHydrationHistoryIfNeeded } from '../utils/appHelpers';
 
+import { downloadBackupJsonFile, sanitizeImportedStreaks } from './backupExportHelper';
+
 export interface UseBackupActionsParams {
   activeTimeZone: string;
   adhanOverrideSilent: boolean;
@@ -99,10 +101,8 @@ export function useBackupActions(params: UseBackupActionsParams) {
 
   const handleExportBackupJson = useCallback(() => {
     const todayIso = getDateIsoInTimeZone(activeTimeZone);
-    const payload = {
-      app: 'DayRhythm',
-      version: 1,
-      exportedAtIso: new Date().toISOString(),
+    const ok = downloadBackupJsonFile({
+      todayIso,
       lifeProfile,
       medications,
       memories,
@@ -111,34 +111,21 @@ export function useBackupActions(params: UseBackupActionsParams) {
       hydrationHistory,
       streaks,
       deviceSettings,
-      uiPrefs: sanitizeUiPrefs({
-        selectedLogoId,
-        capsuleOrientation: capsulePrefs.orientation,
-        capsuleSize: capsulePrefs.size,
-      }),
-    };
-    try {
-      const blob = new Blob([JSON.stringify(payload, null, 2)], {
-        type: 'application/json;charset=utf-8',
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `dayrhythm-backup-${todayIso}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      showToast(`💾 تم تنزيل النسخة الاحتياطية الكاملة (dayrhythm-backup-${todayIso}.json) ✓`);
-    } catch {
-      showToast('تعذر تنزيل ملف النسخة الاحتياطية — حاول مرة أخرى');
-    }
+      selectedLogoId,
+      capsulePrefs,
+    });
+    showToast(
+      ok
+        ? `💾 تم تنزيل النسخة الاحتياطية الكاملة (dayrhythm-backup-${todayIso}.json) ✓`
+        : 'تعذر تنزيل ملف النسخة الاحتياطية — حاول مرة أخرى'
+    );
   }, [
     activeTimeZone,
     capsulePrefs.orientation,
     capsulePrefs.size,
     creativeActivities,
     deviceSettings,
+    habits,
     hydrationHistory,
     lifeProfile,
     medications,
@@ -185,25 +172,7 @@ export function useBackupActions(params: UseBackupActionsParams) {
             capsuleOrientation: capsulePrefs.orientation,
             capsuleSize: capsulePrefs.size,
           };
-        const nextStreaks: DualStreaks =
-          parsed.streaks && typeof parsed.streaks === 'object'
-            ? {
-                dailyCommitmentDays: Math.max(
-                  0,
-                  Math.min(3650, Number((parsed.streaks as Partial<DualStreaks>).dailyCommitmentDays) || 0)
-                ),
-                dailyCommitmentDoneToday: Boolean(
-                  (parsed.streaks as Partial<DualStreaks>).dailyCommitmentDoneToday
-                ),
-                waterTargetDays: Math.max(
-                  0,
-                  Math.min(3650, Number((parsed.streaks as Partial<DualStreaks>).waterTargetDays) || 0)
-                ),
-                waterTargetDoneToday: Boolean(
-                  (parsed.streaks as Partial<DualStreaks>).waterTargetDoneToday
-                ),
-              }
-            : streaks;
+        const nextStreaks = sanitizeImportedStreaks(parsed.streaks, streaks);
         const restoreTz = nextProfile.currentTimeZone || activeTimeZone;
         const nextHydration =
           Array.isArray(parsed.hydrationHistory) && parsed.hydrationHistory.length === 7

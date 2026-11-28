@@ -1,51 +1,24 @@
 import React, { useState } from 'react';
-import { Pencil, Sun, Volume2 } from 'lucide-react';
+import { Pencil, Volume2 } from 'lucide-react';
 import { playSunlightChime } from '../engines/audioEngine';
 import {
   DEFAULT_SUNLIGHT_SETTINGS,
-  type SunlightExposureMode,
   type SunlightSessionId,
   type SunlightSettings,
-  type SunlightSkinTone,
 } from '../types/dayrhythm';
+import { SunlightHeaderControls } from './SunlightHeaderControls';
 import type { SunlightZoneBounds } from '../engines/sunlightEngine';
+import {
+  buildZoneGradient,
+  EXPOSURE_OPTIONS,
+  SESSION_ORDER,
+  SESSION_ZONES,
+  SKIN_TONE_OPTIONS,
+} from './sunlightSettingsConfig';
 
 interface SunlightSettingsSectionProps {
   settings: SunlightSettings;
   onChange: (next: SunlightSettings) => void;
-}
-
-const SESSION_ORDER: SunlightSessionId[] = ['morning', 'noon', 'evening'];
-
-const SESSION_ZONES: Record<SunlightSessionId, SunlightZoneBounds> = {
-  morning: { minUseful: 5, optimal: 12, maxUseful: 18, maxSafe: 20 },
-  noon: { minUseful: 5, optimal: 15, maxUseful: 25, maxSafe: 30 },
-  evening: { minUseful: 5, optimal: 15, maxUseful: 20, maxSafe: 25 },
-};
-
-const SKIN_TONE_OPTIONS: Array<{ value: SunlightSkinTone; labelAr: string }> = [
-  { value: 'fair', labelAr: 'فاتحة' },
-  { value: 'wheat', labelAr: 'قمحية' },
-  { value: 'dark', labelAr: 'سمراء' },
-];
-
-const EXPOSURE_OPTIONS: Array<{ value: SunlightExposureMode; labelAr: string }> = [
-  { value: 'auto', labelAr: 'تلقائي' },
-  { value: 'face_hands', labelAr: 'وجه ويدين' },
-  { value: 'arms_light', labelAr: 'ذراعين' },
-];
-
-function buildZoneGradient(zones: SunlightZoneBounds): string {
-  const min = zones.minUseful;
-  const max = zones.maxSafe;
-  const span = Math.max(1, max - min);
-  const toPct = (val: number) =>
-    Math.max(0, Math.min(100, ((val - min) / span) * 100));
-
-  const optPct = toPct(zones.optimal);
-  const maxUsefulPct = toPct(zones.maxUseful);
-
-  return `linear-gradient(to right, rgba(245, 158, 11, 0.35) 0%, rgba(16, 185, 129, 0.38) ${optPct.toFixed(1)}%, rgba(56, 189, 248, 0.35) ${maxUsefulPct.toFixed(1)}%, rgba(161, 161, 170, 0.22) 100%)`;
 }
 
 export const SunlightSettingsSection: React.FC<SunlightSettingsSectionProps> = ({
@@ -76,39 +49,10 @@ export const SunlightSettingsSection: React.FC<SunlightSettingsSectionProps> = (
       dir="rtl"
       className="rounded-xl border border-white/10 bg-black/50 p-4 space-y-3.5 text-xs"
     >
-      {/* Header + Master Toggle */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-bold text-white flex items-center gap-2">
-          <Sun className="w-4 h-4 text-amber-300" aria-hidden="true" />
-          <span>الأشعة المفيدة</span>
-        </h3>
-
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => playSunlightChime('end')}
-            title="تجربة نغمة انتهاء الجلسة"
-            className="px-2.5 py-1 rounded-full border border-white/10 bg-white/[0.03] text-zinc-300 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 text-[11px] inline-flex items-center gap-1 cursor-pointer transition-colors"
-          >
-            <Volume2 className="w-3 h-3" aria-hidden="true" />
-            <span>نغمة الانتهاء</span>
-          </button>
-
-          <button
-            type="button"
-            role="switch"
-            aria-checked={settings.enabled}
-            onClick={() => onChange({ ...settings, enabled: !settings.enabled })}
-            className={`px-3 py-1 rounded-full border font-mono-tabular text-[11px] font-semibold cursor-pointer transition-colors ${
-              settings.enabled
-                ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/15 text-[#7FFFD4]'
-                : 'border-white/15 bg-white/[0.03] text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            {settings.enabled ? 'مفعّل' : 'متوقف'}
-          </button>
-        </div>
-      </div>
+      <SunlightHeaderControls
+        enabled={settings.enabled}
+        onToggle={() => onChange({ ...settings, enabled: !settings.enabled })}
+      />
 
       {settings.enabled && (
         <div className="space-y-3.5 pt-1">

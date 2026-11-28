@@ -1,0 +1,4 @@
+# ninja log v5
+0	920	8174923543616872	CMakeFiles/dayrhythm_core.dir/src/jni_bridge.cpp.o	1f9b2c1ebd9ba17a
+376	1019	8174923544546931	CMakeFiles/dayrhythm_core.dir/src/spirc_codec.cpp.o	3e822890a5f4aa3
+1019	1744	8174923551840129	C:/Users/Administrator/Downloads/DayRhythm/native/android-webkit/app/build/intermediates/cxx/Debug/4b423c2b/obj/armeabi-v7a/libdayrhythm_core.so	7f99086d13e612c2

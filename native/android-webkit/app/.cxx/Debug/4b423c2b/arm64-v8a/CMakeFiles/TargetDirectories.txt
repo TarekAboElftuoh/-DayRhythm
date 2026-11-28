@@ -1,0 +1,3 @@
+C:/Users/Administrator/Downloads/DayRhythm/native/android-webkit/app/.cxx/Debug/4b423c2b/arm64-v8a/CMakeFiles/dayrhythm_core.dir
+C:/Users/Administrator/Downloads/DayRhythm/native/android-webkit/app/.cxx/Debug/4b423c2b/arm64-v8a/CMakeFiles/edit_cache.dir
+C:/Users/Administrator/Downloads/DayRhythm/native/android-webkit/app/.cxx/Debug/4b423c2b/arm64-v8a/CMakeFiles/rebuild_cache.dir

@@ -1,88 +1,20 @@
-import {
-  CreativeActivityItem,
-  DynamicHabit,
-  HydrationDayLog,
-  LifeProfile,
-  MedicationItem,
-  MemoryItem,
-  PersistedChatMessage,
-  QuietModeType,
-  UiPrefs,
-} from '../types/dayrhythm';
-import { OnePlusDeviceSettings } from '../firebase';
 import { refreshGoogleCalendarTokenSilently } from './googleCalendarAuth';
+import {
+  GDRIVE_BACKUP_FILENAME,
+  getDriveApiStatus,
+  setDriveApiStatus,
+  getStoredFileId,
+  storeFileId,
+  type FullDayRhythmCloudBackup,
+  type DriveApiStatus,
+} from './googleDriveTypes';
 
-export const GDRIVE_BACKUP_FILENAME = 'dayrhythm_account_sync.json';
-const GDRIVE_FILE_ID_CACHE_KEY = 'dayrhythm_gdrive_appdata_file_id_v1';
-
-export interface FullDayRhythmCloudBackup {
-  version: 1;
-  updatedAtIso: string;
-  updatedAtMs: number;
-  lifeProfile: LifeProfile;
-  medications: MedicationItem[];
-  hydrationHistory: HydrationDayLog[];
-  creativeActivities: CreativeActivityItem[];
-  habits?: DynamicHabit[];
-  memories: MemoryItem[];
-  deviceSettings: OnePlusDeviceSettings;
-  uiPrefs?: UiPrefs;
-  quietMode?: QuietModeType;
-  adhanOverrideSilent?: boolean;
-  waterRemindersEnabled?: boolean;
-  phoneChargeLimitPct?: number;
-  smartChargeAlertEnabled?: boolean;
-  smartChargeKeepUntilUnplugged?: boolean;
-  capsulePrefs?: {
-    orientation: 'horizontal' | 'vertical';
-    size: 'sm' | 'md' | 'lg';
-  };
-  selectedLogoId?: string;
-  chatMessages?: PersistedChatMessage[];
-}
-
-let cachedFileId: string | null = null;
-
-export interface DriveApiStatus {
-  status: 'ok' | 'service_disabled' | 'scope_missing' | 'unknown_error';
-  enableUrl: string;
-}
-
-let lastDriveStatus: DriveApiStatus = {
-  status: 'ok',
-  enableUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=527201435015',
+export {
+  GDRIVE_BACKUP_FILENAME,
+  getDriveApiStatus,
+  type FullDayRhythmCloudBackup,
+  type DriveApiStatus,
 };
-
-export function getDriveApiStatus(): DriveApiStatus {
-  return lastDriveStatus;
-}
-
-function getStoredFileId(): string | null {
-  if (cachedFileId) return cachedFileId;
-  try {
-    const saved = localStorage.getItem(GDRIVE_FILE_ID_CACHE_KEY);
-    if (saved && typeof saved === 'string') {
-      cachedFileId = saved.trim();
-      return cachedFileId;
-    }
-  } catch {
-    // ignore storage errors
-  }
-  return null;
-}
-
-function storeFileId(fileId: string | null): void {
-  cachedFileId = fileId;
-  try {
-    if (fileId) {
-      localStorage.setItem(GDRIVE_FILE_ID_CACHE_KEY, fileId);
-    } else {
-      localStorage.removeItem(GDRIVE_FILE_ID_CACHE_KEY);
-    }
-  } catch {
-    // ignore storage errors
-  }
-}
 
 /**
  * Searches for the appDataFolder backup file or creates a clean one if not found.
@@ -117,13 +49,13 @@ export async function getOrFindAppDataFileId(token: string): Promise<string | nu
       const errJson = await res.json().catch(() => ({}));
       const str = JSON.stringify(errJson);
       const isServiceDisabled = str.includes('SERVICE_DISABLED') || str.includes('has not been used in project');
-      lastDriveStatus = {
+      setDriveApiStatus({
         status: isServiceDisabled ? 'service_disabled' : 'scope_missing',
         enableUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=527201435015',
-      };
-      console.warn('[GoogleDriveStorage] Google Drive API 403 on getOrFind:', lastDriveStatus.status, errJson);
+      });
+      console.warn('[GoogleDriveStorage] Google Drive API 403 on getOrFind:', getDriveApiStatus().status, errJson);
       if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: lastDriveStatus }));
+        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: getDriveApiStatus() }));
       }
       return null;
     }
@@ -203,13 +135,13 @@ export async function loadFromGoogleDriveAppData(
         const errJson = await searchRes.json().catch(() => ({}));
         const str = JSON.stringify(errJson);
         const isServiceDisabled = str.includes('SERVICE_DISABLED') || str.includes('has not been used in project');
-        lastDriveStatus = {
+        setDriveApiStatus({
           status: isServiceDisabled ? 'service_disabled' : 'scope_missing',
           enableUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=527201435015',
-        };
-        console.warn('[GoogleDriveStorage] Google Drive API 403 on search:', lastDriveStatus.status, errJson);
+        });
+        console.warn('[GoogleDriveStorage] Google Drive API 403 on search:', getDriveApiStatus().status, errJson);
         if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: lastDriveStatus }));
+          window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: getDriveApiStatus() }));
         }
         return null;
       }
@@ -325,13 +257,13 @@ export async function saveToGoogleDriveAppData(
       const errJson = await patchRes.json().catch(() => ({}));
       const str = JSON.stringify(errJson);
       const isServiceDisabled = str.includes('SERVICE_DISABLED') || str.includes('has not been used in project');
-      lastDriveStatus = {
+      setDriveApiStatus({
         status: isServiceDisabled ? 'service_disabled' : 'scope_missing',
         enableUrl: 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=527201435015',
-      };
-      console.warn('[GoogleDriveStorage] Google Drive API 403 on patch:', lastDriveStatus.status, errJson);
+      });
+      console.warn('[GoogleDriveStorage] Google Drive API 403 on patch:', getDriveApiStatus().status, errJson);
       if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: lastDriveStatus }));
+        window.dispatchEvent(new CustomEvent('dayrhythm:gdrive-api-status', { detail: getDriveApiStatus() }));
       }
       return false;
     }
