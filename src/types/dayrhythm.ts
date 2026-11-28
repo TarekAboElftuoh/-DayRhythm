@@ -182,12 +182,20 @@ export interface TaskExecutionResult {
   taskListId?: string;
 }
 
+export type MedicationFastingPolicy =
+  | 'auto-nearest'
+  | 'before-fajr'
+  | 'after-maghrib'
+  | 'skip'
+  | 'unchanged';
+
 export interface MedicationItem {
   id: string;
   name: string;
   time24: string;
   times24?: string[]; // Multiple daily doses e.g. ['08:00', '20:00']; empty = flexible / awaiting time
   daysOfWeek?: number[]; // Empty = every day; otherwise 0=Sun..6=Sat (e.g. gym days)
+  fastingPolicy?: MedicationFastingPolicy; // How daytime (Fajr-Maghrib) doses behave on fasting days
   takenDosesToday?: string[]; // Dose keys logged on takenDateKey
   doseNote: string;
   takenDateKey: string;
@@ -206,6 +214,7 @@ export interface MedicationActionProposal {
   time24?: string;
   times24?: string[];
   daysOfWeek?: number[];
+  fastingPolicy?: MedicationFastingPolicy;
   doseNote?: string;
   courseEndDate?: string;
   remainingDoses?: number;
@@ -392,10 +401,14 @@ export interface LifeProfile {
   cupSizeMl: number;
   fastingDays: number[]; // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
   suhoorLeadMinutes: number;
-  sleepTargetMinutes: number; // e.g., 450 = 7.5 hours (5 x 90m cycles)
+  sleepTargetMinutes: number; // e.g., 450 = 7.5 hours (5 x 90m cycles), allowed 180..840
+  bedtime24?: string; // Optional preferred bedtime override in HH:MM (24h)
+  wakeLeadBeforeFajrMinutes?: number; // Optional wake lead before Fajr in minutes (0..180)
   sleepStrategy: SleepStrategy;
   sleepDebtMinutes: number; // 0..480 accumulated sleep deficit for gentle automatic recovery
   sleepDebtLogDateKey: string; // YYYY-MM-DD when user last checked in morning sleep quality
+  fastingWhiteDays?: boolean; // Whether 13/14/15 Hijri White Days auto-fasting is enabled
+  dailyWaterTargetMl?: number; // Optional explicit daily hydration target override in ml (1000..8000)
   adhanLeadMinutes: number; // default 0 min (exact Adhan time)
   prayerSilenceMinutes: number; // default 20 min from Adhan for Dhuhr/Asr/Maghrib/Isha
   fajrSilenceMinutes: number; // default 30 min from Adhan for Fajr
@@ -591,6 +604,7 @@ export interface PendingProposal {
   profileUpdates?: Partial<LifeProfile>;
   memoryActions?: MemoryActionProposal[];
   appSettings?: AppSettingsPatch;
+  settingsPatchProposal?: SettingsPatchProposal;
   status: 'pending' | 'confirmed' | 'cancelled';
   fromTextFallback?: boolean;
 }
@@ -716,7 +730,7 @@ export interface PeriodicRitualStatus {
  * Every field is optional; only the ones present are applied.
  */
 export interface AppSettingsPatch {
-  phoneChargeLimitPct?: number; // 60..100
+  phoneChargeLimitPct?: number; // 50..100
   chargeAlertEnabled?: boolean;
   chargeAlertKeepUntilUnplugged?: boolean;
   waterRemindersEnabled?: boolean;
@@ -732,12 +746,126 @@ export interface AppSettingsPatch {
   liveAlertsAlwaysOn?: boolean;
   liveAlertsShowCharging?: boolean;
   persistentCountdownNotif?: boolean;
+  includePrayerAnchors?: boolean;
   // NOTE: deliberately no "autoExecuteChat" here — manual-confirm vs instant-execute is a trust
   // setting only a direct tap on the toggle may change, never Gemini on the user's behalf.
   soundRepeats?: Partial<Record<
     'prayer' | 'water' | 'medication' | 'focus_work' | 'walk_health' | 'sleep_suhoor' | 'meeting_event' | 'general',
     number | 'continuous'
   >>;
+}
+
+export type SanctuarySilenceModeOption =
+  | 'silent_inbox'
+  | 'silent_notif'
+  | 'vibrate_notif'
+  | 'hide_all';
+
+export interface MedicationFastingPolicyUpdate {
+  medicationId?: string;
+  name: string;
+  fastingPolicy: MedicationFastingPolicy;
+}
+
+export interface TravelStatePatch {
+  active?: boolean;
+  cityName?: string;
+  lat?: number;
+  lng?: number;
+  timeZone?: string;
+  distanceKm?: number;
+  durationMode?: TravelDurationMode;
+  returnDate?: string;
+  deferredCategories?: TravelDeferrableCategory[];
+  deferredMedIds?: string[];
+}
+
+export interface UnifiedSettingsPatch extends AppSettingsPatch {
+  // Sleep & wake targets
+  bedtime24?: string;
+  sleepTargetHours?: number;
+  sleepTargetMinutes?: number;
+  wakeLeadBeforeFajrMinutes?: number;
+  suhoorLeadMinutes?: number;
+  sleepStrategy?: SleepStrategy;
+  sleepDebtMinutes?: number;
+
+  // Fasting settings
+  fastingDays?: number[];
+  addFastingDays?: number[];
+  removeFastingDays?: number[];
+  fastingMonThu?: boolean;
+  fastingWhiteDays?: boolean;
+  fastingOverride?: 'auto' | 'fasting' | 'normal';
+
+  // Hydration & body targets
+  dailyWaterTargetLiters?: number;
+  dailyWaterTargetMl?: number;
+  cupSizeMl?: number;
+  weightKg?: number;
+  heightCm?: number;
+
+  // Audio Silence Sanctuaries
+  adhanLeadMinutes?: number;
+  prayerSilenceMinutes?: number;
+  fajrSilenceMinutes?: number;
+  oneTimeSilenceMinutes?: number;
+  oneTimeSilenceDateKey?: string;
+  sanctuarySilenceMode?: SanctuarySilenceModeOption;
+  sanctuaryOverrideUntilMs?: number;
+  sanctuaryOverrideMinutes?: number;
+  cancelActiveSanctuaryEarly?: boolean;
+  defaultSnoozeMinutes?: 5 | 10 | 15;
+
+  // Daily modes & work / location
+  meetingMode?: boolean;
+  meetingModeMinutes?: number;
+  travelState?: TravelStatePatch;
+  lowEnergyDateKey?: string;
+  careerTrack?: string;
+  workEnabled?: boolean;
+  workStart24?: string;
+  workEnd24?: string;
+  workDays?: number[];
+  autoLocationSync?: boolean;
+  currentCityName?: string;
+  currentTimeZone?: string;
+  currentLat?: number;
+  currentLng?: number;
+  priorityOrderAr?: string;
+  personalNotes?: string;
+
+  // Medication fasting policies
+  medicationFastingPolicies?: MedicationFastingPolicyUpdate[];
+}
+
+export interface SettingsDiffItem {
+  key: string;
+  labelAr: string;
+  beforeDisplay: string;
+  afterDisplay: string;
+}
+
+export interface SettingsPatchProposal {
+  summaryAr: string;
+  patch: UnifiedSettingsPatch;
+  diffs?: SettingsDiffItem[];
+  warnings?: string[];
+  errors?: string[];
+  blockedKeys?: string[];
+}
+
+export interface SettingsSnapshotContext {
+  lifeProfile?: LifeProfile;
+  appSettings?: AppSettingsPatch;
+  fastingOverride?: 'auto' | 'fasting' | 'normal';
+  travelState?: TravelState;
+  sanctuaryOverrideUntilMs?: number;
+  medications?: Array<{
+    id: string;
+    name: string;
+    fastingPolicy?: MedicationFastingPolicy;
+  }>;
 }
 
 /**

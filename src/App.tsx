@@ -44,6 +44,7 @@ import {
   PomodoroState,
   QuietModeType,
   ScheduleBlock,
+  SettingsSnapshotContext,
   SharedChangelogEntry,
   SilentNotificationItem,
   SoundRepeatSetting,
@@ -59,9 +60,11 @@ import {
   TomorrowAlertInfo,
   TravelState,
   UiPrefs,
+  UnifiedSettingsPatch,
   WeatherHydrationInfo,
   WorkspaceSyncSignal,
 } from './types/dayrhythm';
+import { validateAndNormalizeSettingsPatch } from './utils/settingsPatchValidator';
 import {
   getCalendarAccessToken,
   getOrRefreshCalendarAccessToken,
@@ -171,7 +174,37 @@ function sanitizeLifeProfile(raw: Partial<LifeProfile> | undefined): LifeProfile
   )
     ? (rawMode as SanctuarySilenceMode)
     : 'silent_inbox';
-  return { ...base, sanctuarySilenceMode, schemaVersion: SCHEMA_VERSION };
+  const sleepTargetMinutes =
+    typeof raw?.sleepTargetMinutes === 'number' && Number.isFinite(raw.sleepTargetMinutes)
+      ? Math.max(180, Math.min(840, Math.round(raw.sleepTargetMinutes)))
+      : base.sleepTargetMinutes;
+  const bedtime24 =
+    typeof raw?.bedtime24 === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(raw.bedtime24.trim())
+      ? raw.bedtime24.trim()
+      : raw?.bedtime24 === ''
+        ? ''
+        : undefined;
+  const wakeLeadBeforeFajrMinutes =
+    typeof raw?.wakeLeadBeforeFajrMinutes === 'number' && Number.isFinite(raw.wakeLeadBeforeFajrMinutes)
+      ? Math.max(0, Math.min(180, Math.round(raw.wakeLeadBeforeFajrMinutes)))
+      : undefined;
+  const fastingWhiteDays =
+    typeof raw?.fastingWhiteDays === 'boolean' ? raw.fastingWhiteDays : undefined;
+  const dailyWaterTargetMl =
+    typeof raw?.dailyWaterTargetMl === 'number' && Number.isFinite(raw.dailyWaterTargetMl)
+      ? Math.max(1000, Math.min(8000, Math.round(raw.dailyWaterTargetMl)))
+      : undefined;
+
+  return {
+    ...base,
+    sleepTargetMinutes,
+    ...(bedtime24 !== undefined ? { bedtime24 } : {}),
+    ...(wakeLeadBeforeFajrMinutes !== undefined ? { wakeLeadBeforeFajrMinutes } : {}),
+    ...(fastingWhiteDays !== undefined ? { fastingWhiteDays } : {}),
+    ...(dailyWaterTargetMl !== undefined ? { dailyWaterTargetMl } : {}),
+    sanctuarySilenceMode,
+    schemaVersion: SCHEMA_VERSION,
+  };
 }
 
 function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhythmPayload {
@@ -214,10 +247,12 @@ import {
   DEFAULT_LIFE_PROFILE,
   analyzeTomorrowAlert,
   buildLifeProfileGeminiSummary,
+  buildMedicationAlarmEntries,
   computeCreativePlacements,
   computeDailyRhythmPlan,
   computeMedicationDaysLeft,
   findFreeTimeSlotsForToday,
+  resolveMedicationDosesForDay,
 } from './engines/lifeRhythmEngine';
 import { applyTravelMatrix, buildBaseSchedule } from './engines/scheduleEngine';
 import {
@@ -762,6 +797,9 @@ export default function App() {
       computeDailyRhythmPlan(lifeProfile, prayers, {
         todayWeekday: tomorrowInfo.todayW,
         tomorrowWeekday: tomorrowInfo.tomorrowW,
+        todayIso: todayCairoIso,
+        tomorrowIso: tomorrowInfo.tomorrowIso,
+        timeZone: activeTimeZone,
         fastingOverride,
         heatBonusMl: weatherInfo?.heatBonusMl ?? 0,
         specialFastTodayAr: specialFastToday?.nameAr ?? null,
@@ -770,6 +808,9 @@ export default function App() {
     [
       tomorrowInfo.todayW,
       tomorrowInfo.tomorrowW,
+      todayCairoIso,
+      tomorrowInfo.tomorrowIso,
+      activeTimeZone,
       fastingOverride,
       lifeProfile,
       prayers,
@@ -820,7 +861,7 @@ export default function App() {
       tomorrowInfo.tomorrowIso,
       tomorrowInfo.tomorrowW
     );
-    if (!specialFastTomorrow) return base;
+    if (!specialFastTomorrow || specialFastTomorrow.id === 'ramadan') return base;
     const headline = `${specialFastTomorrow.emoji} بكرة ${specialFastTomorrow.nameAr} — صيام سُنّة`;
     const detail = 'السحور ومواعيد المية اتظبطوا تلقائياً على الصيام';
     if (base) return { ...base, headlineAr: headline, detailAr: `${detail} · ${base.detailAr}` };
@@ -993,9 +1034,9 @@ export default function App() {
   const [phoneChargeLimitPct, setPhoneChargeLimitPct] = useState<number>(() => {
     try {
       const saved = Number(localStorage.getItem('dayrhythm_phone_charge_limit'));
-      if (Number.isFinite(saved) && saved >= 60 && saved <= 100) return Math.round(saved);
+      if (Number.isFinite(saved) && saved >= 50 && saved <= 100) return Math.round(saved);
       const savedBypass = Number(localStorage.getItem('dayrhythm_bypass_limit_v1'));
-      if (Number.isFinite(savedBypass) && savedBypass >= 60 && savedBypass <= 100) return Math.round(savedBypass);
+      if (Number.isFinite(savedBypass) && savedBypass >= 50 && savedBypass <= 100) return Math.round(savedBypass);
       const migrated = readMigratedStorageBundle();
       if (migrated) return migrated.phoneChargeLimitPct;
     } catch {
@@ -1313,7 +1354,7 @@ export default function App() {
       appSettingsRef.current = next;
 
       if (typeof patch.phoneChargeLimitPct === 'number') {
-        const clamped = Math.max(60, Math.min(100, Math.round(patch.phoneChargeLimitPct)));
+        const clamped = Math.max(50, Math.min(100, Math.round(patch.phoneChargeLimitPct)));
         next.phoneChargeLimitPct = clamped;
         setPhoneChargeLimitPct(clamped);
         phoneChargeLimitRef.current = clamped;
@@ -1478,7 +1519,7 @@ export default function App() {
 
   const handleUpdatePhoneChargeLimit = useCallback(
     (nextLimit: number) => {
-      const clamped = Math.max(60, Math.min(100, Math.round(nextLimit)));
+      const clamped = Math.max(50, Math.min(100, Math.round(nextLimit)));
       phoneChargeNotifiedCycleRef.current = false;
       setPhoneChargeAlertDismissed(false);
       updateAppSettings({ phoneChargeLimitPct: clamped });
@@ -8130,37 +8171,39 @@ export default function App() {
 
     // 2. Medication & Supplement reminders (5-min high-visibility alert + sound + quick-confirm metadata)
     const deferredMedsSet = travelState.active ? new Set(travelState.deferredMedIds ?? []) : null;
+    const fajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
+    const maghribMin = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
     medications.forEach((med) => {
       if (deferredMedsSet?.has(med.id)) return;
       if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayW)) {
         return;
       }
-      const times =
-        med.times24 && med.times24.length > 0
-          ? med.times24
-          : med.time24
-            ? [med.time24]
-            : [];
-      times.forEach((t24) => {
-        const match = t24.match(/^(\d{1,2}):(\d{2})$/);
-        if (!match) return;
-        const medMin = Number(match[1]) * 60 + Number(match[2]);
-        const diff = nowTickMin - medMin;
+      const rawTimesCount =
+        med.times24 && med.times24.length > 0 ? med.times24.length : med.time24 ? 1 : 0;
+      const resolved = resolveMedicationDosesForDay(med, {
+        isFastingToday: Boolean(dailyRhythmPlan.isFastingToday),
+        fajrMin,
+        maghribMin,
+      });
+      const takenDoses = med.takenDateKey === todayIso ? med.takenDosesToday ?? [] : [];
+      resolved.doses.forEach((dose) => {
+        const diff = nowTickMin - dose.effectiveMin;
         if (diff < 0 || diff > 4) return;
-        const takenDoses = med.takenDateKey === todayIso ? med.takenDosesToday ?? [] : [];
         const alreadyTaken =
-          times.length > 1 ? takenDoses.includes(t24) : med.takenDateKey === todayIso;
+          rawTimesCount > 1
+            ? takenDoses.includes(dose.originalTime24) || takenDoses.includes(dose.effectiveTime24)
+            : med.takenDateKey === todayIso;
         if (alreadyTaken) return;
 
-        const key = `${todayIso}:med:${med.id}:${t24}`;
+        const key = `${todayIso}:med:${med.id}:${dose.effectiveTime24}`;
         if (firedReminderKeysRef.current.has(key)) return;
         firedReminderKeysRef.current.add(key);
         triggerTaskAlert('💊', 'medication', {
           privacyEmoji: '💊',
           displayTitle: `موعد الجرعة: ${med.name}`,
-          sourceLabel: 'العلاجات والأدوية',
+          sourceLabel: dose.wasShifted ? 'العلاجات والأدوية · معدّل للصيام' : 'العلاجات والأدوية',
           medicationId: med.id,
-          medicationDoseTime24: t24,
+          medicationDoseTime24: rawTimesCount > 1 ? dose.originalTime24 : undefined,
         });
       });
     });
@@ -8284,6 +8327,7 @@ export default function App() {
     nowTickMin,
     waterRemindersEnabled,
     dailyRhythmPlan.hydrationSlots,
+    dailyRhythmPlan.isFastingToday,
     dailyRhythmPlan.cupSizeMl,
     hydrationToday,
     medications,
@@ -8912,6 +8956,273 @@ export default function App() {
   });
   handleToggleMedicationRef.current = handleToggleMedication;
 
+  const [settingsAlarmEpoch, setSettingsAlarmEpoch] = useState(0);
+
+  const currentSettingsSnapshot: SettingsSnapshotContext = useMemo(
+    () => ({
+      lifeProfile,
+      appSettings: {
+        phoneChargeLimitPct,
+        chargeAlertEnabled: smartChargeAlertEnabled,
+        chargeAlertKeepUntilUnplugged: smartChargeKeepUntilUnplugged,
+        waterRemindersEnabled,
+        quietMode,
+        adhanSoundInSilent: adhanOverrideSilent,
+        sunMode,
+        language,
+        capsuleOrientation: capsulePrefs.orientation,
+        capsuleSize: capsulePrefs.size,
+        liveAlertsEnabled: deviceSettings.liveAlertsEnabled,
+        liveAlertsLeadMinutes: deviceSettings.liveAlertsLeadMinutes,
+        liveAlertsAlwaysOn: deviceSettings.liveAlertsAlwaysOn,
+        liveAlertsShowCharging: deviceSettings.liveAlertsShowCharging,
+        persistentCountdownNotif: deviceSettings.persistentCountdownNotif,
+        includePrayerAnchors,
+      },
+      fastingOverride,
+      travelState,
+      sanctuaryOverrideUntilMs,
+      medications: medications.map((m) => ({
+        id: m.id,
+        name: m.name,
+        fastingPolicy: m.fastingPolicy,
+      })),
+    }),
+    [
+      adhanOverrideSilent,
+      capsulePrefs.orientation,
+      capsulePrefs.size,
+      deviceSettings.liveAlertsAlwaysOn,
+      deviceSettings.liveAlertsEnabled,
+      deviceSettings.liveAlertsLeadMinutes,
+      deviceSettings.liveAlertsShowCharging,
+      deviceSettings.persistentCountdownNotif,
+      fastingOverride,
+      includePrayerAnchors,
+      language,
+      lifeProfile,
+      medications,
+      phoneChargeLimitPct,
+      quietMode,
+      sanctuaryOverrideUntilMs,
+      smartChargeAlertEnabled,
+      smartChargeKeepUntilUnplugged,
+      sunMode,
+      travelState,
+      waterRemindersEnabled,
+    ]
+  );
+
+  const handleApplySettingsPatch = useCallback(
+    async (rawPatch: UnifiedSettingsPatch) => {
+      const validated = validateAndNormalizeSettingsPatch(
+        lifeProfileRef.current,
+        rawPatch,
+        currentSettingsSnapshot
+      );
+      if (!validated.hasChanges) {
+        if (validated.errors.length > 0) {
+          showToast(`⛔ ${validated.errors[0]}`);
+        }
+        return;
+      }
+
+      const cloudPatch: Partial<UserSettingsPayload> = {};
+      const driveOverrides: Partial<FullDayRhythmCloudBackup> & { travelState?: TravelState } = {};
+
+      if (Object.keys(validated.profilePatch).length > 0) {
+        localWriteLockUntilRef.current = Date.now() + 4000;
+        const nextProfile = sanitizeLifeProfile({
+          ...lifeProfileRef.current,
+          ...validated.profilePatch,
+        });
+        lifeProfileRef.current = nextProfile;
+        setLifeProfile(nextProfile);
+        try {
+          const currentRaw = localStorage.getItem(STORAGE_KEY);
+          const current = currentRaw ? JSON.parse(currentRaw) : {};
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, lifeProfile: nextProfile }));
+        } catch {
+          // ignore storage quota
+        }
+        cloudPatch.lifeProfile = nextProfile;
+        driveOverrides.lifeProfile = nextProfile;
+      }
+
+      const appP = validated.appSettingsPatch;
+      if (Object.keys(appP).length > 0) {
+        const nextAppSettings: AppSyncSettings = {
+          ...appSettingsRef.current,
+          ...(typeof appP.phoneChargeLimitPct === 'number'
+            ? { phoneChargeLimitPct: appP.phoneChargeLimitPct }
+            : {}),
+          ...(typeof appP.chargeAlertEnabled === 'boolean'
+            ? { smartChargeAlertEnabled: appP.chargeAlertEnabled }
+            : {}),
+          ...(typeof appP.chargeAlertKeepUntilUnplugged === 'boolean'
+            ? { smartChargeKeepUntilUnplugged: appP.chargeAlertKeepUntilUnplugged }
+            : {}),
+          ...(typeof appP.waterRemindersEnabled === 'boolean'
+            ? { waterRemindersEnabled: appP.waterRemindersEnabled }
+            : {}),
+          ...(typeof appP.sunMode === 'boolean' ? { sunMode: appP.sunMode } : {}),
+          ...(typeof appP.includePrayerAnchors === 'boolean'
+            ? { includePrayerAnchors: appP.includePrayerAnchors }
+            : {}),
+        };
+        updateAppSettings({
+          phoneChargeLimitPct: nextAppSettings.phoneChargeLimitPct,
+          smartChargeAlertEnabled: nextAppSettings.smartChargeAlertEnabled,
+          smartChargeKeepUntilUnplugged: nextAppSettings.smartChargeKeepUntilUnplugged,
+          waterRemindersEnabled: nextAppSettings.waterRemindersEnabled,
+          sunMode: nextAppSettings.sunMode,
+          includePrayerAnchors: nextAppSettings.includePrayerAnchors,
+        });
+        if (appP.chargeAlertEnabled === false) {
+          stopSmartChargeCompleteAlert();
+          setSmartChargeAudioActive(false);
+        }
+        cloudPatch.appSettings = nextAppSettings;
+        driveOverrides.phoneChargeLimitPct = nextAppSettings.phoneChargeLimitPct;
+        driveOverrides.smartChargeAlertEnabled = nextAppSettings.smartChargeAlertEnabled;
+        driveOverrides.smartChargeKeepUntilUnplugged = nextAppSettings.smartChargeKeepUntilUnplugged;
+        driveOverrides.waterRemindersEnabled = nextAppSettings.waterRemindersEnabled;
+
+        if (appP.quietMode) {
+          const mins = appP.quietMode === 'normal' ? 0 : Math.max(0, appP.quietModeMinutes ?? 0);
+          handleSetQuietMode(appP.quietMode, mins);
+          cloudPatch.quietMode = appP.quietMode;
+          driveOverrides.quietMode = appP.quietMode;
+        }
+        if (typeof appP.adhanSoundInSilent === 'boolean') {
+          adhanOverrideSilentRef.current = appP.adhanSoundInSilent;
+          setAdhanOverrideSilent(appP.adhanSoundInSilent);
+          cloudPatch.adhanOverrideSilent = appP.adhanSoundInSilent;
+          driveOverrides.adhanOverrideSilent = appP.adhanSoundInSilent;
+        }
+        if (appP.language === 'ar' || appP.language === 'en') {
+          setLanguage(appP.language);
+        }
+        if (appP.capsuleOrientation || appP.capsuleSize) {
+          const nextCaps = {
+            orientation: appP.capsuleOrientation ?? capsulePrefs.orientation,
+            size: appP.capsuleSize ?? capsulePrefs.size,
+          };
+          handleUpdateCapsulePrefs(nextCaps);
+          driveOverrides.capsulePrefs = nextCaps;
+        }
+        const devPatch: Partial<OnePlusDeviceSettings> = {};
+        if (typeof appP.liveAlertsEnabled === 'boolean') devPatch.liveAlertsEnabled = appP.liveAlertsEnabled;
+        if (appP.liveAlertsLeadMinutes) devPatch.liveAlertsLeadMinutes = appP.liveAlertsLeadMinutes;
+        if (typeof appP.liveAlertsAlwaysOn === 'boolean') devPatch.liveAlertsAlwaysOn = appP.liveAlertsAlwaysOn;
+        if (typeof appP.liveAlertsShowCharging === 'boolean') devPatch.liveAlertsShowCharging = appP.liveAlertsShowCharging;
+        if (typeof appP.persistentCountdownNotif === 'boolean') devPatch.persistentCountdownNotif = appP.persistentCountdownNotif;
+        if (Object.keys(devPatch).length > 0) {
+          handleUpdateDeviceSettings(devPatch);
+        }
+        if (appP.soundRepeats) {
+          for (const [category, value] of Object.entries(appP.soundRepeats)) {
+            if (value === undefined) continue;
+            const setting: SoundRepeatSetting =
+              value === 'continuous'
+                ? 'continuous'
+                : (Math.max(1, Math.min(10, Math.round(Number(value)))) as SoundRepeatSetting);
+            handleUpdateSoundRepeat(category as TaskSoundCategory, setting);
+          }
+        }
+      }
+
+      if (validated.fastingOverride !== undefined) {
+        handleChangeFastingOverride(validated.fastingOverride);
+        cloudPatch.fastingOverride = validated.fastingOverride;
+      }
+
+      if (validated.cancelActiveSanctuaryEarly) {
+        handleCancelActiveSanctuaryEarly();
+      } else if (validated.sanctuaryOverrideUntilMs !== undefined) {
+        const untilMs = validated.sanctuaryOverrideUntilMs;
+        localWriteLockUntilRef.current = Date.now() + 5000;
+        sanctuaryOverrideUntilMsRef.current = untilMs;
+        setSanctuaryOverrideUntilMs(untilMs);
+        try {
+          localStorage.setItem('dayrhythm_sanctuary_override_until_v1', String(untilMs));
+        } catch {
+          // ignore
+        }
+        cloudPatch.sanctuaryOverrideUntilMs = untilMs;
+      }
+
+      if (validated.travelStatePatch) {
+        const tp = validated.travelStatePatch;
+        if (tp.active === false) {
+          handleDisableTravel();
+        } else {
+          const nextLoc: TravelState['location'] = {
+            ...travelStateRef.current.location,
+            ...(tp.cityName ? { nameAr: tp.cityName, nameEn: tp.cityName } : {}),
+            ...(typeof tp.lat === 'number' ? { lat: tp.lat } : {}),
+            ...(typeof tp.lng === 'number' ? { lng: tp.lng } : {}),
+            ...(tp.timeZone ? { timeZone: tp.timeZone } : {}),
+          };
+          const nextTravel: TravelState = {
+            ...travelStateRef.current,
+            active: tp.active ?? true,
+            location: nextLoc,
+            distanceKm: tp.distanceKm ?? travelStateRef.current.distanceKm,
+            durationMode: tp.durationMode ?? travelStateRef.current.durationMode,
+            returnDate: tp.returnDate ?? travelStateRef.current.returnDate,
+            deferredCategories: tp.deferredCategories ?? travelStateRef.current.deferredCategories,
+            deferredMedIds: tp.deferredMedIds ?? travelStateRef.current.deferredMedIds,
+          };
+          handleApplyTravel(nextTravel);
+          cloudPatch.travelState = nextTravel;
+          driveOverrides.travelState = nextTravel;
+        }
+      }
+
+      if (validated.medicationFastingPolicies.length > 0) {
+        const medUpdates: MedicationActionProposal[] = validated.medicationFastingPolicies.map((m) => ({
+          operation: 'update',
+          medicationId: m.medicationId,
+          name: m.name,
+          fastingPolicy: m.fastingPolicy,
+        }));
+        await handleExecuteMedicationActions(medUpdates);
+      }
+
+      if (validated.affectsAlarms) {
+        lastScheduledAlarmsJsonRef.current = '';
+        lastSyncedCloudAlarmsJsonRef.current = '';
+        setSettingsAlarmEpoch((n) => n + 1);
+      }
+
+      if (Object.keys(cloudPatch).length > 0) {
+        void saveCloudUserSettingsImmediately(cloudPatch);
+      }
+      void pushFullCloudBackupImmediately(undefined, driveOverrides);
+      showToast('⚙️ تم تطبيق التغييرات وحفظها ومزامنتها ✓');
+    },
+    [
+      capsulePrefs.orientation,
+      capsulePrefs.size,
+      currentSettingsSnapshot,
+      handleApplyTravel,
+      handleCancelActiveSanctuaryEarly,
+      handleChangeFastingOverride,
+      handleDisableTravel,
+      handleExecuteMedicationActions,
+      handleSetQuietMode,
+      handleUpdateCapsulePrefs,
+      handleUpdateDeviceSettings,
+      handleUpdateSoundRepeat,
+      pushFullCloudBackupImmediately,
+      saveCloudUserSettingsImmediately,
+      showToast,
+      stopSmartChargeCompleteAlert,
+      updateAppSettings,
+    ]
+  );
+
   const handleAddCreativeActivity = useCallback(
     (input: {
       name: string;
@@ -9152,6 +9463,8 @@ export default function App() {
   // Next untaken medication dose for today (used by Floating Capsule 1-tap Check-In & Windows Tray Capsule)
   const nextMedicationQuick = useMemo(() => {
     const todayW = getWeekdayInTimeZone(activeTimeZone);
+    const fajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
+    const maghribMin = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
     const candidates: Array<{
       id: string;
       name: string;
@@ -9172,18 +9485,23 @@ export default function App() {
         }
         continue;
       }
-      for (const t24 of times) {
+      const resolved = resolveMedicationDosesForDay(med, {
+        isFastingToday: Boolean(dailyRhythmPlan.isFastingToday),
+        fajrMin,
+        maghribMin,
+      });
+      for (const dose of resolved.doses) {
         const alreadyTaken =
-          times.length > 1 ? takenDoses.includes(t24) : med.takenDateKey === todayCairoIso;
+          times.length > 1
+            ? takenDoses.includes(dose.originalTime24) || takenDoses.includes(dose.effectiveTime24)
+            : med.takenDateKey === todayCairoIso;
         if (alreadyTaken) continue;
-        const m = t24.match(/^(\d{1,2}):(\d{2})$/);
-        const min = m ? Number(m[1]) * 60 + Number(m[2]) : 24 * 60;
         candidates.push({
           id: med.id,
           name: med.name,
-          doseTime24: times.length > 1 ? t24 : undefined,
-          timeLabel: m ? formatMinutes12h(min, 'ar') : undefined,
-          sortMin: min,
+          doseTime24: times.length > 1 ? dose.originalTime24 : undefined,
+          timeLabel: formatMinutes12h(dose.effectiveMin, 'ar'),
+          sortMin: dose.effectiveMin,
         });
       }
     }
@@ -9196,7 +9514,7 @@ export default function App() {
       doseTime24: upcoming.doseTime24,
       timeLabel: upcoming.timeLabel,
     };
-  }, [activeTimeZone, medications, nowTickMin, todayCairoIso]);
+  }, [activeTimeZone, dailyRhythmPlan.isFastingToday, medications, nowTickMin, prayers, todayCairoIso]);
 
   // Feature #4: One-Click Full JSON Backup Export & Restore (zero OAuth tokens or secrets!)
   const { handleExportBackupJson, handleImportBackupJson } = useBackupActions({
@@ -9577,6 +9895,8 @@ export default function App() {
     // 3. Upcoming Medication & Supplement doses for today (not yet taken)
     const deferredMedsCapsule = travelState.active ? new Set(travelState.deferredMedIds ?? []) : null;
     const todayWeekday = getWeekdayInTimeZone(activeTimeZone);
+    const capsuleFajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
+    const capsuleMaghribMin = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
     for (const med of medications) {
       if (deferredMedsCapsule?.has(med.id)) continue;
       if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayWeekday)) {
@@ -9589,13 +9909,18 @@ export default function App() {
             ? [med.time24]
             : [];
       const takenDoses = med.takenDateKey === todayCairoIso ? med.takenDosesToday ?? [] : [];
-      for (const t24 of times) {
-        const match = t24.match(/^(\d{1,2}):(\d{2})$/);
-        if (!match) continue;
+      const resolved = resolveMedicationDosesForDay(med, {
+        isFastingToday: Boolean(dailyRhythmPlan.isFastingToday),
+        fajrMin: capsuleFajrMin,
+        maghribMin: capsuleMaghribMin,
+      });
+      for (const dose of resolved.doses) {
         const alreadyTaken =
-          times.length > 1 ? takenDoses.includes(t24) : med.takenDateKey === todayCairoIso;
+          times.length > 1
+            ? takenDoses.includes(dose.originalTime24) || takenDoses.includes(dose.effectiveTime24)
+            : med.takenDateKey === todayCairoIso;
         if (alreadyTaken) continue;
-        const medMin = Number(match[1]) * 60 + Number(match[2]);
+        const medMin = dose.effectiveMin;
         const startSec = medMin * 60;
         const durationSec = 10 * 60;
         const endSec = startSec + durationSec;
@@ -9816,7 +10141,9 @@ export default function App() {
     liveBlocks,
     hydrationHistory,
     dailyRhythmPlan.hydrationSlots,
+    dailyRhythmPlan.isFastingToday,
     medications,
+    prayers,
     googleTasks,
     todayCairoIso,
     nextActiveBlock,
@@ -10243,42 +10570,24 @@ export default function App() {
         });
       }
 
-      // 3. Remaining Medication Doses today
-      const deferredMedsAlarm = travelState.active ? new Set(travelState.deferredMedIds ?? []) : null;
-      for (const med of medications) {
-        if (deferredMedsAlarm?.has(med.id)) continue;
-        if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(todayW)) {
-          continue;
-        }
-        const times =
-          med.times24 && med.times24.length > 0 ? med.times24 : med.time24 ? [med.time24] : [];
-        const takenDoses = med.takenDateKey === todayCairoIso ? med.takenDosesToday ?? [] : [];
-        for (const t24 of times) {
-          const alreadyTaken =
-            times.length > 1 ? takenDoses.includes(t24) : med.takenDateKey === todayCairoIso;
-          if (alreadyTaken) continue;
-          const m = t24.match(/^(\d{1,2}):(\d{2})$/);
-          if (!m) continue;
-          const medMin = Number(m[1]) * 60 + Number(m[2]);
-          const triggerAtMs = msForMinuteToday(medMin);
-          if (triggerAtMs > nowMs + 1_000 && !isSilencedAt(medMin, triggerAtMs)) {
-            const stockLine =
-              typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
-                ? `\n💊 الرصيد المتبقي: ${med.remainingDoses} جرعة`
-                : '';
-            alarms.push({
-              id: `med_${todayCairoIso}_${med.id}_${t24}`,
-              kind: 'medication',
-              title: `💊 موعد الجرعة: ${med.name}`,
-              body: `${med.doseNote ? `${med.doseNote} · ` : ''}${formatMinutes12h(medMin, 'ar')}${stockLine}`,
-              triggerAtMs,
-              snoozeMinutes,
-              medicationId: med.id,
-              doseTime24: times.length > 1 ? t24 : '',
-            });
-          }
-        }
-      }
+      // 3. Remaining Medication Doses today (shifted cleanly on fasting days without mutating saved times)
+      const alarmFajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
+      const alarmMaghribMin = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
+      alarms.push(
+        ...buildMedicationAlarmEntries({
+          medications,
+          todayIso: todayCairoIso,
+          todayWeekday: todayW,
+          isFastingToday: Boolean(dailyRhythmPlan.isFastingToday),
+          fajrMin: alarmFajrMin,
+          maghribMin: alarmMaghribMin,
+          nowMs,
+          snoozeMinutes,
+          deferredMedIds: travelState.active ? travelState.deferredMedIds ?? [] : null,
+          msForMinuteToday,
+          isSilencedAt,
+        })
+      );
 
       // 4. Upcoming Google Calendar Events today (exact simultaneous firing with PC)
       const deferCalendarAlarm = travelState.active && (travelState.deferredCategories?.includes('calendar') ?? false);
@@ -10424,6 +10733,7 @@ export default function App() {
     todayCairoIso,
     travelState,
     waterRemindersEnabled,
+    settingsAlarmEpoch,
   ]);
 
   const assistantContextSummary = useMemo(() => {
@@ -10856,6 +11166,8 @@ ${lifeConstitution}
             onExecuteCreativeActions={handleExecuteCreativeActions}
             onApplyProfileUpdates={handleUpdateLifeProfile}
             onApplyAppSettings={handleApplyAppSettings}
+            onApplySettingsPatch={handleApplySettingsPatch}
+            currentSettingsSnapshot={currentSettingsSnapshot}
             onExecuteMemoryActions={handleExecuteMemoryActions}
             onOpenLifeProfile={() => setIsLifeProfileModalOpen(true)}
             initialPrompt={pendingAssistantPrompt}

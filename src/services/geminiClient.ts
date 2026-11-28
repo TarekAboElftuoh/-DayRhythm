@@ -6,8 +6,10 @@ import {
   MedicationActionProposal,
   MemoryActionProposal,
   PersistedChatMessage,
+  SettingsSnapshotContext,
   TaskActionProposal,
 } from '../types/dayrhythm';
+import { formatSettingsSchemaForGemini } from '../utils/settingsPatchValidator';
 import {
   type GeminiFunctionCall,
   extractPendingProposalFromFunctionCalls,
@@ -234,6 +236,7 @@ export interface ChatRequestPayload {
     time24?: string;
     times24?: string[];
     daysOfWeek?: number[];
+    fastingPolicy?: string;
     doseNote?: string;
     takenToday?: boolean;
     takenDosesToday?: string[];
@@ -243,6 +246,7 @@ export interface ChatRequestPayload {
     refillAlertDays?: number;
     takenDates?: string[];
   }>;
+  settingsSnapshot?: SettingsSnapshotContext;
   creativeActivities?: Array<{
     id: string;
     name: string;
@@ -375,9 +379,11 @@ export const DAYRHYTHM_SYSTEM_INSTRUCTION = `
    - لديك صلاحية كاملة لحذف أي علاج أو مكمل عند طلب المستخدم صراحةً: استخدم propose_medication_actions بعملية remove مع تمرير medicationId أو اسم العلاج الدقيق من قائمته الحالية، واقترح معه حذف الحدث المرتبط به في Google Calendar إن وُجد عبر propose_calendar_actions.
    - ادعم الجرعات المتعددة (times24)، الأيام المحددة (daysOfWeek)، مدة الكورس (courseEndDate)، وعدد الجرعات المتبقية (remainingDoses / totalDoses).
 5. تحديث الوزن والماء والثوابت بمرونة كاملة:
-   - الوزن متغيّر دائماً: لو أبلغك المستخدم بتغيّر وزنه، اقترح فوراً تحديث weightKg عبر propose_profile_updates فيُعاد حساب هدف الماء العلمي وتوزيع الأكواب تلقائياً.
-   - عدّل أي ثابت بلا قيود عبر propose_profile_updates، واحفظ أي قاعدة أو مبدأ دائم عبر propose_memory_actions.
-   - أي إعداد في التطبيق نفسه (حد الشحن وتنبيهه، تنبيهات المية، وضع الصمت، صوت الأذان، المود النهاري/الليلي، اللغة، كبسولة الكمبيوتر، التنبيهات الحية، تكرار الرنين، التنفيذ الفوري) غيّره فوراً عبر propose_app_settings بدل ما تطلب من المستخدم يغيّره يدوياً.
+   - الوزن متغيّر دائماً: لو أبلغك المستخدم بتغيّر وزنه، اقترح فوراً تحديث weightKg عبر update_app_settings فيُعاد حساب هدف الماء العلمي وتوزيع الأكواب تلقائياً.
+   - أي إعداد في التطبيق أو الدستور الشخصي (النوم وساعاته وموعده والاستيقاظ قبل الفجر والسحور، أيام الصيام والأيام البيض والإثنين والخميس وحالة الصيام اليوم، هدف الماء وحجم الكوب وتنبيهات المية، الحرم الصوتي للصلاة والنوم وإنهاؤه مبكراً، حد شحن البطارية 50–100 وتنبيهه، وضع الهدوء/الاجتماع/السفر، المظهر النهاري، اللغة، كبسولة الكمبيوتر، التنبيهات الحية، تكرار الرنين، وسياسة صيام الأدوية) غيّره فوراً عبر الأداة الموحدة update_app_settings بدل ما تطلب من المستخدم يغيّره يدوياً.
+   - أمثلة: "خلّي حد الشحن 85% وصيام السبت شغال وانقل فيتامين د لبعد المغرب" ← استدعِ update_app_settings(summaryAr: "...", patch: { phoneChargeLimitPct: 85, addFastingDays: [6], medicationFastingPolicies: [{ name: "فيتامين د", fastingPolicy: "after-maghrib" }] }).
+   - أمان صارم: يُمنع تماماً قراءة أو كشف أو تعديل مفاتيح API أو التوكنات أو إعدادات Firebase أو UIDs أو وضع التأكيد اليدوي/التنفيذ الفوري (autoExecuteChat).
+   - احفظ أي قاعدة أو مبدأ دائم عبر propose_memory_actions.
 6. الأنشطة الإبداعية والهوايات والمشاريع:
    - استخدم propose_creative_actions لإضافة أو تعديل أو حذف أو تسجيل جلسة نشاط إبداعي، وعند جدولته في Google Calendar ضعه دائماً في الأوقات الفارغة الفعلية.
 7. وضع اليوم الهادئ / الطاقة المنخفضة، وتعديل مدة الصمت لمرة واحدة، وتكرار الرنين، ومدة التأجيل (Snooze):
@@ -527,6 +533,11 @@ export const GEMINI_CHAT_TOOLS = [
                   time24: { type: 'STRING', description: 'ميعاد الجرعة الرئيسية بصيغة HH:MM.' },
                   times24: { type: 'ARRAY', items: { type: 'STRING' }, description: 'قائمة مواعيد الجرعات باليوم بصيغة HH:MM.' },
                   daysOfWeek: { type: 'ARRAY', items: { type: 'NUMBER' }, description: 'أيام الأسبوع المحددة (0=الأحد .. 6=السبت).' },
+                  fastingPolicy: {
+                    type: 'STRING',
+                    enum: ['auto-nearest', 'before-fajr', 'after-maghrib', 'skip', 'unchanged'],
+                    description: 'سياسة الجرعة النهارية في أيام الصيام.',
+                  },
                   doseNote: { type: 'STRING', description: 'ملاحظة قصيرة للجرعة.' },
                   courseEndDate: { type: 'STRING', description: 'تاريخ انتهاء الكورس بصيغة YYYY-MM-DD.' },
                   remainingDoses: { type: 'NUMBER', description: 'عدد الجرعات المتبقية في العبوة.' },
@@ -607,47 +618,106 @@ export const GEMINI_CHAT_TOOLS = [
         },
       },
       {
-        name: 'propose_app_settings',
+        name: 'update_app_settings',
         description:
-          'تغيير أي إعداد في التطبيق نفسه (غير الدستور الشخصي) بناءً على طلب المستخدم: حد الشحن وتنبيهه، تنبيهات المية، وضع الصمت ومدته، صوت الأذان في الصمت، المود النهاري/الليلي، اللغة، شكل وحجم كبسولة الكمبيوتر، التنبيهات الحية والإشعار الثابت، عدد مرات رنين كل نوع تنبيه. ضع فقط الحقول المطلوب تغييرها. ملحوظة: لا تملك صلاحية تغيير وضع "تأكيد يدوي/تنفيذ فوري" إطلاقاً — هذا مفتاح ثقة يُغيَّر فقط بضغطة المستخدم المباشرة على الزر نفسه، ولو طلب ذلك اشرح له أن يضغط الزر بنفسه.',
+          'الأداة الموحدة لتعديل أي إعداد في التطبيق أو الدستور الشخصي أو الأوضاع اليومية: النوم والاستيقاظ، الصيام والأيام البيض، الماء وحجم الكوب، الحرم الصوتي للصلاة والنوم وإنهاؤه مبكراً، حد شحن البطارية (50–100)، وضع الهدوء/الاجتماع/السفر، المظهر، اللغة، التنبيهات الحية، وسياسة صيام الأدوية. أرسل فقط الحقول المطلوب تغييرها داخل patch. يُمنع تعديل مفاتيح API أو التوكنات أو UIDs أو autoExecuteChat.',
         parameters: {
           type: 'OBJECT',
           properties: {
-            summaryAr: { type: 'STRING', description: 'ملخص عربي قصير للتغيير.' },
-            phoneChargeLimitPct: { type: 'INTEGER', description: 'نسبة الشحن (60-100) التي يُنبَّه عندها لفصل الشاحن.' },
-            chargeAlertEnabled: { type: 'BOOLEAN', description: 'تشغيل/إيقاف تنبيه اكتمال الشحن.' },
-            chargeAlertKeepUntilUnplugged: { type: 'BOOLEAN', description: 'استمرار رنين تنبيه الشحن حتى فصل الشاحن.' },
-            waterRemindersEnabled: { type: 'BOOLEAN', description: 'تشغيل/إيقاف تنبيهات أكواب المية.' },
-            quietMode: {
-              type: 'STRING',
-              enum: ['normal', 'mute_audio', 'vibrate_only', 'silent_all'],
-              description: 'وضع الصمت: normal عادي، mute_audio كتم الصوت، vibrate_only اهتزاز فقط، silent_all صمت كامل.',
-            },
-            quietModeMinutes: { type: 'INTEGER', description: 'مدة وضع الصمت بالدقائق (0 = حتى يُلغى يدوياً).' },
-            adhanSoundInSilent: { type: 'BOOLEAN', description: 'تشغيل نداء الأذان حتى أثناء الصمت.' },
-            sunMode: { type: 'BOOLEAN', description: 'true = المود النهاري (مود الشمس)، false = المود الليلي.' },
-            language: { type: 'STRING', enum: ['ar', 'en'], description: 'لغة الواجهة.' },
-            capsuleOrientation: { type: 'STRING', enum: ['horizontal', 'vertical'], description: 'اتجاه كبسولة الكمبيوتر.' },
-            capsuleSize: { type: 'STRING', enum: ['sm', 'md', 'lg'], description: 'حجم كبسولة الكمبيوتر.' },
-            liveAlertsEnabled: { type: 'BOOLEAN', description: 'التنبيهات الحية قبل المواعيد على الموبايل.' },
-            liveAlertsLeadMinutes: { type: 'INTEGER', description: 'كم دقيقة قبل الموعد تبدأ التنبيهات الحية (5/10/15/20/30).' },
-            persistentCountdownNotif: { type: 'BOOLEAN', description: 'الإشعار الثابت بالعد التنازلي على الموبايل.' },
-            soundRepeats: {
+            summaryAr: { type: 'STRING', description: 'ملخص عربي مختصر للتغييرات المقترحة.' },
+            patch: {
               type: 'OBJECT',
-              description: 'عدد مرات تكرار رنين كل نوع تنبيه (رقم 1-10).',
+              description: 'الحقول المراد تعديلها فقط.',
               properties: {
-                prayer: { type: 'INTEGER' },
-                water: { type: 'INTEGER' },
-                medication: { type: 'INTEGER' },
-                focus_work: { type: 'INTEGER' },
-                walk_health: { type: 'INTEGER' },
-                sleep_suhoor: { type: 'INTEGER' },
-                meeting_event: { type: 'INTEGER' },
-                general: { type: 'INTEGER' },
+                bedtime24: { type: 'STRING', description: 'وقت النوم المفضّل بصيغة HH:MM (أو "" للعودة للتلقائي).' },
+                sleepTargetHours: { type: 'NUMBER', description: 'هدف ساعات النوم اليومي (3 إلى 14 ساعة).' },
+                sleepTargetMinutes: { type: 'INTEGER', description: 'هدف النوم بالدقائق (180 إلى 840).' },
+                wakeLeadBeforeFajrMinutes: { type: 'INTEGER', description: 'دقائق الاستيقاظ قبل الفجر (0 إلى 180).' },
+                suhoorLeadMinutes: { type: 'INTEGER', description: 'دقائق السحور قبل الفجر (10 إلى 180).' },
+                sleepStrategy: { type: 'STRING', enum: ['night_only_strict', 'biphasic_qailulah', 'anchor_early_bed'] },
+                sleepDebtMinutes: { type: 'INTEGER', description: 'رصيد النوم الناقص (0 إلى 480).' },
+                fastingDays: { type: 'ARRAY', items: { type: 'INTEGER' }, description: 'قائمة أيام الصيام الكاملة (0=الأحد .. 6=السبت).' },
+                addFastingDays: { type: 'ARRAY', items: { type: 'INTEGER' }, description: 'إضافة أيام صيام دون مسح الأيام الحالية (مثال: [6] للسبت).' },
+                removeFastingDays: { type: 'ARRAY', items: { type: 'INTEGER' }, description: 'إزالة أيام صيام محددة.' },
+                fastingMonThu: { type: 'BOOLEAN', description: 'تفعيل/إيقاف صيام الإثنين والخميس.' },
+                fastingWhiteDays: { type: 'BOOLEAN', description: 'تفعيل/إيقاف صيام الأيام البيض (13-15 هجري).' },
+                fastingOverride: { type: 'STRING', enum: ['auto', 'fasting', 'normal'] },
+                dailyWaterTargetLiters: { type: 'NUMBER', description: 'هدف الماء اليومي باللتر (1 إلى 8).' },
+                dailyWaterTargetMl: { type: 'INTEGER', description: 'هدف الماء اليومي بالملليلتر (1000 إلى 8000).' },
+                cupSizeMl: { type: 'INTEGER', description: 'حجم الكوب بالملليلتر (50 إلى 2000).' },
+                waterRemindersEnabled: { type: 'BOOLEAN' },
+                weightKg: { type: 'NUMBER', description: 'الوزن بالكيلوجرام (30 إلى 250).' },
+                heightCm: { type: 'NUMBER', description: 'الطول بالسنتيمتر (100 إلى 240).' },
+                adhanLeadMinutes: { type: 'INTEGER', description: 'التنبيه قبل الأذان (0 إلى 30).' },
+                prayerSilenceMinutes: { type: 'INTEGER', description: 'مدة صمت الصلوات (0 إلى 90).' },
+                fajrSilenceMinutes: { type: 'INTEGER', description: 'مدة صمت الفجر (0 إلى 90).' },
+                oneTimeSilenceMinutes: { type: 'INTEGER', description: 'صمت مؤقت لصلاة واحدة (0 إلى 120).' },
+                oneTimeSilenceDateKey: { type: 'STRING', description: 'YYYY-MM-DD.' },
+                sanctuarySilenceMode: { type: 'STRING', enum: ['silent_inbox', 'silent_notif', 'vibrate_notif', 'hide_all'] },
+                cancelActiveSanctuaryEarly: { type: 'BOOLEAN', description: 'إنهاء الحرم الصوتي النشط الآن مبكراً.' },
+                sanctuaryOverrideMinutes: { type: 'INTEGER', description: 'تجاوز الحرم الصوتي لعدد دقائق (0 لإعادة التفعيل).' },
+                defaultSnoozeMinutes: { type: 'INTEGER', description: '5 أو 10 أو 15 دقيقة.' },
+                phoneChargeLimitPct: { type: 'INTEGER', description: 'حد شحن البطارية (50 إلى 100).' },
+                chargeAlertEnabled: { type: 'BOOLEAN' },
+                chargeAlertKeepUntilUnplugged: { type: 'BOOLEAN' },
+                quietMode: { type: 'STRING', enum: ['normal', 'mute_audio', 'vibrate_only', 'silent_all'] },
+                quietModeMinutes: { type: 'INTEGER', description: 'مدة وضع الهدوء بالدقائق (0 = مستمر).' },
+                adhanSoundInSilent: { type: 'BOOLEAN' },
+                meetingMode: { type: 'BOOLEAN', description: 'تفعيل/إيقاف وضع الاجتماع.' },
+                meetingModeMinutes: { type: 'INTEGER', description: 'مدة وضع الاجتماع بالدقائق.' },
+                travelState: {
+                  type: 'OBJECT',
+                  properties: {
+                    active: { type: 'BOOLEAN' },
+                    cityName: { type: 'STRING' },
+                    durationMode: { type: 'STRING', enum: ['until_return', '1d', '2d', '7d', '14d', 'custom_date', 'today', 'tomorrow', 'manual'] },
+                    returnDate: { type: 'STRING' },
+                  },
+                },
+                lowEnergyDateKey: { type: 'STRING', description: 'YYYY-MM-DD لوضع اليوم الهادئ أو "" لإيقافه.' },
+                sunMode: { type: 'BOOLEAN' },
+                language: { type: 'STRING', enum: ['ar', 'en'] },
+                capsuleOrientation: { type: 'STRING', enum: ['horizontal', 'vertical'] },
+                capsuleSize: { type: 'STRING', enum: ['sm', 'md', 'lg'] },
+                liveAlertsEnabled: { type: 'BOOLEAN' },
+                liveAlertsLeadMinutes: { type: 'INTEGER' },
+                liveAlertsAlwaysOn: { type: 'BOOLEAN' },
+                liveAlertsShowCharging: { type: 'BOOLEAN' },
+                persistentCountdownNotif: { type: 'BOOLEAN' },
+                includePrayerAnchors: { type: 'BOOLEAN' },
+                soundRepeats: {
+                  type: 'OBJECT',
+                  properties: {
+                    prayer: { type: 'INTEGER' },
+                    water: { type: 'INTEGER' },
+                    medication: { type: 'INTEGER' },
+                    focus_work: { type: 'INTEGER' },
+                    walk_health: { type: 'INTEGER' },
+                    sleep_suhoor: { type: 'INTEGER' },
+                    meeting_event: { type: 'INTEGER' },
+                    general: { type: 'INTEGER' },
+                  },
+                },
+                medicationFastingPolicies: {
+                  type: 'ARRAY',
+                  description: 'تحديث سياسة صيام دواء أو مكمل موجود (مثال: فيتامين د لبعد المغرب).',
+                  items: {
+                    type: 'OBJECT',
+                    properties: {
+                      medicationId: { type: 'STRING' },
+                      name: { type: 'STRING' },
+                      fastingPolicy: {
+                        type: 'STRING',
+                        enum: ['auto-nearest', 'before-fajr', 'after-maghrib', 'skip', 'unchanged'],
+                      },
+                    },
+                    required: ['name', 'fastingPolicy'],
+                  },
+                },
               },
             },
           },
-          required: ['summaryAr'],
+          required: ['summaryAr', 'patch'],
         },
       },
       {
@@ -680,7 +750,7 @@ export const GEMINI_CHAT_TOOLS = [
 
 /** Tools cost tokens and a tool round-trip. Attach them only when the message may change data. */
 const ACTION_INTENT_PATTERN =
-  /(أضف|اضف|ضيف|ضيّف|أنشئ|انشئ|اعمل|أنشأ|جدول|جدوللي|عدّل|عدل|غيّر|غير|احذف|امسح|ألغ|الغ|ذكرني|فكّرني|فكرني|مهمة|مهمه|مهام|تاسك|موعد|حدث|أحداث|دواء|علاج|جرعة|نشاط|عادة|هدف|ذاكرة|قاعدة|احفظ|سجل|سجّل|أجل|انقل|رحّل|رتب|نظم|plan|schedule|remind|create|add|edit|delete|cancel|task|event|memory)/i;
+  /(أضف|اضف|ضيف|ضيّف|أنشئ|انشئ|اعمل|أنشأ|جدول|جدوللي|عدّل|عدل|غيّر|غير|خلّي|خلي|اجعل|اضبط|ضبط|فعّل|فعل|شغّل|شغل|اقفل|أوقف|وقف|عطّل|عطل|احذف|امسح|ألغ|الغ|ذكرني|فكّرني|فكرني|مهمة|مهمه|مهام|تاسك|موعد|حدث|أحداث|دواء|علاج|جرعة|مكمل|فيتامين|نشاط|عادة|هدف|ذاكرة|قاعدة|احفظ|سجل|سجّل|أجل|انقل|رحّل|رتب|نظم|إعداد|اعداد|صيام|صوم|سحور|إفطار|افطار|شحن|بطارية|نوم|استيقاظ|ماء|مية|مياه|كوب|وزن|طول|صمت|كتم|هدوء|اجتماع|سفر|حرم|أذان|لغة|كبسولة|ثيم|مظهر|نهاري|ليلي|plan|schedule|remind|create|add|edit|update|set|change|enable|disable|turn|mute|quiet|meeting|travel|fasting|sleep|bedtime|wake|suhoor|water|hydration|charge|battery|sanctuary|silence|language|theme|delete|cancel|task|event|memory|setting)/i;
 
 export function shouldAttachChatTools(message?: string): boolean {
   return ACTION_INTENT_PATTERN.test(message ?? '');
@@ -769,7 +839,7 @@ export function buildChatSystemInstruction(
               typeof m.remainingDoses === 'number' && m.remainingDoses >= 0
                 ? ` | المتبقي: ${m.remainingDoses}${typeof m.totalDoses === 'number' && m.totalDoses > 0 ? `/${m.totalDoses}` : ''} جرعة (تنبيه قبل ${m.refillAlertDays ?? 3} أيام)`
                 : '';
-            return `- [medicationId=${m.id}] ${m.name} | المواعيد: ${doses} | التكرار: ${daysStr}${courseStr}${refillStr}${m.doseNote ? ` | ${m.doseNote}` : ''} | حالة اليوم: ${m.takenToday ? 'تم التناول ✓' : m.takenDosesToday && m.takenDosesToday.length > 0 ? `أُخذ (${m.takenDosesToday.join(', ')})` : 'لم يُؤخذ بعد'}`;
+            return `- [medicationId=${m.id}] ${m.name} | المواعيد: ${doses} | التكرار: ${daysStr} | سياسة الصيام: ${m.fastingPolicy ?? 'auto-nearest'}${courseStr}${refillStr}${m.doseNote ? ` | ${m.doseNote}` : ''} | حالة اليوم: ${m.takenToday ? 'تم التناول ✓' : m.takenDosesToday && m.takenDosesToday.length > 0 ? `أُخذ (${m.takenDosesToday.join(', ')})` : 'لم يُؤخذ بعد'}`;
           })
           .join('\n')}`
       : '';
@@ -791,8 +861,16 @@ export function buildChatSystemInstruction(
       ? `\n\n=== مقتطفات مرجعية سابقة ===\n${payload.longTermChatContext.trim().slice(0, 1400)}`
       : '';
 
+  const settingsSchemaBlock =
+    !lean && payload.settingsSnapshot?.lifeProfile
+      ? `\n\n${formatSettingsSchemaForGemini(
+          payload.settingsSnapshot.lifeProfile,
+          payload.settingsSnapshot
+        )}`
+      : '';
+
   const contextText = (payload.contextSummary ?? '').slice(0, lean ? 600 : 1800);
-  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${contextText}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${contextText}${settingsSchemaBlock}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
 
   return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
 }
@@ -1183,7 +1261,9 @@ export async function apiStreamGeminiChatClient(
   }
 
   const sanitized = sanitizeGeminiOutputText(fullText, collectedFnCalls);
-  const pendingProposal = extractPendingProposalFromFunctionCalls(sanitized.recoveredFnCalls);
+  const pendingProposal = extractPendingProposalFromFunctionCalls(sanitized.recoveredFnCalls, {
+    settingsSnapshot: payload.settingsSnapshot,
+  });
   const finalText =
     sanitized.cleanText ||
     pendingProposal?.summaryAr ||

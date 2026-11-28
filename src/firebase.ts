@@ -33,6 +33,7 @@ import {
   CreativeActivityItem,
   CreativeCadence,
   LifeProfile,
+  MedicationFastingPolicy,
   MedicationItem,
   MemoryCategory,
   MemoryItem,
@@ -839,6 +840,20 @@ function sanitizeDoseKeysList(raw: unknown): string[] {
   return out;
 }
 
+const VALID_MED_FASTING_POLICIES: readonly MedicationFastingPolicy[] = [
+  'auto-nearest',
+  'before-fajr',
+  'after-maghrib',
+  'skip',
+  'unchanged',
+];
+
+export function sanitizeMedicationFastingPolicy(raw: unknown): MedicationFastingPolicy {
+  return VALID_MED_FASTING_POLICIES.includes(raw as MedicationFastingPolicy)
+    ? (raw as MedicationFastingPolicy)
+    : 'auto-nearest';
+}
+
 export function sanitizeMedicationItem(raw: Partial<MedicationItem>): MedicationItem {
   const id = sanitizeMedicationId(raw.id || `med_${Date.now().toString(36)}`);
   const name = String(raw.name ?? '').trim().slice(0, 80) || 'علاج / مكمل';
@@ -847,6 +862,7 @@ export function sanitizeMedicationItem(raw: Partial<MedicationItem>): Medication
   const times24 = sanitizeTimesList(raw.times24, safeSingle);
   const time24 = times24[0] ?? safeSingle;
   const daysOfWeek = sanitizeWeekdayList(raw.daysOfWeek, []);
+  const fastingPolicy = sanitizeMedicationFastingPolicy(raw.fastingPolicy);
   const takenDosesToday = sanitizeDoseKeysList(raw.takenDosesToday);
   const doseNote = String(raw.doseNote ?? '').trim().slice(0, 120);
   const rawDateKey = String(raw.takenDateKey ?? '').trim();
@@ -888,6 +904,7 @@ export function sanitizeMedicationItem(raw: Partial<MedicationItem>): Medication
     time24,
     times24,
     daysOfWeek,
+    fastingPolicy,
     takenDosesToday,
     doseNote,
     takenDateKey,
@@ -1533,6 +1550,7 @@ export function subscribeMedications(
               time24: String(data.time24 ?? ''),
               times24: Array.isArray(data.times24) ? data.times24.map(String) : undefined,
               daysOfWeek: Array.isArray(data.daysOfWeek) ? data.daysOfWeek.map(Number) : undefined,
+              fastingPolicy: data.fastingPolicy as MedicationFastingPolicy | undefined,
               takenDosesToday: Array.isArray(data.takenDosesToday)
                 ? data.takenDosesToday.map(String)
                 : undefined,
@@ -1584,6 +1602,7 @@ export async function upsertMedicationRecord(
           time24: clean.time24,
           times24: clean.times24 ?? [],
           daysOfWeek: clean.daysOfWeek ?? [],
+          fastingPolicy: clean.fastingPolicy ?? 'auto-nearest',
           takenDosesToday: clean.takenDosesToday ?? [],
           takenDates: clean.takenDates ?? [],
           doseNote: clean.doseNote,

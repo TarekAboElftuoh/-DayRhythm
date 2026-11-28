@@ -6,8 +6,12 @@ import type {
   MedicationActionProposal,
   MemoryActionProposal,
   PendingProposal,
+  SettingsPatchProposal,
+  SettingsSnapshotContext,
   TaskActionProposal,
 } from '../types/dayrhythm';
+import { DEFAULT_LIFE_PROFILE } from '../engines/lifeRhythmEngine';
+import { validateAndNormalizeSettingsPatch } from '../utils/settingsPatchValidator';
 
 export interface GeminiFunctionCall {
   name?: string;
@@ -23,6 +27,7 @@ export const GEMINI_TOOL_KEYS = [
   'propose_profile_updates',
   'propose_memory_actions',
   'propose_app_settings',
+  'update_app_settings',
 ] as const;
 
 export interface ExtractedBalancedCall {
@@ -319,7 +324,8 @@ export function cleanDisplayMessageText(rawText?: string | null): string {
 }
 
 export function extractPendingProposalFromFunctionCalls(
-  fnCalls?: GeminiFunctionCall[]
+  fnCalls?: GeminiFunctionCall[],
+  options?: { settingsSnapshot?: SettingsSnapshotContext }
 ): PendingProposal | undefined {
   if (!fnCalls || fnCalls.length === 0) return undefined;
 
@@ -330,6 +336,7 @@ export function extractPendingProposalFromFunctionCalls(
   const profileCall = fnCalls.find((f) => f.name === 'propose_profile_updates');
   const memoryCall = fnCalls.find((f) => f.name === 'propose_memory_actions');
   const settingsCall = fnCalls.find((f) => f.name === 'propose_app_settings');
+  const unifiedSettingsCall = fnCalls.find((f) => f.name === 'update_app_settings');
 
   if (
     !calCall &&
@@ -338,7 +345,8 @@ export function extractPendingProposalFromFunctionCalls(
     !creativeCall &&
     !profileCall &&
     !memoryCall &&
-    !settingsCall
+    !settingsCall &&
+    !unifiedSettingsCall
   ) {
     return undefined;
   }
@@ -350,7 +358,8 @@ export function extractPendingProposalFromFunctionCalls(
     creativeCall?.fromTextFallback ||
     profileCall?.fromTextFallback ||
     memoryCall?.fromTextFallback ||
-    settingsCall?.fromTextFallback
+    settingsCall?.fromTextFallback ||
+    unifiedSettingsCall?.fromTextFallback
   );
 
   const calArgs = (calCall?.args ?? {}) as {
@@ -371,29 +380,61 @@ export function extractPendingProposalFromFunctionCalls(
   };
   const profileArgs = (profileCall?.args ?? {}) as Record<string, unknown>;
   const { summaryAr: profileSummaryAr, ...rawProfilePatch } = profileArgs;
-  const profileUpdates =
-    profileCall && Object.keys(rawProfilePatch).length > 0
-      ? (rawProfilePatch as Partial<LifeProfile>)
-      : undefined;
   const memoryArgs = (memoryCall?.args ?? {}) as {
     summaryAr?: string;
     memoryActions?: MemoryActionProposal[];
   };
-  const settingsArgs = (settingsCall?.args ?? {}) as {
-    summaryAr?: string;
-    patch?: AppSettingsPatch;
-  } & AppSettingsPatch;
+  const settingsArgs = (settingsCall?.args ?? {}) as Record<string, unknown>;
+  const unifiedArgs = (unifiedSettingsCall?.args ?? {}) as Record<string, unknown>;
 
-  const rawSettingsPatch =
-    settingsCall && typeof settingsArgs === 'object' && settingsArgs !== null
-      ? (settingsArgs.patch ?? settingsArgs)
-      : undefined;
-  const appSettings: AppSettingsPatch | undefined =
-    rawSettingsPatch && typeof rawSettingsPatch === 'object'
-      ? { ...rawSettingsPatch }
-      : undefined;
-  if (appSettings) {
-    delete (appSettings as { summaryAr?: string }).summaryAr;
+  const unwrapPatch = (raw: Record<string, unknown>): Record<string, unknown> => {
+    const nested =
+      raw.patch && typeof raw.patch === 'object' && !Array.isArray(raw.patch)
+        ? (raw.patch as Record<string, unknown>)
+        : raw;
+    const out = { ...nested };
+    delete out.summaryAr;
+    return out;
+  };
+
+  const mergedSettingsInput: Record<string, unknown> = {
+    ...(profileCall ? rawProfilePatch : {}),
+    ...(settingsCall ? unwrapPatch(settingsArgs) : {}),
+    ...(unifiedSettingsCall ? unwrapPatch(unifiedArgs) : {}),
+  };
+
+  let settingsPatchProposal: SettingsPatchProposal | undefined;
+  let profileUpdates: Partial<LifeProfile> | undefined;
+  let appSettings: AppSettingsPatch | undefined;
+
+  if (Object.keys(mergedSettingsInput).length > 0) {
+    const baseProfile = options?.settingsSnapshot?.lifeProfile ?? DEFAULT_LIFE_PROFILE;
+    const validation = validateAndNormalizeSettingsPatch(
+      baseProfile,
+      mergedSettingsInput,
+      options?.settingsSnapshot
+    );
+    const settingsSummary =
+      (typeof unifiedArgs.summaryAr === 'string' && unifiedArgs.summaryAr) ||
+      (typeof settingsArgs.summaryAr === 'string' && settingsArgs.summaryAr) ||
+      (typeof profileSummaryAr === 'string' && profileSummaryAr) ||
+      'تعديل إعدادات التطبيق';
+
+    settingsPatchProposal = {
+      summaryAr: settingsSummary,
+      patch: validation.normalizedPatch,
+      diffs: validation.diffs,
+      warnings: validation.warnings.length > 0 ? validation.warnings : undefined,
+      errors: validation.errors.length > 0 ? validation.errors : undefined,
+      blockedKeys: validation.blockedKeys.length > 0 ? validation.blockedKeys : undefined,
+    };
+
+    if (Object.keys(validation.profilePatch).length > 0) {
+      profileUpdates = validation.profilePatch;
+    }
+    if (Object.keys(validation.appSettingsPatch).length > 0) {
+      appSettings = validation.appSettingsPatch;
+    }
   }
 
   const actions = Array.isArray(calArgs.actions) ? calArgs.actions : [];
@@ -413,9 +454,8 @@ export function extractPendingProposalFromFunctionCalls(
     taskArgs.summaryAr ||
     medArgs.summaryAr ||
     creativeArgs.summaryAr ||
-    (typeof profileSummaryAr === 'string' ? profileSummaryAr : undefined) ||
+    settingsPatchProposal?.summaryAr ||
     memoryArgs.summaryAr ||
-    (typeof settingsArgs?.summaryAr === 'string' ? settingsArgs.summaryAr : undefined) ||
     'اقتراح تعديل على التقويم والمهام';
 
   return {
@@ -426,7 +466,8 @@ export function extractPendingProposalFromFunctionCalls(
     creativeActions: creativeActions.length > 0 ? creativeActions : undefined,
     profileUpdates,
     memoryActions: memoryActions.length > 0 ? memoryActions : undefined,
-    appSettings: appSettings && Object.keys(appSettings).length > 0 ? appSettings : undefined,
+    appSettings,
+    settingsPatchProposal,
     status: 'pending',
     fromTextFallback: isFromFallback || undefined,
   };

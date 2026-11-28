@@ -76,6 +76,7 @@ import {
   HydrationDayLog,
   LifeProfile,
   MedicationActionProposal,
+  MedicationFastingPolicy,
   MedicationItem,
   PeriodicRitualStatus,
   PersistedChatMessage,
@@ -111,7 +112,19 @@ import {
   checkSmartScheduleConflict,
   computeMedicationDaysLeft,
   formatDurationAr,
+  resolveMedicationDosesForDay,
 } from '../engines/lifeRhythmEngine';
+
+const MED_FASTING_POLICY_OPTIONS: ReadonlyArray<{
+  value: MedicationFastingPolicy;
+  labelAr: string;
+}> = [
+  { value: 'auto-nearest', labelAr: 'تلقائي للأقرب (سحور / إفطار)' },
+  { value: 'before-fajr', labelAr: 'قبل الفجر بـ 15 د (السحور)' },
+  { value: 'after-maghrib', labelAr: 'بعد المغرب بـ 15 د (الإفطار)' },
+  { value: 'skip', labelAr: 'تخطي في أيام الصيام' },
+  { value: 'unchanged', labelAr: 'تثبيت نفس الموعد' },
+];
 import { cleanCalendarText, resolveBlockDisplayInfo } from '../services/apiClient';
 import { t } from '../engines/i18n';
 
@@ -221,6 +234,7 @@ interface DashboardViewProps {
     time24?: string;
     times24?: string[];
     daysOfWeek?: number[];
+    fastingPolicy?: MedicationFastingPolicy;
     doseNote?: string;
     courseEndDate?: string;
     remainingDoses?: number;
@@ -538,6 +552,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Quick Add Flexible Medication / Supplement inline form (supports multi-dose, weekdays, course end, refill count & lead days)
   const [showAddMedForm, setShowAddMedForm] = useState(false);
   const [showMedAdvanced, setShowMedAdvanced] = useState(false);
+  const [showEditMedAdvanced, setShowEditMedAdvanced] = useState(false);
   const [editingMedId, setEditingMedId] = useState<string | null>(null);
   const [editMedName, setEditMedName] = useState('');
   const [editMedHour12, setEditMedHour12] = useState<number>(8);
@@ -545,6 +560,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [editMedPeriod, setEditMedPeriod] = useState<'AM' | 'PM'>('AM');
   const [editMedTimes24, setEditMedTimes24] = useState<string[]>([]);
   const [editMedDaysOfWeek, setEditMedDaysOfWeek] = useState<number[]>([]);
+  const [editMedFastingPolicy, setEditMedFastingPolicy] = useState<MedicationFastingPolicy>('auto-nearest');
   const [editMedNote, setEditMedNote] = useState('');
   const [editMedCourseEnd, setEditMedCourseEnd] = useState('');
   const [editMedRemainingDoses, setEditMedRemainingDoses] = useState('');
@@ -555,6 +571,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [newMedPeriod, setNewMedPeriod] = useState<'AM' | 'PM'>('AM');
   const [newMedTimes24, setNewMedTimes24] = useState<string[]>([]);
   const [newMedDaysOfWeek, setNewMedDaysOfWeek] = useState<number[]>([]);
+  const [newMedFastingPolicy, setNewMedFastingPolicy] = useState<MedicationFastingPolicy>('auto-nearest');
   const [newMedNote, setNewMedNote] = useState('');
   const [newMedCourseEnd, setNewMedCourseEnd] = useState('');
   const [newMedRemainingDoses, setNewMedRemainingDoses] = useState('');
@@ -659,11 +676,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   };
 
   // Medication adherence summary (Today + last 7 days)
+  const medFajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
+  const medMaghribMin = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
   const medAdherenceSummary = useMemo(() => {
     const todayWeekday = last7CairoDays[last7CairoDays.length - 1]?.weekdayNum ?? 0;
-    const dueTodayMeds = medications.filter(
-      (m) => !m.daysOfWeek || m.daysOfWeek.length === 0 || m.daysOfWeek.includes(todayWeekday)
-    );
+    const dueTodayMeds = medications.filter((m) => {
+      if (m.daysOfWeek && m.daysOfWeek.length > 0 && !m.daysOfWeek.includes(todayWeekday)) {
+        return false;
+      }
+      const rawTimes = m.times24 && m.times24.length > 0 ? m.times24 : m.time24 ? [m.time24] : [];
+      if (rawTimes.length > 0 && dailyRhythmPlan.isFastingToday) {
+        const resolved = resolveMedicationDosesForDay(m, {
+          isFastingToday: true,
+          fajrMin: medFajrMin,
+          maghribMin: medMaghribMin,
+        });
+        if (resolved.doses.length === 0 && resolved.skippedCount > 0) return false;
+      }
+      return true;
+    });
     const takenTodayCount = dueTodayMeds.filter((m) => {
       const times = m.times24 && m.times24.length > 0 ? m.times24 : m.time24 ? [m.time24] : [];
       const takenDoses = m.takenDateKey === todayCairoIso ? m.takenDosesToday ?? [] : [];
@@ -700,7 +731,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       missedPastSlots,
       adherencePct,
     };
-  }, [medications, last7CairoDays, todayCairoIso]);
+  }, [medications, last7CairoDays, todayCairoIso, dailyRhythmPlan.isFastingToday, medFajrMin, medMaghribMin]);
 
   const cardSurface =
     surfaceTheme === 'amoled'
@@ -3859,6 +3890,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     time24: finalTimes[0],
                     times24: finalTimes,
                     daysOfWeek: newMedDaysOfWeek,
+                    fastingPolicy: newMedFastingPolicy,
                     doseNote: trimmedNote || '',
                     courseEndDate: newMedCourseEnd.trim() || '',
                     remainingDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
@@ -3892,6 +3924,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   setNewMedNote('');
                   setNewMedTimes24([]);
                   setNewMedDaysOfWeek([]);
+                  setNewMedFastingPolicy('auto-nearest');
                   setNewMedCourseEnd('');
                   setNewMedRemainingDoses('');
                   setNewMedRefillAlertDays(3);
@@ -4136,6 +4169,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </div>
                     </div>
 
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-zinc-400 block">
+                        سياسة الصيام (الجرعات بين الفجر والمغرب):
+                      </label>
+                      <select
+                        value={newMedFastingPolicy}
+                        onChange={(e) =>
+                          setNewMedFastingPolicy(e.target.value as MedicationFastingPolicy)
+                        }
+                        className="w-full rounded-lg border border-white/12 bg-black px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:border-[#7FFFD4]"
+                      >
+                        {MED_FASTING_POLICY_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.labelAr}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     {calendarConnected && (
                       <label className="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer select-none pt-0.5">
                         <input
@@ -4201,6 +4253,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       : med.time24
                         ? [med.time24]
                         : [];
+                  const resolvedMed = resolveMedicationDosesForDay(med, {
+                    isFastingToday: Boolean(dailyRhythmPlan.isFastingToday),
+                    fajrMin: medFajrMin,
+                    maghribMin: medMaghribMin,
+                  });
                   const takenDoses =
                     med.takenDateKey === todayCairoIso ? med.takenDosesToday ?? [] : [];
                   const takenToday =
@@ -4231,9 +4288,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           <span className={`font-semibold truncate ${takenToday ? 'text-[#4ADE80]' : 'text-zinc-100'}`}>
                             {med.name}
                           </span>
-                          {doseTimes.length === 1 && (
-                            <span className="font-mono-tabular text-[11px] text-zinc-400 shrink-0">
-                              · {formatTime24To12h(doseTimes[0], language)}
+                          {doseTimes.length === 1 && resolvedMed.doses.length === 0 && resolvedMed.skippedCount > 0 && (
+                            <span className="text-[11px] text-amber-300/80 shrink-0">
+                              · متخطى (صيام)
+                            </span>
+                          )}
+                          {doseTimes.length === 1 && resolvedMed.doses[0] && (
+                            <span
+                              className={`font-mono-tabular text-[11px] shrink-0 ${
+                                resolvedMed.doses[0].wasShifted ? 'text-[#7FFFD4]' : 'text-zinc-400'
+                              }`}
+                              title={
+                                resolvedMed.doses[0].wasShifted
+                                  ? `الموعد الأصلي: ${formatTime24To12h(resolvedMed.doses[0].originalTime24, language)}`
+                                  : undefined
+                              }
+                            >
+                              · {formatTime24To12h(resolvedMed.doses[0].effectiveTime24, language)}
+                              {resolvedMed.doses[0].wasShifted ? ' (صيام)' : ''}
                             </span>
                           )}
                           {daysLabel && (
@@ -4284,6 +4356,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               );
                               setEditMedTimes24(doseTimes);
                               setEditMedDaysOfWeek(med.daysOfWeek ?? []);
+                              setEditMedFastingPolicy(med.fastingPolicy ?? 'auto-nearest');
+                              setShowEditMedAdvanced(false);
                               setEditMedNote(med.doseNote ?? '');
                               setEditMedCourseEnd(med.courseEndDate ?? '');
                               setEditMedRemainingDoses(
@@ -4339,6 +4413,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                               time24: finalTimes[0],
                               times24: finalTimes,
                               daysOfWeek: editMedDaysOfWeek,
+                              fastingPolicy: editMedFastingPolicy,
                               doseNote: editMedNote.trim(),
                               courseEndDate: editMedCourseEnd.trim(),
                               remainingDoses: Number.isFinite(parsedRem) ? parsedRem : -1,
@@ -4515,6 +4590,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             })}
                           </div>
 
+                          <button
+                            type="button"
+                            onClick={() => setShowEditMedAdvanced((v) => !v)}
+                            aria-expanded={showEditMedAdvanced}
+                            className="text-[11px] text-zinc-400 hover:text-[#7FFFD4] flex items-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <span>خيارات إضافية {showEditMedAdvanced ? '▴' : '▾'}</span>
+                          </button>
+
+                          {showEditMedAdvanced && (
+                            <div className="space-y-1 pt-1 border-t border-white/[0.06]">
+                              <label className="text-[11px] text-zinc-400 block">
+                                سياسة الصيام (الجرعات بين الفجر والمغرب):
+                              </label>
+                              <select
+                                value={editMedFastingPolicy}
+                                onChange={(e) =>
+                                  setEditMedFastingPolicy(e.target.value as MedicationFastingPolicy)
+                                }
+                                className="w-full rounded-lg border border-white/15 bg-black px-2.5 py-1.5 text-[11px] text-zinc-200 focus:outline-none focus:border-[#7FFFD4]"
+                              >
+                                {MED_FASTING_POLICY_OPTIONS.map((opt) => (
+                                  <option key={opt.value} value={opt.value}>
+                                    {opt.labelAr}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
                           <div className="flex items-center justify-end gap-1.5 pt-1 border-t border-white/[0.08]">
                             <button
                               type="button"
@@ -4535,24 +4640,40 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       )}
 
                       {doseTimes.length > 1 && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {doseTimes.map((t24) => {
-                            const doseDone = takenDoses.includes(t24);
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          {resolvedMed.doses.map((dose) => {
+                            const doseDone =
+                              takenDoses.includes(dose.originalTime24) ||
+                              takenDoses.includes(dose.effectiveTime24);
                             return (
                               <button
-                                key={t24}
+                                key={dose.originalTime24}
                                 type="button"
-                                onClick={() => onToggleMedication(med.id, t24)}
+                                onClick={() => onToggleMedication(med.id, dose.originalTime24)}
+                                title={
+                                  dose.wasShifted
+                                    ? `الموعد الأصلي: ${formatTime24To12h(dose.originalTime24, language)}`
+                                    : undefined
+                                }
                                 className={`px-2 py-0.5 rounded-md border font-mono-tabular text-[11px] cursor-pointer transition-colors ${
                                   doseDone
                                     ? 'border-[#4ADE80]/45 bg-[#4ADE80]/15 text-[#4ADE80] font-bold'
-                                    : 'border-white/10 bg-white/[0.02] text-zinc-300 hover:border-[#7FFFD4]/45'
+                                    : dose.wasShifted
+                                      ? 'border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] hover:border-[#7FFFD4]/60'
+                                      : 'border-white/10 bg-white/[0.02] text-zinc-300 hover:border-[#7FFFD4]/45'
                                 }`}
                               >
-                                {formatTime24To12h(t24, language)} {doseDone ? '✓' : '○'}
+                                {formatTime24To12h(dose.effectiveTime24, language)}{' '}
+                                {dose.wasShifted ? '(صيام) ' : ''}
+                                {doseDone ? '✓' : '○'}
                               </button>
                             );
                           })}
+                          {resolvedMed.skippedCount > 0 && (
+                            <span className="text-[10px] text-amber-300/80">
+                              (تخطي {resolvedMed.skippedCount} للصيام)
+                            </span>
+                          )}
                         </div>
                       )}
 

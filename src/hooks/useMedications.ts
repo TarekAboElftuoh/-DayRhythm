@@ -14,6 +14,7 @@ import {
 import type {
   MedicationActionProposal,
   MedicationExecutionResult,
+  MedicationFastingPolicy,
   MedicationItem,
 } from '../types/dayrhythm';
 
@@ -370,6 +371,7 @@ export function useMedicationActions({
       time24?: string;
       times24?: string[];
       daysOfWeek?: number[];
+      fastingPolicy?: MedicationFastingPolicy;
       doseNote?: string;
       calendarEventId?: string;
       courseEndDate?: string;
@@ -397,6 +399,7 @@ export function useMedicationActions({
         time24: cleanTimes[0] ?? '',
         times24: cleanTimes,
         daysOfWeek: input.daysOfWeek ?? [],
+        fastingPolicy: input.fastingPolicy ?? 'auto-nearest',
         doseNote: input.doseNote ?? '',
         takenDateKey: '',
         takenDosesToday: [],
@@ -529,6 +532,7 @@ export function useMedicationActions({
                 time24: actTimes?.[0] ?? act.time24 ?? target.time24,
                 times24: actTimes ?? target.times24,
                 daysOfWeek: act.daysOfWeek ?? target.daysOfWeek,
+                fastingPolicy: act.fastingPolicy ?? target.fastingPolicy,
                 doseNote: act.doseNote ?? target.doseNote,
                 courseEndDate: act.courseEndDate ?? target.courseEndDate,
                 remainingDoses:
@@ -556,6 +560,7 @@ export function useMedicationActions({
                 time24: actTimes?.[0] ?? act.time24 ?? existing.time24,
                 times24: actTimes ?? existing.times24,
                 daysOfWeek: act.daysOfWeek ?? existing.daysOfWeek,
+                fastingPolicy: act.fastingPolicy ?? existing.fastingPolicy,
                 doseNote: act.doseNote ?? existing.doseNote,
                 calendarEventId: calId || existing.calendarEventId,
                 courseEndDate: act.courseEndDate ?? existing.courseEndDate,
@@ -591,6 +596,7 @@ export function useMedicationActions({
                 time24: actTimes?.[0] ?? act.time24 ?? '',
                 times24: actTimes ?? [],
                 daysOfWeek: act.daysOfWeek ?? [],
+                fastingPolicy: act.fastingPolicy ?? 'auto-nearest',
                 doseNote: act.doseNote ?? '',
                 takenDateKey: '',
                 takenDosesToday: [],

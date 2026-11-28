@@ -738,13 +738,14 @@ function parseArabicOrLatinInt(raw: string): number {
 }
 
 export interface SpecialFastDay {
-  id: 'arafah' | 'ashura';
+  id: 'ramadan' | 'white_days' | 'arafah' | 'ashura';
   nameAr: string;
   emoji: string;
 }
 
 /**
- * Detects the special Sunnah fasting days from the Hijri date (Umm al-Qura calendar):
+ * Detects Islamic fasting days from the Hijri date (Umm al-Qura calendar):
+ *   Ramadan (month 9), White Days (13, 14, 15 except 13 Dhu al-Hijjah),
  *   9 Dhu al-Hijjah → يوم عرفة · 10 Muharram → يوم عاشوراء.
  * Note: Egypt's official start of a Hijri month (moon sighting) can differ by a day from Umm al-Qura;
  * the user can always switch the day back to normal with the fasting override.
@@ -761,8 +762,12 @@ export function getSpecialFastDay(dateIso: string, timeZone = 'Africa/Cairo'): S
     }).formatToParts(date);
     const day = Number(parts.find((p) => p.type === 'day')?.value);
     const month = Number(parts.find((p) => p.type === 'month')?.value);
+    if (month === 9) return { id: 'ramadan', nameAr: 'شهر رمضان', emoji: '🌙' };
     if (month === 12 && day === 9) return { id: 'arafah', nameAr: 'يوم عرفة', emoji: '🕋' };
     if (month === 1 && day === 10) return { id: 'ashura', nameAr: 'يوم عاشوراء', emoji: '🌙' };
+    if ((day === 13 && month !== 12) || day === 14 || day === 15) {
+      return { id: 'white_days', nameAr: 'الأيام البيض', emoji: '🌕' };
+    }
   } catch {
     // Intl without the islamic calendar: no special days
   }

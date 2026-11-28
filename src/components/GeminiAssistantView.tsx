@@ -48,9 +48,13 @@ import {
   MemoryCategory,
   MemoryItem,
   PersistedChatMessage,
+  SettingsPatchProposal,
+  SettingsSnapshotContext,
   TaskActionProposal,
   TaskExecutionResult,
+  UnifiedSettingsPatch,
 } from '../types/dayrhythm';
+import { validateAndNormalizeSettingsPatch } from '../utils/settingsPatchValidator';
 import {
   formatIsoTo12h,
   formatTime24To12h,
@@ -122,6 +126,10 @@ interface GeminiAssistantViewProps {
   onApplyProfileUpdates: (patch: Partial<LifeProfile>) => void;
   /** Applies app settings Gemini proposed (charge limit, silent mode, theme, language, …). */
   onApplyAppSettings?: (patch: AppSettingsPatch) => void;
+  /** Unified validated settings patch applier (persists Firestore + Drive + re-arms alarms). */
+  onApplySettingsPatch?: (patch: UnifiedSettingsPatch) => Promise<void> | void;
+  /** Live settings snapshot used to ground Gemini schema & before/after diffs. */
+  currentSettingsSnapshot?: SettingsSnapshotContext;
   onExecuteMemoryActions: (memoryActions: MemoryActionProposal[]) => void;
   onOpenLifeProfile: () => void;
   initialPrompt?: string | null;
@@ -361,6 +369,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   onExecuteCreativeActions,
   onApplyProfileUpdates,
   onApplyAppSettings,
+  onApplySettingsPatch,
+  currentSettingsSnapshot,
   onExecuteMemoryActions,
   onOpenLifeProfile,
   initialPrompt,
@@ -900,7 +910,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     creativeActions: CreativeActivityActionProposal[] = [],
     profileUpdates?: Partial<LifeProfile>,
     memoryActions: MemoryActionProposal[] = [],
-    appSettings?: AppSettingsPatch
+    appSettings?: AppSettingsPatch,
+    settingsPatchProposal?: SettingsPatchProposal
   ) => {
     setExecutingProposalId(msgId);
     try {
@@ -909,22 +920,30 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       const linkedCalendarIds: Record<string, string> = {};
       let queuedOffline = false;
 
-      if (appSettings && Object.keys(appSettings).length > 0) {
-        // "تأكيد يدوي / تنفيذ فوري" is a trust setting, not an app preference — it decides whether
-        // Gemini's OWN future proposals need your click at all. Letting Gemini flip it on your
-        // behalf (even via an explicit request) meant a single confirmed message could silently
-        // turn manual-confirm off, and every action after that "confirmed itself" with no visible
-        // click — exactly the bug reported ("it executed on its own, I never turned that on").
-        // It must only ever change from the toggle button itself, a direct human click.
-        if ('autoExecuteChat' in appSettings) {
-          delete (appSettings as { autoExecuteChat?: boolean }).autoExecuteChat;
+      if (settingsPatchProposal || (appSettings && Object.keys(appSettings).length > 0) || (profileUpdates && Object.keys(profileUpdates).length > 0)) {
+        const rawCombined: Record<string, unknown> = {
+          ...(profileUpdates ?? {}),
+          ...(appSettings ?? {}),
+          ...(settingsPatchProposal?.patch ?? {}),
+        };
+        const validated = validateAndNormalizeSettingsPatch(
+          lifeProfile,
+          rawCombined,
+          currentSettingsSnapshot
+        );
+        if (validated.hasChanges) {
+          if (onApplySettingsPatch) {
+            await onApplySettingsPatch(validated.normalizedPatch);
+          } else {
+            if (Object.keys(validated.appSettingsPatch).length > 0) {
+              onApplyAppSettings?.(validated.appSettingsPatch);
+            }
+            if (Object.keys(validated.profilePatch).length > 0) {
+              onApplyProfileUpdates(validated.profilePatch);
+            }
+          }
+          summaryParts.push('إعدادات التطبيق');
         }
-        if (Object.keys(appSettings).length > 0) onApplyAppSettings?.(appSettings);
-      }
-
-      if (profileUpdates && Object.keys(profileUpdates).length > 0) {
-        onApplyProfileUpdates(profileUpdates);
-        summaryParts.push('الدستور الشخصي');
       }
 
       if (memoryActions.length > 0) {
@@ -1108,8 +1127,12 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         (proposal.creativeActions?.length ?? 0) +
         (proposal.profileUpdates ? 1 : 0) +
         (proposal.appSettings ? 1 : 0) +
+        (proposal.settingsPatchProposal ? 1 : 0) +
         (proposal.memoryActions?.length ?? 0);
       if (totalItems === 0) return;
+      if (proposal.settingsPatchProposal?.errors && proposal.settingsPatchProposal.errors.length > 0) {
+        return;
+      }
       // Never auto-execute destructive medication removal silently — always require explicit user confirmation
       const hasMedicationRemove = Boolean(
         proposal.medicationActions?.some((m) => m.operation === 'remove')
@@ -1125,7 +1148,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           proposal.creativeActions ?? [],
           proposal.profileUpdates,
           proposal.memoryActions ?? [],
-          proposal.appSettings
+          proposal.appSettings,
+          proposal.settingsPatchProposal
         );
       }, 0);
     };
@@ -1215,6 +1239,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             time24: m.time24,
             times24: m.times24,
             daysOfWeek: m.daysOfWeek,
+            fastingPolicy: m.fastingPolicy,
             doseNote: m.doseNote,
             takenToday: m.takenDateKey === todayLocalIso,
             takenDosesToday: m.takenDateKey === todayLocalIso ? m.takenDosesToday ?? [] : [],
@@ -1224,6 +1249,14 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             refillAlertDays: m.refillAlertDays ?? 3,
             takenDates: m.takenDates ?? [],
           })),
+          settingsSnapshot: currentSettingsSnapshot ?? {
+            lifeProfile,
+            medications: medications.map((m) => ({
+              id: m.id,
+              name: m.name,
+              fastingPolicy: m.fastingPolicy,
+            })),
+          },
           creativeActivities: creativePlacements.map((p) => ({
             id: p.activity.id,
             name: p.activity.name,
@@ -2661,23 +2694,67 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                       </div>
                     )}
 
-                    {/* Explicit User Confirmation Block for Calendar / Tasks / Meds / Memories / Profile */}
-                    {displayProposal && (
-                      <div className="mt-3 pt-3 border-t border-[#7FFFD4]/30 space-y-2.5">
+                    {/* Explicit User Confirmation Block for Calendar / Tasks / Meds / Memories / Settings */}
+                    {displayProposal && (() => {
+                      const hasSettingsInput = Boolean(
+                        displayProposal.settingsPatchProposal ||
+                        displayProposal.profileUpdates ||
+                        displayProposal.appSettings
+                      );
+                      const settingsValidation = hasSettingsInput
+                        ? validateAndNormalizeSettingsPatch(
+                            lifeProfile,
+                            displayProposal.settingsPatchProposal?.patch ?? {
+                              ...(displayProposal.profileUpdates ?? {}),
+                              ...(displayProposal.appSettings ?? {}),
+                            },
+                            currentSettingsSnapshot
+                          )
+                        : null;
+                      const displayedDiffs =
+                        displayProposal.settingsPatchProposal?.diffs &&
+                        displayProposal.settingsPatchProposal.diffs.length > 0
+                          ? displayProposal.settingsPatchProposal.diffs
+                          : settingsValidation?.diffs ?? [];
+                      const displayedWarnings =
+                        displayProposal.settingsPatchProposal?.warnings ??
+                        settingsValidation?.warnings ??
+                        [];
+                      const displayedErrors =
+                        displayProposal.settingsPatchProposal?.errors ??
+                        settingsValidation?.errors ??
+                        [];
+                      const totalProposalCount =
+                        displayProposal.actions.length +
+                        (displayProposal.taskActions?.length ?? 0) +
+                        (displayProposal.medicationActions?.length ?? 0) +
+                        (displayProposal.creativeActions?.length ?? 0) +
+                        (displayedDiffs.length > 0
+                          ? displayedDiffs.length
+                          : displayProposal.profileUpdates || displayProposal.appSettings
+                            ? 1
+                            : 0) +
+                        (displayProposal.memoryActions?.length ?? 0);
+
+                      return (
+                      <div dir="rtl" className="mt-3 pt-3 border-t border-[#7FFFD4]/30 space-y-2.5">
                         <div className="flex items-center justify-between gap-2 text-xs">
                           <span className="font-bold text-[#7FFFD4]">
-                            تأكيد التعديلات (
-                            {displayProposal.actions.length +
-                              (displayProposal.taskActions?.length ?? 0) +
-                              (displayProposal.medicationActions?.length ?? 0) +
-                              (displayProposal.creativeActions?.length ?? 0) +
-                              (displayProposal.profileUpdates ? 1 : 0) +
-                              (displayProposal.memoryActions?.length ?? 0)}
-                            )
+                            {hasSettingsInput ? 'تأكيد تعديل الإعدادات' : 'تأكيد التعديلات'} ({totalProposalCount})
                           </span>
-                          <span className="text-[11px] text-zinc-400">
+                          <span
+                            className={`text-[11px] font-medium ${
+                              displayProposal.status === 'confirmed'
+                                ? 'text-[#4ADE80]'
+                                : displayProposal.status === 'cancelled'
+                                  ? 'text-zinc-500'
+                                  : 'text-zinc-400'
+                            }`}
+                          >
                             {displayProposal.status === 'confirmed'
-                              ? 'تم التنفيذ ✓'
+                              ? hasSettingsInput
+                                ? 'تم التطبيق ✓'
+                                : 'تم التنفيذ ✓'
                               : displayProposal.status === 'cancelled'
                                 ? 'تم الإلغاء'
                                 : 'بانتظار موافقتك'}
@@ -2686,38 +2763,47 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
 
                         <p className="text-xs text-zinc-300">{displayProposal.summaryAr}</p>
 
-                        {displayProposal.profileUpdates && (
-                          <div className="pt-2 border-t border-white/10 text-[11px] space-y-1">
-                            <div className="font-semibold text-[#7FFFD4]">
-                              تحديث الدستور الشخصي الدائم:
-                            </div>
-                            <div className="text-zinc-200 flex flex-wrap gap-x-3 gap-y-1 font-mono-tabular">
-                              {displayProposal.profileUpdates.weightKg !== undefined && (
-                                <span>الوزن: {displayProposal.profileUpdates.weightKg} كجم</span>
-                              )}
-                              {displayProposal.profileUpdates.heightCm !== undefined && (
-                                <span>الطول: {displayProposal.profileUpdates.heightCm} سم</span>
-                              )}
-                              {displayProposal.profileUpdates.cupSizeMl !== undefined && (
-                                <span>الكوب: {displayProposal.profileUpdates.cupSizeMl} مل</span>
-                              )}
-                              {displayProposal.profileUpdates.workEnabled !== undefined && (
-                                <span>
-                                  الشغل:{' '}
-                                  {displayProposal.profileUpdates.workEnabled
-                                    ? `${formatTime24To12h(displayProposal.profileUpdates.workStart24, language)} – ${formatTime24To12h(displayProposal.profileUpdates.workEnd24, language)}`
-                                    : 'تفرغ للكورسات'}
-                                </span>
-                              )}
-                              {displayProposal.profileUpdates.currentCityName && (
-                                <span>الموقع: {displayProposal.profileUpdates.currentCityName}</span>
-                              )}
-                              {displayProposal.profileUpdates.sleepTargetMinutes !== undefined && (
-                                <span>
-                                  هدف النوم: {displayProposal.profileUpdates.sleepTargetMinutes} د
-                                </span>
-                              )}
-                            </div>
+                        {hasSettingsInput && (
+                          <div className="rounded-xl border border-white/[0.08] bg-black/25 px-3 py-2.5 space-y-2 text-[11px]">
+                            {displayedDiffs.length > 0 ? (
+                              <ul className="divide-y divide-white/[0.06]">
+                                {displayedDiffs.map((diff) => (
+                                  <li
+                                    key={diff.key}
+                                    className="py-1.5 first:pt-0 last:pb-0 flex flex-wrap items-center justify-between gap-2"
+                                  >
+                                    <span className="text-zinc-200 font-medium">{diff.labelAr}:</span>
+                                    <span className="inline-flex items-center gap-1.5 font-mono-tabular">
+                                      <span className="text-zinc-400 line-through decoration-zinc-500/60">
+                                        {diff.beforeDisplay}
+                                      </span>
+                                      <span className="text-zinc-500">←</span>
+                                      <span className="text-[#7FFFD4] font-semibold">
+                                        {diff.afterDisplay}
+                                      </span>
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <div className="text-zinc-400">
+                                لا توجد تغييرات فعلية جديدة لتطبيقها.
+                              </div>
+                            )}
+                            {displayedWarnings.length > 0 && (
+                              <div className="pt-1 border-t border-amber-400/20 text-amber-300 space-y-0.5">
+                                {displayedWarnings.map((w, idx) => (
+                                  <div key={`warn-${idx}`}>⚠️ {w}</div>
+                                ))}
+                              </div>
+                            )}
+                            {displayedErrors.length > 0 && (
+                              <div className="pt-1 border-t border-rose-400/20 text-rose-300 space-y-0.5">
+                                {displayedErrors.map((errMsg, idx) => (
+                                  <div key={`err-${idx}`}>⛔ {errMsg}</div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -2873,7 +2959,17 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                           <div className="flex items-center gap-2 pt-1">
                             <button
                               type="button"
-                              disabled={executingProposalId === m.id}
+                              disabled={
+                                executingProposalId === m.id ||
+                                (hasSettingsInput &&
+                                  displayedErrors.length > 0 &&
+                                  displayedDiffs.length === 0 &&
+                                  displayProposal.actions.length === 0 &&
+                                  (displayProposal.taskActions?.length ?? 0) === 0 &&
+                                  (displayProposal.medicationActions?.length ?? 0) === 0 &&
+                                  (displayProposal.creativeActions?.length ?? 0) === 0 &&
+                                  (displayProposal.memoryActions?.length ?? 0) === 0)
+                              }
                               onClick={() =>
                                 handleConfirmProposal(
                                   m.id,
@@ -2883,7 +2979,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                                   displayProposal!.creativeActions ?? [],
                                   displayProposal!.profileUpdates,
                                   displayProposal!.memoryActions ?? [],
-                                  displayProposal!.appSettings
+                                  displayProposal!.appSettings,
+                                  displayProposal!.settingsPatchProposal
                                 )
                               }
                               className="flex-1 min-h-[44px] sm:min-h-[40px] py-2 px-4 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-[#66eec2] cursor-pointer disabled:opacity-50 transition-colors"
@@ -2893,7 +2990,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                               ) : (
                                 <Check className="w-3.5 h-3.5" />
                               )}
-                              <span>تأكيد وتنفيذ</span>
+                              <span>{hasSettingsInput ? 'تطبيق التغييرات' : 'تأكيد وتنفيذ'}</span>
                             </button>
                             <button
                               type="button"
@@ -2906,7 +3003,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                           </div>
                         )}
                       </div>
-                    )}
+                      );
+                    })()}
 
                     {/* Maps Grounding Links */}
                     {m.places && m.places.length > 0 && (

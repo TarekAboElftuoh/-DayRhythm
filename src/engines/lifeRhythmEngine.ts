@@ -8,6 +8,8 @@ import {
   GoogleCalendarEventItem,
   HydrationScheduleSlot,
   LifeProfile,
+  MedicationFastingPolicy,
+  MedicationItem,
   MemoryCategory,
   MemoryItem,
   PrayerTimeItem,
@@ -23,6 +25,7 @@ import {
   formatMinutes12h,
   formatMinutes24h,
   formatTime24To12h,
+  getSpecialFastDay,
 } from './prayerEngine';
 import { DEFAULT_SOUND_REPEATS, TASK_SOUND_META } from './audioEngine';
 
@@ -160,17 +163,56 @@ export function computeScientificHydration(
   };
 }
 
+export interface FastingDayInput {
+  weekday: number; // 0=Sun..6=Sat
+  fastingDays: number[]; // Custom selected weekdays (e.g., Sat [6], Mon/Thu [1, 4])
+  dateIso?: string;
+  timeZone?: string;
+  fastingOverride?: 'auto' | 'fasting' | 'normal';
+  /** Optional precomputed special fast label (Ramadan, White Days, Arafah, Ashura). */
+  specialFastAr?: string | null;
+  isWhiteDay?: boolean;
+  isRamadan?: boolean;
+}
+
+/**
+ * Single authoritative fasting detector shared across hydration, medications, Suhoor, and conflict checks.
+ * Honors custom selected weekdays, Mon/Thu, White Days, Ramadan, Arafah/Ashura, and one-off toggles.
+ */
+export function isFastingDay(input: FastingDayInput): boolean {
+  if (input.fastingOverride === 'fasting') return true;
+  if (input.fastingOverride === 'normal') return false;
+  if (Array.isArray(input.fastingDays) && input.fastingDays.includes(input.weekday)) {
+    return true;
+  }
+  if (input.isRamadan || input.isWhiteDay) return true;
+  if (input.specialFastAr !== undefined) {
+    return Boolean(input.specialFastAr);
+  }
+  if (input.dateIso) {
+    return Boolean(getSpecialFastDay(input.dateIso, input.timeZone));
+  }
+  return false;
+}
+
 export function computeDailyRhythmPlan(
   profile: LifeProfile,
   prayers: PrayerTimeItem[],
   options: {
     todayWeekday: number; // 0=Sun..6=Sat
     tomorrowWeekday: number;
+    todayIso?: string;
+    tomorrowIso?: string;
+    timeZone?: string;
     fastingOverride?: 'auto' | 'fasting' | 'normal';
     heatBonusMl?: number;
-    /** Arabic name of a special Sunnah fast today/tomorrow (يوم عرفة / يوم عاشوراء), if any. */
+    /** Arabic name of a special fast today/tomorrow (Ramadan / White Days / Arafah / Ashura), if any. */
     specialFastTodayAr?: string | null;
     specialFastTomorrowAr?: string | null;
+    isWhiteDayToday?: boolean;
+    isWhiteDayTomorrow?: boolean;
+    isRamadanToday?: boolean;
+    isRamadanTomorrow?: boolean;
   }
 ): DailyRhythmPlan {
   const fajr = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
@@ -183,17 +225,49 @@ export function computeDailyRhythmPlan(
   const safeRedSun = redSun ?? (maghrib - 35);
   const isha = prayers.find((p) => p.id === 'isha')?.adhanMinutes ?? 19 * 60;
 
-  const autoFastToday =
-    profile.fastingDays.includes(options.todayWeekday) || Boolean(options.specialFastTodayAr);
-  const isFastingToday =
-    options.fastingOverride === 'fasting'
-      ? true
-      : options.fastingOverride === 'normal'
-        ? false
-        : autoFastToday;
+  const tz = options.timeZone ?? profile.currentTimeZone;
+  const resolvedSpecialToday =
+    options.specialFastTodayAr !== undefined
+      ? options.specialFastTodayAr
+      : options.todayIso
+        ? getSpecialFastDay(options.todayIso, tz)?.nameAr ?? null
+        : null;
+  const resolvedSpecialTomorrow =
+    options.specialFastTomorrowAr !== undefined
+      ? options.specialFastTomorrowAr
+      : options.tomorrowIso
+        ? getSpecialFastDay(options.tomorrowIso, tz)?.nameAr ?? null
+        : null;
 
-  const isFastingTomorrow =
-    profile.fastingDays.includes(options.tomorrowWeekday) || Boolean(options.specialFastTomorrowAr);
+  const autoFastToday = isFastingDay({
+    weekday: options.todayWeekday,
+    fastingDays: profile.fastingDays,
+    dateIso: options.todayIso,
+    timeZone: tz,
+    specialFastAr: resolvedSpecialToday,
+    isWhiteDay: options.isWhiteDayToday,
+    isRamadan: options.isRamadanToday,
+  });
+  const isFastingToday = isFastingDay({
+    weekday: options.todayWeekday,
+    fastingDays: profile.fastingDays,
+    dateIso: options.todayIso,
+    timeZone: tz,
+    fastingOverride: options.fastingOverride,
+    specialFastAr: resolvedSpecialToday,
+    isWhiteDay: options.isWhiteDayToday,
+    isRamadan: options.isRamadanToday,
+  });
+
+  const isFastingTomorrow = isFastingDay({
+    weekday: options.tomorrowWeekday,
+    fastingDays: profile.fastingDays,
+    dateIso: options.tomorrowIso,
+    timeZone: tz,
+    specialFastAr: resolvedSpecialTomorrow,
+    isWhiteDay: options.isWhiteDayTomorrow,
+    isRamadan: options.isRamadanTomorrow,
+  });
 
   const dayNameMap: Record<number, string> = {
     0: 'الأحد',
@@ -208,9 +282,13 @@ export function computeDailyRhythmPlan(
   const fastingReasonAr = isFastingToday
     ? options.fastingOverride === 'fasting' && !autoFastToday
       ? 'صيام إضافي مفعّل لليوم'
-      : options.specialFastTodayAr
-        ? `صيام ${options.specialFastTodayAr}`
-        : `صيام تلقائي (${dayNameMap[options.todayWeekday] ?? 'اليوم'})`
+      : options.isRamadanToday
+        ? 'صيام شهر رمضان'
+        : options.isWhiteDayToday
+          ? 'صيام الأيام البيض'
+          : resolvedSpecialToday
+            ? `صيام ${resolvedSpecialToday}`
+            : `صيام تلقائي (${dayNameMap[options.todayWeekday] ?? 'اليوم'})`
     : options.fastingOverride === 'normal' && autoFastToday
       ? 'إفطار مستثنى لليوم'
       : 'يوم عادي';
@@ -401,11 +479,16 @@ export function computeDailyRhythmPlan(
     const suhoorCups = Math.min(2, Math.max(1, Math.floor(hydration.activeTargetCups / 4)));
     const eveningCups = Math.max(1, hydration.activeTargetCups - suhoorCups);
 
-    // Suhoor happens before Fajr on the civil calendar day, so place it first to match sequential slot logging.
-    const suhoorBegin = wrap1440(fajr - profile.suhoorLeadMinutes);
-    const suhoorSpan = Math.max(15, profile.suhoorLeadMinutes - 10);
+    // Suhoor happens strictly before Fajr; place it first to match sequential slot logging.
+    const suhoorLead = Math.max(10, profile.suhoorLeadMinutes);
+    const suhoorBegin = wrap1440(fajr - suhoorLead);
+    const maxSuhoorSpan = Math.max(0, suhoorLead - 5);
+    const suhoorSpan = Math.min(maxSuhoorSpan, Math.max(5, suhoorLead - 10));
     for (let s = 0; s < suhoorCups; s++) {
-      const offset = suhoorCups === 1 ? 10 : Math.round((s * suhoorSpan) / (suhoorCups - 1));
+      const offset =
+        suhoorCups === 1
+          ? Math.min(10, Math.floor(suhoorLead / 2))
+          : Math.round((s * suhoorSpan) / (suhoorCups - 1));
       hydrationSlots.push({
         cupIndex: s + 1,
         timeMinutes: wrap1440(suhoorBegin + offset),
@@ -414,9 +497,18 @@ export function computeDailyRhythmPlan(
       });
     }
 
+    // Evening window strictly inside Maghrib -> Fajr (never spills into Fajr -> Maghrib daytime).
     const eveningStart = maghrib;
-    const eveningEnd = wrap1440(bedtimeMin - 45);
-    const eveningSpan = Math.max(45, durationForward(eveningStart, eveningEnd));
+    const maxAllowedEveningSpan = Math.max(10, durationForward(eveningStart, fajr) - 10);
+    const rawEveningEnd = wrap1440(bedtimeMin - 45);
+    const rawEveningSpan = durationForward(eveningStart, rawEveningEnd);
+    const eveningSpan =
+      rawEveningSpan < maxAllowedEveningSpan
+        ? Math.min(maxAllowedEveningSpan, Math.max(45, rawEveningSpan))
+        : Math.min(
+            maxAllowedEveningSpan,
+            Math.max(15, Math.min(durationForward(eveningStart, bedtimeMin), maxAllowedEveningSpan))
+          );
     const step = eveningCups > 1 ? Math.floor(eveningSpan / (eveningCups - 1)) : 0;
 
     for (let i = 0; i < eveningCups; i++) {
@@ -872,6 +964,7 @@ export function checkSmartScheduleConflict(params: {
   }
 
   // 3. Fasting window conflict for oral medications/supplements
+  let hitsFastingDay = false;
   if (params.isOralMedication) {
     const fajrMin = prayers.find((p) => p.id === 'fajr')?.adhanMinutes ?? 4 * 60 + 45;
     const maghribMin = prayers.find((p) => p.id === 'maghrib')?.adhanMinutes ?? 17 * 60 + 30;
@@ -879,8 +972,24 @@ export function checkSmartScheduleConflict(params: {
       Array.isArray(params.daysOfWeek) && params.daysOfWeek.length > 0
         ? params.daysOfWeek
         : [0, 1, 2, 3, 4, 5, 6];
-    const hitsFastingDay =
-      profile.fastingDays.some((fd) => targetDays.includes(fd)) || plan.isFastingToday;
+    const targetDateWeekday = params.dateIso
+      ? new Date(`${params.dateIso}T12:00:00Z`).getUTCDay()
+      : -1;
+    hitsFastingDay =
+      targetDays.some((d) =>
+        isFastingDay({
+          weekday: d,
+          fastingDays: profile.fastingDays,
+        })
+      ) ||
+      (Boolean(params.dateIso) &&
+        isFastingDay({
+          weekday: targetDateWeekday,
+          fastingDays: profile.fastingDays,
+          dateIso: params.dateIso,
+          timeZone: profile.currentTimeZone,
+        })) ||
+      plan.isFastingToday;
     if (hitsFastingDay && startMin >= fajrMin && startMin < maghribMin) {
       warnings.push(
         `يتعارض مع ساعات الصيام (الفجر ${formatMinutes12h(fajrMin)} – المغرب ${formatMinutes12h(maghribMin)}) في أيام صيامك`
@@ -920,7 +1029,7 @@ export function checkSmartScheduleConflict(params: {
   for (const slot of freeSlots) {
     if (slot.durationMin < dur) continue;
     let candidate = Math.max(slot.startMin, Math.min(startMin, slot.endMin - dur));
-    if (params.isOralMedication && profile.fastingDays.length > 0) {
+    if (params.isOralMedication && hitsFastingDay) {
       if (candidate >= fajrMin && candidate < maghribMin) {
         // Prefer after Maghrib if fasting conflict exists
         if (slot.endMin - dur >= maghribMin + 15) {
@@ -1202,4 +1311,179 @@ export function computeMedicationDaysLeft(
   const daysPerWeek = daysOfWeek && daysOfWeek.length > 0 ? daysOfWeek.length : 7;
   const dailyRate = Math.max(0.14, (safeDosesPerDay * daysPerWeek) / 7);
   return remainingDoses / dailyRate;
+}
+
+export interface ResolveMedicationDosesOptions {
+  isFastingToday: boolean;
+  fajrMin: number;
+  maghribMin: number;
+}
+
+export interface ResolvedMedicationDose {
+  originalTime24: string;
+  effectiveTime24: string;
+  effectiveMin: number;
+  wasShifted: boolean;
+  shiftTarget: 'before-fajr' | 'after-maghrib' | null;
+}
+
+export interface ResolvedMedicationDaySchedule {
+  med: MedicationItem;
+  policy: MedicationFastingPolicy;
+  doses: ResolvedMedicationDose[];
+  skippedCount: number;
+}
+
+/**
+ * Resolves today's effective medication doses without mutating the saved MedicationItem.
+ * On fasting days, doses strictly inside [fajrMin, maghribMin) follow med.fastingPolicy (default 'auto-nearest').
+ */
+export function resolveMedicationDosesForDay(
+  med: MedicationItem,
+  options: ResolveMedicationDosesOptions
+): ResolvedMedicationDaySchedule {
+  const rawTimes =
+    med.times24 && med.times24.length > 0
+      ? med.times24
+      : med.time24
+        ? [med.time24]
+        : [];
+  const policy: MedicationFastingPolicy = med.fastingPolicy ?? 'auto-nearest';
+  const suhoorShiftMin = wrap1440(options.fajrMin - 15);
+  const iftarShiftMin = wrap1440(options.maghribMin + 15);
+
+  const doses: ResolvedMedicationDose[] = [];
+  let skippedCount = 0;
+
+  for (const t24 of rawTimes) {
+    const m = t24.match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) continue;
+    const origMin = Number(m[1]) * 60 + Number(m[2]);
+    const inFastingWindow =
+      options.isFastingToday && origMin >= options.fajrMin && origMin < options.maghribMin;
+
+    if (!inFastingWindow || policy === 'unchanged') {
+      doses.push({
+        originalTime24: t24,
+        effectiveTime24: t24,
+        effectiveMin: origMin,
+        wasShifted: false,
+        shiftTarget: null,
+      });
+      continue;
+    }
+
+    if (policy === 'skip') {
+      skippedCount += 1;
+      continue;
+    }
+
+    let targetMin: number;
+    let shiftTarget: 'before-fajr' | 'after-maghrib';
+    if (policy === 'before-fajr') {
+      targetMin = suhoorShiftMin;
+      shiftTarget = 'before-fajr';
+    } else if (policy === 'after-maghrib') {
+      targetMin = iftarShiftMin;
+      shiftTarget = 'after-maghrib';
+    } else {
+      // 'auto-nearest'
+      const distFajr = origMin - options.fajrMin;
+      const distMaghrib = options.maghribMin - origMin;
+      if (distFajr < distMaghrib) {
+        targetMin = suhoorShiftMin;
+        shiftTarget = 'before-fajr';
+      } else {
+        targetMin = iftarShiftMin;
+        shiftTarget = 'after-maghrib';
+      }
+    }
+
+    doses.push({
+      originalTime24: t24,
+      effectiveTime24: formatMinutes24h(targetMin),
+      effectiveMin: targetMin,
+      wasShifted: true,
+      shiftTarget,
+    });
+  }
+
+  return { med, policy, doses, skippedCount };
+}
+
+export interface NativeMedicationAlarmEntry {
+  id: string;
+  kind: 'medication';
+  title: string;
+  body: string;
+  triggerAtMs: number;
+  snoozeMinutes: number;
+  medicationId: string;
+  doseTime24: string;
+}
+
+/**
+ * Builds today's Android AlarmManager medication payloads using shifted fasting-day times
+ * while keeping original recurring times untouched.
+ */
+export function buildMedicationAlarmEntries(params: {
+  medications: MedicationItem[];
+  todayIso: string;
+  todayWeekday: number;
+  isFastingToday: boolean;
+  fajrMin: number;
+  maghribMin: number;
+  nowMs: number;
+  snoozeMinutes: number;
+  deferredMedIds?: Iterable<string> | null;
+  msForMinuteToday: (targetMin: number) => number;
+  isSilencedAt: (minOfDay: number, triggerAtMs: number) => boolean;
+}): NativeMedicationAlarmEntry[] {
+  const deferredSet = params.deferredMedIds ? new Set(params.deferredMedIds) : null;
+  const alarms: NativeMedicationAlarmEntry[] = [];
+
+  for (const med of params.medications) {
+    if (deferredSet?.has(med.id)) continue;
+    if (med.daysOfWeek && med.daysOfWeek.length > 0 && !med.daysOfWeek.includes(params.todayWeekday)) {
+      continue;
+    }
+
+    const rawTimesCount =
+      med.times24 && med.times24.length > 0 ? med.times24.length : med.time24 ? 1 : 0;
+    const takenDoses = med.takenDateKey === params.todayIso ? med.takenDosesToday ?? [] : [];
+    const resolved = resolveMedicationDosesForDay(med, {
+      isFastingToday: params.isFastingToday,
+      fajrMin: params.fajrMin,
+      maghribMin: params.maghribMin,
+    });
+
+    for (const dose of resolved.doses) {
+      const alreadyTaken =
+        rawTimesCount > 1
+          ? takenDoses.includes(dose.originalTime24) || takenDoses.includes(dose.effectiveTime24)
+          : med.takenDateKey === params.todayIso;
+      if (alreadyTaken) continue;
+
+      const triggerAtMs = params.msForMinuteToday(dose.effectiveMin);
+      if (triggerAtMs > params.nowMs + 1_000 && !params.isSilencedAt(dose.effectiveMin, triggerAtMs)) {
+        const stockLine =
+          typeof med.remainingDoses === 'number' && med.remainingDoses >= 0
+            ? `\n💊 الرصيد المتبقي: ${med.remainingDoses} جرعة`
+            : '';
+        const fastingSuffix = dose.wasShifted ? ' · (معدّل للصيام)' : '';
+        alarms.push({
+          id: `med_${params.todayIso}_${med.id}_${dose.effectiveTime24}`,
+          kind: 'medication',
+          title: `💊 موعد الجرعة: ${med.name}`,
+          body: `${med.doseNote ? `${med.doseNote} · ` : ''}${formatMinutes12h(dose.effectiveMin, 'ar')}${fastingSuffix}${stockLine}`,
+          triggerAtMs,
+          snoozeMinutes: params.snoozeMinutes,
+          medicationId: med.id,
+          doseTime24: rawTimesCount > 1 ? dose.originalTime24 : '',
+        });
+      }
+    }
+  }
+
+  return alarms;
 }

@@ -4,6 +4,7 @@ import {
   computeEventRangeInTimeZone,
   formatMinutes12h,
   formatMinutes24h,
+  getSpecialFastDay,
   getTimeZoneOffsetString,
   haversineDistanceKm,
 } from './prayerEngine';
@@ -87,5 +88,14 @@ describe('prayerEngine', () => {
     const rangeCrossing = computeEventRangeInTimeZone('2026-11-24', '23:45', 30, 'Africa/Cairo');
     expect(rangeCrossing.startDateTime).toBe('2026-11-24T23:45:00+02:00');
     expect(rangeCrossing.endDateTime).toBe('2026-11-25T00:15:00+02:00');
+  });
+
+  it('detects Ramadan and White Days in getSpecialFastDay', () => {
+    // 2026-02-20 = 3 Ramadan 1447 AH
+    expect(getSpecialFastDay('2026-02-20', 'Africa/Cairo')?.id).toBe('ramadan');
+    // 2026-11-23 = 13 Jumada II 1448 AH (White Day)
+    expect(getSpecialFastDay('2026-11-23', 'Africa/Cairo')?.id).toBe('white_days');
+    // 2026-11-28 = 18 Jumada II 1448 AH (normal day)
+    expect(getSpecialFastDay('2026-11-28', 'Africa/Cairo')).toBeNull();
   });
 });
