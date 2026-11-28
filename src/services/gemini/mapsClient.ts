@@ -36,6 +36,12 @@ import {
 import { getGeminiApiKey, resolveGeminiModelOrder, type ChatStreamHandlers } from './config';
 import { getFromCache, setToCache } from './cacheAndTime';
 import { formatFriendlyGeminiErrorAr } from './errorsAndStatus';
+import {
+  PLACES_RANK_PREFERENCE,
+  PLACES_TRAVEL_MODE,
+  rankPlacesByWalkingDistance,
+  walkingSearchRadii,
+} from '../../engines/places/walkingNearest';
 
 export async function apiStreamGeminiMapsClient(
   payload: {
@@ -94,7 +100,8 @@ export async function apiStreamGeminiMapsClient(
                 ? '["shop"="supermarket"]'
                 : '["amenity"="fuel"]';
 
-    for (const radiusMeters of [300, 700, 1500]) {
+    // Walking-first: 300m then 500m (mosque) before widening, so a near small mosque wins.
+    for (const radiusMeters of walkingSearchRadii(isMosqueQuery)) {
       const ql = `[out:json][timeout:4];(nwr${tagFilter}(around:${radiusMeters},${lat.toFixed(6)},${lng.toFixed(6)}););out center tags 15;`;
       try {
         const res = await fetch('https://overpass-api.de/api/interpreter', {
@@ -133,9 +140,7 @@ export async function apiStreamGeminiMapsClient(
             distanceMeters,
           });
         }
-        const sorted = Array.from(dedup.values())
-          .sort((a, b) => a.distanceMeters - b.distanceMeters)
-          .slice(0, 7);
+        const sorted = rankPlacesByWalkingDistance(Array.from(dedup.values()));
         if (sorted.length > 0) return sorted;
       } catch {
         // try next radius
@@ -193,7 +198,7 @@ export async function apiStreamGeminiMapsClient(
         distanceMeters,
       });
     }
-    return Array.from(dedup.values()).sort((a, b) => a.distanceMeters - b.distanceMeters).slice(0, 7);
+    return rankPlacesByWalkingDistance(Array.from(dedup.values()));
   };
 
   try {
@@ -221,7 +226,8 @@ export async function apiStreamGeminiMapsClient(
 النتائج الجغرافية المكتشفة:
 ${placesContext}
 
-أجب باختصار مباشر وودود باللغة العربية، مع إعطاء الأولوية القصوى للأماكن ضمن نطاق المشي (أقل من 1–2 كم أولاً) مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة وأفضل نصيحة توقيت لزيارتها. Prioritize strictly the closest places within walking distance (under 1–2 km first), sorted nearest-first with walking time and distance.`;
+أجب باختصار مباشر وودود باللغة العربية، مع إعطاء الأولوية القصوى للأماكن ضمن نطاق المشي (أقل من 1–2 كم أولاً) مرتبةً من الأقرب فالأقرب مع تقدير مدة المشي بالدقائق والمسافة وأفضل نصيحة توقيت لزيارتها. Prioritize strictly the closest places within walking distance (under 1–2 km first), sorted nearest-first with walking time and distance.
+إذا كان السؤال عن مسجد أو صلاة: اختر المسجد الأقرب الذي يمكن المشي إليه فعلاً من النتائج (${PLACES_TRAVEL_MODE} · rankPreference ${PLACES_RANK_PREFERENCE}، نطاق البحث يبدأ من 300–500 متر)، ولا تقترح أبداً مسجداً أكبر أو أشهر إن كان أبعد، واذكر مدة المشي للمسجد الأقرب فقط. Never recommend a larger or more prominent mosque that is farther away.`;
 
   return apiStreamGeminiChatClient(
     {

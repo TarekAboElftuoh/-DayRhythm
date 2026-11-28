@@ -29,6 +29,7 @@ import {
 import { executeCalendarDirect, executeTasksDirect } from './googleWorkspaceDirect';
 
 import { applyOfflineActionsToBlocks } from './applyOfflineActionsHelper';
+import { resolveCalendarCreatePlan, resolveTaskCreatePlan } from '../engines/chat/batchActions';
 
 export interface UseCalendarTaskExecutorsParams {
   activeTimeZone: string;
@@ -137,19 +138,19 @@ export function useCalendarTaskExecutors(p: UseCalendarTaskExecutorsParams) {
           googleSynced = true;
           p.setReflowedBlocksOverride(null);
           const createdItems: GoogleCalendarEventItem[] = [];
-          for (const act of actions) {
-            if (act.operation === 'create' && act.dateIso && act.startTime24) {
-              const resItem = results.find((r) => r.operation === 'create' && r.title === act.title);
-              const { startDateTime, endDateTime } = computeEventRangeInTimeZone(
-                act.dateIso, act.startTime24, act.durationMinutes, p.activeTimeZone
-              );
-              const createdId = resItem?.id || `created_${Date.now()}`;
-              createdItems.push({
-                id: createdId, calendarId: act.calendarId || 'primary', summary: act.title,
-                description: act.description || '', start: startDateTime, end: endDateTime, isAllDay: false, htmlLink: resItem?.htmlLink,
-              });
-              p.recentlyCreatedEventIdsRef.current.add(createdId);
-            }
+          // One unique id per create action keeps every batch item visible on the schedule.
+          const createPlans = resolveCalendarCreatePlan(actions, results, `created_${Date.now().toString(36)}`);
+          for (const plan of createPlans) {
+            const act = actions[plan.actionIndex];
+            if (!act?.dateIso || !act.startTime24) continue;
+            const { startDateTime, endDateTime } = computeEventRangeInTimeZone(
+              act.dateIso, act.startTime24, act.durationMinutes, p.activeTimeZone
+            );
+            createdItems.push({
+              id: plan.id, calendarId: act.calendarId || 'primary', summary: act.title,
+              description: act.description || '', start: startDateTime, end: endDateTime, isAllDay: false, htmlLink: plan.htmlLink,
+            });
+            p.recentlyCreatedEventIdsRef.current.add(plan.id);
           }
           if (createdItems.length > 0) {
             p.setCalendarEvents((prev) => {
@@ -251,21 +252,20 @@ export function useCalendarTaskExecutors(p: UseCalendarTaskExecutorsParams) {
       }
 
       const createdItems: GoogleTaskItem[] = [];
-      for (const act of taskActions) {
-        if (act.operation === 'create') {
-          const resItem = results.find((r) => r.operation === 'create' && r.title === act.title);
-          const createdId = resItem?.id || `task_${Date.now()}`;
-          createdItems.push({
-            id: createdId,
-            taskListId: act.taskListId || '@default',
-            taskListTitle: p.googleTaskLists.find((l) => l.id === act.taskListId)?.title || 'المهام',
-            title: act.title,
-            notes: act.notes || '',
-            status: 'needsAction',
-            due: act.dueDateIso ? `${act.dueDateIso}T00:00:00.000Z` : undefined,
-          });
-          p.recentlyCreatedTaskIdsRef.current.add(createdId);
-        }
+      const taskPlans = resolveTaskCreatePlan(taskActions, results, `task_${Date.now().toString(36)}`);
+      for (const plan of taskPlans) {
+        const act = taskActions[plan.actionIndex];
+        if (!act) continue;
+        createdItems.push({
+          id: plan.id,
+          taskListId: act.taskListId || '@default',
+          taskListTitle: p.googleTaskLists.find((l) => l.id === act.taskListId)?.title || 'المهام',
+          title: act.title,
+          notes: act.notes || '',
+          status: 'needsAction',
+          due: act.dueDateIso ? `${act.dueDateIso}T00:00:00.000Z` : undefined,
+        });
+        p.recentlyCreatedTaskIdsRef.current.add(plan.id);
       }
       if (createdItems.length > 0) {
         p.setGoogleTasks((prev) => {

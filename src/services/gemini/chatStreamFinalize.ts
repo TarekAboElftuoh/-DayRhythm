@@ -5,6 +5,8 @@ import {
   type GeminiFunctionCall,
 } from '../geminiSanitizer';
 import { validateGeminiScheduleProposal } from '../geminiSanitizer';
+import { countProposalActions } from '../../engines/chat/batchActions';
+import { guardUnexecutedClaims } from '../geminiSanitizer/claimGuard';
 
 export function finalizeChatStreamResult(params: {
   fullText: string;
@@ -45,8 +47,14 @@ export function finalizeChatStreamResult(params: {
           pendingProposal?.summaryAr ||
           'أعددتُ التعديلات المطلوبة — راجع التفاصيل وأكد التنفيذ.';
 
+  // Pending actions have NOT run yet: no "added" claims until the user confirms execution.
+  const guardedText = guardUnexecutedClaims(
+    finalText,
+    pendingProposal ? countProposalActions(pendingProposal) : 0
+  );
+
   handlers.onDone({
-    text: finalText,
+    text: guardedText,
     pendingProposal,
     latencyMs: Math.max(1, Date.now() - startedAt),
     memoriesAppliedCount,
