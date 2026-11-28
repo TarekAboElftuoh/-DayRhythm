@@ -32,6 +32,9 @@ import firebaseConfig from '../firebase-applet-config.json';
 import {
   CreativeActivityItem,
   CreativeCadence,
+  DynamicHabit,
+  DynamicHabitAnchor,
+  DynamicHabitStatus,
   LifeProfile,
   MedicationFastingPolicy,
   MedicationItem,
@@ -431,6 +434,8 @@ export const DEFAULT_MEDICATIONS: MedicationItem[] = [];
 
 export const DEFAULT_CREATIVE_ACTIVITIES: CreativeActivityItem[] = [];
 
+export const DEFAULT_HABITS: DynamicHabit[] = [];
+
 export interface SyncedRhythmPayload {
   hydrationDateKey: string;
   cupsLogged: number;
@@ -456,6 +461,7 @@ export interface SyncedRhythmPayload {
   medicationsUpdatedAt?: number;
   deletedMedicationIds?: string[];
   creativeActivities?: CreativeActivityItem[];
+  habits?: DynamicHabit[];
   memories?: MemoryItem[];
   completedOverrides?: Record<string, boolean>;
   fastingOverride?: 'auto' | 'fasting' | 'normal';
@@ -923,6 +929,62 @@ export function sanitizeCreativeActivityId(rawId: string): string {
   return `act_${Date.now().toString(36)}`;
 }
 
+const VALID_HABIT_ANCHORS: ReadonlyArray<DynamicHabitAnchor> = [
+  'after-fajr',
+  'sunrise-light',
+  'duha',
+  'after-dhuhr',
+  'after-asr',
+  'pre-maghrib',
+  'after-maghrib',
+  'after-isha',
+  'any-free-slot',
+];
+
+export function sanitizeHabitId(rawId: string): string {
+  const clean = rawId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60);
+  if (clean.length >= 1) return clean;
+  return `hab_${Date.now().toString(36)}`;
+}
+
+export function sanitizeDynamicHabit(raw: Partial<DynamicHabit>): DynamicHabit {
+  const id = sanitizeHabitId(String(raw.id ?? '').trim() || `hab_${Date.now().toString(36)}`);
+  const title = String(raw.title ?? '').trim().slice(0, 100) || 'عادة يومية';
+  const status: DynamicHabitStatus = raw.status === 'planned' ? 'planned' : 'active';
+  const anchor: DynamicHabitAnchor =
+    raw.anchor && VALID_HABIT_ANCHORS.includes(raw.anchor) ? raw.anchor : 'any-free-slot';
+  const durationMin = clampInt(raw.durationMin, 5, 240, 30);
+  const daysOfWeek = Array.isArray(raw.daysOfWeek)
+    ? Array.from(
+        new Set(
+          raw.daysOfWeek
+            .map((d) => Number(d))
+            .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+        )
+      ).sort((a, b) => a - b)
+    : undefined;
+  const completedDates: string[] = [];
+  if (Array.isArray(raw.completedDates)) {
+    for (const d of raw.completedDates) {
+      const s = String(d ?? '').trim();
+      if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(s) && !completedDates.includes(s)) {
+        completedDates.push(s);
+      }
+    }
+  }
+  completedDates.sort();
+  return {
+    id,
+    title,
+    status,
+    anchor,
+    durationMin,
+    ...(daysOfWeek && daysOfWeek.length > 0 ? { daysOfWeek } : {}),
+    ...(raw.skipOnFasting ? { skipOnFasting: true } : {}),
+    completedDates: completedDates.slice(-60),
+  };
+}
+
 export function sanitizeCreativeActivityItem(
   raw: Partial<CreativeActivityItem>
 ): CreativeActivityItem {
@@ -1045,6 +1107,9 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
         .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
         .map((s) => sanitizeMedicationId(s))
     : undefined;
+  const safeHabits = Array.isArray(payload.habits)
+    ? payload.habits.slice(0, 100).map((h) => sanitizeDynamicHabit(h))
+    : undefined;
 
   return {
     hydrationDateKey: safeDateKey,
@@ -1069,6 +1134,7 @@ export function sanitizeRhythmPayload(payload: SyncedRhythmPayload): SyncedRhyth
     ...(cleanAppSettings ? { appSettings: cleanAppSettings } : {}),
     ...(safeMedicationsUpdatedAt !== undefined ? { medicationsUpdatedAt: safeMedicationsUpdatedAt } : {}),
     ...(safeDeletedMedicationIds ? { deletedMedicationIds: safeDeletedMedicationIds } : {}),
+    ...(safeHabits ? { habits: safeHabits } : {}),
   };
 }
 
@@ -1155,6 +1221,9 @@ export function subscribeUserRhythmState(
                   : undefined,
               deletedMedicationIds: Array.isArray(data.deletedMedicationIds)
                 ? (data.deletedMedicationIds as string[])
+                : undefined,
+              habits: Array.isArray(data.habits)
+                ? (data.habits as DynamicHabit[]).map((h) => sanitizeDynamicHabit(h))
                 : undefined,
             })
           );
@@ -1249,6 +1318,7 @@ const ALLOWED_USER_DOC_KEYS = new Set([
   'appSettings',
   'medicationsUpdatedAt',
   'deletedMedicationIds',
+  'habits',
   'createdAt',
   'updatedAt',
 ]);

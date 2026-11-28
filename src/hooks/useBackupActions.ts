@@ -3,6 +3,7 @@ import type { User } from 'firebase/auth';
 import {
   CreativeActivityItem,
   DualStreaks,
+  DynamicHabit,
   HydrationDayLog,
   LifeProfile,
   MedicationItem,
@@ -17,6 +18,7 @@ import {
   OnePlusDeviceSettings,
   sanitizeCreativeActivityItem,
   sanitizeDeviceSettings,
+  sanitizeDynamicHabit,
   sanitizeLifeProfile,
   sanitizeMedicationItem,
   sanitizeMemoryItem,
@@ -31,6 +33,7 @@ export interface UseBackupActionsParams {
   adhanOverrideSilent: boolean;
   capsulePrefs: CapsulePrefs;
   creativeActivities: CreativeActivityItem[];
+  habits?: DynamicHabit[];
   deviceSettings: OnePlusDeviceSettings;
   firebaseUser: User | null;
   firestoreSynced: boolean;
@@ -45,6 +48,7 @@ export interface UseBackupActionsParams {
   selectedLogoId: string;
   setCapsulePrefs: Dispatch<SetStateAction<CapsulePrefs>>;
   setCreativeActivities: Dispatch<SetStateAction<CreativeActivityItem[]>>;
+  setHabits?: Dispatch<SetStateAction<DynamicHabit[]>>;
   setDeviceSettings: Dispatch<SetStateAction<OnePlusDeviceSettings>>;
   setHydrationHistory: Dispatch<SetStateAction<HydrationDayLog[]>>;
   setLifeProfile: Dispatch<SetStateAction<LifeProfile>>;
@@ -64,6 +68,7 @@ export function useBackupActions(params: UseBackupActionsParams) {
     adhanOverrideSilent,
     capsulePrefs,
     creativeActivities,
+    habits = [],
     deviceSettings,
     firebaseUser,
     firestoreSynced,
@@ -78,6 +83,7 @@ export function useBackupActions(params: UseBackupActionsParams) {
     selectedLogoId,
     setCapsulePrefs,
     setCreativeActivities,
+    setHabits,
     setDeviceSettings,
     setHydrationHistory,
     setLifeProfile,
@@ -101,6 +107,7 @@ export function useBackupActions(params: UseBackupActionsParams) {
       medications,
       memories,
       creativeActivities,
+      habits,
       hydrationHistory,
       streaks,
       deviceSettings,
@@ -169,6 +176,9 @@ export function useBackupActions(params: UseBackupActionsParams) {
               sanitizeCreativeActivityItem(a as Partial<CreativeActivityItem>)
             )
           : creativeActivities;
+        const nextHabits = Array.isArray(parsed.habits)
+          ? parsed.habits.map((h) => sanitizeDynamicHabit(h as Partial<DynamicHabit>))
+          : habits;
         const nextUi: UiPrefs =
           (parsed.uiPrefs ? sanitizeUiPrefs(parsed.uiPrefs as Partial<UiPrefs>) : undefined) ?? {
             selectedLogoId,
@@ -210,6 +220,7 @@ export function useBackupActions(params: UseBackupActionsParams) {
         setMedications(nextMeds);
         setMemories(nextMems);
         setCreativeActivities(nextCreative);
+        setHabits?.(nextHabits);
         setStreaks(nextStreaks);
         setHydrationHistory(nextHydration);
         setSelectedLogoId(nextUi.selectedLogoId);
@@ -248,6 +259,7 @@ export function useBackupActions(params: UseBackupActionsParams) {
           lifeProfile: nextProfile,
           medications: nextMeds,
           creativeActivities: nextCreative,
+          habits: nextHabits,
           memories: nextMems,
           uiPrefs: nextUi,
         });
@@ -269,6 +281,7 @@ export function useBackupActions(params: UseBackupActionsParams) {
       capsulePrefs.orientation,
       capsulePrefs.size,
       creativeActivities,
+      habits,
       deviceSettings,
       firebaseUser?.emailVerified,
       firebaseUser?.uid,
@@ -284,6 +297,7 @@ export function useBackupActions(params: UseBackupActionsParams) {
       selectedLogoId,
       setCapsulePrefs,
       setCreativeActivities,
+      setHabits,
       setDeviceSettings,
       setHydrationHistory,
       setLifeProfile,

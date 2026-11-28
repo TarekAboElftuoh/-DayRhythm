@@ -2,6 +2,7 @@ import type {
   AppSettingsPatch,
   CalendarActionProposal,
   CreativeActivityActionProposal,
+  HabitActionProposal,
   LifeProfile,
   MedicationActionProposal,
   MemoryActionProposal,
@@ -24,6 +25,7 @@ export const GEMINI_TOOL_KEYS = [
   'propose_task_actions',
   'propose_medication_actions',
   'propose_creative_actions',
+  'propose_habit_actions',
   'propose_profile_updates',
   'propose_memory_actions',
   'propose_app_settings',
@@ -162,6 +164,17 @@ function tryRecoverTool(
       name: toolName,
       args: {
         creativeActions,
+        summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
+      },
+      fromTextFallback,
+    });
+  } else if (toolName === 'propose_habit_actions') {
+    const rawHabits = (argsObj as Record<string, unknown>)?.habitActions ?? argsObj;
+    const habitActions = Array.isArray(rawHabits) ? rawHabits : [];
+    recoveredFnCalls.push({
+      name: toolName,
+      args: {
+        habitActions,
         summaryAr: ((argsObj as Record<string, unknown>)?.summaryAr as string) || undefined,
       },
       fromTextFallback,
@@ -333,6 +346,7 @@ export function extractPendingProposalFromFunctionCalls(
   const taskCall = fnCalls.find((f) => f.name === 'propose_task_actions');
   const medCall = fnCalls.find((f) => f.name === 'propose_medication_actions');
   const creativeCall = fnCalls.find((f) => f.name === 'propose_creative_actions');
+  const habitCall = fnCalls.find((f) => f.name === 'propose_habit_actions');
   const profileCall = fnCalls.find((f) => f.name === 'propose_profile_updates');
   const memoryCall = fnCalls.find((f) => f.name === 'propose_memory_actions');
   const settingsCall = fnCalls.find((f) => f.name === 'propose_app_settings');
@@ -343,6 +357,7 @@ export function extractPendingProposalFromFunctionCalls(
     !taskCall &&
     !medCall &&
     !creativeCall &&
+    !habitCall &&
     !profileCall &&
     !memoryCall &&
     !settingsCall &&
@@ -356,6 +371,7 @@ export function extractPendingProposalFromFunctionCalls(
     taskCall?.fromTextFallback ||
     medCall?.fromTextFallback ||
     creativeCall?.fromTextFallback ||
+    habitCall?.fromTextFallback ||
     profileCall?.fromTextFallback ||
     memoryCall?.fromTextFallback ||
     settingsCall?.fromTextFallback ||
@@ -377,6 +393,10 @@ export function extractPendingProposalFromFunctionCalls(
   const creativeArgs = (creativeCall?.args ?? {}) as {
     summaryAr?: string;
     creativeActions?: CreativeActivityActionProposal[];
+  };
+  const habitArgs = (habitCall?.args ?? {}) as {
+    summaryAr?: string;
+    habitActions?: HabitActionProposal[];
   };
   const profileArgs = (profileCall?.args ?? {}) as Record<string, unknown>;
   const { summaryAr: profileSummaryAr, ...rawProfilePatch } = profileArgs;
@@ -445,6 +465,9 @@ export function extractPendingProposalFromFunctionCalls(
   const creativeActions = Array.isArray(creativeArgs.creativeActions)
     ? creativeArgs.creativeActions
     : [];
+  const habitActions = Array.isArray(habitArgs.habitActions)
+    ? habitArgs.habitActions
+    : [];
   const memoryActions = Array.isArray(memoryArgs.memoryActions)
     ? memoryArgs.memoryActions
     : [];
@@ -454,6 +477,7 @@ export function extractPendingProposalFromFunctionCalls(
     taskArgs.summaryAr ||
     medArgs.summaryAr ||
     creativeArgs.summaryAr ||
+    habitArgs.summaryAr ||
     settingsPatchProposal?.summaryAr ||
     memoryArgs.summaryAr ||
     'اقتراح تعديل على التقويم والمهام';
@@ -464,6 +488,7 @@ export function extractPendingProposalFromFunctionCalls(
     taskActions: taskActions.length > 0 ? taskActions : undefined,
     medicationActions: medicationActions.length > 0 ? medicationActions : undefined,
     creativeActions: creativeActions.length > 0 ? creativeActions : undefined,
+    habitActions: habitActions.length > 0 ? habitActions : undefined,
     profileUpdates,
     memoryActions: memoryActions.length > 0 ? memoryActions : undefined,
     appSettings,

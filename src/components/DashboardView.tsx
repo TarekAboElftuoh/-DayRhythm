@@ -67,6 +67,9 @@ import {
   DeletedWorkspaceSnapshot,
   DualStreaks,
   DailyRhythmPlan,
+  DynamicHabit,
+  DynamicHabitAnchor,
+  DynamicHabitStatus,
   FreeTimeSlot,
   GmailDigestItem,
   GoogleCalendarEventItem,
@@ -84,6 +87,7 @@ import {
   PomodoroState,
   PrayerTimeItem,
   QuietModeType,
+  ResolvedHabitPlacement,
   ScheduleBlock,
   SilentNotificationItem,
   SoundRepeatMap,
@@ -109,6 +113,7 @@ import {
 } from '../engines/prayerEngine';
 import {
   ARABIC_WEEKDAYS,
+  DYNAMIC_HABIT_ANCHOR_LABELS,
   checkSmartScheduleConflict,
   computeMedicationDaysLeft,
   formatDurationAr,
@@ -367,6 +372,30 @@ interface DashboardViewProps {
   sunlightEnabled?: boolean;
   onSnoozeSunlight?: (id: SunlightSessionId) => void;
   onSunlightSessionEnd?: (id: SunlightSessionId) => void;
+  habits?: DynamicHabit[];
+  resolvedHabits?: ResolvedHabitPlacement[];
+  onAddHabit?: (input: {
+    title: string;
+    status: DynamicHabitStatus;
+    anchor: DynamicHabitAnchor;
+    durationMin: number;
+    daysOfWeek?: number[];
+    skipOnFasting?: boolean;
+  }) => void;
+  onUpdateHabit?: (
+    id: string,
+    patch: {
+      title: string;
+      status: DynamicHabitStatus;
+      anchor: DynamicHabitAnchor;
+      durationMin: number;
+      daysOfWeek?: number[];
+      skipOnFasting?: boolean;
+    }
+  ) => void;
+  onToggleHabitToday?: (habitId: string) => void;
+  onDeleteHabit?: (habitId: string) => void;
+  onToggleHabitStatus?: (habitId: string) => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -503,6 +532,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   sunlightEnabled = false,
   onSnoozeSunlight,
   onSunlightSessionEnd,
+  habits = [],
+  resolvedHabits = [],
+  onAddHabit,
+  onUpdateHabit,
+  onToggleHabitToday,
+  onDeleteHabit,
+  onToggleHabitStatus,
 }) => {
   const [showTrash, setShowTrash] = useState(false);
   const [showSilentInbox, setShowSilentInbox] = useState(false);
@@ -511,6 +547,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [showTaskScheduleRow, setShowTaskScheduleRow] = useState(false);
   const [creatingTaskNow, setCreatingTaskNow] = useState(false);
   const [showAllCreative, setShowAllCreative] = useState(false);
+  const [showPlannedHabits, setShowPlannedHabits] = useState(false);
+  const [habitModalOpen, setHabitModalOpen] = useState(false);
+  const [editingHabitId, setEditingHabitId] = useState<string | null>(null);
+  const [habitTitle, setHabitTitle] = useState('');
+  const [habitStatus, setHabitStatus] = useState<DynamicHabitStatus>('active');
+  const [habitAnchor, setHabitAnchor] = useState<DynamicHabitAnchor>('sunrise-light');
+  const [habitDurationMin, setHabitDurationMin] = useState<number>(30);
+  const [habitDaysOfWeek, setHabitDaysOfWeek] = useState<number[]>([]);
+  const [habitSkipOnFasting, setHabitSkipOnFasting] = useState<boolean>(false);
   const [showHydrationSchedule, setShowHydrationSchedule] = useState(false);
   // Timed meeting-mode picker: mode (mute vs vibrate) × duration, so it can't be forgotten-on.
   const [meetingPickerOpen, setMeetingPickerOpen] = useState(false);
@@ -3343,6 +3388,185 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </section>
           </ErrorBoundary>
 
+          {/* 2. Dynamic Daily Habits ("عادات اليوم") */}
+          <ErrorBoundary sectionTitle="عادات اليوم" compact>
+          <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>
+            {(() => {
+              const plannedHabits = habits.filter((h) => h.status === 'planned');
+              const completedHabitsCount = resolvedHabits.filter((r) => r.completedToday).length;
+              const openNewHabitModal = () => {
+                setEditingHabitId(null);
+                setHabitTitle('');
+                setHabitStatus('active');
+                setHabitAnchor('sunrise-light');
+                setHabitDurationMin(30);
+                setHabitDaysOfWeek([]);
+                setHabitSkipOnFasting(false);
+                setHabitModalOpen(true);
+              };
+              const openEditHabitModal = (h: DynamicHabit) => {
+                setEditingHabitId(h.id);
+                setHabitTitle(h.title);
+                setHabitStatus(h.status);
+                setHabitAnchor(h.anchor);
+                setHabitDurationMin(h.durationMin || 30);
+                setHabitDaysOfWeek(Array.isArray(h.daysOfWeek) ? h.daysOfWeek : []);
+                setHabitSkipOnFasting(Boolean(h.skipOnFasting));
+                setHabitModalOpen(true);
+              };
+              return (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-[var(--border-subtle)]">
+                    <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-[#7FFFD4]" />
+                      <span>عادات اليوم</span>
+                      {resolvedHabits.length > 0 && (
+                        <span className="font-mono-tabular text-xs font-medium text-zinc-500">
+                          · {completedHabitsCount}/{resolvedHabits.length}
+                        </span>
+                      )}
+                    </h2>
+                    <div className="flex items-center gap-2">
+                      {plannedHabits.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowPlannedHabits((v) => !v)}
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg border border-white/[0.08] bg-[var(--bg-surface)] text-[11px] font-medium text-zinc-300 hover:border-[#7FFFD4]/40 hover:text-[#7FFFD4] cursor-pointer transition-colors"
+                        >
+                          مستقبلية ({plannedHabits.length})
+                        </button>
+                      )}
+                      {onAddHabit && (
+                        <button
+                          type="button"
+                          onClick={openNewHabitModal}
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg border border-[#7FFFD4]/30 bg-[#7FFFD4]/10 text-[#7FFFD4] text-xs font-semibold flex items-center gap-1 hover:bg-[#7FFFD4]/20 cursor-pointer transition-colors"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>إضافة</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {resolvedHabits.length === 0 ? (
+                    <div className="text-xs text-zinc-500 py-1 flex items-center justify-between gap-2">
+                      <span>لا توجد عادات حالية مفعّلة اليوم — أضف عادة لتتكيّف تلقائياً مع أوقاتك الفاضية.</span>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-[var(--border-subtle)]">
+                      {resolvedHabits.map((item) => {
+                        const { habit, dueToday, completedToday, skippedReasonAr, slot, isFallbackSlot, isFlexibleUnplaced } = item;
+                        const anchorMeta = DYNAMIC_HABIT_ANCHOR_LABELS[habit.anchor];
+                        return (
+                          <div
+                            key={habit.id}
+                            className="py-2.5 flex items-center justify-between gap-3 text-xs"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                              <button
+                                type="button"
+                                onClick={() => onToggleHabitToday?.(habit.id)}
+                                aria-label={completedToday ? `إلغاء إنجاز ${habit.title}` : `إنجاز ${habit.title}`}
+                                className="min-h-[36px] min-w-[36px] -ms-1 flex items-center justify-center rounded-lg cursor-pointer shrink-0 transition-colors hover:bg-white/[0.04]"
+                              >
+                                {completedToday ? (
+                                  <CheckCircle2 className="w-4 h-4 text-[#4ADE80]" />
+                                ) : (
+                                  <Circle className="w-4 h-4 text-zinc-500 hover:text-[#7FFFD4]" />
+                                )}
+                              </button>
+                              <div className="min-w-0 flex-1">
+                                <div
+                                  className={`font-medium truncate ${
+                                    completedToday ? 'line-through text-zinc-500' : 'text-white'
+                                  }`}
+                                >
+                                  {habit.title}
+                                </div>
+                                <div className="text-[11px] text-zinc-500 flex flex-wrap items-center gap-1.5 mt-0.5">
+                                  <span>{anchorMeta.emoji} {anchorMeta.labelAr}</span>
+                                  <span>·</span>
+                                  <span className="font-mono-tabular">{habit.durationMin} د</span>
+                                  {!dueToday && skippedReasonAr ? (
+                                    <span className="text-zinc-500">· {skippedReasonAr}</span>
+                                  ) : slot ? (
+                                    <span className="font-mono-tabular text-[#7FFFD4]">
+                                      · {formatMinutes12h(slot.startMin, language)} – {formatMinutes12h(slot.endMin, language)}
+                                      {isFallbackSlot ? ' (بديل متاح)' : ''}
+                                    </span>
+                                  ) : isFlexibleUnplaced ? (
+                                    <span className="text-amber-300/90">· مرنة (حسب التفرغ)</span>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+
+                            {onUpdateHabit && (
+                              <button
+                                type="button"
+                                onClick={() => openEditHabitModal(habit)}
+                                className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.05] cursor-pointer shrink-0"
+                                title={`تعديل ${habit.title}`}
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {showPlannedHabits && plannedHabits.length > 0 && (
+                    <div className="pt-2.5 border-t border-[var(--border-subtle)] space-y-2">
+                      <div className="text-[11px] font-semibold text-zinc-400">
+                        عادات مستقبلية (مؤجلة حتى تفعيلها)
+                      </div>
+                      <div className="divide-y divide-[var(--border-subtle)]">
+                        {plannedHabits.map((ph) => {
+                          const anchorMeta = DYNAMIC_HABIT_ANCHOR_LABELS[ph.anchor];
+                          return (
+                            <div key={ph.id} className="py-2 flex items-center justify-between gap-2 text-xs">
+                              <div className="min-w-0">
+                                <div className="text-zinc-300 font-medium truncate">{ph.title}</div>
+                                <div className="text-[11px] text-zinc-500">
+                                  {anchorMeta.emoji} {anchorMeta.labelAr} · {ph.durationMin} د
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {onToggleHabitStatus && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onToggleHabitStatus(ph.id)}
+                                    className="px-2.5 py-1 rounded-lg border border-[#7FFFD4]/35 bg-[#7FFFD4]/10 text-[#7FFFD4] text-[11px] font-semibold hover:bg-[#7FFFD4]/20 cursor-pointer"
+                                  >
+                                    تفعيل
+                                  </button>
+                                )}
+                                {onUpdateHabit && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditHabitModal(ph)}
+                                    className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-200 cursor-pointer"
+                                    title={`تعديل ${ph.title}`}
+                                  >
+                                    <Pencil className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </section>
+          </ErrorBoundary>
+
           {/* 3. Creative Activities & Hobbies (Shown only when non-empty) */}
           {creativePlacements.length > 0 && (
             <section className={`rounded-2xl border p-4 sm:p-5 space-y-3 ${cardSurface}`}>
@@ -5876,6 +6100,202 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {/* Add / Edit Dynamic Habit Modal / Bottom Sheet */}
+      {habitModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 p-0 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={editingHabitId ? 'تعديل العادة' : 'إضافة عادة ديناميكية'}
+        >
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-[#7FFFD4]/30 bg-[#090C11] p-4 sm:p-5 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-[#7FFFD4] flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{editingHabitId ? 'تعديل العادة' : 'إضافة عادة جديدة'}</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setHabitModalOpen(false)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/10 cursor-pointer"
+                aria-label="إغلاق"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-zinc-400 mb-1.5">اسم العادة</label>
+                <input
+                  type="text"
+                  value={habitTitle}
+                  onChange={(e) => setHabitTitle(e.target.value)}
+                  placeholder="مثال: مشي صباحي أو قراءة 20 صفحة"
+                  className="w-full rounded-xl border border-white/10 bg-black/60 px-3 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-[#7FFFD4]/50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-zinc-400 mb-1.5">الحالة</label>
+                <div className="grid grid-cols-2 gap-2 p-1 rounded-xl border border-white/10 bg-black/50">
+                  <button
+                    type="button"
+                    onClick={() => setHabitStatus('active')}
+                    className={`py-2 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                      habitStatus === 'active'
+                        ? 'bg-[#7FFFD4]/15 text-[#7FFFD4] border border-[#7FFFD4]/35'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    حالية (نشطة اليوم)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHabitStatus('planned')}
+                    className={`py-2 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                      habitStatus === 'planned'
+                        ? 'bg-[#7FFFD4]/15 text-[#7FFFD4] border border-[#7FFFD4]/35'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    مستقبلية (مؤجلة)
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-zinc-400 mb-1.5">المرتكز الزمني الديناميكي</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(Object.keys(DYNAMIC_HABIT_ANCHOR_LABELS) as DynamicHabitAnchor[]).map((key) => {
+                    const meta = DYNAMIC_HABIT_ANCHOR_LABELS[key];
+                    const selected = habitAnchor === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setHabitAnchor(key)}
+                        className={`px-2 py-2 rounded-xl border text-[11px] font-medium cursor-pointer transition-colors flex items-center justify-center gap-1 ${
+                          selected
+                            ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/12 text-[#7FFFD4]'
+                            : 'border-white/10 bg-black/40 text-zinc-300 hover:border-white/25'
+                        }`}
+                      >
+                        <span>{meta.emoji}</span>
+                        <span className="truncate">{meta.labelAr}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-zinc-400 mb-1.5">المدة (بالدقائق)</label>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[15, 30, 45, 60].map((mins) => (
+                    <button
+                      key={mins}
+                      type="button"
+                      onClick={() => setHabitDurationMin(mins)}
+                      className={`py-2 rounded-xl border font-mono-tabular text-xs font-semibold cursor-pointer transition-colors ${
+                        habitDurationMin === mins
+                          ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/12 text-[#7FFFD4]'
+                          : 'border-white/10 bg-black/40 text-zinc-300 hover:border-white/25'
+                      }`}
+                    >
+                      {mins} د
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-zinc-400 mb-1.5">أيام التكرار (فارغ = يومياً)</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {ARABIC_WEEKDAYS.map((wd) => {
+                    const active = habitDaysOfWeek.includes(wd.id);
+                    return (
+                      <button
+                        key={wd.id}
+                        type="button"
+                        onClick={() =>
+                          setHabitDaysOfWeek((prev) =>
+                            prev.includes(wd.id) ? prev.filter((d) => d !== wd.id) : [...prev, wd.id]
+                          )
+                        }
+                        className={`px-2.5 py-1.5 rounded-lg border text-[11px] cursor-pointer transition-colors ${
+                          active
+                            ? 'border-[#7FFFD4]/50 bg-[#7FFFD4]/12 text-[#7FFFD4] font-semibold'
+                            : 'border-white/10 bg-black/40 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {wd.shortAr}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-black/40 px-3 py-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={habitSkipOnFasting}
+                  onChange={(e) => setHabitSkipOnFasting(e.target.checked)}
+                  className="h-4 w-4 accent-[#7FFFD4] cursor-pointer"
+                />
+                <span className="text-zinc-200">تخطي تلقائياً في أيام الصيام</span>
+              </label>
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                disabled={!habitTitle.trim()}
+                onClick={() => {
+                  const cleanTitle = habitTitle.trim();
+                  if (!cleanTitle) return;
+                  const payload = {
+                    title: cleanTitle,
+                    status: habitStatus,
+                    anchor: habitAnchor,
+                    durationMin: habitDurationMin,
+                    daysOfWeek: habitDaysOfWeek.length > 0 ? habitDaysOfWeek : undefined,
+                    skipOnFasting: habitSkipOnFasting || undefined,
+                  };
+                  if (editingHabitId && onUpdateHabit) {
+                    onUpdateHabit(editingHabitId, payload);
+                  } else if (onAddHabit) {
+                    onAddHabit(payload);
+                  }
+                  setHabitModalOpen(false);
+                }}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] disabled:opacity-40 cursor-pointer"
+              >
+                {editingHabitId ? 'حفظ التعديل' : 'حفظ العادة'}
+              </button>
+              {editingHabitId && onDeleteHabit && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onDeleteHabit(editingHabitId);
+                    setHabitModalOpen(false);
+                  }}
+                  className="py-2.5 px-3 rounded-xl border border-rose-500/35 text-xs text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                >
+                  حذف
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setHabitModalOpen(false)}
+                className="py-2.5 px-4 rounded-xl border border-white/15 text-xs text-zinc-300 hover:bg-white/10 cursor-pointer"
+              >
+                إلغاء
+              </button>
+            </div>
           </div>
         </div>
       )}

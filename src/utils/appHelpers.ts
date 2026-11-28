@@ -2,6 +2,7 @@ import {
   CalendarActionProposal,
   CalendarTombstone,
   CreativeActivityItem,
+  DynamicHabit,
   GoogleCalendarEventItem,
   GoogleTaskItem,
   HydrationDayLog,
@@ -16,8 +17,10 @@ import {
 import type { CapsulePrefs } from '../components/FloatingPiPCapsule';
 import {
   DEFAULT_CREATIVE_ACTIVITIES,
+  DEFAULT_HABITS,
   DEFAULT_MEMORIES,
   sanitizeCreativeActivityItem,
+  sanitizeDynamicHabit,
   sanitizeMemoryItem,
   type SyncedRhythmPayload,
 } from '../firebase';
@@ -31,6 +34,7 @@ import {
 import { clearGeminiClientCache, sanitizePersistedChats } from '../services/apiClient';
 export const STORAGE_KEY = 'dayrhythm_state_v3';
 export const CREATIVE_STORAGE_KEY = 'dayrhythm_creative_v1';
+export const HABITS_STORAGE_KEY = 'dayrhythm_habits_v1';
 export const MEMORIES_STORAGE_KEY = 'dayrhythm_memories_v1';
 export const CHAT_STORAGE_KEY = 'dayrhythm_gemini_chats_v1';
 export const SILENT_NOTIFS_STORAGE_KEY = 'dayrhythm_silent_notifs_v1';
@@ -93,6 +97,7 @@ export function clearAllPersonalLocalStorage(): void {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(MEDS_STORAGE_KEY);
     localStorage.removeItem(CREATIVE_STORAGE_KEY);
+    localStorage.removeItem(HABITS_STORAGE_KEY);
     localStorage.removeItem(MEMORIES_STORAGE_KEY);
     localStorage.removeItem(CHAT_STORAGE_KEY);
     localStorage.removeItem(SILENT_NOTIFS_STORAGE_KEY);
@@ -153,6 +158,21 @@ export function loadSavedCreativeActivities(): CreativeActivityItem[] {
     // ignore storage errors
   }
   return DEFAULT_CREATIVE_ACTIVITIES;
+}
+
+export function loadSavedHabits(): DynamicHabit[] {
+  try {
+    const raw = localStorage.getItem(HABITS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((h) => sanitizeDynamicHabit(h));
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return DEFAULT_HABITS;
 }
 
 export function loadSavedMemories(): MemoryItem[] {
@@ -417,6 +437,7 @@ export const RHYTHM_FIELD_GROUPS: ReadonlyArray<ReadonlyArray<keyof SyncedRhythm
   ['appSettings'],
   ['medications'],
   ['creativeActivities'],
+  ['habits'],
   ['memories'],
   ['completedOverrides'],
   ['fastingOverride'],

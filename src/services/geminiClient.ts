@@ -2,6 +2,8 @@ import {
   AppSettingsPatch,
   CalendarActionProposal,
   CreativeActivityActionProposal,
+  DynamicHabitAnchor,
+  DynamicHabitStatus,
   FreeWindow,
   GroundingPlace,
   MedicationActionProposal,
@@ -12,7 +14,7 @@ import {
   TaskActionProposal,
 } from '../types/dayrhythm';
 import { formatMinutes12h } from '../engines/prayerEngine';
-import { formatDurationAr } from '../engines/lifeRhythmEngine';
+import { DYNAMIC_HABIT_ANCHOR_LABELS, formatDurationAr } from '../engines/lifeRhythmEngine';
 import { formatSettingsSchemaForGemini } from '../utils/settingsPatchValidator';
 import {
   type GeminiFunctionCall,
@@ -267,6 +269,20 @@ export interface ChatRequestPayload {
     scheduledTime24?: string;
     expiresOnDate?: string;
   }>;
+  habits?: Array<{
+    id: string;
+    title: string;
+    status: DynamicHabitStatus;
+    anchor: DynamicHabitAnchor;
+    durationMin: number;
+    daysOfWeek?: number[];
+    skipOnFasting?: boolean;
+    completedToday?: boolean;
+    resolvedTimeLabel?: string;
+    isFallbackSlot?: boolean;
+    isFlexibleUnplaced?: boolean;
+    skippedReasonAr?: string;
+  }>;
 }
 
 // Bounded in-memory response cache
@@ -391,8 +407,9 @@ export const DAYRHYTHM_SYSTEM_INSTRUCTION = `
    - أمثلة: "خلّي حد الشحن 85% وصيام السبت شغال وانقل فيتامين د لبعد المغرب" ← استدعِ update_app_settings(summaryAr: "...", patch: { phoneChargeLimitPct: 85, addFastingDays: [6], medicationFastingPolicies: [{ name: "فيتامين د", fastingPolicy: "after-maghrib" }] }).
    - أمان صارم: يُمنع تماماً قراءة أو كشف أو تعديل مفاتيح API أو التوكنات أو إعدادات Firebase أو UIDs أو وضع التأكيد اليدوي/التنفيذ الفوري (autoExecuteChat).
    - احفظ أي قاعدة أو مبدأ دائم عبر propose_memory_actions.
-6. الأنشطة الإبداعية والهوايات والمشاريع:
+6. الأنشطة الإبداعية والهوايات والعادات اليومية الديناميكية:
    - استخدم propose_creative_actions لإضافة أو تعديل أو حذف أو تسجيل جلسة نشاط إبداعي، وعند جدولته في Google Calendar ضعه دائماً في الأوقات الفارغة الفعلية.
+   - العادات اليومية الديناميكية (حالية active / مستقبلية planned): استخدم propose_habit_actions لإضافة عادة، تعديلها، إيقافها مؤقتاً (pause -> تتحول إلى planned)، تفعيل عادة مستقبلية (activate -> تتحول إلى active)، حذفها، أو تسجيل إنجازها اليوم (toggle_today). يُمنع تماماً إنشاء أحداث في Google Calendar للعادات اليومية — التقويم مخصص فقط للمواعيد الخارجية الثابتة.
 7. وضع اليوم الهادئ / الطاقة المنخفضة، وتعديل مدة الصمت لمرة واحدة، وتكرار الرنين، ومدة التأجيل (Snooze):
    - إذا قال المستخدم «النهارده تعبان / مرهق / طاقتي قليلة»: فعّل له وضع اليوم الهادئ بتعيين lowEnergyDateKey لتاريخ اليوم (YYYY-MM-DD) عبر propose_profile_updates.
    - إذا طلب المستخدم تغيير مدة زر التأجيل (Snooze) للتنبيهات (5 أو 10 أو 15 دقيقة): عدّل defaultSnoozeMinutes عبر propose_profile_updates (الافتراضي 5 دقائق).
@@ -586,6 +603,74 @@ export const GEMINI_CHAT_TOOLS = [
             },
           },
           required: ['summaryAr', 'creativeActions'],
+        },
+      },
+      {
+        name: 'propose_habit_actions',
+        description:
+          'اقتراح إضافة أو تعديل أو تفعيل عادة مستقبلية أو إيقاف عادة مؤقتاً أو حذفها أو تسجيل إنجازها اليوم في نظام العادات الديناميكية (دون إضافتها إلى Google Calendar).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            summaryAr: {
+              type: 'STRING',
+              description: 'ملخص عربي مختصر للتغييرات المقترحة على العادات اليومية.',
+            },
+            habitActions: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  operation: {
+                    type: 'STRING',
+                    enum: ['add', 'update', 'pause', 'activate', 'remove', 'toggle_today'],
+                    description:
+                      'add (إضافة) أو update (تعديل) أو pause (إيقاف مؤقت / تحويل لمستقبلية) أو activate (تفعيل عادة مستقبلية) أو remove (حذف) أو toggle_today (تسجيل/إلغاء إنجاز اليوم).',
+                  },
+                  habitId: {
+                    type: 'STRING',
+                    description: 'معرف العادة الحالية عند التعديل أو التفعيل أو الإيقاف أو الحذف.',
+                  },
+                  title: { type: 'STRING', description: 'اسم العادة.' },
+                  status: {
+                    type: 'STRING',
+                    enum: ['active', 'planned'],
+                    description: 'حالية (active) أو مستقبلية (planned).',
+                  },
+                  anchor: {
+                    type: 'STRING',
+                    enum: [
+                      'after-fajr',
+                      'sunrise-light',
+                      'duha',
+                      'after-dhuhr',
+                      'after-asr',
+                      'pre-maghrib',
+                      'after-maghrib',
+                      'after-isha',
+                      'any-free-slot',
+                    ],
+                    description: 'المرتكز الزمني الديناميكي للعادة.',
+                  },
+                  durationMin: {
+                    type: 'NUMBER',
+                    description: 'مدة العادة بالدقائق (الافتراضي 30).',
+                  },
+                  daysOfWeek: {
+                    type: 'ARRAY',
+                    items: { type: 'NUMBER' },
+                    description: 'أيام التكرار (0=الأحد .. 6=السبت)، ويُترك فارغاً للعادات اليومية.',
+                  },
+                  skipOnFasting: {
+                    type: 'BOOLEAN',
+                    description: 'تخطي العادة تلقائياً في أيام الصيام.',
+                  },
+                },
+                required: ['operation', 'title'],
+              },
+            },
+          },
+          required: ['summaryAr', 'habitActions'],
         },
       },
       {
@@ -861,6 +946,39 @@ export function buildChatSystemInstruction(
           .join('\n')}`
       : '';
 
+  const habitsList = Array.isArray(payload.habits) ? payload.habits : [];
+  const activeHabits = habitsList.filter((h) => h.status === 'active');
+  const plannedHabits = habitsList.filter((h) => h.status === 'planned');
+  const habitsBlockText =
+    habitsList.length > 0
+      ? `\n\n=== العادات الديناميكية (حالية ومستقبلية) ===${
+          activeHabits.length > 0
+            ? `\nالعادات الحالية اليوم (active):\n${activeHabits
+                .map((h) => {
+                  const anchorLabel = DYNAMIC_HABIT_ANCHOR_LABELS[h.anchor]?.labelAr ?? h.anchor;
+                  const slotInfo = h.skippedReasonAr
+                    ? `الحالة اليوم: ${h.skippedReasonAr}`
+                    : h.resolvedTimeLabel
+                      ? `الموعد اليوم: ${h.resolvedTimeLabel}${h.isFallbackSlot ? ' (بديل متاح)' : ''}`
+                      : h.isFlexibleUnplaced
+                        ? 'الموعد اليوم: مرن حسب التفرغ'
+                        : 'الموعد اليوم: غير محدد';
+                  return `- [habitId=${h.id}] ${h.title} | المرتكز: ${anchorLabel} | المدة: ${h.durationMin} د | ${slotInfo} | الإنجاز اليوم: ${h.completedToday ? 'تم ✓' : 'لم يُنجز بعد'}`;
+                })
+                .join('\n')}`
+            : ''
+        }${
+          plannedHabits.length > 0
+            ? `\nالعادات المستقبلية المؤجلة (planned — غير مفعّلة في جدول اليوم):\n${plannedHabits
+                .map((h) => {
+                  const anchorLabel = DYNAMIC_HABIT_ANCHOR_LABELS[h.anchor]?.labelAr ?? h.anchor;
+                  return `- [habitId=${h.id}] ${h.title} | المرتكز المقترح: ${anchorLabel} | المدة: ${h.durationMin} د | الحالة: مستقبلية (planned)`;
+                })
+                .join('\n')}`
+            : ''
+        }`
+      : '';
+
   const longTermArchiveBlock =
     !lean &&
     typeof payload.longTermChatContext === 'string' &&
@@ -908,7 +1026,7 @@ export function buildChatSystemInstruction(
       : '';
 
   const contextText = (payload.contextSummary ?? '').slice(0, lean ? 600 : 1800);
-  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${contextText}${seasonalAndFreeWindowsBlock}${settingsSchemaBlock}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
+  const systemInstruction = `${DAYRHYTHM_SYSTEM_INSTRUCTION}\n\nالتاريخ: ${todayCairo} | الوقت الآن: ${nowCairo12} | التزم حرفياً بالدستور والذاكرة أدناه وأجب باختصار مباشر وسريع.${memoriesBlock}${longTermArchiveBlock}\n\n=== الدستور والسياق ===\n${contextText}${seasonalAndFreeWindowsBlock}${habitsBlockText}${settingsSchemaBlock}${eventsListText}${tasksListText}${medsListText}${creativeListText}`;
 
   return { systemInstruction, memoriesAppliedCount: memoriesArr.length };
 }

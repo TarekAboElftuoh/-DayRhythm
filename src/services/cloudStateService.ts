@@ -16,6 +16,7 @@ import { db, AppSyncSettings, OnePlusDeviceSettings } from '../firebase';
 import {
   CreativeActivityItem,
   DualStreaks,
+  DynamicHabit,
   HydrationDayLog,
   LifeProfile,
   MedicationItem,
@@ -75,6 +76,7 @@ export interface UserSettingsPayload {
   uiPrefs?: UiPrefs;
   medications?: MedicationItem[];
   creativeActivities?: CreativeActivityItem[];
+  habits?: DynamicHabit[];
   memories?: MemoryItem[];
   hydrationDateKey?: string;
   cupsLogged?: number;

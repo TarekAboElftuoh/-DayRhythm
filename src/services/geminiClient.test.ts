@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildChatSystemInstruction, DAYRHYTHM_SYSTEM_INSTRUCTION } from './geminiClient';
+import { extractPendingProposalFromFunctionCalls } from './geminiSanitizer';
 import { FreeWindow } from '../types/dayrhythm';
 
 describe('Gemini Smart Scheduling Context', () => {
@@ -51,5 +52,53 @@ describe('Gemini Smart Scheduling Context', () => {
 
     expect(fullResult.systemInstruction).toContain('medium-night');
     expect(fullResult.systemInstruction).toContain('05:38 ص – 09:00 ص');
+  });
+
+  it('injects active and planned dynamic habits into Gemini context and parses propose_habit_actions', () => {
+    const result = buildChatSystemInstruction(
+      {
+        message: 'فعّل عادة المشي المستقبلية',
+        habits: [
+          {
+            id: 'h1',
+            title: 'قراءة صباحية',
+            status: 'active',
+            anchor: 'sunrise-light',
+            durationMin: 20,
+            completedToday: true,
+            resolvedTimeLabel: '07:03 ص – 07:23 ص',
+          },
+          {
+            id: 'h2',
+            title: 'مشي بعد العصر',
+            status: 'planned',
+            anchor: 'after-asr',
+            durationMin: 30,
+          },
+        ],
+      },
+      { lean: true }
+    );
+
+    expect(result.systemInstruction).toContain('قراءة صباحية');
+    expect(result.systemInstruction).toContain('07:03 ص – 07:23 ص');
+    expect(result.systemInstruction).toContain('تم ✓');
+    expect(result.systemInstruction).toContain('مشي بعد العصر');
+    expect(result.systemInstruction).toContain('planned');
+    expect(DAYRHYTHM_SYSTEM_INSTRUCTION).toContain('propose_habit_actions');
+
+    const proposal = extractPendingProposalFromFunctionCalls([
+      {
+        name: 'propose_habit_actions',
+        args: {
+          summaryAr: 'تفعيل عادة المشي',
+          habitActions: [
+            { operation: 'activate', habitId: 'h2', title: 'مشي بعد العصر', anchor: 'after-asr' },
+          ],
+        },
+      },
+    ]);
+    expect(proposal?.habitActions).toHaveLength(1);
+    expect(proposal?.habitActions?.[0].operation).toBe('activate');
   });
 });

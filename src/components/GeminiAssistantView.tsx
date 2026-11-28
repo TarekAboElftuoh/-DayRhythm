@@ -36,10 +36,13 @@ import {
   CreativeActivityActionProposal,
   CreativeActivityPlacement,
   CreativeExecutionResult,
+  DynamicHabit,
   GeoLocation,
   GoogleCalendarEventItem,
   GoogleTaskItem,
   AppSettingsPatch,
+  HabitActionProposal,
+  HabitExecutionResult,
   LifeProfile,
   MedicationActionProposal,
   MedicationExecutionResult,
@@ -48,6 +51,7 @@ import {
   MemoryCategory,
   MemoryItem,
   PersistedChatMessage,
+  ResolvedHabitPlacement,
   SettingsPatchProposal,
   SettingsSnapshotContext,
   TaskActionProposal,
@@ -57,10 +61,15 @@ import {
 import { validateAndNormalizeSettingsPatch } from '../utils/settingsPatchValidator';
 import {
   formatIsoTo12h,
+  formatMinutes12h,
   formatTime24To12h,
   getDateIsoInTimeZone,
 } from '../engines/prayerEngine';
-import { ARABIC_WEEKDAYS, MEMORY_CATEGORY_LABELS } from '../engines/lifeRhythmEngine';
+import {
+  ARABIC_WEEKDAYS,
+  DYNAMIC_HABIT_ANCHOR_LABELS,
+  MEMORY_CATEGORY_LABELS,
+} from '../engines/lifeRhythmEngine';
 import {
   GeminiConnectionStatus,
   apiFetchJson,
@@ -101,6 +110,8 @@ interface GeminiAssistantViewProps {
   googleTasks: GoogleTaskItem[];
   medications: MedicationItem[];
   creativePlacements: CreativeActivityPlacement[];
+  habits?: DynamicHabit[];
+  resolvedHabits?: ResolvedHabitPlacement[];
   loadingEvents: boolean;
   loadingTasks: boolean;
   messages: PersistedChatMessage[];
@@ -123,6 +134,7 @@ interface GeminiAssistantViewProps {
     creativeActions: CreativeActivityActionProposal[],
     linkedCalendarIds?: Record<string, string>
   ) => Promise<CreativeExecutionResult[]>;
+  onExecuteHabitActions?: (habitActions: HabitActionProposal[]) => Promise<HabitExecutionResult[]>;
   onApplyProfileUpdates: (patch: Partial<LifeProfile>) => void;
   /** Applies app settings Gemini proposed (charge limit, silent mode, theme, language, …). */
   onApplyAppSettings?: (patch: AppSettingsPatch) => void;
@@ -355,6 +367,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   googleTasks,
   medications,
   creativePlacements,
+  habits = [],
+  resolvedHabits = [],
   loadingEvents,
   loadingTasks,
   messages,
@@ -367,6 +381,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
   onExecuteTaskActions,
   onExecuteMedicationActions,
   onExecuteCreativeActions,
+  onExecuteHabitActions,
   onApplyProfileUpdates,
   onApplyAppSettings,
   onApplySettingsPatch,
@@ -911,7 +926,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
     profileUpdates?: Partial<LifeProfile>,
     memoryActions: MemoryActionProposal[] = [],
     appSettings?: AppSettingsPatch,
-    settingsPatchProposal?: SettingsPatchProposal
+    settingsPatchProposal?: SettingsPatchProposal,
+    habitActions: HabitActionProposal[] = []
   ) => {
     setExecutingProposalId(msgId);
     try {
@@ -986,6 +1002,11 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
       if (creativeActions.length > 0) {
         const crRes = await onExecuteCreativeActions(creativeActions, linkedCalendarIds);
         summaryParts.push(`الأنشطة (${crRes.length})`);
+      }
+
+      if (habitActions.length > 0 && onExecuteHabitActions) {
+        const habitRes = await onExecuteHabitActions(habitActions);
+        summaryParts.push(`العادات (${habitRes.length})`);
       }
 
       // One message per action: the proposal card itself becomes "done" (with the Google links)
@@ -1125,6 +1146,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
         (proposal.taskActions?.length ?? 0) +
         (proposal.medicationActions?.length ?? 0) +
         (proposal.creativeActions?.length ?? 0) +
+        (proposal.habitActions?.length ?? 0) +
         (proposal.profileUpdates ? 1 : 0) +
         (proposal.appSettings ? 1 : 0) +
         (proposal.settingsPatchProposal ? 1 : 0) +
@@ -1149,7 +1171,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           proposal.profileUpdates,
           proposal.memoryActions ?? [],
           proposal.appSettings,
-          proposal.settingsPatchProposal
+          proposal.settingsPatchProposal,
+          proposal.habitActions ?? []
         );
       }, 0);
     };
@@ -1174,6 +1197,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
           calendarEvents.slice(0, 30).map((e) => `${e.id}:${e.start}:${e.summary}`),
           googleTasks.slice(0, 20).map((t) => `${t.id}:${t.status}:${t.title}`),
           medications.map((m) => `${m.id}:${m.takenDateKey}:${m.remainingDoses ?? -1}`),
+          habits.map((h) => `${h.id}:${h.status}:${h.anchor}:${h.completedDates.includes(todayLocalIso)}`),
         ]);
 
         if (!bypassCache) {
@@ -1271,6 +1295,36 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
             scheduledTime24: p.activity.scheduledTime24 || p.suggestedSlot?.time24,
             expiresOnDate: p.activity.expiresOnDate,
           })),
+          habits: [
+            ...resolvedHabits.map((r) => ({
+              id: r.habit.id,
+              title: r.habit.title,
+              status: r.habit.status,
+              anchor: r.habit.anchor,
+              durationMin: r.habit.durationMin,
+              daysOfWeek: r.habit.daysOfWeek,
+              skipOnFasting: r.habit.skipOnFasting,
+              completedToday: r.completedToday,
+              resolvedTimeLabel: r.slot
+                ? `${formatMinutes12h(r.slot.startMin, language)} – ${formatMinutes12h(r.slot.endMin, language)}`
+                : undefined,
+              isFallbackSlot: r.isFallbackSlot,
+              isFlexibleUnplaced: r.isFlexibleUnplaced,
+              skippedReasonAr: r.skippedReasonAr,
+            })),
+            ...habits
+              .filter((h) => h.status === 'planned')
+              .map((h) => ({
+                id: h.id,
+                title: h.title,
+                status: h.status,
+                anchor: h.anchor,
+                durationMin: h.durationMin,
+                daysOfWeek: h.daysOfWeek,
+                skipOnFasting: h.skipOnFasting,
+                completedToday: false,
+              })),
+          ],
         };
 
         let streamInserted = false;
@@ -2909,6 +2963,50 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                             </ul>
                           )}
 
+                        {displayProposal.habitActions &&
+                          displayProposal.habitActions.length > 0 && (
+                            <ul className="divide-y divide-white/10 text-xs">
+                              {displayProposal.habitActions.map((hAct, idx) => {
+                                const anchorMeta = hAct.anchor
+                                  ? DYNAMIC_HABIT_ANCHOR_LABELS[hAct.anchor]
+                                  : null;
+                                const opLabel =
+                                  hAct.operation === 'remove'
+                                    ? 'حذف عادة'
+                                    : hAct.operation === 'pause'
+                                      ? 'إيقاف مؤقت (مستقبلية)'
+                                      : hAct.operation === 'activate'
+                                        ? 'تفعيل عادة'
+                                        : hAct.operation === 'toggle_today'
+                                          ? 'تحديث إنجاز اليوم'
+                                          : hAct.operation === 'update'
+                                            ? 'تعديل عادة'
+                                            : hAct.status === 'planned'
+                                              ? 'إضافة مستقبلية'
+                                              : 'إضافة حالية';
+                                return (
+                                  <li
+                                    key={`hab-${idx}`}
+                                    className="py-1.5 flex items-center justify-between gap-2"
+                                  >
+                                    <span className="text-white font-medium">
+                                      {anchorMeta?.emoji ?? '✨'} {hAct.title}
+                                      {anchorMeta ? (
+                                        <span className="text-zinc-400 font-normal">
+                                          {' '}· {anchorMeta.labelAr}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                    <span className="font-mono-tabular text-[#7FFFD4] shrink-0 text-[11px]">
+                                      {opLabel}
+                                      {hAct.durationMin ? ` · ${hAct.durationMin} د` : ''}
+                                    </span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+
                         {displayProposal.taskActions &&
                           displayProposal.taskActions.length > 0 && (
                             <ul className="divide-y divide-white/10 text-xs">
@@ -2968,6 +3066,7 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                                   (displayProposal.taskActions?.length ?? 0) === 0 &&
                                   (displayProposal.medicationActions?.length ?? 0) === 0 &&
                                   (displayProposal.creativeActions?.length ?? 0) === 0 &&
+                                  (displayProposal.habitActions?.length ?? 0) === 0 &&
                                   (displayProposal.memoryActions?.length ?? 0) === 0)
                               }
                               onClick={() =>
@@ -2980,7 +3079,8 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                                   displayProposal!.profileUpdates,
                                   displayProposal!.memoryActions ?? [],
                                   displayProposal!.appSettings,
-                                  displayProposal!.settingsPatchProposal
+                                  displayProposal!.settingsPatchProposal,
+                                  displayProposal!.habitActions ?? []
                                 )
                               }
                               className="flex-1 min-h-[44px] sm:min-h-[40px] py-2 px-4 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-[#66eec2] cursor-pointer disabled:opacity-50 transition-colors"
@@ -2990,7 +3090,11 @@ export const GeminiAssistantView: React.FC<GeminiAssistantViewProps> = ({
                               ) : (
                                 <Check className="w-3.5 h-3.5" />
                               )}
-                              <span>{hasSettingsInput ? 'تطبيق التغييرات' : 'تأكيد وتنفيذ'}</span>
+                              <span>
+                                {hasSettingsInput || (displayProposal.habitActions?.length ?? 0) > 0
+                                  ? 'تطبيق التغييرات'
+                                  : 'تأكيد وتنفيذ'}
+                              </span>
                             </button>
                             <button
                               type="button"

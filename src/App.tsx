@@ -24,12 +24,17 @@ import {
   DayMode,
   DeletedWorkspaceSnapshot,
   DualStreaks,
+  DynamicHabit,
+  DynamicHabitAnchor,
+  DynamicHabitStatus,
   FreeWindow,
   GmailDigestItem,
   GoogleCalendarEventItem,
   GoogleCalendarInfo,
   GoogleTaskItem,
   GoogleTaskList,
+  HabitActionProposal,
+  HabitExecutionResult,
   HydrationDayLog,
   LifeProfile,
   MedicationActionProposal,
@@ -43,6 +48,7 @@ import {
   PhoneBatteryTelemetry,
   PomodoroState,
   QuietModeType,
+  ResolvedHabitPlacement,
   ScheduleBlock,
   SettingsSnapshotContext,
   SharedChangelogEntry,
@@ -135,6 +141,7 @@ import {
   configuredDbId,
   DEFAULT_CREATIVE_ACTIVITIES,
   DEFAULT_DEVICE_SETTINGS,
+  DEFAULT_HABITS,
   DEFAULT_MEDICATIONS,
   DEFAULT_MEMORIES,
   OnePlusDeviceSettings,
@@ -144,6 +151,8 @@ import {
   sanitizeCreativeActivityId,
   sanitizeCreativeActivityItem,
   sanitizeDeviceSettings,
+  sanitizeDynamicHabit,
+  sanitizeHabitId,
   sanitizeLifeProfile as firebaseSanitizeLifeProfile,
   sanitizeMedicationItem,
   sanitizeMemoryId,
@@ -252,6 +261,7 @@ import {
   computeDailyRhythmPlan,
   computeFreeWindows,
   computeMedicationDaysLeft,
+  resolveHabitsForDay,
   resolveMedicationDosesForDay,
 } from './engines/lifeRhythmEngine';
 import { applyTravelMatrix, buildBaseSchedule } from './engines/scheduleEngine';
@@ -317,6 +327,7 @@ import {
 import {
   STORAGE_KEY,
   CREATIVE_STORAGE_KEY,
+  HABITS_STORAGE_KEY,
   MEMORIES_STORAGE_KEY,
   CHAT_STORAGE_KEY,
   SILENT_NOTIFS_STORAGE_KEY,
@@ -334,6 +345,7 @@ import {
   WELCOME_MESSAGE,
   loadSavedChats,
   loadSavedCreativeActivities,
+  loadSavedHabits,
   loadSavedMemories,
   loadSavedSilentNotifications,
   getLast7DayLabels,
@@ -1150,6 +1162,8 @@ export default function App() {
   );
   const seededDefaultCreativeRef = useRef(false);
 
+  const [habits, setHabits] = useState<DynamicHabit[]>(loadSavedHabits);
+
   const [waterRemindersEnabled, setWaterRemindersEnabled] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem(WATER_REMINDER_STORAGE_KEY);
@@ -1470,6 +1484,8 @@ export default function App() {
   medicationsRef.current = medications;
   const creativeActivitiesRef = useRef(creativeActivities);
   creativeActivitiesRef.current = creativeActivities;
+  const habitsRef = useRef(habits);
+  habitsRef.current = habits;
   const memoriesRef = useRef(memories);
   memoriesRef.current = memories;
   const selectedLogoIdRef = useRef(selectedLogoId);
@@ -3037,6 +3053,16 @@ export default function App() {
     void pushToTasksVaultRef.current({ creativeActivities });
   }, [creativeActivities]);
 
+  // Reactive cross-device sync for Dynamic Habits
+  const lastSyncedHabitsSigRef = useRef<string>('');
+  useEffect(() => {
+    if (!hasHydratedRemoteRef.current) return;
+    const sig = JSON.stringify(habits);
+    if (sig === lastSyncedHabitsSigRef.current) return;
+    lastSyncedHabitsSigRef.current = sig;
+    void pushToTasksVaultRef.current({ habits });
+  }, [habits]);
+
   // Reactive cross-device sync for Gemini Long-term Memories
   const lastSyncedMemoriesSigRef = useRef<string>('');
   useEffect(() => {
@@ -3209,6 +3235,15 @@ export default function App() {
               // ignore storage errors
             }
           }
+          if (Array.isArray(backup.habits)) {
+            const cleanHabits = backup.habits.map((h) => sanitizeDynamicHabit(h));
+            setHabits(cleanHabits);
+            try {
+              localStorage.setItem(HABITS_STORAGE_KEY, JSON.stringify(cleanHabits));
+            } catch {
+              // ignore storage errors
+            }
+          }
           if (Array.isArray(backup.memories)) {
             const cleanMemories = backup.memories.map((m) => sanitizeMemoryItem(m));
             setMemories(cleanMemories);
@@ -3375,6 +3410,7 @@ export default function App() {
         } as Record<string, unknown> ),
         hydrationHistory: overrides?.hydrationHistory ?? hydrationHistory,
         creativeActivities: overrides?.creativeActivities ?? creativeActivities,
+        habits: overrides?.habits ?? habits,
         memories: overrides?.memories ?? memories,
         deviceSettings: overrides?.deviceSettings ?? deviceSettings,
         quietMode: overrides?.quietMode ?? quietMode,
@@ -3420,6 +3456,7 @@ export default function App() {
       medications,
       hydrationHistory,
       creativeActivities,
+      habits,
       memories,
       deviceSettings,
       quietMode,
@@ -3634,6 +3671,7 @@ export default function App() {
           clearAllPersonalLocalStorage();
           setMedications(DEFAULT_MEDICATIONS);
           setCreativeActivities(DEFAULT_CREATIVE_ACTIVITIES);
+          setHabits(DEFAULT_HABITS);
           setMemories(DEFAULT_MEMORIES);
           setLifeProfile(DEFAULT_LIFE_PROFILE);
           setDeviceSettings(DEFAULT_DEVICE_SETTINGS);
@@ -3792,6 +3830,7 @@ export default function App() {
   const applyRemote = useCallback((remote: SyncedRhythmPayload & {
     medications?: MedicationItem[];
     creativeActivities?: CreativeActivityItem[];
+    habits?: DynamicHabit[];
     memories?: MemoryItem[];
   }) => {
     const migratedRemote = migrateAppState(remote);
@@ -4105,6 +4144,20 @@ export default function App() {
         }
       }
     }
+    if (Array.isArray(remote.habits)) {
+      const cleanHabits = remote.habits.map((h) => sanitizeDynamicHabit(h));
+      const sig = JSON.stringify(cleanHabits);
+      if (sig !== JSON.stringify(habitsRef.current)) {
+        lastSyncedHabitsSigRef.current = sig;
+        habitsRef.current = cleanHabits;
+        setHabits(cleanHabits);
+        try {
+          localStorage.setItem(HABITS_STORAGE_KEY, sig);
+        } catch {
+          // ignore
+        }
+      }
+    }
     if (remote.uiPrefs) {
       const cleanUi = sanitizeUiPrefs(remote.uiPrefs);
       if (cleanUi) {
@@ -4405,6 +4458,7 @@ export default function App() {
     (remote: SyncedRhythmPayload & {
       medications?: MedicationItem[];
       creativeActivities?: CreativeActivityItem[];
+      habits?: DynamicHabit[];
       memories?: MemoryItem[];
     }) => {
       const waitMs = localWriteLockUntilRef.current - Date.now();
@@ -4540,6 +4594,7 @@ export default function App() {
           lifeProfile: currentProfile,
           medications,
           creativeActivities,
+          habits,
           memories,
           originClientId: clientIdRef.current,
           completedOverrides,
@@ -4706,6 +4761,7 @@ export default function App() {
       deviceSettings,
       medications,
       creativeActivities,
+      habits,
       memories,
       phoneChargeLimitPct,
       smartChargeAlertEnabled,
@@ -5100,6 +5156,7 @@ export default function App() {
           applyOrDeferRef.current(signal.patch as SyncedRhythmPayload & {
             medications?: MedicationItem[];
             creativeActivities?: CreativeActivityItem[];
+            habits?: DynamicHabit[];
             memories?: MemoryItem[];
           });
         }
@@ -5241,6 +5298,14 @@ export default function App() {
 
   useEffect(() => {
     try {
+      localStorage.setItem(HABITS_STORAGE_KEY, JSON.stringify(habits));
+    } catch {
+      // ignore storage errors
+    }
+  }, [habits]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(WATER_REMINDER_STORAGE_KEY, String(waterRemindersEnabled));
     } catch {
       // ignore storage errors
@@ -5308,6 +5373,7 @@ export default function App() {
         medications,
         hydrationHistory,
         creativeActivities,
+        habits,
         memories,
         deviceSettings,
         quietMode,
@@ -5347,6 +5413,7 @@ export default function App() {
     medications,
     hydrationHistory,
     creativeActivities,
+    habits,
     memories,
     deviceSettings,
     quietMode,
@@ -5412,6 +5479,7 @@ export default function App() {
       lifeProfile,
       medications,
       creativeActivities,
+      habits,
       memories,
       appSettings: {
         ...appSettingsRef.current,
@@ -5462,6 +5530,7 @@ export default function App() {
     lifeProfile,
     medications,
     creativeActivities,
+    habits,
     memories,
     phoneChargeLimitPct,
     smartChargeAlertEnabled,
@@ -6359,6 +6428,7 @@ export default function App() {
     setGmailNeedsReauth(false);
     setMedications(DEFAULT_MEDICATIONS);
     setCreativeActivities(DEFAULT_CREATIVE_ACTIVITIES);
+    setHabits(DEFAULT_HABITS);
     setMemories(DEFAULT_MEMORIES);
     setLifeProfile(DEFAULT_LIFE_PROFILE);
     setDeviceSettings(DEFAULT_DEVICE_SETTINGS);
@@ -6592,6 +6662,22 @@ export default function App() {
         ? []
         : computeCreativePlacements(creativeActivities, freeSlotsToday, todayCairoIso, nowTickMin),
     [lowEnergyActive, creativeActivities, freeSlotsToday, todayCairoIso, nowTickMin]
+  );
+
+  // Dynamically resolve active habits into today's free windows (never overlaps prayers, sleep, Suhoor, naps, or Calendar)
+  const resolvedHabits: ResolvedHabitPlacement[] = useMemo(
+    () =>
+      resolveHabitsForDay({
+        habits,
+        prayers,
+        plan: dailyRhythmPlan,
+        freeWindows: freeSlotsToday,
+        profile: lifeProfile,
+        todayIso: todayCairoIso,
+        weekday: getWeekdayInTimeZone(activeTimeZone),
+        timeZone: activeTimeZone,
+      }),
+    [habits, prayers, dailyRhythmPlan, freeSlotsToday, lifeProfile, todayCairoIso, activeTimeZone]
   );
 
   // Merge free-slot Creative Activities gently into the daily timeline (skip duplicates already in Calendar)
@@ -9443,6 +9529,251 @@ export default function App() {
     [activeTimeZone, pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
   );
 
+  const persistHabitsNext = useCallback(
+    (updater: (prev: DynamicHabit[]) => DynamicHabit[]) => {
+      setHabits((prev) => {
+        const next = updater(prev);
+        void pushToTasksVaultImmediately({ habits: next });
+        void pushFullCloudBackupImmediately();
+        try {
+          localStorage.setItem(HABITS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
+    },
+    [pushToTasksVaultImmediately, pushFullCloudBackupImmediately]
+  );
+
+  const handleAddHabit = useCallback(
+    (input: {
+      title: string;
+      status: DynamicHabitStatus;
+      anchor: DynamicHabitAnchor;
+      durationMin: number;
+      daysOfWeek?: number[];
+      skipOnFasting?: boolean;
+    }) => {
+      const created = sanitizeDynamicHabit({
+        id: sanitizeHabitId(`hab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`),
+        title: input.title,
+        status: input.status,
+        anchor: input.anchor,
+        durationMin: input.durationMin,
+        daysOfWeek: input.daysOfWeek,
+        skipOnFasting: input.skipOnFasting,
+        completedDates: [],
+      });
+      persistHabitsNext((prev) => [...prev, created]);
+      showToast(
+        created.status === 'active'
+          ? `✓ تمت إضافة العادة «${created.title}» وتسكينها تلقائياً في أوقاتك الفاضية`
+          : `✓ تمت إضافة العادة المستقبلية «${created.title}»`
+      );
+    },
+    [persistHabitsNext, showToast]
+  );
+
+  const handleUpdateHabit = useCallback(
+    (
+      id: string,
+      patch: {
+        title: string;
+        status: DynamicHabitStatus;
+        anchor: DynamicHabitAnchor;
+        durationMin: number;
+        daysOfWeek?: number[];
+        skipOnFasting?: boolean;
+      }
+    ) => {
+      persistHabitsNext((prev) =>
+        prev.map((h) =>
+          h.id === id
+            ? sanitizeDynamicHabit({
+                ...h,
+                title: patch.title,
+                status: patch.status,
+                anchor: patch.anchor,
+                durationMin: patch.durationMin,
+                daysOfWeek: patch.daysOfWeek,
+                skipOnFasting: patch.skipOnFasting,
+              })
+            : h
+        )
+      );
+      showToast('✓ تم تحديث العادة');
+    },
+    [persistHabitsNext, showToast]
+  );
+
+  const handleToggleHabitToday = useCallback(
+    (habitId: string) => {
+      const todayIso = getDateIsoInTimeZone(activeTimeZone);
+      let completedNow = false;
+      let targetTitle = '';
+      persistHabitsNext((prev) =>
+        prev.map((h) => {
+          if (h.id !== habitId) return h;
+          targetTitle = h.title;
+          const has = h.completedDates.includes(todayIso);
+          completedNow = !has;
+          const nextDates = has
+            ? h.completedDates.filter((d) => d !== todayIso)
+            : [...h.completedDates, todayIso].slice(-60);
+          return { ...h, completedDates: nextDates };
+        })
+      );
+      if (targetTitle) {
+        showToast(completedNow ? `✓ تم إنجاز «${targetTitle}» اليوم` : `تم إلغاء إنجاز «${targetTitle}»`);
+      }
+    },
+    [activeTimeZone, persistHabitsNext, showToast]
+  );
+
+  const handleDeleteHabit = useCallback(
+    (habitId: string) => {
+      persistHabitsNext((prev) => prev.filter((h) => h.id !== habitId));
+      showToast('تم حذف العادة');
+    },
+    [persistHabitsNext, showToast]
+  );
+
+  const handleToggleHabitStatus = useCallback(
+    (habitId: string) => {
+      let nextStatus: DynamicHabitStatus = 'active';
+      let targetTitle = '';
+      persistHabitsNext((prev) =>
+        prev.map((h) => {
+          if (h.id !== habitId) return h;
+          targetTitle = h.title;
+          nextStatus = h.status === 'active' ? 'planned' : 'active';
+          return { ...h, status: nextStatus };
+        })
+      );
+      if (targetTitle) {
+        showToast(
+          nextStatus === 'active'
+            ? `✓ تم تفعيل «${targetTitle}» في جدول اليوم`
+            : `تم تأجيل «${targetTitle}» إلى العادات المستقبلية`
+        );
+      }
+    },
+    [persistHabitsNext, showToast]
+  );
+
+  const handleExecuteHabitActions = useCallback(
+    async (habitActions: HabitActionProposal[]): Promise<HabitExecutionResult[]> => {
+      const todayIso = getDateIsoInTimeZone(activeTimeZone);
+      const results: HabitExecutionResult[] = [];
+
+      persistHabitsNext((prev) => {
+        let next = [...prev];
+        for (const act of habitActions) {
+          const op = act.operation;
+          const findTarget = () =>
+            next.find(
+              (h) =>
+                (act.habitId && h.id === act.habitId) ||
+                h.title.trim().toLowerCase() === act.title.trim().toLowerCase()
+            ) ??
+            next.find((h) => h.title.trim().includes(act.title.trim()));
+
+          if (op === 'remove') {
+            const target = findTarget();
+            if (target) {
+              next = next.filter((h) => h.id !== target.id);
+              results.push({ id: target.id, title: target.title, operation: 'remove', status: 'removed' });
+            }
+          } else if (op === 'toggle_today') {
+            const target = findTarget();
+            if (target) {
+              const has = target.completedDates.includes(todayIso);
+              const nextDates = has
+                ? target.completedDates.filter((d) => d !== todayIso)
+                : [...target.completedDates, todayIso].slice(-60);
+              next = next.map((h) => (h.id === target.id ? { ...h, completedDates: nextDates } : h));
+              results.push({
+                id: target.id,
+                title: target.title,
+                operation: 'toggle_today',
+                status: has ? 'unchecked' : 'completed',
+              });
+            }
+          } else if (op === 'pause' || op === 'activate') {
+            const target = findTarget();
+            const targetStatus: DynamicHabitStatus = op === 'pause' ? 'planned' : 'active';
+            if (target) {
+              const updated = sanitizeDynamicHabit({
+                ...target,
+                status: targetStatus,
+                ...(act.anchor ? { anchor: act.anchor } : {}),
+                ...(typeof act.durationMin === 'number' ? { durationMin: act.durationMin } : {}),
+                ...(Array.isArray(act.daysOfWeek) ? { daysOfWeek: act.daysOfWeek } : {}),
+                ...(typeof act.skipOnFasting === 'boolean' ? { skipOnFasting: act.skipOnFasting } : {}),
+              });
+              next = next.map((h) => (h.id === target.id ? updated : h));
+              results.push({ id: updated.id, title: updated.title, operation: op, status: targetStatus });
+            } else if (op === 'activate') {
+              const created = sanitizeDynamicHabit({
+                id: sanitizeHabitId(
+                  act.habitId || `hab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+                ),
+                title: act.title,
+                status: 'active',
+                anchor: act.anchor ?? 'any-free-slot',
+                durationMin: act.durationMin ?? 30,
+                daysOfWeek: act.daysOfWeek,
+                skipOnFasting: act.skipOnFasting,
+                completedDates: [],
+              });
+              next = [...next, created];
+              results.push({ id: created.id, title: created.title, operation: op, status: 'active' });
+            }
+          } else {
+            const existing = op === 'update' ? findTarget() : next.find(
+              (h) =>
+                (act.habitId && h.id === act.habitId) ||
+                h.title.trim().toLowerCase() === act.title.trim().toLowerCase()
+            );
+            if (existing) {
+              const updated = sanitizeDynamicHabit({
+                ...existing,
+                title: act.title || existing.title,
+                status: act.status ?? existing.status,
+                anchor: act.anchor ?? existing.anchor,
+                durationMin: act.durationMin ?? existing.durationMin,
+                daysOfWeek: act.daysOfWeek ?? existing.daysOfWeek,
+                skipOnFasting: act.skipOnFasting ?? existing.skipOnFasting,
+              });
+              next = next.map((h) => (h.id === existing.id ? updated : h));
+              results.push({ id: updated.id, title: updated.title, operation: 'update', status: updated.status });
+            } else {
+              const created = sanitizeDynamicHabit({
+                id: sanitizeHabitId(
+                  act.habitId || `hab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+                ),
+                title: act.title,
+                status: act.status ?? 'active',
+                anchor: act.anchor ?? 'any-free-slot',
+                durationMin: act.durationMin ?? 30,
+                daysOfWeek: act.daysOfWeek,
+                skipOnFasting: act.skipOnFasting,
+                completedDates: [],
+              });
+              next = [...next, created];
+              results.push({ id: created.id, title: created.title, operation: 'add', status: created.status });
+            }
+          }
+        }
+        return next;
+      });
+
+      return results;
+    },
+    [activeTimeZone, persistHabitsNext]
+  );
+
   const handleToggleDailyCommitmentStreak = () => {
     localWriteLockUntilRef.current = Date.now() + 300;
 
@@ -9532,6 +9863,7 @@ export default function App() {
     adhanOverrideSilent,
     capsulePrefs,
     creativeActivities,
+    habits,
     deviceSettings,
     firebaseUser,
     firestoreSynced,
@@ -9546,6 +9878,7 @@ export default function App() {
     selectedLogoId,
     setCapsulePrefs,
     setCreativeActivities,
+    setHabits,
     setDeviceSettings,
     setHydrationHistory,
     setLifeProfile,
@@ -11041,6 +11374,13 @@ ${lifeConstitution}
             sunlightEnabled={sunlightSettings.enabled}
             onSnoozeSunlight={handleSnoozeSunlight}
             onSunlightSessionEnd={handleSunlightSessionEnd}
+            habits={habits}
+            resolvedHabits={resolvedHabits}
+            onAddHabit={handleAddHabit}
+            onUpdateHabit={handleUpdateHabit}
+            onToggleHabitToday={handleToggleHabitToday}
+            onDeleteHabit={handleDeleteHabit}
+            onToggleHabitStatus={handleToggleHabitStatus}
           />
           </motion.div>
         )}
@@ -11162,6 +11502,8 @@ ${lifeConstitution}
             googleTasks={googleTasks}
             medications={medications}
             creativePlacements={creativePlacements}
+            habits={habits}
+            resolvedHabits={resolvedHabits}
             loadingEvents={loadingEvents}
             loadingTasks={loadingTasks}
             messages={chatMessages}
@@ -11174,6 +11516,7 @@ ${lifeConstitution}
             onExecuteTaskActions={handleExecuteTaskActions}
             onExecuteMedicationActions={handleExecuteMedicationActions}
             onExecuteCreativeActions={handleExecuteCreativeActions}
+            onExecuteHabitActions={handleExecuteHabitActions}
             onApplyProfileUpdates={handleUpdateLifeProfile}
             onApplyAppSettings={handleApplyAppSettings}
             onApplySettingsPatch={handleApplySettingsPatch}

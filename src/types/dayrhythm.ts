@@ -265,6 +265,63 @@ export interface CreativeExecutionResult {
   id: string;
 }
 
+export type DynamicHabitStatus = 'active' | 'planned';
+
+export type DynamicHabitAnchor =
+  | 'after-fajr'
+  | 'sunrise-light'
+  | 'duha'
+  | 'after-dhuhr'
+  | 'after-asr'
+  | 'pre-maghrib'
+  | 'after-maghrib'
+  | 'after-isha'
+  | 'any-free-slot';
+
+export interface DynamicHabit {
+  id: string;
+  title: string;
+  status: DynamicHabitStatus;
+  anchor: DynamicHabitAnchor;
+  durationMin: number;
+  daysOfWeek?: number[];
+  skipOnFasting?: boolean;
+  completedDates: string[];
+}
+
+export interface ResolvedHabitPlacement {
+  habit: DynamicHabit;
+  dueToday: boolean;
+  completedToday: boolean;
+  skippedReasonAr?: string;
+  slot: {
+    startMin: number;
+    endMin: number;
+    time24: string;
+    windowLabel: string;
+  } | null;
+  isFallbackSlot: boolean;
+  isFlexibleUnplaced: boolean;
+}
+
+export interface HabitActionProposal {
+  operation: 'add' | 'update' | 'pause' | 'activate' | 'remove' | 'toggle_today';
+  habitId?: string;
+  title: string;
+  status?: DynamicHabitStatus;
+  anchor?: DynamicHabitAnchor;
+  durationMin?: number;
+  daysOfWeek?: number[];
+  skipOnFasting?: boolean;
+}
+
+export interface HabitExecutionResult {
+  id: string;
+  title: string;
+  operation: string;
+  status: string;
+}
+
 export interface FreeTimeSlot {
   startMin: number;
   endMin: number;
@@ -642,6 +699,7 @@ export interface PendingProposal {
   taskActions?: TaskActionProposal[];
   medicationActions?: MedicationActionProposal[];
   creativeActions?: CreativeActivityActionProposal[];
+  habitActions?: HabitActionProposal[];
   profileUpdates?: Partial<LifeProfile>;
   memoryActions?: MemoryActionProposal[];
   appSettings?: AppSettingsPatch;

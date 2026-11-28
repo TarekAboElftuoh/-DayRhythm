@@ -1,5 +1,6 @@
 import {
   CreativeActivityItem,
+  DynamicHabit,
   HydrationDayLog,
   LifeProfile,
   MedicationItem,
@@ -22,6 +23,7 @@ export interface FullDayRhythmCloudBackup {
   medications: MedicationItem[];
   hydrationHistory: HydrationDayLog[];
   creativeActivities: CreativeActivityItem[];
+  habits?: DynamicHabit[];
   memories: MemoryItem[];
   deviceSettings: OnePlusDeviceSettings;
   uiPrefs?: UiPrefs;
