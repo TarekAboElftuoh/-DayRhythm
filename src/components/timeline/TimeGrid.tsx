@@ -8,10 +8,11 @@ import {
   type DayTimelinePlacedItem,
 } from '../../engines/lifeRhythmEngine';
 import { FreeGapSlot } from './FreeGapSlot';
+import { PeriodFocusView } from './PeriodFocusView';
 import { TimeBlockCard } from './TimeBlockCard';
 import { TimeGridHeader } from './TimeGridHeader';
+import { createDayYMapper } from './dayYMapper';
 import {
-  clampToDaySlices,
   formatHourRulerLabel,
   isBackgroundLockedBlock,
   isBackgroundTimelineItem,
@@ -21,7 +22,6 @@ import { PX_PER_HOUR, PX_PER_MIN, useTimelineDrag } from './useTimelineDrag';
 import { clampVisualSliceToLocked, getClampedDragPreviewRect, type VisualLockedBound } from './timelineCollision';
 
 const MINUTES_PER_DAY = 24 * 60;
-const GRID_HEIGHT_PX = 24 * PX_PER_HOUR;
 const MIN_BLOCK_PX = 26;
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 
@@ -50,16 +50,14 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
   onCommitDragOrResize,
 }) => {
   const [internalShowBg, setInternalShowBg] = useState(false);
+  const [focusedPeriod, setFocusedPeriod] = useState<FreeWindow | null>(null);
   const showBackgroundEvents = controlledShowBg ?? internalShowBg;
   const toggleBg = onToggleBackgroundEvents ?? (() => setInternalShowBg((prev) => !prev));
   const [optimisticOverrides, setOptimisticOverrides] = useState<
     Record<string, { startMin: number; durationMin: number }>
   >({});
 
-  const handleCommitDrag = async (
-    item: DayTimelinePlacedItem,
-    next: { startMin: number; durationMin: number }
-  ) => {
+  const handleCommitDrag = async (item: DayTimelinePlacedItem, next: { startMin: number; durationMin: number }) => {
     setOptimisticOverrides((prev) => ({ ...prev, [item.id]: next }));
     try {
       await onCommitDragOrResize?.(item, next);
@@ -73,74 +71,62 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
     }
   };
 
-  const hardLockedBlocks = useMemo(
-    () => model.lockedBlocks.filter((blk) => !isBackgroundLockedBlock(blk)),
-    [model.lockedBlocks]
-  );
+  const hardLockedBlocks = useMemo(() => model.lockedBlocks.filter((blk) => !isBackgroundLockedBlock(blk)), [model.lockedBlocks]);
+  const { dragState, startMove, startResize, handlePointerMove, handlePointerEnd, consumeClickAllowed } =
+    useTimelineDrag({ lockedBlocks: hardLockedBlocks, onCommitDrag: handleCommitDrag });
 
-  const {
-    dragState,
-    startMove,
-    startResize,
-    handlePointerMove,
-    handlePointerEnd,
-    consumeClickAllowed,
-  } = useTimelineDrag({
-    lockedBlocks: hardLockedBlocks,
-    onCommitDrag: handleCommitDrag,
-  });
-
+  const yMap = useMemo(() => createDayYMapper(hardLockedBlocks), [hardLockedBlocks]);
+  const gridHeightPx = yMap.gridHeightPx;
   const clampedNow = ((Math.round(nowMinutes) % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
-  const nowTopPx = clampedNow * PX_PER_MIN;
+  const nowTopPx = yMap.minToY(clampedNow);
 
-  const bgItems = useMemo<BackgroundGridItem[]>(() => {
-    const fromLocked = model.lockedBlocks
-      .filter(isBackgroundLockedBlock)
-      .map((b) => ({ id: b.id, title: b.titleAr, emoji: b.emoji, startMin: b.startMin, endMin: b.endMin, durationMin: b.durationMin, subtitleAr: b.subtitleAr }));
-    const fromPlaced = model.placedBlocks
-      .filter(isBackgroundTimelineItem)
-      .map((p) => ({ id: p.id, title: p.title, emoji: p.emoji, startMin: p.startMin, endMin: p.endMin, durationMin: p.durationMin, subtitleAr: p.subtitleAr }));
-    return [...fromLocked, ...fromPlaced];
-  }, [model.lockedBlocks, model.placedBlocks]);
+  const bgItems = useMemo<BackgroundGridItem[]>(() => [
+    ...model.lockedBlocks.filter(isBackgroundLockedBlock).map((b) => ({ id: b.id, title: b.titleAr, emoji: b.emoji, startMin: b.startMin, endMin: b.endMin, durationMin: b.durationMin, subtitleAr: b.subtitleAr })),
+    ...model.placedBlocks.filter(isBackgroundTimelineItem).map((p) => ({ id: p.id, title: p.title, emoji: p.emoji, startMin: p.startMin, endMin: p.endMin, durationMin: p.durationMin, subtitleAr: p.subtitleAr })),
+  ], [model.lockedBlocks, model.placedBlocks]);
 
   const bgSlices = useMemo(
-    () => (showBackgroundEvents ? bgItems.flatMap((b) => clampToDaySlices<BackgroundGridItem>(b.startMin, b.endMin, `bg-${b.id}`, b, MIN_BLOCK_PX, PX_PER_MIN)) : []),
-    [showBackgroundEvents, bgItems]
+    () => (showBackgroundEvents ? yMap.mapSlices(bgItems.map((b) => ({ startMin: b.startMin, endMin: b.endMin, key: `bg-${b.id}`, data: b })), MIN_BLOCK_PX) : []),
+    [showBackgroundEvents, bgItems, yMap]
   );
-
   const lockedSlices = useMemo(
-    () => hardLockedBlocks.flatMap((blk) => clampToDaySlices<DayTimelineLockedBlock>(blk.startMin, blk.endMin, blk.id, blk, MIN_BLOCK_PX, PX_PER_MIN)),
-    [hardLockedBlocks]
+    () => yMap.mapSlices(hardLockedBlocks.map((blk) => ({ startMin: blk.startMin, endMin: blk.endMin, key: blk.id, data: blk })), MIN_BLOCK_PX),
+    [hardLockedBlocks, yMap]
   );
-
   const lockedBounds = useMemo<VisualLockedBound[]>(
     () => lockedSlices.map((s) => ({ startMin: s.startMin, endMin: s.endMin, topPx: s.topPx, bottomPx: s.topPx + s.heightPx })),
     [lockedSlices]
   );
-
   const activeSlices = useMemo(
     () =>
-      model.placedBlocks
-        .filter((item) => !isBackgroundTimelineItem(item))
-        .flatMap((item) => {
-          const ov = optimisticOverrides[item.id];
-          const startMin = ov ? ov.startMin : item.startMin;
-          const durationMin = ov ? ov.durationMin : item.durationMin;
-          const endMin = startMin + durationMin;
-          const eff = ov ? { ...item, startMin, endMin, durationMin } : item;
-          return clampToDaySlices<DayTimelinePlacedItem>(startMin, endMin, item.id, eff, MIN_BLOCK_PX, PX_PER_MIN)
-            .map((sl) => ({ ...sl, ...clampVisualSliceToLocked(sl.startMin, sl.endMin, sl.topPx, sl.heightPx, lockedBounds, GRID_HEIGHT_PX) }));
-        }),
-    [model.placedBlocks, optimisticOverrides, lockedBounds]
+      model.placedBlocks.filter((item) => !isBackgroundTimelineItem(item)).flatMap((item) => {
+        const ov = optimisticOverrides[item.id];
+        const startMin = ov ? ov.startMin : item.startMin;
+        const durationMin = ov ? ov.durationMin : item.durationMin;
+        const endMin = startMin + durationMin;
+        const eff = ov ? { ...item, startMin, endMin, durationMin } : item;
+        return yMap.mapSlices([{ startMin, endMin, key: item.id, data: eff }], MIN_BLOCK_PX)
+          .map((sl) => ({ ...sl, ...clampVisualSliceToLocked(sl.startMin, sl.endMin, sl.topPx, sl.heightPx, lockedBounds, gridHeightPx) }));
+      }),
+    [model.placedBlocks, optimisticOverrides, lockedBounds, gridHeightPx, yMap]
+  );
+  const gapSlices = useMemo(
+    () => yMap.mapSlices(model.freeWindows.map((gap, idx) => ({ startMin: gap.startMin, endMin: gap.endMin, key: `gap-${gap.startMin}-${gap.endMin}-${idx}`, data: gap })), 24),
+    [model.freeWindows, yMap]
   );
 
-  const gapSlices = useMemo(
-    () =>
-      model.freeWindows.flatMap((gap, idx) =>
-        clampToDaySlices<FreeWindow>(gap.startMin, gap.endMin, `gap-${gap.startMin}-${gap.endMin}-${idx}`, gap, 24, PX_PER_MIN)
-      ),
-    [model.freeWindows]
-  );
+  if (focusedPeriod) {
+    return (
+      <PeriodFocusView
+        period={focusedPeriod} language={language} nowMinutes={nowMinutes}
+        showBackgroundEvents={showBackgroundEvents} onToggleBackgroundEvents={toggleBg}
+        hardLockedBlocks={hardLockedBlocks} bgItems={bgItems}
+        placedItems={model.placedBlocks.filter((item) => !isBackgroundTimelineItem(item))}
+        optimisticOverrides={optimisticOverrides} onBack={() => setFocusedPeriod(null)}
+        onSelectActiveItem={onSelectActiveItem} onCommitDrag={handleCommitDrag}
+      />
+    );
+  }
 
   return (
     <section
@@ -156,36 +142,36 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
       />
 
       <div className="relative flex bg-[#000000] px-2 py-3">
-        <div className="relative w-12 shrink-0 select-none" style={{ height: `${GRID_HEIGHT_PX}px` }}>
-          {HOURS.map((hour) => (
-            <div
-              key={hour}
-              style={{ top: `${hour * PX_PER_HOUR}px`, height: `${PX_PER_HOUR}px` }}
-              className="absolute inset-x-0 flex items-start justify-end pl-2"
-            >
-              <span className="-translate-y-2 font-mono-tabular text-[10px] font-medium text-zinc-500">
-                {formatHourRulerLabel(hour, language)}
-              </span>
-            </div>
-          ))}
+        <div className="relative w-12 shrink-0 select-none" style={{ height: `${gridHeightPx}px` }}>
+          {HOURS.map((hour) => {
+            const top = yMap.minToY(hour * 60);
+            const h = yMap.minToY((hour + 1) * 60) - top;
+            const showLabel = h >= 18 || !yMap.isHourInSleep(hour);
+            return (
+              <div key={hour} style={{ top: `${top}px`, height: `${h}px` }} className="absolute inset-x-0 flex items-start justify-end pl-2">
+                {showLabel && (
+                  <span className="-translate-y-2 font-mono-tabular text-[10px] font-medium text-zinc-500">
+                    {formatHourRulerLabel(hour, language)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
 
-        <div
-          className="relative flex-1 border-r border-white/10"
-          style={{ height: `${GRID_HEIGHT_PX}px` }}
-        >
-          {HOURS.map((hour) => (
-            <div
-              key={hour}
-              style={{ top: `${hour * PX_PER_HOUR}px`, height: `${PX_PER_HOUR}px` }}
-              className="pointer-events-none absolute inset-x-0 border-t border-white/[0.06]"
-            >
-              <div className="mt-[32px] border-t border-dashed border-white/[0.025]" />
-            </div>
-          ))}
+        <div className="relative flex-1 border-r border-white/10" style={{ height: `${gridHeightPx}px` }}>
+          {HOURS.map((hour) => {
+            const top = yMap.minToY(hour * 60);
+            const h = yMap.minToY((hour + 1) * 60) - top;
+            return (
+              <div key={hour} style={{ top: `${top}px`, height: `${h}px` }} className="pointer-events-none absolute inset-x-0 border-t border-white/[0.06]">
+                {h >= 36 && <div className="mt-[32px] border-t border-dashed border-white/[0.025]" />}
+              </div>
+            );
+          })}
 
           {gapSlices.map((slice) => (
-            <FreeGapSlot key={slice.key} gap={slice.data} topPx={slice.topPx} heightPx={slice.heightPx} language={language} onSelectGap={onSelectFreeGap} />
+            <FreeGapSlot key={slice.key} gap={slice.data} topPx={slice.topPx} heightPx={slice.heightPx} language={language} onSelectGap={(g) => { setFocusedPeriod(g); onSelectFreeGap?.(g); }} />
           ))}
           {bgSlices.map((slice) => (
             <TimeBlockCard key={slice.key} variant="background" item={slice.data} topPx={slice.topPx} heightPx={slice.heightPx} language={language} isNow={clampedNow >= slice.startMin && clampedNow < slice.endMin} />
@@ -205,10 +191,14 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
           ))}
 
           {dragState?.hasMoved && (() => {
-            const r = getClampedDragPreviewRect(dragState.startMin, dragState.durationMin, MIN_BLOCK_PX, PX_PER_MIN, lockedBounds, GRID_HEIGHT_PX);
+            const topPx = yMap.minToY(dragState.startMin);
+            const rawH = Math.max(MIN_BLOCK_PX, yMap.minToY(dragState.startMin + dragState.durationMin) - topPx);
+            const r = getClampedDragPreviewRect(dragState.startMin, dragState.durationMin, MIN_BLOCK_PX, PX_PER_MIN, lockedBounds, gridHeightPx);
+            const previewTop = topPx;
+            const previewH = Math.min(r.heightPx, rawH);
             return (
               <div
-                style={{ top: `${r.topPx}px`, height: `${r.heightPx}px`, maxHeight: `${r.heightPx}px` }}
+                style={{ top: `${previewTop}px`, height: `${previewH}px`, maxHeight: `${previewH}px` }}
                 className="pointer-events-none absolute inset-x-1 z-50 rounded-xl border-2 border-[#7FFFD4] bg-[#7FFFD4]/15 shadow-[0_0_24px_rgba(127,255,212,0.35)]"
               >
                 <div

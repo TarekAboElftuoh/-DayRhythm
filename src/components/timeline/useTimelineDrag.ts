@@ -23,12 +23,13 @@ export interface ActiveTimelineDrag {
 
 export function useTimelineDrag(params: {
   lockedBlocks: DayTimelineLockedBlock[];
+  pxPerMin?: number;
   onCommitDrag?: (
     item: DayTimelinePlacedItem,
     next: { startMin: number; durationMin: number }
   ) => Promise<void> | void;
 }) {
-  const { lockedBlocks, onCommitDrag } = params;
+  const { lockedBlocks, pxPerMin = PX_PER_MIN, onCommitDrag } = params;
   const [dragState, setDragState] = useState<ActiveTimelineDrag | null>(null);
   const suppressNextClickRef = useRef(false);
 
@@ -88,7 +89,7 @@ export function useTimelineDrag(params: {
     if (!s.hasMoved && Math.abs(dy) < 4) return;
     s.hasMoved = true;
 
-    const deltaMin = dy / PX_PER_MIN;
+    const deltaMin = dy / pxPerMin;
     if (s.mode === 'move') {
       const res = resolveMoveClamped(
         s.initialStartMin + deltaMin,

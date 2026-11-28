@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, GripVertical, Lock } from 'lucide-react';
+import { Check, Lock, Moon } from 'lucide-react';
 import type { AppLanguage } from '../../types/dayrhythm';
 import { formatMinutes12h } from '../../engines/prayerEngine';
 import {
@@ -55,6 +55,7 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
 
   if (props.variant === 'locked') {
     const { block } = props;
+    const isSleep = block.kind === 'sleep';
     const rangeText = `${formatMinutes12h(block.startMin, language)} – ${formatMinutes12h(block.endMin, language)}`;
 
     return (
@@ -62,20 +63,28 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
         style={{
           top: `${topPx}px`,
           height: `${heightPx}px`,
-          backgroundImage: HATCH_PATTERN,
+          backgroundImage: isSleep ? undefined : HATCH_PATTERN,
         }}
         aria-label={`${block.titleAr} (${rangeText})`}
-        className={`pointer-events-none select-none absolute inset-x-1 z-20 flex flex-col justify-center rounded-xl border bg-[#040807]/95 px-2.5 overflow-hidden ${
-          isNow ? 'border-[#7FFFD4]/45' : 'border-white/10'
+        className={`pointer-events-none select-none absolute inset-x-1 z-20 flex flex-col justify-center rounded-xl border px-2.5 overflow-hidden ${
+          isSleep
+            ? 'bg-[#05070A]/95 border-white/15'
+            : `bg-[#040807]/95 ${isNow ? 'border-[#7FFFD4]/45' : 'border-white/10'}`
         }`}
       >
         <div className="flex items-center justify-between gap-2 min-w-0">
           <div className="flex items-center gap-1.5 min-w-0">
-            <Lock className="h-3 w-3 shrink-0 text-zinc-500" aria-hidden="true" />
-            <span className="text-xs leading-none shrink-0" aria-hidden="true">
-              {block.emoji}
-            </span>
-            <span className="truncate text-[11px] font-medium text-zinc-300">
+            {isSleep ? (
+              <Moon className="h-3 w-3 shrink-0 text-zinc-400" aria-hidden="true" />
+            ) : (
+              <Lock className="h-3 w-3 shrink-0 text-zinc-500" aria-hidden="true" />
+            )}
+            {!isSleep && (
+              <span className="text-xs leading-none shrink-0" aria-hidden="true">
+                {block.emoji}
+              </span>
+            )}
+            <span className="truncate text-[11px] font-medium text-zinc-200">
               {block.titleAr}
             </span>
           </div>
@@ -173,9 +182,16 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
             onPointerCancel={(e) => { e.stopPropagation(); onPointerEnd?.(e); }}
             onTouchMove={(e) => { e.stopPropagation(); e.preventDefault(); }}
             onClick={(e) => e.stopPropagation()}
-            className="touch-none cursor-grab active:cursor-grabbing shrink-0 -mr-1.5 min-w-[28px] min-h-[28px] px-1 py-1 rounded-lg text-zinc-300 bg-white/[0.04] border border-white/10 hover:text-[#7FFFD4] hover:border-[#7FFFD4]/40 flex items-center justify-center"
+            className="touch-none cursor-grab active:cursor-grabbing shrink-0 -mr-2 min-w-[28px] min-h-[32px] flex items-center justify-center"
           >
-            <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+            <span
+              aria-hidden="true"
+              className={`w-[3px] h-4 rounded-full transition-all ${
+                isDragging
+                  ? 'bg-[#7FFFD4] shadow-[0_0_8px_#7FFFD4]'
+                  : 'bg-zinc-500/45 group-hover:bg-[#7FFFD4]/70'
+              }`}
+            />
           </div>
           <span className="text-xs leading-none shrink-0" aria-hidden="true">
             {item.emoji}
