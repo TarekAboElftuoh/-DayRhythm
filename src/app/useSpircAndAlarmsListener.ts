@@ -158,7 +158,7 @@ export function useSpircAndAlarmsListener(p: UseSpircAndAlarmsListenerParams): v
         if (relevantDismissal) {
           p.handledDismissedAlarmIdsRef.current.add(relevantDismissal.id);
           const activeAlert = p.persistentAlertRef.current;
-          const shouldDismissActive = !activeAlert || activeAlert.id === relevantDismissal.id;
+          const shouldDismissActive = Boolean(activeAlert && activeAlert.id === relevantDismissal.id);
           if (shouldDismissActive) {
             stopContinuousAlert();
             stopSmartChargeCompleteAlert();

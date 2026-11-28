@@ -155,6 +155,7 @@ export function sanitizeLifeProfile(
         ? raw.defaultSnoozeMinutes
         : 5,
     soundRepeats: sanitizeSoundRepeats(raw?.soundRepeats),
+    ringPauseSeconds: clampInt(raw?.ringPauseSeconds, 1, 10, DEFAULT_LIFE_PROFILE.ringPauseSeconds ?? 2),
     careerTrack: String(raw?.careerTrack ?? DEFAULT_LIFE_PROFILE.careerTrack)
       .trim()
       .slice(0, 120),

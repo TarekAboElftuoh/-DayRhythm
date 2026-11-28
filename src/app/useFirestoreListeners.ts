@@ -89,7 +89,7 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
               const matchesActive = Boolean(
                 activeAlert && sigAlertId && sigAlertId === activeAlert.id
               );
-              const shouldDismissActive = !activeAlert || matchesActive || sigTs >= activeAlert.createdAtMs;
+              const shouldDismissActive = matchesActive || (activeAlert ? sigTs >= activeAlert.createdAtMs : false);
               if (shouldDismissActive) {
                 stopContinuousAlert();
                 stopSmartChargeCompleteAlert();
@@ -171,7 +171,7 @@ export function useFirestoreListeners(p: UseFirestoreListenersParams): void {
           const matchesActive = Boolean(
             activeAlert && signal.alertId && signal.alertId === activeAlert.id
           );
-          const shouldDismissActive = !activeAlert || matchesActive || dismissTs >= activeAlert.createdAtMs;
+          const shouldDismissActive = matchesActive || (activeAlert ? dismissTs >= activeAlert.createdAtMs : false);
           if (shouldDismissActive) {
             stopContinuousAlert();
             stopSmartChargeCompleteAlert();

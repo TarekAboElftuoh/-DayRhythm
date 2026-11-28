@@ -103,6 +103,26 @@ export const ScheduleAndAudioSection: React.FC<{
 
         {isRingAccordionOpen && (
           <div className="mt-2 space-y-2 rounded-xl border border-white/[0.06] bg-black/30 px-3 py-2">
+            <div className="flex items-center justify-between gap-3 py-1.5 border-b border-white/[0.06] text-xs">
+              <span className="font-medium text-zinc-200">الوقت بين كل رنة</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={1}
+                  max={10}
+                  step={1}
+                  value={draft.ringPauseSeconds ?? 2}
+                  onChange={(e) =>
+                    updateDraft((p) => ({ ...p, ringPauseSeconds: Number(e.target.value) }))
+                  }
+                  aria-label="الوقت بين كل رنة"
+                  className="w-24 accent-[#7FFFD4] cursor-pointer"
+                />
+                <span className="font-mono-tabular text-[#7FFFD4] font-bold w-8 text-left">
+                  {draft.ringPauseSeconds ?? 2} ث
+                </span>
+              </div>
+            </div>
             <div className="flex items-center justify-between text-[11px] text-zinc-400">
               <span>اضغط على أي نوع لتجربة النغمة · ∞ = مستمر حتى الإيقاف</span>
             </div>

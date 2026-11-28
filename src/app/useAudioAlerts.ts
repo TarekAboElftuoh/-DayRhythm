@@ -122,7 +122,7 @@ export function useAudioAlerts({
   ]);
 
   useEffect(() => {
-    if (!activeAudioAlert || activeAudioAlert.isContinuous) return;
+    if (!activeAudioAlert || activeAudioAlert.isContinuous || activeAudioAlert.category === 'water') return;
     const id = window.setTimeout(() => setActiveAudioAlert(null), 12_000);
     return () => window.clearTimeout(id);
   }, [activeAudioAlert, setActiveAudioAlert]);
@@ -208,8 +208,9 @@ export function useAudioAlerts({
 
       const isContinuous = repeatCount === 'continuous';
       const alertId = `alert_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      const ringPauseSeconds = lifeProfile.ringPauseSeconds ?? 2;
       const playRes = !isAndroidNative
-        ? playTaskSignature(category, { bypassSanctuary: true, repeatCount, alertId })
+        ? playTaskSignature(category, { bypassSanctuary: true, repeatCount, alertId, ringPauseSeconds })
         : { playedAudio: false, vibrated: false, isContinuous };
       const nowTime12 = formatNow12hInTimeZone(activeTimeZone, 'ar');
       const defaultSnooze = lifeProfile.defaultSnoozeMinutes === 10 || lifeProfile.defaultSnoozeMinutes === 15 ? lifeProfile.defaultSnoozeMinutes : 5;
@@ -277,7 +278,7 @@ export function useAudioAlerts({
     },
     [
       activeSanctuary, activeTimeZone, authUser?.uid, clientIdRef, emitCrossDeviceSync, firebaseUser,
-      lifeProfile.cupSizeMl, lifeProfile.defaultSnoozeMinutes, lifeProfile.sanctuarySilenceMode, lifeProfile.soundRepeats,
+      lifeProfile.cupSizeMl, lifeProfile.defaultSnoozeMinutes, lifeProfile.ringPauseSeconds, lifeProfile.sanctuarySilenceMode, lifeProfile.soundRepeats,
       setActiveAudioAlert, setPersistentAlert, setSilentNotifications, showToast,
     ]
   );

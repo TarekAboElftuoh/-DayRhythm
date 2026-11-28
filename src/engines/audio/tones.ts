@@ -123,6 +123,7 @@ export function playTaskSignature(
     sanctuary?: ActiveSanctuaryState;
     repeatCount?: SoundRepeatSetting;
     alertId?: string;
+    ringPauseSeconds?: number;
   }
 ): { playedAudio: boolean; vibrated: boolean; isContinuous: boolean } {
   const sanctuary = options?.sanctuary;
@@ -145,9 +146,14 @@ export function playTaskSignature(
   playBurstWhenReady(ctx, category, gen);
 
   const burstMs = BURST_DURATION_MS[category] ?? 650;
+  const pauseSec =
+    typeof options?.ringPauseSeconds === 'number' && Number.isFinite(options.ringPauseSeconds)
+      ? Math.min(10, Math.max(1, Math.round(options.ringPauseSeconds)))
+      : 2;
+  const pauseMs = pauseSec * 1000;
 
   if (repeat === 'continuous' && typeof window !== 'undefined') {
-    const loopMs = Math.max(2400, burstMs + 1400);
+    const loopMs = burstMs + pauseMs;
     audioState.activeContinuousInterval = window.setInterval(() => {
       const c = getCtx();
       if (c) playBurstWhenReady(c, category, gen);
@@ -170,7 +176,7 @@ export function playTaskSignature(
   }
 
   if (typeof repeat === 'number' && repeat > 1 && typeof window !== 'undefined') {
-    const gapMs = Math.max(1950, burstMs + 1150);
+    const gapMs = burstMs + pauseMs;
     const clamped = Math.min(4, Math.max(1, Math.round(repeat)));
     for (let i = 1; i < clamped; i++) {
       const id = window.setTimeout(() => {

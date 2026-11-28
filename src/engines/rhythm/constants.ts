@@ -49,6 +49,7 @@ export const DEFAULT_LIFE_PROFILE: LifeProfile = {
   lowEnergyDateKey: '',
   defaultSnoozeMinutes: 5,
   soundRepeats: { ...DEFAULT_SOUND_REPEATS },
+  ringPauseSeconds: 2,
   careerTrack: '',
   workEnabled: false,
   workStart24: '09:00',

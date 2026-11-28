@@ -83,6 +83,7 @@ export interface LifeProfile {
   lowEnergyDateKey?: string; // YYYY-MM-DD when soft/low-energy day mode is active
   defaultSnoozeMinutes?: number; // 5 | 10 | 15 minutes for alert snooze button (default 5)
   soundRepeats?: SoundRepeatMap; // Ring repeats per category (1..4 or 'continuous')
+  ringPauseSeconds?: number; // Pause in seconds between consecutive rings (1..10, default 2)
   careerTrack: string;
   workEnabled: boolean;
   workStart24: string;
