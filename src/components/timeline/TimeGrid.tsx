@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import type { AppLanguage, FreeWindow } from '../../types/dayrhythm';
 import { formatMinutes12h } from '../../engines/prayerEngine';
 import {
@@ -9,7 +9,8 @@ import {
 } from '../../engines/lifeRhythmEngine';
 import { FreeGapSlot } from './FreeGapSlot';
 import { TimeBlockCard } from './TimeBlockCard';
-import { clampToDaySlices, formatHourRulerLabel } from './types';
+import { TimeGridHeader } from './TimeGridHeader';
+import { clampToDaySlices, formatHourRulerLabel, isBackgroundTimelineItem } from './types';
 import { PX_PER_HOUR, PX_PER_MIN, useTimelineDrag } from './useTimelineDrag';
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -37,6 +38,28 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
   onSelectActiveItem,
   onCommitDragOrResize,
 }) => {
+  const [showBackgroundEvents, setShowBackgroundEvents] = useState(false);
+  const [optimisticOverrides, setOptimisticOverrides] = useState<
+    Record<string, { startMin: number; durationMin: number }>
+  >({});
+
+  const handleCommitDrag = async (
+    item: DayTimelinePlacedItem,
+    next: { startMin: number; durationMin: number }
+  ) => {
+    setOptimisticOverrides((prev) => ({ ...prev, [item.id]: next }));
+    try {
+      await onCommitDragOrResize?.(item, next);
+    } finally {
+      setOptimisticOverrides((prev) => {
+        if (!(item.id in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[item.id];
+        return copy;
+      });
+    }
+  };
+
   const {
     dragState,
     startMove,
@@ -46,11 +69,16 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
     consumeClickAllowed,
   } = useTimelineDrag({
     lockedBlocks: model.lockedBlocks,
-    onCommitDrag: onCommitDragOrResize,
+    onCommitDrag: handleCommitDrag,
   });
 
   const clampedNow = ((Math.round(nowMinutes) % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
   const nowTopPx = clampedNow * PX_PER_MIN;
+
+  const backgroundCount = useMemo(
+    () => model.placedBlocks.filter(isBackgroundTimelineItem).length,
+    [model.placedBlocks]
+  );
 
   const lockedSlices = useMemo(
     () =>
@@ -62,10 +90,17 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
 
   const activeSlices = useMemo(
     () =>
-      model.placedBlocks.flatMap((item) =>
-        clampToDaySlices<DayTimelinePlacedItem>(item.startMin, item.endMin, item.id, item, MIN_BLOCK_PX, PX_PER_MIN)
-      ),
-    [model.placedBlocks]
+      model.placedBlocks
+        .filter((item) => showBackgroundEvents || !isBackgroundTimelineItem(item))
+        .flatMap((item) => {
+          const ov = optimisticOverrides[item.id];
+          const startMin = ov ? ov.startMin : item.startMin;
+          const durationMin = ov ? ov.durationMin : item.durationMin;
+          const endMin = startMin + durationMin;
+          const eff = ov ? { ...item, startMin, endMin, durationMin } : item;
+          return clampToDaySlices<DayTimelinePlacedItem>(startMin, endMin, item.id, eff, MIN_BLOCK_PX, PX_PER_MIN);
+        }),
+    [model.placedBlocks, showBackgroundEvents, optimisticOverrides]
   );
 
   const gapSlices = useMemo(
@@ -82,25 +117,12 @@ export const TimeGrid: React.FC<TimeGridProps> = ({
       aria-label={language === 'ar' ? 'الشبكة الزمنية ٢٤ ساعة' : '24h Time Grid'}
       className="rounded-2xl border border-white/10 bg-[#000000] overflow-hidden"
     >
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-[#060E0C] px-3.5 py-2.5 text-[11px]">
-        <span className="font-semibold text-zinc-200">
-          {language === 'ar' ? 'المخطط الزمني (٢٤ ساعة)' : '24h Time Grid'}
-        </span>
-        <div className="flex items-center gap-3 text-zinc-400">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm border border-white/20 bg-[#040807]" />
-            <span>{language === 'ar' ? 'مقفل' : 'Locked'}</span>
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm border border-[#7FFFD4]/40 bg-[#060E0C]" />
-            <span>{language === 'ar' ? 'نشط' : 'Active'}</span>
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm border border-dashed border-[#7FFFD4]/50 bg-[#030908]" />
-            <span>{language === 'ar' ? 'فراغ' : 'Free'}</span>
-          </span>
-        </div>
-      </header>
+      <TimeGridHeader
+        language={language}
+        showBackgroundEvents={showBackgroundEvents}
+        backgroundCount={backgroundCount}
+        onToggleBackgroundEvents={() => setShowBackgroundEvents((prev) => !prev)}
+      />
 
       <div className="relative flex bg-[#000000] px-2 py-3">
         <div className="relative w-12 shrink-0 select-none" style={{ height: `${GRID_HEIGHT_PX}px` }}>
