@@ -104,7 +104,7 @@ export function useTimelinePointerDrag(p: UseTimelinePointerDragParams) {
 
   const handleSelectGhostSlot = (ghost: DayTimelineGhostSlot) => {
     if (!placementTarget) return;
-    const dur = Math.max(10, Math.min(placementTarget.durationMin, ghost.durationMin));
+    const dur = Math.max(5, Math.min(placementTarget.durationMin, ghost.durationMin));
     openMoveConfirmation(
       placementTarget,
       {

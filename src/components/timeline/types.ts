@@ -152,12 +152,12 @@ export function clampToDaySlices<T>(
 }
 
 export const EDITOR_DURATION_CHIPS = [
+  { min: 5, label: '5د' },
   { min: 15, label: '15د' },
   { min: 30, label: '30د' },
   { min: 45, label: '45د' },
   { min: 60, label: '1س' },
   { min: 90, label: '1.5س' },
-  { min: 120, label: '2س' },
 ] as const;
 
 export const EDITOR_NUDGE_STEPS = [

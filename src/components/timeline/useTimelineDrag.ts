@@ -112,11 +112,12 @@ export function useTimelineDrag(params: {
   const startGesture = (
     e: React.PointerEvent<HTMLElement>,
     item: DayTimelinePlacedItem,
-    mode: 'move' | 'resize'
+    mode: 'move' | 'resize',
+    fromHandle = false
   ) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
-    // On touch devices, tapping a block opens the mobile sheet; only mouse/pen drags directly
-    if (mode === 'move' && e.pointerType === 'touch') return;
+    // On touch devices, card body taps open the sheet; only the dedicated touch-none handle drags directly
+    if (mode === 'move' && e.pointerType === 'touch' && !fromHandle) return;
 
     e.stopPropagation();
     try {
@@ -224,8 +225,8 @@ export function useTimelineDrag(params: {
 
   return {
     dragState,
-    startMove: (e: React.PointerEvent<HTMLElement>, item: DayTimelinePlacedItem) =>
-      startGesture(e, item, 'move'),
+    startMove: (e: React.PointerEvent<HTMLElement>, item: DayTimelinePlacedItem, fromHandle = false) =>
+      startGesture(e, item, 'move', fromHandle),
     startResize: (e: React.PointerEvent<HTMLElement>, item: DayTimelinePlacedItem) =>
       startGesture(e, item, 'resize'),
     handlePointerMove,

@@ -102,8 +102,8 @@ export const HabitFormModal: React.FC<{ d: DashboardController }> = ({ d }) => {
 
               <div>
                 <label className="block text-zinc-400 mb-1.5">المدة (بالدقائق)</label>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {[15, 30, 45, 60].map((mins) => (
+                <div className="grid grid-cols-5 gap-1.5">
+                  {[5, 15, 30, 45, 60].map((mins) => (
                     <button
                       key={mins}
                       type="button"

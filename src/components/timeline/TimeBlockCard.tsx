@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Lock } from 'lucide-react';
+import { Check, GripVertical, Lock } from 'lucide-react';
 import type { AppLanguage } from '../../types/dayrhythm';
 import { formatMinutes12h } from '../../engines/prayerEngine';
 import {
@@ -35,7 +35,11 @@ type TimeBlockCardProps =
       isNow: boolean;
       isDragging?: boolean;
       onSelect?: (item: DayTimelinePlacedItem) => void;
-      onMovePointerDown?: (e: React.PointerEvent<HTMLElement>, item: DayTimelinePlacedItem) => void;
+      onMovePointerDown?: (
+        e: React.PointerEvent<HTMLElement>,
+        item: DayTimelinePlacedItem,
+        fromHandle?: boolean
+      ) => void;
       onResizePointerDown?: (e: React.PointerEvent<HTMLElement>, item: DayTimelinePlacedItem) => void;
       onPointerMove?: (e: React.PointerEvent<HTMLElement>) => void;
       onPointerEnd?: (e: React.PointerEvent<HTMLElement>) => void;
@@ -165,7 +169,23 @@ export const TimeBlockCard: React.FC<TimeBlockCardProps> = (props) => {
       } ${isDragging ? 'opacity-30' : item.completed ? 'opacity-55' : ''}`}
     >
       <div className="flex items-center justify-between gap-2 min-w-0 w-full">
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-1 min-w-0">
+          <div
+            role="button"
+            tabIndex={-1}
+            aria-label={language === 'ar' ? 'سحب لتحريك الموعد' : 'Drag to move'}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onMovePointerDown?.(e, item, true);
+            }}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerEnd}
+            onPointerCancel={onPointerEnd}
+            onClick={(e) => e.stopPropagation()}
+            className="touch-none cursor-grab active:cursor-grabbing shrink-0 -mr-1 px-1 py-1 text-zinc-400 hover:text-[#7FFFD4] flex items-center justify-center"
+          >
+            <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+          </div>
           <span className="text-xs leading-none shrink-0" aria-hidden="true">
             {item.emoji}
           </span>

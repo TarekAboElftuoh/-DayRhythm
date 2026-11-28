@@ -125,8 +125,8 @@ export const CreateEventTimePicker: React.FC<{ d: DashboardController; setEvMinu
                       {/* Clean Duration Pills */}
                       <div className="flex items-center justify-between gap-2 pt-1">
                         <span className="text-[11px] text-zinc-400">المدة</span>
-                        <div className="flex items-center gap-1">
-                          {[0, 15, 30, 45, 60, 90].map((preset) => (
+                        <div className="flex flex-wrap items-center gap-1">
+                          {[0, 5, 15, 30, 45, 60, 90].map((preset) => (
                             <button
                               key={preset}
                               type="button"
