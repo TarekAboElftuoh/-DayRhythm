@@ -64,6 +64,7 @@ export const SOUND_CATEGORY_LABELS_AR: Record<TaskSoundCategory, string> = {
   water: 'المياه',
   medication: 'العلاجات',
   focus_work: 'العمل والتركيز',
+  pomodoro: 'بومودورو',
   walk_health: 'المشي والصحة',
   sleep_suhoor: 'النوم والسحور',
   meeting_event: 'الاجتماعات',

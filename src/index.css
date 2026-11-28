@@ -70,6 +70,11 @@
     body {
       font-size: 15px;
     }
+
+    .app-root {
+      border: 1px solid rgba(127, 255, 212, 0.22);
+      box-sizing: border-box;
+    }
   }
 
   @media (min-width: 1024px) {

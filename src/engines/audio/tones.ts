@@ -34,6 +34,7 @@ const BURST_DURATION_MS: Record<TaskSoundCategory, number> = {
   water: 480,
   medication: 520,
   focus_work: 660,
+  pomodoro: 760,
   walk_health: 720,
   sleep_suhoor: 1280,
   meeting_event: 780,
@@ -60,6 +61,11 @@ function playSingleBurst(ctx: AudioContext, category: TaskSoundCategory) {
       scheduleTone(ctx, 440.0, 0, 0.22, 'triangle', 0.09);
       scheduleTone(ctx, 554.37, 0.14, 0.22, 'triangle', 0.09);
       scheduleTone(ctx, 659.25, 0.28, 0.34, 'sine', 0.1);
+      break;
+    case 'pomodoro':
+      scheduleTone(ctx, 587.33, 0, 0.18, 'triangle', 0.1);
+      scheduleTone(ctx, 783.99, 0.16, 0.2, 'sine', 0.11);
+      scheduleTone(ctx, 1046.5, 0.34, 0.36, 'sine', 0.11);
       break;
     case 'walk_health':
       scheduleTone(ctx, 523.25, 0, 0.14, 'sine', 0.09);

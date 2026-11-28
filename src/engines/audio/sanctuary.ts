@@ -24,6 +24,11 @@ export const TASK_SOUND_META: Record<
     icon: '💻',
     descAr: 'ثلاثية إيقاعية متزنة لبداية التركيز',
   },
+  pomodoro: {
+    labelAr: 'بومودورو (التركيز والاستراحة)',
+    icon: '🍅',
+    descAr: 'رنين انتهاء جلسة التركيز أو الاستراحة',
+  },
   walk_health: {
     labelAr: 'مشي وحركة',
     icon: '🚶',

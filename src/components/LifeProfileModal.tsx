@@ -13,6 +13,7 @@ import {
   type NumericProfileKey,
 } from './lifeProfile/types';
 import { HydrationAndSleepSection } from './lifeProfile/HydrationAndSleepSection';
+import { PrayerSettingsSection } from './lifeProfile/PrayerSettingsSection';
 import { SanctuaryGpsMemorySection } from './lifeProfile/SanctuaryGpsMemorySection';
 import { ScheduleAndAudioSection } from './lifeProfile/ScheduleAndAudioSection';
 import { CloudBackupCapsuleSection } from './lifeProfile/CloudBackupCapsuleSection';
@@ -202,16 +203,26 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         onSaveProfile={onSaveProfile}
       />
 
-      <SanctuaryGpsMemorySection
+      <PrayerSettingsSection
         draft={draft}
         rawInputs={rawInputs}
         updateDraft={updateDraft}
         handleNumericChange={handleNumericChange}
         handleNumericBlur={handleNumericBlur}
-        sunlightSettings={sunlightSettings}
-        onUpdateSunlightSettings={onUpdateSunlightSettings}
+        isMobile={isMobile}
+        includePrayerAnchors={includePrayerAnchors}
+        onToggleIncludePrayerAnchors={onToggleIncludePrayerAnchors}
+        isFridayMode={isFridayMode}
+        onToggleFridayMode={onToggleFridayMode}
+        includeBiweeklyPcCleanup={includeBiweeklyPcCleanup}
+        onToggleBiweeklyPcCleanup={onToggleBiweeklyPcCleanup}
         onDetectGpsLocation={onDetectGpsLocation}
         isDetectingGps={isDetectingGps}
+      />
+
+      <SanctuaryGpsMemorySection
+        sunlightSettings={sunlightSettings}
+        onUpdateSunlightSettings={onUpdateSunlightSettings}
         memories={memories}
         onAddMemory={onAddMemory}
         onUpdateMemory={onUpdateMemory}
@@ -222,16 +233,9 @@ export const LifeProfileModal: React.FC<LifeProfileModalProps> = ({
         <ScheduleAndAudioSection
           draft={draft}
           updateDraft={updateDraft}
-          isMobile={isMobile}
           calendarConnected={calendarConnected}
           onGoogleSignOut={onGoogleSignOut}
           onClose={onClose}
-          includePrayerAnchors={includePrayerAnchors}
-          onToggleIncludePrayerAnchors={onToggleIncludePrayerAnchors}
-          isFridayMode={isFridayMode}
-          onToggleFridayMode={onToggleFridayMode}
-          includeBiweeklyPcCleanup={includeBiweeklyPcCleanup}
-          onToggleBiweeklyPcCleanup={onToggleBiweeklyPcCleanup}
           soundRepeats={soundRepeats}
           onUpdateSoundRepeat={onUpdateSoundRepeat}
           onTriggerTaskAlert={onTriggerTaskAlert}

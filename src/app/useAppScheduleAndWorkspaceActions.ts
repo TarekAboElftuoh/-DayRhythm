@@ -161,6 +161,7 @@ export function useAppScheduleAndWorkspaceActions(b: AppBaseState, p0: AppSyncWo
     setOfflineBlocks,
     setLastDeletedBlock,
     setPomodoro,
+    triggerTaskAlert: p0.triggerTaskAlert,
     showToast,
   });
 

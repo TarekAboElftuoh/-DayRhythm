@@ -31,6 +31,7 @@ export type TaskSoundCategory =
   | 'water'
   | 'medication'
   | 'focus_work'
+  | 'pomodoro'
   | 'walk_health'
   | 'sleep_suhoor'
   | 'meeting_event'

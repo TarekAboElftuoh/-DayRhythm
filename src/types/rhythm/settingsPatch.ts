@@ -3,7 +3,7 @@ import type { CapsuleOrientation, CapsuleSize, QuietModeType, SurfaceTheme, Trav
 import type { FreeWindow } from './habits';
 import type { MedicationFastingPolicy } from './integrations';
 import type { SeasonalSleepMode } from './plan';
-import type { LifeProfile, SleepStrategy } from './profile';
+import type { LifeProfile, SleepStrategy, TaskSoundCategory } from './profile';
 
 /**
  * App settings Gemini can change from the chat (everything outside the life profile).
@@ -30,7 +30,7 @@ export interface AppSettingsPatch {
   // NOTE: deliberately no "autoExecuteChat" here — manual-confirm vs instant-execute is a trust
   // setting only a direct tap on the toggle may change, never Gemini on the user's behalf.
   soundRepeats?: Partial<Record<
-    'prayer' | 'water' | 'medication' | 'focus_work' | 'walk_health' | 'sleep_suhoor' | 'meeting_event' | 'general',
+    TaskSoundCategory,
     number | 'continuous'
   >>;
 }

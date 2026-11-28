@@ -1,7 +1,6 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type React from 'react';
-import type { ActiveSanctuaryState, PomodoroState, QuietModeType, ScheduleBlock } from '../types/dayrhythm';
-import { playSoftChime } from '../engines/audioEngine';
+import type { ActiveSanctuaryState, PomodoroState, QuietModeType, ScheduleBlock, TaskSoundCategory } from '../types/dayrhythm';
 import { triggerHapticWaveform } from '../engines/hapticsEngine';
 
 export interface UsePomodoroAndUndoEffectsParams {
@@ -14,6 +13,17 @@ export interface UsePomodoroAndUndoEffectsParams {
   setOfflineBlocks: React.Dispatch<React.SetStateAction<ScheduleBlock[]>>;
   setLastDeletedBlock: React.Dispatch<React.SetStateAction<ScheduleBlock | null>>;
   setPomodoro: React.Dispatch<React.SetStateAction<PomodoroState>>;
+  triggerTaskAlert: (
+    title: string,
+    category: TaskSoundCategory,
+    options?: {
+      bypassSanctuary?: boolean;
+      privacyEmoji?: string;
+      displayTitle?: string;
+      sourceLabel?: string;
+      description?: string;
+    }
+  ) => void;
   showToast: (msg: string) => void;
 }
 
@@ -48,24 +58,55 @@ export function usePomodoroAndUndoEffects(p: UsePomodoroAndUndoEffectsParams) {
     return () => window.removeEventListener('devicemotion', onMotion);
   }, [p.shakeUndoSecondsLeft, handleTriggerShakeUndo]);
 
+  const pomodoroRef = useRef(p.pomodoro);
+  pomodoroRef.current = p.pomodoro;
+  const triggerTaskAlertRef = useRef(p.triggerTaskAlert);
+  triggerTaskAlertRef.current = p.triggerTaskAlert;
+
   useEffect(() => {
     if (!p.pomodoro.isRunning) return;
     const id = window.setInterval(() => {
+      const cur = pomodoroRef.current;
+      if (!cur.isRunning) return;
+      if (cur.remainingSeconds > 1) {
+        p.setPomodoro((prev) =>
+          prev.isRunning && prev.remainingSeconds > 1
+            ? { ...prev, remainingSeconds: prev.remainingSeconds - 1 }
+            : prev
+        );
+        return;
+      }
+
+      const finishedPhase = cur.phase;
       p.setPomodoro((prev) => {
         if (!prev.isRunning) return prev;
-        if (prev.remainingSeconds > 1) return { ...prev, remainingSeconds: prev.remainingSeconds - 1 };
         if (prev.phase === 'focus') {
-          if (p.quietMode === 'normal') playSoftChime('focus_done', p.activeSanctuary);
-          if (p.quietMode !== 'silent_all' && p.quietMode !== 'mute_audio') triggerHapticWaveform('pomodoro');
           return { ...prev, phase: 'break', remainingSeconds: 5 * 60, totalSeconds: 5 * 60, isRunning: true, completedCycles: prev.completedCycles + 1 };
         }
-        if (p.quietMode === 'normal') playSoftChime('break_done', p.activeSanctuary);
-        if (p.quietMode !== 'silent_all' && p.quietMode !== 'mute_audio') triggerHapticWaveform('pomodoro');
         return { ...prev, phase: 'focus', remainingSeconds: prev.presetMinutes * 60, totalSeconds: prev.presetMinutes * 60, isRunning: false };
       });
+
+      if (p.quietMode !== 'silent_all' && p.quietMode !== 'mute_audio') {
+        triggerHapticWaveform('pomodoro');
+      }
+      if (finishedPhase === 'focus') {
+        triggerTaskAlertRef.current('انتهت جلسة التركيز — حان وقت الاستراحة 5 دقائق', 'pomodoro', {
+          privacyEmoji: '🍅',
+          displayTitle: 'انتهت جلسة التركيز! حان وقت الاستراحة (5 د)',
+          sourceLabel: 'مؤقت بومودورو',
+          description: 'خذ نفساً عميقاً، تحرّك قليلاً أو اشرب كوب ماء قبل الدورة القادمة.',
+        });
+      } else {
+        triggerTaskAlertRef.current('انتهت الاستراحة — جاهز لجلسة تركيز جديدة', 'pomodoro', {
+          privacyEmoji: '🍅',
+          displayTitle: 'انتهت الاستراحة! جاهز لجلسة تركيز جديدة',
+          sourceLabel: 'مؤقت بومودورو',
+          description: 'اضغط بدء التركيز عند استعدادك للدورة التالية.',
+        });
+      }
     }, 1000);
     return () => window.clearInterval(id);
-  }, [p.pomodoro.isRunning, p.quietMode, p.activeSanctuary, p.setPomodoro]);
+  }, [p.pomodoro.isRunning, p.quietMode, p.setPomodoro]);
 
   return { handleTriggerShakeUndo };
 }

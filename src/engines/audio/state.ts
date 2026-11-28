@@ -17,6 +17,7 @@ export const DEFAULT_SOUND_REPEATS: SoundRepeatMap = {
   water: 2,
   medication: 2,
   focus_work: 2,
+  pomodoro: 2,
   walk_health: 2,
   sleep_suhoor: 'continuous',
   meeting_event: 3,
