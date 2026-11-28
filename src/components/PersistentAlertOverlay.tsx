@@ -133,15 +133,17 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
   const remSec = remainingSec % 60;
   const remFormatted = `${String(remMin).padStart(2, '0')}:${String(remSec).padStart(2, '0')}`;
 
+  const isWater = alert.category === 'water' || Boolean(alert.isHydration);
+
   const accentBorder =
-    alert.category === 'water'
+    isWater
       ? 'border-sky-400/75 shadow-[0_0_24px_rgba(56,189,248,0.24)]'
       : alert.category === 'medication'
         ? 'border-rose-400/75 shadow-[0_0_24px_rgba(251,113,133,0.24)]'
         : 'border-[#7FFFD4]/80 shadow-[0_0_26px_rgba(127,255,212,0.24)]';
 
   const barColor =
-    alert.category === 'water'
+    isWater
       ? 'bg-sky-400'
       : alert.category === 'medication'
         ? 'bg-rose-400'
@@ -177,8 +179,8 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                <span className="inline-flex items-center gap-1 font-bold text-[#7FFFD4]">
-                  <Bell className="w-3 h-3" />
+                <span className={`inline-flex items-center gap-1 font-bold ${isWater ? 'text-sky-300' : 'text-[#7FFFD4]'}`}>
+                  {isWater ? <Droplets className="w-3 h-3" /> : <Bell className="w-3 h-3" />}
                   <span>{alert.sourceLabel}</span>
                 </span>
                 <span className="text-zinc-500">·</span>
@@ -220,11 +222,11 @@ export const PersistentAlertOverlay: React.FC<PersistentAlertOverlayProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
-          {alert.isHydration && onConfirmWater && (
+          {isWater && onConfirmWater && (
             <button
               type="button"
               onClick={onConfirmWater}
-              className="flex-1 sm:flex-none min-h-[46px] sm:min-h-[40px] px-3.5 py-2 rounded-xl bg-[#7FFFD4] text-black text-xs font-bold hover:bg-[#66eec2] flex items-center justify-center gap-1.5 cursor-pointer"
+              className="flex-1 sm:flex-none min-h-[46px] sm:min-h-[40px] px-3.5 py-2 rounded-xl bg-sky-400 text-black text-xs font-bold hover:bg-sky-300 flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Droplets className="w-3.5 h-3.5" />
               <span>شربت فعلاً</span>
